@@ -78,7 +78,7 @@ fn the_chat_page_needs_a_session_and_renders_the_default_wallpaper() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     let body = &page.body;
     assert!(
-        body.contains("/static/wallpaper/kallisti.svg"),
+        body.contains("/static/wallpaper/kallisti.jpg"),
         "the default backdrop is painted: {body}"
     );
     assert!(
@@ -348,13 +348,17 @@ fn a_wallpaper_choice_round_trips_and_refusals_name_the_field() {
 fn the_presets_are_served_as_svg_and_an_uploaded_image_keeps_its_real_type() {
     let (_dir, engine, app, cookie) = ready_app();
 
-    let preset = block_on(send(
-        &app,
-        Call::get_owned(wallpaper::url("kallisti").unwrap()),
-    ));
-    assert_eq!(preset.status, StatusCode::OK, "{}", preset.body);
-    assert_eq!(preset.headers.get("content-type").unwrap(), "image/svg+xml");
-    assert!(preset.body.starts_with("<svg"));
+    // The default preset is the artwork now, and it is served as the image it is.
+    let (art_status, art_type, art_bytes) = get_bytes(&app, &wallpaper::url("kallisti").unwrap());
+    assert_eq!(art_status, StatusCode::OK);
+    assert_eq!(art_type, "image/jpeg");
+    assert_eq!(&art_bytes[..2], &[0xff, 0xd8], "a real JPEG comes back");
+
+    // The generated backdrops are still SVG, and still served as SVG.
+    let (svg_status, svg_type, svg_bytes) = get_bytes(&app, &wallpaper::url("arcs").unwrap());
+    assert_eq!(svg_status, StatusCode::OK);
+    assert_eq!(svg_type, "image/svg+xml");
+    assert!(svg_bytes.starts_with(b"<svg"));
 
     // Before any upload, the custom path is an honest 404.
     let (absent_status, _absent_type, _) = get_bytes(&app, &wallpaper::url("custom").unwrap());

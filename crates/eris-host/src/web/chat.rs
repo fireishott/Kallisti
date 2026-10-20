@@ -20,7 +20,7 @@
 //! - **The transcript is the operator's.** It is never logged, and the audit row
 //!   for a chat turn records a count and a size, never the words.
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use core_domain::{Capabilities, ModelProfile, ProviderProfile};
 use core_runtime::provider::{
@@ -33,9 +33,167 @@ use crate::onboarding::{
     SetupEngine,
 };
 
-/// One conversation for 1.0.1. The column exists so a thread list does not need
-/// a migration later.
+/// The id 1.0.1 through 1.0.3 used for the single transcript.
+///
+/// Production code resolves a conversation now, but the migration backfills this
+/// id's row and the suites pin their fixtures to it, so it stays a named constant
+/// rather than a magic string in eight tests.
 pub const CONVERSATION_ID: &str = "main";
+
+/// What a fresh conversation is called until its first message names it.
+pub const NEW_CONVERSATION_TITLE: &str = "New chat";
+
+/// How many conversations the rail lists. A rail is a shortlist, not an archive.
+pub const SESSION_LIMIT: usize = 30;
+
+/// The longest title the rail stores from a first message.
+pub const TITLE_LIMIT: usize = 72;
+
+/// One conversation the rail can list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conversation {
+    /// Opaque id, also the transcript key.
+    pub id: String,
+    /// What the operator reads.
+    pub title: String,
+    /// The database stamp of the last message, for ordering and for the rail.
+    pub updated_at: String,
+}
+
+/// The newest conversations, newest first.
+pub fn conversations(db: &Db, limit: usize) -> Result<Vec<Conversation>, DbError> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT id, title, updated_at
+               FROM chat_conversations
+              ORDER BY updated_at DESC, rowid DESC
+              LIMIT ?1",
+        )?;
+        let rows = statement.query_map(params![limit as i64], |row| {
+            Ok(Conversation {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                updated_at: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    })
+}
+
+/// Whether a conversation id is one the daemon knows.
+pub fn conversation_exists(db: &Db, id: &str) -> Result<bool, DbError> {
+    db.with_conn(|conn| {
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM chat_conversations WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    })
+}
+
+/// Start a conversation and return its id.
+pub fn create_conversation(db: &Db) -> Result<String, DbError> {
+    let id = uuid::Uuid::now_v7().to_string();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO chat_conversations (id, title) VALUES (?1, ?2)",
+            params![id, NEW_CONVERSATION_TITLE],
+        )?;
+        Ok(())
+    })?;
+    Ok(id)
+}
+
+/// Make sure a conversation row exists for this id.
+///
+/// Used by the migration's backfill path and by the suites, which pin their
+/// fixtures to [`CONVERSATION_ID`] and then expect a page to find them.
+pub fn seed_conversation(db: &Db, id: &str) -> Result<(), DbError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT OR IGNORE INTO chat_conversations (id, title) VALUES (?1, ?2)",
+            params![id, NEW_CONVERSATION_TITLE],
+        )?;
+        Ok(())
+    })
+}
+
+/// The newest conversation's id, when there is one.
+pub fn latest_conversation(db: &Db) -> Result<Option<String>, DbError> {
+    Ok(conversations(db, 1)?.into_iter().next().map(|row| row.id))
+}
+
+/// The conversation a page should show: the requested one when it exists, the
+/// newest one otherwise, and a fresh one when the daemon has none at all.
+///
+/// A page never renders an empty rail because of a missing row: the answer always
+/// names a conversation that exists.
+pub fn resolve_conversation(db: &Db, requested: Option<&str>) -> Result<String, DbError> {
+    if let Some(id) = requested.filter(|id| !id.is_empty())
+        && conversation_exists(db, id)?
+    {
+        return Ok(id.to_owned());
+    }
+    match latest_conversation(db)? {
+        Some(id) => Ok(id),
+        None => create_conversation(db),
+    }
+}
+
+/// Delete a conversation and its transcript. Returns how many messages went.
+pub fn delete_conversation(db: &Db, id: &str) -> Result<usize, DbError> {
+    db.with_conn(|conn| {
+        let removed = conn.execute(
+            "DELETE FROM chat_messages WHERE conversation_id = ?1",
+            params![id],
+        )?;
+        conn.execute("DELETE FROM chat_conversations WHERE id = ?1", params![id])?;
+        Ok(removed)
+    })
+}
+
+/// Bump a conversation so the rail keeps the one in use at the top.
+pub fn touch_conversation(db: &Db, id: &str) -> Result<(), DbError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_conversations
+                SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    })
+}
+
+/// Name a conversation from its first question, when it still has the default
+/// name. Never renames one the operator has already seen named.
+pub fn name_from_first_message(db: &Db, id: &str, text: &str) -> Result<(), DbError> {
+    let title = title_from(text);
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_conversations
+                SET title = ?2
+              WHERE id = ?1 AND title = ?3",
+            params![id, title, NEW_CONVERSATION_TITLE],
+        )?;
+        Ok(())
+    })
+}
+
+/// A title from the first question: one line, trimmed, bounded.
+#[must_use]
+pub fn title_from(text: &str) -> String {
+    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= TITLE_LIMIT {
+        return collapsed;
+    }
+    let mut cut: String = collapsed.chars().take(TITLE_LIMIT).collect();
+    cut.push('…');
+    cut
+}
 
 /// The largest single message a browser may send, in bytes.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
@@ -667,6 +825,72 @@ mod tests {
         assert_eq!(removed, 1);
         assert_eq!(count(&db, CONVERSATION_ID).unwrap(), 0);
         assert_eq!(count(&db, "other").unwrap(), 1);
+    }
+
+    #[test]
+    fn conversations_are_listed_newest_first_and_deleted_with_their_messages() {
+        let db = db();
+        let older = create_conversation(&db).unwrap();
+        append(&db, &older, Role::User, "older question", State::Complete).unwrap();
+        let newer = create_conversation(&db).unwrap();
+        append(&db, &newer, Role::User, "newer question", State::Complete).unwrap();
+        // The stamp has millisecond resolution; two rows made in the same
+        // millisecond tie, and the tie-break is insertion order. Waiting is what
+        // makes "touched" mean what the rail shows.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        touch_conversation(&db, &older).unwrap();
+
+        let listed = conversations(&db, SESSION_LIMIT).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(
+            listed[0].id, older,
+            "touch moves a conversation to the top of the rail"
+        );
+
+        let removed = delete_conversation(&db, &older).unwrap();
+        assert_eq!(removed, 1, "the message goes with the conversation");
+        assert!(!conversation_exists(&db, &older).unwrap());
+        assert_eq!(count(&db, &older).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_page_always_resolves_a_conversation_that_exists() {
+        let db = db();
+        // Nothing yet: resolve creates one rather than returning nothing.
+        let first = resolve_conversation(&db, None).unwrap();
+        assert!(conversation_exists(&db, &first).unwrap());
+
+        // A requested id that exists wins.
+        let second = create_conversation(&db).unwrap();
+        assert_eq!(resolve_conversation(&db, Some(&second)).unwrap(), second);
+
+        // A bogus id is the newest conversation, never an error.
+        assert_eq!(resolve_conversation(&db, Some("nope")).unwrap(), second);
+    }
+
+    #[test]
+    fn a_conversation_is_named_by_its_first_message_once() {
+        let db = db();
+        let id = create_conversation(&db).unwrap();
+        name_from_first_message(&db, &id, "  What is   the\n state of the lab?  ").unwrap();
+        let title = conversations(&db, 1).unwrap()[0].title.clone();
+        assert_eq!(title, "What is the state of the lab?");
+
+        // A second message never renames it.
+        name_from_first_message(&db, &id, "a different question").unwrap();
+        assert_eq!(conversations(&db, 1).unwrap()[0].title, title);
+    }
+
+    #[test]
+    fn a_long_first_message_is_cut_to_a_title() {
+        let long = "x".repeat(TITLE_LIMIT + 20);
+        let title = title_from(&long);
+        assert_eq!(
+            title.chars().count(),
+            TITLE_LIMIT + 1,
+            "the cut plus its ellipsis"
+        );
+        assert!(title.ends_with('…'));
     }
 
     #[test]

@@ -83,6 +83,13 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   pointer-events: none;
 }
 
+/* A picture is fitted, not cropped: the figure keeps her composition and the
+   black field of the drawing meets the obsidian page without a seam. */
+.app-wall.art {
+  background-size: contain;
+  background-position: right center;
+}
+
 .side {
   position: sticky;
   top: 0;
@@ -138,29 +145,91 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   white-space: nowrap;
 }
 
-.nav { display: flex; flex-direction: column; gap: 2px; }
-.nav a {
-  display: flex;
+.sections { display: flex; flex-wrap: wrap; gap: 8px; }
+.sections a {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px 9px 14px;
-  border: 1px solid transparent;
-  border-left: 2px solid transparent;
-  border-radius: 9px;
-  font-size: 13.5px;
+  padding: 7px 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: 12.5px;
   color: var(--muted);
   transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
 }
-.nav a:hover { color: var(--text); background: var(--raise); text-decoration: none; }
-.nav a[aria-current=page] {
+.sections a:hover { color: var(--text); background: var(--raise); text-decoration: none; }
+.sections a[aria-current=page] {
   color: var(--text);
   background: var(--raise);
-  border-color: var(--line);
-  border-left-color: var(--platinum);
+  border-color: var(--platinum);
   font-weight: 620;
 }
-.nav .soon { font-size: 13.5px; color: var(--muted); opacity: 0.55; padding: 9px 12px; }
-.nav .soon .tag { margin-left: 5px; }
+
+/* The rail: new chat, the conversations, the cog -------------------------- */
+
+.side-action { margin: 0; }
+.side-action button {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 9px 12px;
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--text);
+  font-weight: 560;
+}
+.side-action button:hover { background: var(--raise); filter: none; }
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  min-height: 0;
+  margin: -12px 0 0;
+  padding: 0 0 4px;
+}
+.sessions a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px 7px 12px;
+  border-left: 2px solid transparent;
+  border-radius: 0 8px 8px 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.sessions a:hover { color: var(--text); background: var(--raise); text-decoration: none; }
+.sessions a[aria-current=page] {
+  color: var(--text);
+  background: var(--raise);
+  border-left-color: var(--platinum);
+}
+.sessions .session-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessions .session-stamp {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+.side-empty { display: block; padding: 6px 12px; font-size: 12px; color: var(--muted); }
+
+.cog {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.cog:hover { color: var(--text); background: var(--raise); text-decoration: none; }
+.cog[aria-current=page] { color: var(--text); background: var(--raise); }
+.cog-glyph { font-size: 14px; line-height: 1; }
 .soon { opacity: 0.55; cursor: not-allowed; }
 
 .badge {
@@ -892,6 +961,7 @@ pre.code {
 
 @media (max-width: 900px) {
   .app { display: block; }
+  .app-wall.art { background-position: center top; }
   .side {
     /* Static on a phone: a rail that sticks while the transcript scrolls puts the
        navigation in the middle of the conversation. */
@@ -907,8 +977,11 @@ pre.code {
     border-bottom: 1px solid var(--line);
   }
   .brand .ver { display: none; }
-  .nav { flex-direction: row; flex-wrap: wrap; width: 100%; gap: 2px; }
-  .nav a { padding: 7px 10px; font-size: 13px; border-left-width: 1px; }
+  .side-action { margin-left: auto; }
+  .side-action button { width: auto; }
+  .sessions { flex-direction: row; overflow-x: auto; gap: 4px; width: 100%; margin: 0; }
+  .sessions a { border-left-width: 1px; border-radius: 8px; white-space: nowrap; }
+  .sessions .session-stamp { display: none; }
   .side-foot { flex-direction: row; align-items: center; margin-top: 0; padding-top: 0; border-top: 0; margin-left: auto; gap: 10px; }
   .side-foot .ver { display: none; }
   .wrap { padding: 22px 18px 56px; }

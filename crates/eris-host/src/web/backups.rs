@@ -771,6 +771,17 @@ fn the_nav_has_no_disabled_entries_left() {
         ROUTE_ACTIVITY,
         ROUTE_BACKUPS,
     ];
+    // The rail no longer carries the admin nav: settings is the index of every
+    // section, and every page keeps the cog back to it.
+    let settings = block_on(send(&app, Call::get(ROUTE_SETTINGS).html().cookie(cookie)));
+    assert_eq!(settings.status, StatusCode::OK, "{}", settings.body);
+    for link in pages {
+        assert!(
+            settings.body.contains(&format!(r#"href="{link}""#)),
+            "settings links {link}: {}",
+            settings.body
+        );
+    }
     for route in pages {
         let page = block_on(send(&app, Call::get(route).html().cookie(cookie)));
         assert_eq!(page.status, StatusCode::OK, "{route}: {}", page.body);
@@ -780,16 +791,9 @@ fn the_nav_has_no_disabled_entries_left() {
             "{route} has no disabled nav entry: {}",
             page.body
         );
-        for link in pages {
-            assert!(
-                page.body.contains(&format!(r#"href="{link}""#)),
-                "{route} links {link}: {}",
-                page.body
-            );
-        }
         assert!(
-            page.body.contains(r#"aria-current="page""#),
-            "{route} marks the current page: {}",
+            page.body.contains(&format!(r#"href="{ROUTE_SETTINGS}""#)),
+            "{route} keeps the cog: {}",
             page.body
         );
     }

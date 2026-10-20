@@ -294,6 +294,21 @@ pub struct Chrome {
     /// application's desk, not a chat decoration: Settings, Sessions and the
     /// dashboard all sit on the same surface.
     pub wallpaper_url: Option<String>,
+    /// The conversations the rail lists, newest first.
+    pub sessions: Vec<ChatSession>,
+    /// The conversation this page is showing, when it is showing one.
+    pub current_conversation: Option<String>,
+}
+
+/// One conversation in the rail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatSession {
+    /// Opaque id, also the route segment.
+    pub id: String,
+    /// What the operator reads.
+    pub title: String,
+    /// A short stamp for the rail.
+    pub stamp: String,
 }
 
 impl Default for Chrome {
@@ -308,6 +323,8 @@ impl Default for Chrome {
             // The documented default, so a page rendered without a resolved
             // settings row still paints the Kallisti backdrop.
             wallpaper_url: super::wallpaper::url(super::wallpaper::DEFAULT_WALLPAPER),
+            sessions: Vec::new(),
+            current_conversation: None,
         }
     }
 }
@@ -389,7 +406,12 @@ pub fn shell(
             }
             body {
                 @if let Some(url) = &chrome.wallpaper_url {
-                    div .app-wall style=(format!("background-image:url('{url}')")) {}
+                    // A raster wallpaper is a picture with a composition, so it is
+                    // fitted rather than cropped; the generated SVG fields fill the
+                    // frame by design.
+                    @let art = url.ends_with(".jpg") || url.ends_with(".jpeg") || url.ends_with(".png");
+                    div class=(if art { "app-wall art" } else { "app-wall" })
+                        style=(format!("background-image:url('{url}')")) {}
                 }
                 div .app {
                     header .side {
@@ -400,8 +422,39 @@ pub fn shell(
                                 span .ver { "1.0 Eris daemon" }
                             }
                         }
-                        @if let Some(current) = nav { (nav_bar(current)) }
+                        @if nav.is_some() {
+                            form .side-action method="post" action=(crate::admin::ROUTE_CHAT_NEW) {
+                                button type="submit" { "+  New chat" }
+                            }
+                            nav .sessions aria-label="Conversations" {
+                                @if chrome.sessions.is_empty() {
+                                    span .side-empty { "No conversations yet" }
+                                }
+                                @for session in &chrome.sessions {
+                                    @let open = chrome.current_conversation.as_deref() == Some(session.id.as_str());
+                                    a href=(format!("/dashboard/chat/{}", session.id))
+                                        aria-current=[open.then_some("page")]
+                                        title=(session.title) {
+                                        span .session-title { (session.title) }
+                                        span .session-stamp { (session.stamp) }
+                                    }
+                                }
+                            }
+                        }
                         div .side-foot {
+                            /* The cog is the way into everything that configures
+                               the daemon, and it only exists for a signed-in
+                               browser: a settings link on the sign-in form would
+                               only bounce back to the sign-in form. */
+                            @if nav.is_some() {
+                                @let on_settings = nav == Some(Nav::Settings);
+                                a .cog href=(crate::admin::ROUTE_SETTINGS)
+                                    aria-label="Settings"
+                                    aria-current=[on_settings.then_some("page")] {
+                                    span .cog-glyph aria-hidden="true" { "\u{2699}" }
+                                    span .cog-label { "Settings" }
+                                }
+                            }
                             span class=(state_class) { (state.as_str()) }
                             span .ver { "Eris " (VERSION) }
                         }
@@ -495,7 +548,7 @@ impl Nav {
 /// section the listener does not serve.
 fn nav_bar(current: Nav) -> Markup {
     html! {
-        nav class="nav" aria-label="Sections" {
+        nav class="sections" aria-label="Sections" {
             @for entry in Nav::ALL {
                 a href=(entry.path()) aria-current=[(current == entry).then_some("page")] {
                     (entry.label())
@@ -1611,6 +1664,15 @@ pub fn settings_page(view: &SettingsView) -> Markup {
         }
         (alert_region(page_error, None))
 
+        section .card aria-labelledby="sections-heading" {
+            h2 id="sections-heading" { "Where everything lives" }
+            p .small {
+                "The rail is the conversation list. The surfaces that configure this daemon are here, "
+                "and the cog in the rail comes back to this page from anywhere."
+            }
+            (nav_bar(Nav::Settings))
+        }
+
         section .card aria-labelledby="provider-heading" {
             h2 id="provider-heading" { "Provider" }
             p .small {
@@ -2504,13 +2566,19 @@ pub struct ChatLine {
     pub cached_tokens: Option<u64>,
     /// Wall time from request to last byte.
     pub duration_ms: Option<u64>,
+    /// The context window declared for the model that answered.
+    pub context_window: Option<u64>,
 }
 
 impl ChatLine {
-    /// The numbers this answer cost, as one line: `1.2k in / 18 out / 97% cache`.
+    /// The numbers this answer cost, as one line:
+    /// `1.2k in / 18 out / 97% cache / 21% ctx / 900ms`.
     ///
-    /// A number the provider did not report is left out rather than shown as
-    /// zero, so a row never claims a cost it did not measure.
+    /// This is the whole of the usage story on the page: 1.0.3 put a summary bar
+    /// above the transcript, and a bar of zeros above an empty conversation said
+    /// nothing. The numbers belong to the answer that produced them, so they ride
+    /// with it. A number the provider did not report is left out rather than
+    /// shown as zero.
     #[must_use]
     pub fn usage_line(&self) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
@@ -2525,6 +2593,12 @@ impl ChatLine {
         {
             parts.push(format!("{pct}% cache"));
         }
+        if let (Some(cached), Some(prompt), Some(window)) =
+            (self.cached_tokens, self.prompt_tokens, self.context_window)
+            && let Some(pct) = ((prompt + cached) * 100).checked_div(window)
+        {
+            parts.push(format!("{}% ctx", pct.min(100)));
+        }
         if let Some(ms) = self.duration_ms {
             if ms >= 1000 {
                 parts.push(format!("{:.1}s", ms as f64 / 1000.0));
@@ -2535,7 +2609,7 @@ impl ChatLine {
         if parts.is_empty() {
             None
         } else {
-            Some(parts.join(" / "))
+            Some(parts.join(" · "))
         }
     }
 }
@@ -2563,6 +2637,10 @@ pub struct ChatView {
     pub version: String,
     /// The configured model, shown as a chip so the answer has a return address.
     pub model: String,
+    /// The conversation this page shows.
+    pub conversation: String,
+    /// Its name, for the heading and the delete confirmation.
+    pub conversation_title: String,
     /// The transcript, oldest first.
     pub messages: Vec<ChatLine>,
     /// False until a provider is stored; the composer is disabled when it is.
@@ -2640,52 +2718,6 @@ pub fn blocks(text: &str) -> Markup {
     html! { @for piece in pieces { (piece) } }
 }
 
-/// The numbers a conversation has cost, as a row of chips.
-///
-/// Shown above the transcript so the state of the conversation is readable
-/// without scrolling to the bottom of it.
-fn chat_stats(view: &ChatView) -> Markup {
-    let stats = &view.stats;
-    let context = match (stats.context_pct, stats.context_used, stats.context_window) {
-        (Some(pct), Some(used), Some(window)) => format!(
-            "{pct}% of {} ({})",
-            human_tokens(window),
-            human_tokens(used)
-        ),
-        (None, Some(used), _) => format!("{} used", human_tokens(used)),
-        _ => "context unknown".to_owned(),
-    };
-    let cache = match stats.cache_hit_pct {
-        Some(pct) => format!("{pct}% cache"),
-        None => "cache unknown".to_owned(),
-    };
-    html! {
-        div .chat-stats aria-label="Conversation usage" {
-            div .stat-chip {
-                span .n { (stats.turns) }
-                span .k { "turns" }
-            }
-            div .stat-chip {
-                span .n { (human_tokens(stats.total_tokens)) }
-                span .k { "tokens" }
-            }
-            div .stat-chip {
-                span .n { (cache) }
-                span .k { "prompt cache" }
-            }
-            div .stat-chip.wide {
-                span .n { (context) }
-                span .k { "context" }
-                @if let Some(pct) = stats.context_pct {
-                    div .meter aria-hidden="true" {
-                        div .meter-fill style=(format!("width:{pct}%")) {}
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// The strip under the composer: the same facts as a single line, which is where
 /// an operator looks while a turn is running.
 fn chat_status_strip(view: &ChatView) -> Markup {
@@ -2752,9 +2784,6 @@ pub fn chat_page(view: &ChatView) -> Markup {
             }
         }
         (alert_region(view.error.as_ref(), None))
-        @if view.provider_ready {
-            (chat_stats(view))
-        }
         section .thread id="thread" aria-label="Conversation" {
             @if view.messages.is_empty() {
                 div .chat-empty {

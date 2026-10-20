@@ -13,8 +13,8 @@
 use axum::http::StatusCode;
 
 use crate::admin::{
-    AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_CHAT, ROUTE_DASHBOARD, ROUTE_DEVICES,
-    ROUTE_LOGIN, ROUTE_SESSIONS, ROUTE_SETTINGS, router_with,
+    AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_CHAT, ROUTE_CHAT_NEW, ROUTE_DASHBOARD,
+    ROUTE_DEVICES, ROUTE_LOGIN, ROUTE_SESSIONS, ROUTE_SETTINGS, router_with,
 };
 
 use super::harness::{
@@ -100,168 +100,157 @@ fn the_dashboard_lists_every_bound_listener() {
 }
 
 #[test]
-fn the_nav_renders_when_ready_and_not_on_the_login_page() {
+fn the_rail_carries_new_chat_the_sessions_and_the_cog() {
     let (_dir, engine, passphrase) = ready_engine();
+    // A conversation with a message, so the rail has something to list.
+    crate::web::chat::append(
+        engine.db(),
+        crate::web::chat::CONVERSATION_ID,
+        crate::web::chat::Role::User,
+        "a question that names the conversation",
+        crate::web::chat::State::Complete,
+    )
+    .unwrap();
+    crate::web::chat::name_from_first_message(
+        engine.db(),
+        crate::web::chat::CONVERSATION_ID,
+        "a question that names the conversation",
+    )
+    .unwrap();
     let app = router_with(AppState::new(engine, false));
     let cookie = sign_in(&app, &passphrase);
 
-    // The dashboard carries the shell: the product name, the nav, and the
-    // current page marked.
     let dashboard = block_on(send(
         &app,
         Call::get(ROUTE_DASHBOARD).html().cookie(Some(&cookie)),
     ));
     assert_eq!(dashboard.status, StatusCode::OK, "{}", dashboard.body);
+    let body = &dashboard.body;
+
+    assert!(body.contains(r#"<header class="side""#), "the rail renders");
+    assert!(body.contains(">Kallisti<"), "the rail names the product");
+    // New chat is an action, not a link: it creates a conversation.
     assert!(
-        dashboard.body.contains(r#"<nav class="nav""#),
-        "the shell renders a nav: {}",
-        dashboard.body
+        body.contains(&format!(r#"action="{ROUTE_CHAT_NEW}""#)),
+        "the rail offers new chat: {body}"
+    );
+    // The conversation is listed and linked.
+    assert!(
+        body.contains(&format!(
+            r#"href="/dashboard/chat/{}""#,
+            crate::web::chat::CONVERSATION_ID
+        )),
+        "the rail lists the conversation: {body}"
     );
     assert!(
-        dashboard.body.contains(">Kallisti<"),
-        "the top bar carries the product name: {}",
-        dashboard.body
+        body.contains("a question that names the conversation"),
+        "the rail shows the title taken from the first message: {body}"
     );
-    for route in LIVE_NAV {
-        assert!(
-            dashboard.body.contains(&format!(r#"href="{route}""#)),
-            "the nav links {route}: {}",
-            dashboard.body
-        );
-    }
+    // The cog is the way into everything else.
     assert!(
-        dashboard.body.contains(r#"aria-current="page""#),
-        "the current page is marked: {}",
-        dashboard.body
-    );
-    // The mark is on the dashboard link, not on some other link.
-    let current = owner_of_aria_current(&dashboard.body);
-    assert!(
-        current.contains(ROUTE_DASHBOARD),
-        "aria-current is on the dashboard link, found {current}"
-    );
-    // The footer carries the version.
-    assert!(
-        dashboard.body.contains(crate::admin::VERSION),
-        "the footer carries the version: {}",
-        dashboard.body
-    );
-    // Every entry is a link now that the backups page exists: a nav that answers
-    // a click with a 404 was the reason the placeholder existed, and there is no
-    // placeholder left.
-    assert_eq!(
-        dashboard.body.matches(r#"aria-disabled="true""#).count(),
-        0,
-        "no nav entry is unavailable: {}",
-        dashboard.body
+        body.contains(&format!(r#"href="{ROUTE_SETTINGS}""#)),
+        "the cog reaches settings: {body}"
     );
     assert!(
-        dashboard.body.contains(">Backups"),
-        "the nav names the backups page: {}",
-        dashboard.body
+        body.contains(r#"aria-label="Settings""#),
+        "the cog is labelled"
+    );
+    // The admin sections are NOT in the rail any more.
+    assert!(
+        !body.contains(r#"class="sections""#),
+        "the dashboard does not carry the section list: {body}"
     );
 
-    // Every dashboard page marks its own entry.
-    for route in [ROUTE_SETTINGS, ROUTE_ACTIVITY] {
-        let page = block_on(send(&app, Call::get(route).html().cookie(Some(&cookie))));
-        assert_eq!(page.status, StatusCode::OK, "{route}: {}", page.body);
-        let marked = owner_of_aria_current(&page.body);
-        assert!(
-            marked.contains(route),
-            "{route} marks itself current, found {marked}"
-        );
-    }
+    // Settings is where the sections live, and it marks itself.
+    let settings = block_on(send(
+        &app,
+        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(settings.status, StatusCode::OK, "{}", settings.body);
+    assert!(
+        settings.body.contains(r#"class="sections""#),
+        "settings lists the sections: {}",
+        settings.body
+    );
+    let marked = owner_of_aria_current(&settings.body);
+    assert!(
+        marked.contains(ROUTE_SETTINGS),
+        "settings marks itself current, found {marked}"
+    );
 
-    // The sign-in form is minimal on purpose: no nav on a page whose whole job is
-    // one field.
+    // The sign-in form is minimal: no rail actions, no conversations, no cog.
     let login = block_on(send(&app, Call::get(ROUTE_LOGIN).html()));
     assert_eq!(login.status, StatusCode::OK, "{}", login.body);
     assert!(
-        !login.body.contains(r#"<nav class="nav""#),
-        "the login page has no nav: {}",
+        !login
+            .body
+            .contains(&format!(r#"action="{ROUTE_CHAT_NEW}""#)),
+        "the login page offers no new chat: {}",
         login.body
     );
     assert!(
-        !login.body.contains(r#"aria-current="page""#),
-        "the login page marks nothing current: {}",
+        !login.body.contains(r#"class="sessions""#),
+        "the login page lists no conversations: {}",
         login.body
     );
     assert!(
         !login.body.contains(&format!(r#"href="{ROUTE_SETTINGS}""#)),
-        "the login page does not link the settings page: {}",
+        "the login page does not link settings: {}",
         login.body
     );
 
-    // While the wizard is open there is no nav either: the dashboard is not a
-    // reachable page yet.
+    // While the wizard is open there is no rail action either.
     let (_setup_dir, setup, _words) = setup_engine();
     let wizard_app = router_with(AppState::new(setup, false));
     let wizard = block_on(send(&wizard_app, Call::get("/setup")));
     assert_eq!(wizard.status, StatusCode::OK, "{}", wizard.body);
     assert!(
-        !wizard.body.contains(r#"<nav class="nav""#),
-        "the wizard has no nav: {}",
+        !wizard
+            .body
+            .contains(&format!(r#"action="{ROUTE_CHAT_NEW}""#)),
+        "the wizard offers no new chat: {}",
         wizard.body
     );
 }
 
 #[test]
-fn sessions_and_devices_nav_links_are_active() {
+fn the_settings_page_reaches_every_section_and_none_is_a_placeholder() {
     let (_dir, _engine, app, cookie) = ready_app();
     let cookie = Some(cookie.as_str());
 
-    // Both pages exist, so both entries are links on every live page, and each
-    // page marks itself current.
-    for route in [ROUTE_SESSIONS, ROUTE_DEVICES] {
-        let page = block_on(send(&app, Call::get(route).html().cookie(cookie)));
-        assert_eq!(page.status, StatusCode::OK, "{route}: {}", page.body);
-        let marked = owner_of_aria_current(&page.body);
-        assert!(
-            marked.contains(route),
-            "{route} marks itself current, found {marked}"
-        );
-    }
-
+    let settings = block_on(send(&app, Call::get(ROUTE_SETTINGS).html().cookie(cookie)));
+    assert_eq!(settings.status, StatusCode::OK, "{}", settings.body);
     for route in LIVE_NAV {
-        let page = block_on(send(&app, Call::get(route).html().cookie(cookie)));
-        assert_eq!(page.status, StatusCode::OK, "{route}: {}", page.body);
-        for link in [ROUTE_SESSIONS, ROUTE_DEVICES] {
-            assert!(
-                page.body.contains(&format!(r#"href="{link}""#)),
-                "{route} links {link}: {}",
-                page.body
-            );
-        }
-        // No placeholders left, on every page.
-        assert_eq!(
-            page.body.matches(r#"aria-disabled="true""#).count(),
-            0,
-            "{route} has no unavailable nav entry: {}",
-            page.body
-        );
         assert!(
-            page.body.contains(">Backups"),
-            "{route} names the backups page: {}",
-            page.body
-        );
-        assert!(
-            page.body.contains(r#"href="/dashboard/backups""#),
-            "{route} links the backups page: {}",
-            page.body
-        );
-        let marked = owner_of_aria_current(&page.body);
-        assert!(
-            marked.contains(route),
-            "{route} marks itself current, found {marked}"
+            settings.body.contains(&format!(r#"href="{route}""#)),
+            "settings links {route}: {}",
+            settings.body
         );
     }
-
-    // The sign-in page still carries no nav at all, so no session link either.
-    let login = block_on(send(&app, Call::get(ROUTE_LOGIN).html()));
-    assert!(
-        !login.body.contains(&format!(r#"href="{ROUTE_SESSIONS}""#)),
-        "the login page links no session page"
+    assert_eq!(
+        settings.body.matches(r#"aria-disabled="true""#).count(),
+        0,
+        "no section is unavailable: {}",
+        settings.body
     );
+
+    // Every admin page keeps its own identity and can get back to the cog.
+    for route in [
+        ROUTE_CHAT,
+        ROUTE_DASHBOARD,
+        ROUTE_SESSIONS,
+        ROUTE_DEVICES,
+        ROUTE_ACTIVITY,
+        ROUTE_BACKUPS,
+    ] {
+        let page = block_on(send(&app, Call::get(route).html().cookie(cookie)));
+        assert_eq!(page.status, StatusCode::OK, "{route}: {}", page.body);
+        assert!(
+            page.body.contains(&format!(r#"href="{ROUTE_SETTINGS}""#)),
+            "{route} keeps the cog: {}",
+            page.body
+        );
+    }
 }
 
 #[test]

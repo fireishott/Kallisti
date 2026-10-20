@@ -225,6 +225,10 @@ pub fn setup_engine() -> (tempfile::TempDir, SetupEngine, String) {
     let dir = tempfile::tempdir().expect("temp dir");
     let paths = Paths::for_root(dir.path());
     let db = Db::open(&paths.db_file).expect("a fresh database opens");
+    // The chat surface resolves a conversation, and a suite that appends to the
+    // documented fixture id expects a page to find it.
+    crate::web::chat::seed_conversation(&db, crate::web::chat::CONVERSATION_ID)
+        .expect("the fixture conversation");
     let engine = SetupEngine::new(db, paths);
     let passphrase = engine
         .ensure_first_run()

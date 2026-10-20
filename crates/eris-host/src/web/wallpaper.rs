@@ -67,11 +67,16 @@ pub struct Preset {
 }
 
 /// The presets, in display order. `none` is last because it is the off switch.
-pub const PRESETS: [Preset; 4] = [
+pub const PRESETS: [Preset; 5] = [
     Preset {
         id: "kallisti",
         label: "Kallisti",
-        hint: "Obsidian with platinum arcs. The default.",
+        hint: "The seated figure on the steps. The default.",
+    },
+    Preset {
+        id: "arcs",
+        label: "Arcs",
+        hint: "Obsidian with platinum arcs and a grid.",
     },
     Preset {
         id: "obsidian",
@@ -137,8 +142,39 @@ pub fn url(wallpaper: &str) -> Option<String> {
             let preset = Preset::find(other).unwrap_or_else(|| {
                 Preset::find(DEFAULT_WALLPAPER).expect("the default preset exists")
             });
-            Some(format!("{ROUTE_WALLPAPER_PREFIX}{}.svg", preset.id))
+            let extension = if raster(preset.id).is_some() {
+                "jpg"
+            } else {
+                "svg"
+            };
+            Some(format!("{ROUTE_WALLPAPER_PREFIX}{}.{extension}", preset.id))
         }
+    }
+}
+
+/// A raster preset: the bytes and the media type they really are.
+///
+/// The default is a JPEG because the artwork is a drawing on a black field and
+/// 97 KiB of committed bytes is cheaper than inventing it in vector shapes.
+pub struct Raster {
+    /// The media type the bytes are.
+    pub media_type: &'static str,
+    /// The bytes, compiled into the binary so a deploy is still one file.
+    pub bytes: &'static [u8],
+}
+
+/// The artwork that ships as the default backdrop.
+pub const KALLISTI_ART: Raster = Raster {
+    media_type: "image/jpeg",
+    bytes: include_bytes!("../../assets/kallisti-wallpaper.jpg"),
+};
+
+/// The raster for a preset `id`, when that preset is an image.
+#[must_use]
+pub fn raster(id: &str) -> Option<&'static Raster> {
+    match id {
+        "kallisti" => Some(&KALLISTI_ART),
+        _ => None,
     }
 }
 
@@ -146,7 +182,7 @@ pub fn url(wallpaper: &str) -> Option<String> {
 #[must_use]
 pub fn svg(id: &str) -> Option<&'static str> {
     match id {
-        "kallisti" => Some(KALLISTI_SVG),
+        "arcs" => Some(KALLISTI_SVG),
         "obsidian" => Some(OBSIDIAN_SVG),
         "platinum" => Some(PLATINUM_SVG),
         _ => None,
@@ -258,16 +294,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_preset_has_an_svg_except_none_and_custom() {
+    fn every_preset_is_backed_by_an_asset_except_none_and_custom() {
         for preset in PRESETS {
             match preset.id {
-                NONE | CUSTOM => assert!(svg(preset.id).is_none()),
+                NONE | CUSTOM => assert!(svg(preset.id).is_none() && raster(preset.id).is_none()),
                 id => assert!(
-                    svg(id).is_some_and(|text| text.starts_with("<svg")),
-                    "{id} has a generated backdrop"
+                    svg(id).is_some_and(|text| text.starts_with("<svg"))
+                        || raster(id).is_some_and(|art| !art.bytes.is_empty()),
+                    "{id} has a real backdrop"
                 ),
             }
         }
+        // The default is the artwork, and it is a JPEG the browser will decode.
+        let art = raster(DEFAULT_WALLPAPER).expect("the default is an image");
+        assert_eq!(art.media_type, "image/jpeg");
+        assert_eq!(
+            &art.bytes[..2],
+            &[0xff, 0xd8],
+            "the default is really a JPEG"
+        );
+        assert!(art.bytes.len() > 10_000, "the artwork is not a placeholder");
     }
 
     #[test]
@@ -300,8 +346,8 @@ mod tests {
     }
 
     #[test]
-    fn the_default_backdrop_is_actually_visible() {
-        let svg = svg(DEFAULT_WALLPAPER).expect("the default backdrop exists");
+    fn the_generated_backdrop_is_actually_visible() {
+        let svg = svg("arcs").expect("the arcs backdrop exists");
         // Some part of it has to paint brighter than a hairline, or the wallpaper
         // is a rumour. This is the bug 1.0.2 fixes: the first pass was so faint
         // that a screenshot looked like a flat page.
@@ -340,13 +386,14 @@ mod tests {
         assert!(url(NONE).is_none());
         assert_eq!(
             url("kallisti").as_deref(),
-            Some("/static/wallpaper/kallisti.svg")
+            Some("/static/wallpaper/kallisti.jpg")
         );
+        assert_eq!(url("arcs").as_deref(), Some("/static/wallpaper/arcs.svg"));
         assert_eq!(url(CUSTOM).as_deref(), Some("/static/wallpaper/custom"));
         // A garbage value still resolves, so a page never renders without one.
         assert_eq!(
             url("garbage").as_deref(),
-            Some("/static/wallpaper/kallisti.svg")
+            Some("/static/wallpaper/kallisti.jpg")
         );
     }
 

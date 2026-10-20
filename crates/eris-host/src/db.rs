@@ -29,21 +29,22 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The twelve tables the migrations create. `schema_migrations` is the
+/// The thirteen tables the migrations create. `schema_migrations` is the
 /// thirteenth and is created by the runner, not by a migration. 0001 creates the
 /// first nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds
 /// columns to `jobs` and no table at all; 0005 adds `chat_messages`.
-pub const TABLES: [&str; 12] = [
+pub const TABLES: [&str; 13] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
     "audit_log",
     "auth_tokens",
+    "chat_conversations",
     "chat_messages",
     "devices",
     "job_events",
@@ -91,6 +92,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 6,
         name: "0006_chat_accounting",
         sql: MIGRATION_0006,
+    },
+    Migration {
+        version: 7,
+        name: "0007_chat_conversations",
+        sql: MIGRATION_0007,
     },
 ];
 
@@ -329,6 +335,29 @@ ALTER TABLE chat_messages ADD COLUMN context_window INTEGER;
 ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_model ON chat_messages (model);
+";
+
+/// Migration 0007: conversations, so the rail has something to list.
+///
+/// 1.0.1-1.0.3 kept one transcript keyed by a constant. A session list needs real
+/// rows: a title, and an `updated_at` the rail can sort by. The seed statement
+/// backfills a row for every conversation the transcript already mentions, so an
+/// upgrade does not lose the chat that was in progress.
+const MIGRATION_0007: &str = r"
+CREATE TABLE IF NOT EXISTS chat_conversations (
+    id         TEXT PRIMARY KEY NOT NULL,
+    title      TEXT NOT NULL DEFAULT 'New chat',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_conversations_updated_at
+    ON chat_conversations (updated_at);
+
+INSERT OR IGNORE INTO chat_conversations (id, title, created_at, updated_at)
+    SELECT conversation_id, 'Earlier chat', MIN(created_at), MAX(created_at)
+      FROM chat_messages
+     GROUP BY conversation_id;
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

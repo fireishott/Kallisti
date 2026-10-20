@@ -25,10 +25,10 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
-    ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_SEND, ROUTE_DASHBOARD, ROUTE_DEVICES,
-    ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
-    ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
+    ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_ID, ROUTE_CHAT_NEW,
+    ROUTE_CHAT_SEND, ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION,
+    ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -106,6 +106,9 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_CHAT, get(chat_page_handler))
         .route(ROUTE_CHAT_SEND, post(chat_send))
         .route(ROUTE_CHAT_CLEAR, post(chat_clear))
+        .route(ROUTE_CHAT_NEW, post(chat_new))
+        .route(ROUTE_CHAT_ID, get(chat_conversation_handler))
+        .route(ROUTE_CHAT_DELETE, post(chat_delete))
         .route(wallpaper::ROUTE_WALLPAPER_SAVE, post(save_wallpaper))
         .route(wallpaper::ROUTE_WALLPAPER_UPLOAD, post(upload_wallpaper))
         .route("/dashboard/provider/rotate", post(rotate_provider))
@@ -2788,8 +2791,11 @@ fn provider_ready(state: &AppState) -> bool {
 
 /// Everything the chat page states, in one place, so the page and every refusal
 /// that re-renders it agree.
-fn build_chat_view(state: &AppState) -> Result<ChatView, FormError> {
-    let transcript = chat::load(state.engine.db(), chat::CONVERSATION_ID)
+fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView, FormError> {
+    let db = state.engine.db();
+    let conversation = chat::resolve_conversation(db, requested)
+        .map_err(|error| FormError::new(None, "chat_unreadable", error.to_string()))?;
+    let transcript = chat::load(db, &conversation)
         .map_err(|error| FormError::new(None, "chat_unreadable", error.to_string()))?;
     let model = state
         .engine
@@ -2818,6 +2824,7 @@ fn build_chat_view(state: &AppState) -> Result<ChatView, FormError> {
                 completion_tokens: message.completion_tokens,
                 cached_tokens: message.cached_tokens,
                 duration_ms: message.duration_ms,
+                context_window: message.context_window,
             }
         })
         .collect();
@@ -2833,9 +2840,21 @@ fn build_chat_view(state: &AppState) -> Result<ChatView, FormError> {
         .provider_contexts()
         .ok()
         .and_then(|contexts| contexts.get(&selected_model).copied());
+    let mut chrome = state.chrome();
+    chrome.current_conversation = Some(conversation.clone());
+    let title = chat::conversations(db, chat::SESSION_LIMIT)
+        .ok()
+        .and_then(|rows| {
+            rows.into_iter()
+                .find(|row| row.id == conversation)
+                .map(|row| row.title)
+        })
+        .unwrap_or_else(|| chat::NEW_CONVERSATION_TITLE.to_owned());
 
     Ok(ChatView {
-        chrome: state.chrome(),
+        chrome,
+        conversation,
+        conversation_title: title,
         state: state.engine.state().unwrap_or(crate::db::SetupState::Ready),
         version: VERSION.to_owned(),
         model: selected_model.clone(),
@@ -2855,7 +2874,7 @@ fn chat_clock(stamp: &str) -> String {
     crate::web::templates::clock(stamp)
 }
 
-/// `GET /dashboard/chat`.
+/// `GET /dashboard/chat` - the newest conversation.
 async fn chat_page_handler(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -2864,10 +2883,79 @@ async fn chat_page_handler(
     if !session_valid(&state, &headers) {
         return no_dashboard_session(&headers, &request_id.0);
     }
-    match build_chat_view(&state) {
+    match build_chat_view(&state, None) {
         Ok(view) => page(chat_page(&view)),
         Err(error) => refusal(error),
     }
+}
+
+/// `GET /dashboard/chat/{id}` - one named conversation.
+async fn chat_conversation_handler(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match build_chat_view(&state, Some(&id)) {
+        Ok(view) => page(chat_page(&view)),
+        Err(error) => refusal(error),
+    }
+}
+
+/// `POST /dashboard/chat/new` - start a conversation and go to it.
+async fn chat_new(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match chat::create_conversation(state.engine.db()) {
+        Ok(id) => see_other_owned(conversation_path(&id)),
+        Err(error) => refusal(FormError::new(None, "chat_write_failed", error.to_string())),
+    }
+}
+
+/// `POST /dashboard/chat/{id}/delete` - drop a conversation and its transcript.
+async fn chat_delete(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match chat::delete_conversation(state.engine.db(), &id) {
+        Ok(removed) => {
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "chat.conversation_deleted",
+                Some(&format!("{removed} messages")),
+            );
+            see_other(ROUTE_CHAT)
+        }
+        Err(error) => refusal(FormError::new(None, "chat_write_failed", error.to_string())),
+    }
+}
+
+/// The path of one conversation, built in one place.
+fn conversation_path(id: &str) -> String {
+    format!("/dashboard/chat/{id}")
+}
+
+/// A 303 to a path that was built at run time.
+fn see_other_owned(location: String) -> Response {
+    (
+        StatusCode::SEE_OTHER,
+        [(header::LOCATION, location.as_str())],
+        Body::empty(),
+    )
+        .into_response()
 }
 
 /// `POST /dashboard/chat/send`.
@@ -2925,9 +3013,15 @@ async fn chat_send(
         .and_then(|contexts| contexts.get(&model).copied());
 
     let db = state.engine.db().clone();
+    let conversation = match chat::resolve_conversation(&db, Some(field(&fields, "conversation"))) {
+        Ok(conversation) => conversation,
+        Err(error) => {
+            return refusal(FormError::new(None, "chat_unreadable", error.to_string()));
+        }
+    };
     if let Err(error) = chat::append(
         &db,
-        chat::CONVERSATION_ID,
+        &conversation,
         chat::Role::User,
         &text,
         chat::State::Complete,
@@ -2938,7 +3032,7 @@ async fn chat_send(
     // The assistant row exists before the first token, so a refresh mid-answer
     // shows the partial reply rather than nothing at all, and it carries the
     // model and window now so a half-finished row is still readable.
-    let answer_id = match chat::append_answer(&db, chat::CONVERSATION_ID, &model, context_window) {
+    let answer_id = match chat::append_answer(&db, &conversation, &model, context_window) {
         Ok(id) => id,
         Err(error) => return refusal(FormError::new(None, "chat_write_failed", error.to_string())),
     };
@@ -2947,7 +3041,10 @@ async fn chat_send(
     let mut config = config;
     config.model = model.clone();
 
-    let transcript = match chat::load(&db, chat::CONVERSATION_ID) {
+    // The first question names the conversation, and the rail bumps it to the top.
+    let _ = chat::name_from_first_message(&db, &conversation, &text);
+    let _ = chat::touch_conversation(&db, &conversation);
+    let transcript = match chat::load(&db, &conversation) {
         Ok(transcript) => transcript,
         Err(error) => return refusal(FormError::new(None, "chat_unreadable", error.to_string())),
     };
@@ -3015,11 +3112,23 @@ async fn chat_clear(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
     headers: HeaderMap,
+    body: Body,
 ) -> Response {
     if !session_valid(&state, &headers) {
         return no_dashboard_session(&headers, &request_id.0);
     }
-    match chat::clear(state.engine.db(), chat::CONVERSATION_ID) {
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return refusal(error),
+    };
+    let db = state.engine.db();
+    let conversation = match chat::resolve_conversation(db, Some(field(&fields, "conversation"))) {
+        Ok(conversation) => conversation,
+        Err(error) => {
+            return refusal(FormError::new(None, "chat_unreadable", error.to_string()));
+        }
+    };
+    match chat::clear(db, &conversation) {
         Ok(removed) => {
             if let Err(error) = state.engine.auth().audit(
                 "loopback",
@@ -3357,6 +3466,28 @@ pub async fn wallpaper_file(State(state): State<AppState>, Path(name): Path<Stri
         };
     }
 
+    if let Some(id) = name
+        .strip_suffix(".jpg")
+        .or_else(|| name.strip_suffix(".jpeg"))
+    {
+        return match wallpaper::raster(id) {
+            Some(raster) => (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, raster.media_type.to_owned()),
+                    (header::CACHE_CONTROL, "public, max-age=86400".to_owned()),
+                ],
+                raster.bytes,
+            )
+                .into_response(),
+            None => ApiError::not_found(
+                name.clone(),
+                "that wallpaper does not exist; the image presets are served as .jpg",
+            )
+            .into_response(),
+        };
+    }
+
     let id = name.strip_suffix(".svg").unwrap_or(&name);
     match wallpaper::svg(id) {
         Some(svg) => (
@@ -3370,7 +3501,7 @@ pub async fn wallpaper_file(State(state): State<AppState>, Path(name): Path<Stri
             .into_response(),
         None => ApiError::not_found(
             name.clone(),
-            "that wallpaper does not exist; the presets are served as /static/wallpaper/{preset}.svg",
+            "that wallpaper does not exist; presets are served as .jpg or .svg",
         )
         .into_response(),
     }

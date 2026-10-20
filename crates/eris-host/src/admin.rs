@@ -84,6 +84,15 @@ pub const ROUTE_CHAT_SEND: &str = "/dashboard/chat/send";
 /// `POST /dashboard/chat/clear` - empty the transcript.
 pub const ROUTE_CHAT_CLEAR: &str = "/dashboard/chat/clear";
 
+/// `GET /dashboard/chat/{id}` - one conversation.
+pub const ROUTE_CHAT_ID: &str = "/dashboard/chat/{id}";
+
+/// `POST /dashboard/chat/new` - start a conversation.
+pub const ROUTE_CHAT_NEW: &str = "/dashboard/chat/new";
+
+/// `POST /dashboard/chat/{id}/delete` - drop a conversation.
+pub const ROUTE_CHAT_DELETE: &str = "/dashboard/chat/{id}/delete";
+
 /// `GET /dashboard/settings` - the three settings forms.
 pub const ROUTE_SETTINGS: &str = "/dashboard/settings";
 
@@ -288,7 +297,29 @@ impl AppState {
             listeners: self.bound_listeners(),
             public_url: self.access.public_url.clone(),
             wallpaper_url: self.wallpaper_url(),
+            sessions: self.rail_sessions(),
+            current_conversation: None,
         }
+    }
+
+    /// The conversations the rail lists: newest first, bounded.
+    ///
+    /// Read here rather than in a handler so every page that renders the rail
+    /// shows the same list. A database that cannot answer is an empty rail, not a
+    /// failed page: the chat surface still opens, it just cannot offer history.
+    fn rail_sessions(&self) -> Vec<crate::web::templates::ChatSession> {
+        use crate::web::chat;
+        use crate::web::templates::ChatSession;
+        let Ok(rows) = chat::conversations(self.engine.db(), chat::SESSION_LIMIT) else {
+            return Vec::new();
+        };
+        rows.into_iter()
+            .map(|row| ChatSession {
+                id: row.id,
+                title: row.title,
+                stamp: crate::web::templates::clock(&row.updated_at),
+            })
+            .collect()
     }
 
     /// The backdrop every signed-in page sits on.
@@ -669,7 +700,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.0.3");
+        assert_eq!(VERSION, "1.0.4");
     }
 
     #[test]
