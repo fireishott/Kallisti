@@ -48,6 +48,9 @@ pub const DEVICE_ADDR: &str = "127.0.0.1:7341";
 /// `POST /v1/pair` - redeem a pairing code for an access and refresh pair.
 pub const ROUTE_PAIR: &str = "/v1/pair";
 
+/// The `settings` row holding the addresses the device listener binds, as JSON.
+pub const SETTING_LISTEN: &str = "device.listen";
+
 /// `POST /v1/token/refresh` - trade a refresh token for an access token.
 pub const ROUTE_REFRESH: &str = "/v1/token/refresh";
 
@@ -189,6 +192,9 @@ pub struct DeviceService {
     hub: Arc<TurnHub>,
     accepting: Arc<AtomicBool>,
     bound: Arc<AtomicBool>,
+    /// Where the listener binds. Loopback by default; a paired phone cannot reach
+    /// loopback, so this is the setting that makes pairing possible off-host.
+    bind: Arc<std::sync::Mutex<Vec<std::net::SocketAddr>>>,
 }
 
 impl DeviceService {
@@ -205,7 +211,33 @@ impl DeviceService {
             hub,
             accepting: Arc::new(AtomicBool::new(true)),
             bound: Arc::new(AtomicBool::new(false)),
+            bind: Arc::new(std::sync::Mutex::new(vec![
+                DEVICE_ADDR
+                    .parse()
+                    .expect("the default is a literal ip:port"),
+            ])),
         }
+    }
+
+    /// Set the addresses the listener binds. Takes effect on the next `start`,
+    /// which is to say on the next daemon start: a bind is not moved under a live
+    /// phone.
+    pub fn set_bind(&self, addresses: Vec<std::net::SocketAddr>) {
+        if addresses.is_empty() {
+            return;
+        }
+        if let Ok(mut bind) = self.bind.lock() {
+            *bind = addresses;
+        }
+    }
+
+    /// What the listener is currently told to bind.
+    #[must_use]
+    pub fn bind(&self) -> Vec<std::net::SocketAddr> {
+        self.bind
+            .lock()
+            .map(|bind| bind.clone())
+            .unwrap_or_default()
     }
 
     /// Build the service with an injected environment lookup, for tests. The
@@ -222,6 +254,11 @@ impl DeviceService {
             hub,
             accepting: Arc::new(AtomicBool::new(true)),
             bound: Arc::new(AtomicBool::new(false)),
+            bind: Arc::new(std::sync::Mutex::new(vec![
+                DEVICE_ADDR
+                    .parse()
+                    .expect("the default is a literal ip:port"),
+            ])),
         }
     }
 
@@ -277,8 +314,26 @@ impl DeviceService {
             return false;
         };
         let service = self.clone();
+        let addresses = self.bind();
         handle.spawn(async move {
-            match serve_address(DEVICE_ADDR, service.clone()).await {
+            // Every configured address is served at once, the same contract the
+            // admin listener has. One failure does not take the others down.
+            let mut first = addresses.clone();
+            let rest: Vec<std::net::SocketAddr> = first.drain(1..).collect();
+            for address in rest {
+                let extra = service.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = serve_address(address, extra).await {
+                        tracing::error!(%error, %address, "device listener could not start");
+                    }
+                });
+            }
+            let first = addresses.first().copied().unwrap_or_else(|| {
+                DEVICE_ADDR
+                    .parse()
+                    .expect("the default is a literal ip:port")
+            });
+            match serve_address(first, service.clone()).await {
                 Ok(()) => {
                     service.bound.store(false, Ordering::SeqCst);
                 }
@@ -320,10 +375,13 @@ pub async fn serve_on(listener: TcpListener, service: DeviceService) -> std::io:
 }
 
 /// Bind and serve one address. The only place the device port is bound.
-pub async fn serve_address(addr: &str, service: DeviceService) -> std::io::Result<()> {
+pub async fn serve_address(
+    addr: std::net::SocketAddr,
+    service: DeviceService,
+) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
-    tracing::info!(%local, "device listener bound (loopback only, /v1 only)");
+    tracing::info!(%local, "device listener bound (/v1 only)");
     serve_on(listener, service).await
 }
 

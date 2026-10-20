@@ -597,6 +597,20 @@ fn run_serve(
     // The device listener is opt-in twice over: the flag, or the switch the
     // operator last saved in the dashboard. Either one binds 127.0.0.1:7341; the
     // flag exists so an acceptance run does not have to drive the wizard first.
+    // Where the device listener binds. A phone cannot reach loopback, so this is
+    // the setting that makes pairing possible off-host. Unset means loopback.
+    let device_bind = state
+        .engine
+        .setting(eris_host::device::SETTING_LISTEN)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .and_then(|list| eris_host::admin::listen::parse_listen_list(&list).ok());
+    if let Some(addresses) = device_bind {
+        tracing::info!(?addresses, "device listener bind from settings");
+        state.device.set_bind(addresses);
+    }
+
     let device_setting = state.engine.device_listener_enabled().unwrap_or(false);
     let device_enabled = device_listen || device_setting;
     state.device.set_accepting(device_enabled);

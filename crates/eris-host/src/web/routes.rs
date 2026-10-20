@@ -29,10 +29,11 @@ use crate::admin::{
     ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_ID, ROUTE_CHAT_MODE,
     ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES,
     ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
-    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
-    ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_TIMEZONE,
-    ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
+    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_MCP,
+    ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
+    VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -96,6 +97,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_DASHBOARD, get(dashboard))
         .route(ROUTE_SETTINGS, get(settings))
         .route(ROUTE_SECURITY, get(security).post(save_credential))
+        .route(ROUTE_SETTINGS_DEVICE, post(save_device_listen))
         .route(ROUTE_SETTINGS_PROVIDER, post(save_provider))
         .route(ROUTE_SETTINGS_WORKSPACE, post(save_workspace))
         .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
@@ -618,6 +620,14 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .and_then(|stored| crate::mcp::parse(&stored).ok())
         .map(|servers| crate::mcp::to_json(&servers))
         .unwrap_or_else(|| "[]".to_owned());
+    view.device_listen = state
+        .engine
+        .setting(crate::device::SETTING_LISTEN)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .map(|list| list.join(", "))
+        .unwrap_or_else(|| crate::device::DEVICE_ADDR.to_owned());
     view.memory_backend = crate::memory::backend(
         state
             .engine
@@ -2609,6 +2619,68 @@ async fn save_credential(
 
 /// Where a successful rotation sends the operator: back to sign in.
 const SAVED_LOGIN: &str = "/login?saved=credential";
+
+/// `POST /dashboard/settings/device` - where the device listener binds.
+///
+/// A bind cannot be moved under a live phone, so the change is stored and applied
+/// at the next start. The page says so rather than pretending it is instant.
+async fn save_device_listen(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    let raw = field(&fields, "device_listen");
+    let list: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let addresses = match crate::admin::listen::parse_listen_list(&list) {
+        Ok(addresses) => addresses,
+        Err(error) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("device_listen"),
+                    "device_listen_invalid",
+                    error.to_string(),
+                ),
+            );
+        }
+    };
+    let encoded = serde_json::to_string(
+        &addresses
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_owned());
+    if let Err(error) =
+        store::settings_put(state.engine.db(), crate::device::SETTING_LISTEN, &encoded)
+    {
+        return store_failure(&request_id.0, crate::device::SETTING_LISTEN, error);
+    }
+    let _ = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.device_listen", Some(&encoded));
+    see_other(SAVED_DEVICE)
+}
+
+/// Where the device-bind form returns to.
+const SAVED_DEVICE: &str = "/dashboard/settings?saved=device";
 const SAVED_PERMISSIONS: &str = "/dashboard/settings?saved=permissions";
 const SAVED_PERSONA: &str = "/dashboard/settings?saved=persona";
 

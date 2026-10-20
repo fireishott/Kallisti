@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 59;
+pub const BUILD: u32 = 60;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -135,6 +135,8 @@ pub const ROUTE_SETTINGS_REASONING: &str = "/dashboard/settings/reasoning";
 /// Where the sign-in credential is changed. A page of its own because the
 /// settings page is forbidden from containing a password input.
 pub const ROUTE_SECURITY: &str = "/dashboard/security";
+/// Where the device listener's bind addresses are set.
+pub const ROUTE_SETTINGS_DEVICE: &str = "/dashboard/settings/device";
 /// Where the memory backend is chosen.
 pub const ROUTE_SETTINGS_MEMORY: &str = "/dashboard/settings/memory";
 
@@ -252,6 +254,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_REASONING,
     ROUTE_SETTINGS_MEMORY,
     ROUTE_SECURITY,
+    ROUTE_SETTINGS_DEVICE,
     ROUTE_SETTINGS_TIMEZONE,
     ROUTE_SETTINGS_TOOLS,
     ROUTE_SETTINGS_PROVIDERS,

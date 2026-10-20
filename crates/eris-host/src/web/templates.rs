@@ -1398,6 +1398,8 @@ pub struct SettingsView {
     pub show_tool_log: bool,
     /// `full`, `summary` or `off`, for the select.
     pub tool_log_mode: String,
+    /// The device listener's bind addresses, comma separated for the form.
+    pub device_listen: String,
     /// Which memory backend a turn recalls from.
     pub memory_backend: String,
     /// The vault directory, when the vault backend is chosen.
@@ -1461,6 +1463,7 @@ impl SettingsView {
             show_reasoning: true,
             show_tool_log: true,
             tool_log_mode: "full".to_owned(),
+            device_listen: "127.0.0.1:7341".to_owned(),
             memory_backend: crate::memory::DEFAULT_BACKEND.to_owned(),
             memory_vault: String::new(),
             timezone: crate::zone::HOST.to_owned(),
@@ -2232,6 +2235,33 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "it appears above the answer in a collapsed, faded bubble you can open."
             }
             (reasoning_group(view))
+        }
+
+        section .card aria-labelledby="device-bind-heading" {
+            h2 id="device-bind-heading" { "Device listener" }
+            p .small {
+                "Where paired phones reach this daemon. Loopback only by default, which is why an "
+                "iPhone cannot pair until you add an address it can route to - your tailnet address, "
+                "or the LAN address if you are on the same network."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_DEVICE) novalidate {
+                div .field {
+                    label for="device_listen" { "Bind addresses" }
+                    input id="device_listen" type="text" name="device_listen" value=(view.device_listen)
+                        placeholder="127.0.0.1:7341, 100.x.y.z:7341";
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("device_listen")) {
+                        span .error { (error.message) }
+                    }
+                    span .hint {
+                        "Comma separated. The device API is /v1 only and every call needs a paired "
+                        "device token, so opening an address does not open the dashboard. Applied at "
+                        "the next start: a bind is not moved under a live phone."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save bind addresses" }
+                }
+            }
         }
 
         section .card aria-labelledby="memory-heading" {
