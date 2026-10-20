@@ -938,6 +938,84 @@ pub fn history(transcript: &[Message], answering: &str) -> Vec<ChatMessage> {
         .collect()
 }
 
+/// The turns the window leaves behind, oldest first.
+///
+/// `history` keeps the newest [`HISTORY_MESSAGES`] and drops the rest. Dropping
+/// is silent by design when nothing summarises them, so this returns the same
+/// slice `history` excludes: a compression role has something to read, and a turn
+/// with no role loses nothing it did not already lose.
+#[must_use]
+pub fn dropped(transcript: &[Message], answering: &str) -> Vec<Message> {
+    let settled: Vec<&Message> = transcript
+        .iter()
+        .filter(|message| message.id != answering)
+        .filter(|message| message.state == State::Complete)
+        .filter(|message| !message.body.trim().is_empty())
+        .collect();
+    let start = settled.len().saturating_sub(HISTORY_MESSAGES);
+    settled[..start]
+        .iter()
+        .map(|message| (*message).clone())
+        .collect()
+}
+
+/// Summarise turns that fell out of the window.
+///
+/// Best effort, like every auxiliary role: a provider that is down leaves the
+/// turn exactly as it would have been without this feature, which is the old
+/// behaviour and not a broken conversation.
+#[must_use]
+pub fn summarise(config: &TurnConfig, dropped: &[Message]) -> Option<String> {
+    if dropped.is_empty() {
+        return None;
+    }
+    let profile = ProviderProfile::new(
+        "compression",
+        config.base_url.clone(),
+        config.key_ref.clone(),
+    )
+    .ok()?;
+    let provider = OpenAiCompatProvider::new(
+        profile,
+        ModelProfile::new(config.model.clone()),
+        Capabilities::openai_compatible(),
+    )
+    .ok()?;
+    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+
+    let mut lines = String::new();
+    for message in dropped.iter().take(40) {
+        let who = match message.role {
+            Role::User => "operator",
+            Role::Assistant => "assistant",
+        };
+        let body: String = message.body.chars().take(400).collect();
+        lines.push_str(&format!("{who}: {body}\n"));
+    }
+
+    let request = ChatRequest {
+        system: Some(
+            "Summarise the earlier part of a conversation so it can be carried as context. \
+             Keep decisions, names, paths and open questions. Reply with the summary only, \
+             under 150 words, no preamble."
+                .to_owned(),
+        ),
+        messages: vec![ChatMessage::text(ChatRole::User, lines)],
+        ..ChatRequest::default()
+    };
+
+    let mut sink = |_event: ProviderEvent| {};
+    let completion = runtime
+        .block_on(provider.stream_chat(&request, &key, &mut sink))
+        .ok()?;
+    let summary = completion.text.trim().to_owned();
+    (!summary.is_empty()).then_some(summary)
+}
+
 /// Trim and validate what the browser typed.
 ///
 /// An empty message is a refusal by name rather than a silently dropped turn, and
@@ -1472,6 +1550,60 @@ mod tests {
             "cut plus its ellipsis"
         );
         assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn the_window_reports_exactly_what_it_drops() {
+        let db = db();
+        let conversation = create_conversation(&db).unwrap();
+        // One more turn than the window holds.
+        for index in 0..(HISTORY_MESSAGES + 2) {
+            let role = if index % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            append(
+                &db,
+                &conversation,
+                role,
+                &format!("message {index}"),
+                State::Complete,
+            )
+            .unwrap();
+        }
+        let transcript = load(&db, &conversation).unwrap();
+        let all = transcript.len();
+        let kept = history(&transcript, "nobody");
+        let lost = dropped(&transcript, "nobody");
+
+        assert_eq!(kept.len(), HISTORY_MESSAGES, "the window is exactly full");
+        assert_eq!(
+            lost.len(),
+            all - HISTORY_MESSAGES,
+            "what is dropped is what the window excluded, no more and no less"
+        );
+        assert_eq!(lost[0].body, "message 0", "oldest first");
+    }
+
+    #[test]
+    fn a_short_conversation_drops_nothing_and_summarises_nothing() {
+        let db = db();
+        let conversation = create_conversation(&db).unwrap();
+        append(&db, &conversation, Role::User, "hello", State::Complete).unwrap();
+        let transcript = load(&db, &conversation).unwrap();
+
+        assert!(dropped(&transcript, "nobody").is_empty());
+        // With nothing dropped the role must not spend a request at all.
+        let config = TurnConfig {
+            base_url: "http://127.0.0.1:1/v1".to_owned(),
+            key_ref: SecretRef::Env("KALLISTI_TEST_KEY".to_owned()),
+            model: "m/one".to_owned(),
+        };
+        assert!(
+            summarise(&config, &[]).is_none(),
+            "an empty window costs nothing and calls nothing"
+        );
     }
 
     #[test]

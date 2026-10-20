@@ -3774,6 +3774,12 @@ async fn chat_send(
         Err(error) => return refusal(FormError::new(None, "chat_unreadable", error.to_string())),
     };
     let mut history = chat::history(&transcript, &answer_id);
+    // Turns the window leaves behind. With a compression role pinned they are
+    // summarised into the prompt; without one they are dropped exactly as before.
+    let dropped = chat::dropped(&transcript, &answer_id);
+    let compression = chat::aux_pinned_config(&state.engine, "compression")
+        .ok()
+        .flatten();
     // Attachments ride after the question, as a second user message built for
     // this turn only: the transcript keeps what the operator typed, and the
     // model still learns what came with it.
@@ -3796,10 +3802,14 @@ async fn chat_send(
         let task = spawn_turn(
             &state,
             config,
-            conversation.clone(),
-            text,
-            answer_id,
-            history,
+            TurnJob {
+                conversation: conversation.clone(),
+                question: text,
+                answer_id,
+                compression,
+                dropped,
+                history,
+            },
             None,
         );
         let _ = task.await;
@@ -3810,10 +3820,14 @@ async fn chat_send(
     spawn_turn(
         &state,
         config,
-        conversation.clone(),
-        text,
-        answer_id,
-        history,
+        TurnJob {
+            conversation: conversation.clone(),
+            question: text,
+            answer_id,
+            compression,
+            dropped,
+            history,
+        },
         Some(tx),
     );
     Sse::new(UnboundedReceiverStream::new(rx))
@@ -4100,6 +4114,19 @@ async fn chat_clear(
     }
 }
 
+/// Everything one turn needs that is already decided before it starts.
+///
+/// Grouped so the signature stays readable: a turn takes nine things, and nine
+/// positional arguments is how a call site quietly passes the wrong one.
+struct TurnJob {
+    conversation: String,
+    question: String,
+    answer_id: String,
+    compression: Option<chat::TurnConfig>,
+    dropped: Vec<chat::Message>,
+    history: Vec<core_runtime::provider::ChatMessage>,
+}
+
 /// Run one chat turn on its own thread, persisting the outcome.
 ///
 /// The sink forwards each fragment to the channel when there is one, and the
@@ -4108,12 +4135,17 @@ async fn chat_clear(
 fn spawn_turn(
     state: &AppState,
     config: chat::TurnConfig,
-    conversation: String,
-    question: String,
-    answer_id: String,
-    history: Vec<core_runtime::provider::ChatMessage>,
+    job: TurnJob,
     sender: Option<tokio::sync::mpsc::UnboundedSender<Result<SseEvent, Infallible>>>,
 ) -> tokio::task::JoinHandle<()> {
+    let TurnJob {
+        conversation,
+        question,
+        answer_id,
+        compression,
+        dropped,
+        history,
+    } = job;
     let db = state.engine.db().clone();
     let persona = state.persona.clone();
     // The sandbox is a boundary, so an unreadable workspace or permission row
@@ -4210,6 +4242,27 @@ fn spawn_turn(
                     ),
                 },
             }
+        };
+
+        let summary = compression
+            .as_ref()
+            .and_then(|config| chat::summarise(config, &dropped));
+        // Recorded either way: a role that never lands must not look wired.
+        if compression.is_some() {
+            let detail = match &summary {
+                Some(text) => format!("dropped={}; summary_chars={}", dropped.len(), text.len()),
+                None => format!("dropped={}; no summary", dropped.len()),
+            };
+            let _ = title_audit.audit("loopback", "chat.compression", Some(&detail));
+        }
+        let system = match (system, summary) {
+            (Some(system), Some(summary)) => Some(format!(
+                "{system}\n\nEarlier in this conversation, summarised:\n{summary}"
+            )),
+            (None, Some(summary)) => Some(format!(
+                "Earlier in this conversation, summarised:\n{summary}"
+            )),
+            (system, None) => system,
         };
 
         let mut streamed = String::new();

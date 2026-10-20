@@ -52,7 +52,7 @@ pub const ROLES: &[Role] = &[
         key: "compression",
         label: "Compression",
         purpose: "Summarises context that no longer fits the window.",
-        consumed_by: None,
+        consumed_by: Some("a turn whose history has outgrown the window, once this role is pinned"),
     },
     Role {
         key: "title_generation",
@@ -255,6 +255,6 @@ mod tests {
             .filter(|role| role.consumed_by.is_some())
             .map(|role| role.key)
             .collect();
-        assert_eq!(wired, vec!["title_generation"]);
+        assert_eq!(wired, vec!["compression", "title_generation"]);
     }
 }
