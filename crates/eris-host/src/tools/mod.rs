@@ -25,6 +25,12 @@ use core_runtime::provider::ToolSpec;
 /// rather than silently truncating into a half-file the model will trust.
 pub const MAX_READ_BYTES: u64 = 256 * 1024;
 
+/// How long one command may run before `timeout` kills it.
+pub const COMMAND_TIMEOUT_SECS: u64 = 30;
+
+/// How much of a command's output is handed back to the model.
+pub const MAX_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
+
 /// Why a tool could not do the thing it was asked to do.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -233,8 +239,8 @@ impl ToolResult {
 /// ones, and every name here is dispatchable by [`execute`] - a spec the model
 /// can call but the daemon cannot run is the bug this module exists to prevent.
 #[must_use]
-pub fn specs() -> Vec<ToolSpec> {
-    vec![
+pub fn specs(mode: SandboxMode) -> Vec<ToolSpec> {
+    let mut offered = vec![
         ToolSpec {
             name: "list_dir".to_owned(),
             description: "List the entries in a directory inside the workspace.".to_owned(),
@@ -281,7 +287,31 @@ pub fn specs() -> Vec<ToolSpec> {
                 "required": ["path", "content"]
             }),
         },
-    ]
+    ];
+
+    // Command execution is offered only where the sandbox will honour it. A tool
+    // the daemon refuses must never reach the model's list, or every turn spends
+    // a round trip discovering a refusal the prompt could have prevented.
+    if mode == SandboxMode::Full {
+        offered.push(ToolSpec {
+            name: "run_command".to_owned(),
+            description: "Run a shell command on this host and return its output. \
+                          Runs in the workspace with the daemon's own privileges."
+                .to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The command line, run with sh -c."
+                    }
+                },
+                "required": ["command"]
+            }),
+        });
+    }
+
+    offered
 }
 
 /// Run one call. Never panics and never returns success for a failure.
@@ -290,6 +320,7 @@ pub fn execute(name: &str, arguments: &serde_json::Value, sandbox: &Sandbox) -> 
         "list_dir" => list_dir(arguments, sandbox),
         "read_file" => read_file(arguments, sandbox),
         "write_file" => write_file(arguments, sandbox),
+        "run_command" => run_command(arguments, sandbox),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
 }
@@ -402,6 +433,72 @@ fn write_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
             "bytes": content.len(),
         })),
         Err(error) => ToolResult::error(format!("{requested}: {error}")),
+    }
+}
+
+fn run_command(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
+    if sandbox.mode() != SandboxMode::Full {
+        return ToolResult::error(format!(
+            "run_command is refused: the sandbox mode is {} and running commands needs full host",
+            sandbox.mode().as_str()
+        ));
+    }
+
+    let command = match string_arg(arguments, "command") {
+        Ok(command) => command,
+        Err(error) => return error,
+    };
+    if command.trim().is_empty() {
+        return ToolResult::error("a command cannot be empty");
+    }
+
+    // `timeout` rather than a Rust timer: the child is killed by the kernel and
+    // exit 124 says so, which is a failure the model can see instead of a hang
+    // that looks like the daemon dying.
+    let output = std::process::Command::new("timeout")
+        .arg(format!("{COMMAND_TIMEOUT_SECS}s"))
+        .arg("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(sandbox.workspace())
+        .output();
+
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => return ToolResult::error(format!("cannot run the command: {error}")),
+    };
+
+    let stdout = truncate(&output.stdout);
+    let stderr = truncate(&output.stderr);
+    let exit_code = output.status.code();
+
+    let body = serde_json::json!({
+        "command": command,
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+    });
+
+    if output.status.success() {
+        ToolResult::ok(body)
+    } else {
+        // A non-zero exit is a failure with evidence attached, never a success
+        // the model has to notice on its own.
+        ToolResult {
+            content: body.to_string(),
+            is_error: true,
+        }
+    }
+}
+
+/// Trim captured output to the budget, saying so when it did.
+fn truncate(bytes: &[u8]) -> String {
+    let limit = MAX_COMMAND_OUTPUT_BYTES.min(bytes.len());
+    let text = String::from_utf8_lossy(&bytes[..limit]).into_owned();
+    if bytes.len() > MAX_COMMAND_OUTPUT_BYTES {
+        format!("{text}\n[truncated: {} bytes omitted]", bytes.len() - limit)
+    } else {
+        text
     }
 }
 
@@ -615,7 +712,7 @@ mod tests {
         scratch.file("probe.txt", "x");
         let sandbox = sandbox(&scratch, super::SandboxMode::WorkspaceWrite);
 
-        for spec in super::specs() {
+        for spec in super::specs(super::SandboxMode::WorkspaceWrite) {
             let result = super::execute(&spec.name, &serde_json::json!({}), &sandbox);
             assert!(
                 !result.content.contains("unknown tool"),
@@ -624,5 +721,82 @@ mod tests {
                 result.content
             );
         }
+    }
+
+    #[test]
+    fn run_command_is_refused_outside_full_host_mode() {
+        let scratch = Scratch::new("execgate");
+        let sandbox = sandbox(&scratch, super::SandboxMode::WorkspaceWrite);
+
+        let result = super::execute(
+            "run_command",
+            &serde_json::json!({"command": "echo hi"}),
+            &sandbox,
+        );
+
+        assert!(result.is_error, "{result:?}");
+        assert!(
+            result.content.to_lowercase().contains("full"),
+            "the refusal names the mode it needs: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn run_command_runs_in_the_workspace_and_captures_output() {
+        let scratch = Scratch::new("exec");
+        let sandbox = sandbox(&scratch, super::SandboxMode::Full);
+
+        let result = super::execute(
+            "run_command",
+            &serde_json::json!({"command": "echo hello && pwd"}),
+            &sandbox,
+        );
+
+        assert!(!result.is_error, "{result:?}");
+        assert!(result.content.contains("hello"), "{}", result.content);
+        assert!(
+            result
+                .content
+                .contains(scratch.workspace().to_string_lossy().as_ref()),
+            "the command runs in the workspace: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn run_command_reports_a_nonzero_exit_instead_of_claiming_success() {
+        let scratch = Scratch::new("execfail");
+        let sandbox = sandbox(&scratch, super::SandboxMode::Full);
+
+        let result = super::execute(
+            "run_command",
+            &serde_json::json!({"command": "exit 3"}),
+            &sandbox,
+        );
+
+        assert!(
+            result.is_error,
+            "a failed command is not a success: {result:?}"
+        );
+        assert!(result.content.contains('3'), "{}", result.content);
+    }
+
+    #[test]
+    fn command_execution_is_offered_only_in_full_host_mode() {
+        let full: Vec<String> = super::specs(super::SandboxMode::Full)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        let confined: Vec<String> = super::specs(super::SandboxMode::WorkspaceWrite)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+
+        assert!(full.contains(&"run_command".to_owned()));
+        assert!(
+            !confined.contains(&"run_command".to_owned()),
+            "a tool the sandbox refuses must not be offered: {confined:?}"
+        );
     }
 }

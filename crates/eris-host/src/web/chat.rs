@@ -774,7 +774,7 @@ pub fn run_turn(
             messages: round.to_vec(),
             // Offered every round: the model needs them again to answer the
             // result it just received.
-            tools: crate::tools::specs(),
+            tools: crate::tools::specs(sandbox.mode()),
             ..ChatRequest::default()
         };
         runtime
@@ -1473,7 +1473,11 @@ mod tests {
         )
         .expect("a turn");
 
-        offered.extend(crate::tools::specs().into_iter().map(|spec| spec.name));
+        offered.extend(
+            crate::tools::specs(crate::onboarding::permissions::SandboxMode::WorkspaceWrite)
+                .into_iter()
+                .map(|spec| spec.name),
+        );
         assert!(offered.contains(&"read_file".to_owned()));
         assert!(offered.contains(&"write_file".to_owned()));
         assert!(offered.contains(&"list_dir".to_owned()));
