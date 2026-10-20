@@ -299,6 +299,65 @@ impl Usage {
             _ => None,
         }
     }
+
+    /// Add a second round trip to this one.
+    ///
+    /// A tool call turns one turn into several provider round trips and each one
+    /// bills separately, so a turn's cost is the sum and not the last round's.
+    /// Understating a total is the same error as reporting zero, so a component
+    /// that any round failed to report stays unavailable rather than being
+    /// quietly dropped from the sum.
+    #[must_use]
+    pub fn accrue(self, other: Self) -> Self {
+        Self {
+            input: accrue_count(self.input, other.input),
+            output: accrue_count(self.output, other.output),
+            cache_read: accrue_cache(self.cache_read, other.cache_read),
+        }
+    }
+}
+
+/// Sum two token counts, or keep whichever one is unknown.
+fn accrue_count(first: TokenCount, second: TokenCount) -> TokenCount {
+    match (first, second) {
+        (
+            TokenCount::Reported { tokens: a },
+            TokenCount::Reported { tokens: b },
+        ) => TokenCount::Reported {
+            tokens: a.saturating_add(b),
+        },
+        (TokenCount::ProviderUnavailable { reason }, _) => TokenCount::ProviderUnavailable { reason },
+        (_, TokenCount::ProviderUnavailable { reason }) => TokenCount::ProviderUnavailable { reason },
+    }
+}
+
+/// Sum two cache-read states, or keep whichever one is unknown.
+///
+/// A folded count sits inside the prompt total and a separate one sits outside
+/// it, so the two cannot be added without knowing which rule applied. Rounds
+/// come from one provider and therefore agree; if they ever disagree, the sum
+/// is unavailable rather than a number with mixed bookkeeping.
+fn accrue_cache(first: CacheRead, second: CacheRead) -> CacheRead {
+    match (first, second) {
+        (
+            CacheRead::Reported {
+                tokens: a,
+                folded_into_prompt: folded_a,
+            },
+            CacheRead::Reported {
+                tokens: b,
+                folded_into_prompt: folded_b,
+            },
+        ) if folded_a == folded_b => CacheRead::Reported {
+            tokens: a.saturating_add(b),
+            folded_into_prompt: folded_a,
+        },
+        (CacheRead::ProviderUnavailable { reason }, _) => CacheRead::ProviderUnavailable { reason },
+        (_, CacheRead::ProviderUnavailable { reason }) => CacheRead::ProviderUnavailable { reason },
+        _ => CacheRead::ProviderUnavailable {
+            reason: UnavailableReason::NotSupportedByProvider,
+        },
+    }
 }
 
 impl fmt::Display for Usage {
@@ -314,6 +373,45 @@ impl fmt::Display for Usage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_rounds_of_usage_accrue_instead_of_overwriting() {
+        let first = Usage::reconcile(
+            CacheReadReporting::FoldedIntoPrompt,
+            Some(100),
+            Some(40),
+            Some(10),
+        );
+        let second = Usage::reconcile(
+            CacheReadReporting::FoldedIntoPrompt,
+            Some(20),
+            Some(0),
+            Some(5),
+        );
+
+        let total = first.accrue(second);
+
+        assert_eq!(total.input_tokens(), Some(80), "60 uncached then + 20");
+        assert_eq!(total.output_tokens(), Some(15));
+        assert_eq!(total.cache_read_tokens(), Some(40));
+    }
+
+    #[test]
+    fn an_unreported_round_makes_the_total_unavailable_rather_than_smaller() {
+        let first = Usage::reconcile(
+            CacheReadReporting::FoldedIntoPrompt,
+            Some(100),
+            Some(40),
+            Some(10),
+        );
+        let second = Usage::unavailable(UnavailableReason::FieldsAbsent);
+
+        let total = first.accrue(second);
+
+        assert_eq!(total.input_tokens(), None);
+        assert_eq!(total.output_tokens(), None);
+        assert_eq!(total.cache_read_tokens(), None);
+    }
 
     #[test]
     fn a_folded_cache_read_is_subtracted_from_the_prompt_total() {

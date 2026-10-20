@@ -732,6 +732,7 @@ pub fn run_turn(
     config: &TurnConfig,
     system: Option<String>,
     messages: Vec<ChatMessage>,
+    sandbox: &crate::tools::Sandbox,
     sink: &mut dyn FnMut(&str),
 ) -> Result<(String, core_domain::Usage), TurnFailure> {
     let profile =
@@ -756,11 +757,7 @@ pub fn run_turn(
             )
         })?;
 
-    let request = ChatRequest {
-        system: system.filter(|text| !text.trim().is_empty()),
-        messages,
-        ..ChatRequest::default()
-    };
+    let system = system.filter(|text| !text.trim().is_empty());
 
     let mut forward = |event: ProviderEvent| {
         if let ProviderEvent::Text(fragment) = event
@@ -770,11 +767,21 @@ pub fn run_turn(
         }
     };
 
-    let completion = runtime
-        .block_on(provider.stream_chat(&request, &key, &mut forward))
-        .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
+    let outcome = drive_tool_loop(sandbox, messages, |round| {
+        let request = ChatRequest {
+            system: system.clone(),
+            messages: round.to_vec(),
+            // Offered every round: the model needs them again to answer the
+            // result it just received.
+            tools: crate::tools::specs(),
+            ..ChatRequest::default()
+        };
+        runtime
+            .block_on(provider.stream_chat(&request, &key, &mut forward))
+            .map_err(|error| (error.kind().to_owned(), error.to_string()))
+    })?;
 
-    Ok((completion.text, completion.usage))
+    Ok((outcome.text, outcome.usage))
 }
 
 /// What a conversation has cost, for the header chips and the status strip.
@@ -869,6 +876,78 @@ pub fn has_messages(transcript: &[Message]) -> bool {
     transcript
         .iter()
         .any(|message| !message.body.trim().is_empty())
+}
+
+/// The most provider round trips one turn may take.
+///
+/// A model that answers with another tool call every time would otherwise loop
+/// for as long as the operator leaves the tab open. At the cap the turn stops and
+/// says so; it does not silently return nothing.
+pub const MAX_TOOL_ROUNDS: usize = 8;
+
+/// What a turn produced once the tool loop settled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnOutcome {
+    /// The reply. A capped turn carries the notice instead of an empty string.
+    pub text: String,
+    /// Usage summed over every round trip, never just the last one.
+    pub usage: core_domain::Usage,
+    /// How many tool rounds ran.
+    pub rounds: usize,
+}
+
+/// Drive one turn: stream, run whatever the model asked for, stream again.
+///
+/// `stream` is handed the prompt for each round trip and returns that round's
+/// completion. Text reaches the operator through whatever `stream` does with it;
+/// this function only decides when to stop and what was spent.
+pub fn drive_tool_loop(
+    sandbox: &crate::tools::Sandbox,
+    mut messages: Vec<ChatMessage>,
+    mut stream: impl FnMut(&[ChatMessage]) -> Result<core_runtime::provider::Completion, TurnFailure>,
+) -> Result<TurnOutcome, TurnFailure> {
+    let mut usage: Option<core_domain::Usage> = None;
+    let mut text = String::new();
+    let mut rounds = 0usize;
+    let mut calls = 0usize;
+
+    loop {
+        if calls >= MAX_TOOL_ROUNDS {
+            if text.trim().is_empty() {
+                text = format!(
+                    "Stopped after {MAX_TOOL_ROUNDS} tool rounds without a final answer."
+                );
+            }
+            break;
+        }
+        calls += 1;
+
+        let completion = stream(&messages)?;
+        usage = Some(match usage {
+            None => completion.usage,
+            Some(total) => total.accrue(completion.usage),
+        });
+        text = completion.text;
+
+        if completion.tool_calls.is_empty() {
+            break;
+        }
+
+        rounds += 1;
+        messages.push(ChatMessage::assistant_calls(completion.tool_calls.clone()));
+        for call in &completion.tool_calls {
+            let result = crate::tools::execute(&call.name, &call.arguments, sandbox);
+            messages.push(ChatMessage::tool_result(call.id.clone(), result.content));
+        }
+    }
+
+    Ok(TurnOutcome {
+        text,
+        usage: usage.unwrap_or_else(|| {
+            core_domain::Usage::unavailable(core_domain::UnavailableReason::FieldsAbsent)
+        }),
+        rounds,
+    })
 }
 
 #[cfg(test)]
@@ -1213,5 +1292,162 @@ mod tests {
         let too_long = "x".repeat(MAX_MESSAGE_BYTES + 1);
         let error = accept_text(&too_long).unwrap_err();
         assert!(error.contains("under"), "{error}");
+    }
+
+    fn completion_with_calls(
+        calls: Vec<core_domain::ToolCall>,
+        text: &str,
+    ) -> core_runtime::provider::Completion {
+        core_runtime::provider::Completion {
+            text: text.to_owned(),
+            reasoning: String::new(),
+            tool_calls: calls,
+            usage: core_domain::Usage::reconcile(
+                core_domain::CacheReadReporting::NotReported,
+                Some(10),
+                None,
+                Some(1),
+            ),
+            finish_reason: Some("stop".to_owned()),
+        }
+    }
+
+    fn scratch_workspace(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "kallisti-loop-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch");
+        root
+    }
+
+    #[test]
+    fn a_tool_call_is_executed_and_the_turn_resumes_with_the_result() {
+        let root = scratch_workspace("resume");
+        std::fs::write(root.join("a.txt"), "alpha").expect("file");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::ReadOnly,
+        );
+
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "read_file",
+            serde_json::json!({"path": "a.txt"}),
+        )
+        .expect("a call");
+
+        let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
+        let mut round = 0usize;
+        let outcome = drive_tool_loop(
+            &sandbox,
+            vec![ChatMessage::text(ChatRole::User, "read a.txt")],
+            |messages| {
+                seen.push(messages.to_vec());
+                round += 1;
+                if round == 1 {
+                    Ok(completion_with_calls(vec![call.clone()], ""))
+                } else {
+                    Ok(completion_with_calls(Vec::new(), "alpha"))
+                }
+            },
+        )
+        .expect("a turn");
+
+        assert_eq!(round, 2, "the provider is called once per round");
+        assert_eq!(outcome.text, "alpha");
+        assert_eq!(outcome.rounds, 1, "one tool round happened");
+
+        let second = seen.get(1).expect("a second request");
+        let replayed = second
+            .iter()
+            .find(|message| !message.tool_calls.is_empty())
+            .expect("the assistant calls are replayed");
+        assert_eq!(replayed.role, ChatRole::Assistant);
+        assert_eq!(replayed.tool_calls[0].id, "call_1");
+
+        let result = second
+            .iter()
+            .find(|message| message.role == ChatRole::Tool)
+            .expect("the tool result is sent back");
+        assert_eq!(result.tool_call_id.as_deref(), Some("call_1"));
+        assert!(
+            result.content.contains("alpha"),
+            "the tool result must be the real content: {}",
+            result.content
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_model_that_only_calls_tools_is_stopped_at_the_cap_with_a_notice() {
+        let root = scratch_workspace("cap");
+        std::fs::write(root.join("a.txt"), "alpha").expect("file");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::ReadOnly,
+        );
+
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "read_file",
+            serde_json::json!({"path": "a.txt"}),
+        )
+        .expect("a call");
+
+        let mut round = 0usize;
+        let outcome = drive_tool_loop(
+            &sandbox,
+            vec![ChatMessage::text(ChatRole::User, "loop forever")],
+            |_messages| {
+                round += 1;
+                Ok(completion_with_calls(vec![call.clone()], ""))
+            },
+        )
+        .expect("a turn");
+
+        assert_eq!(round, MAX_TOOL_ROUNDS, "the loop must stop at the cap");
+        assert_eq!(outcome.rounds, MAX_TOOL_ROUNDS);
+        assert!(
+            !outcome.text.trim().is_empty(),
+            "a capped turn still tells the operator something"
+        );
+        assert!(
+            outcome.text.to_lowercase().contains("tool"),
+            "the notice explains why it stopped: {}",
+            outcome.text
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_turn_carries_the_workspace_tools() {
+        let root = scratch_workspace("specs");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::ReadOnly,
+        );
+
+        let mut offered: Vec<String> = Vec::new();
+        let _ = drive_tool_loop(
+            &sandbox,
+            vec![ChatMessage::text(ChatRole::User, "hi")],
+            |_messages| {
+                Ok(completion_with_calls(Vec::new(), "ok"))
+            },
+        )
+        .expect("a turn");
+
+        offered.extend(crate::tools::specs().into_iter().map(|spec| spec.name));
+        assert!(offered.contains(&"read_file".to_owned()));
+        assert!(offered.contains(&"write_file".to_owned()));
+        assert!(offered.contains(&"list_dir".to_owned()));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

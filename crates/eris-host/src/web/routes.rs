@@ -3577,6 +3577,20 @@ fn spawn_turn(
 ) -> tokio::task::JoinHandle<()> {
     let db = state.engine.db().clone();
     let persona = state.persona.clone();
+    // The sandbox is a boundary, so an unreadable workspace or permission row
+    // falls back to the narrowest mode rather than to a permissive default.
+    let sandbox = {
+        let workspace = state
+            .engine
+            .workspace_path()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let mode = state
+            .engine
+            .permissions()
+            .map(|permissions| permissions.sandbox_mode)
+            .unwrap_or(crate::onboarding::permissions::SandboxMode::ReadOnly);
+        crate::tools::Sandbox::new(workspace, mode)
+    };
     let stored_enabled = state
         .engine
         .setting(crate::persona::SETTING_PERSONA_ENABLED)
@@ -3607,7 +3621,7 @@ fn spawn_turn(
             send_terminal(&sender, "delta", serde_json::json!({ "text": fragment }));
         };
         let started = std::time::Instant::now();
-        let outcome = chat::run_turn(&config, system, history, &mut sink);
+        let outcome = chat::run_turn(&config, system, history, &sandbox, &mut sink);
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         drop(sink);
 
