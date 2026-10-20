@@ -185,31 +185,38 @@ pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
 /// diff rather than generated at request time.
 const KALLISTI_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Kallisti wallpaper">
 <defs>
-<radialGradient id="glow" cx="50%" cy="18%" r="78%">
-<stop offset="0%" stop-color="#c8ccd2" stop-opacity="0.13"/>
-<stop offset="48%" stop-color="#c8ccd2" stop-opacity="0.03"/>
+<radialGradient id="glow" cx="50%" cy="12%" r="86%">
+<stop offset="0%" stop-color="#c8ccd2" stop-opacity="0.30"/>
+<stop offset="34%" stop-color="#c8ccd2" stop-opacity="0.12"/>
+<stop offset="68%" stop-color="#c8ccd2" stop-opacity="0.03"/>
 <stop offset="100%" stop-color="#0c0c10" stop-opacity="0"/>
 </radialGradient>
-<pattern id="hairline" width="96" height="96" patternUnits="userSpaceOnUse">
-<path d="M96 0H0V96" fill="none" stroke="#c8ccd2" stroke-opacity="0.02" stroke-width="1"/>
+<pattern id="grid" width="72" height="72" patternUnits="userSpaceOnUse">
+<path d="M72 0H0V72" fill="none" stroke="#c8ccd2" stroke-opacity="0.05" stroke-width="1"/>
 </pattern>
-<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
-<stop offset="0%" stop-color="#0c0c10" stop-opacity="0"/>
-<stop offset="72%" stop-color="#0c0c10" stop-opacity="0.55"/>
-<stop offset="100%" stop-color="#0c0c10" stop-opacity="0.92"/>
+<linearGradient id="column" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#0c0c10" stop-opacity="0.10"/>
+<stop offset="55%" stop-color="#0c0c10" stop-opacity="0.45"/>
+<stop offset="100%" stop-color="#0c0c10" stop-opacity="0.88"/>
 </linearGradient>
 </defs>
 <rect width="1600" height="1000" fill="#0c0c10"/>
-<rect width="1600" height="1000" fill="url(#hairline)"/>
+<rect width="1600" height="1000" fill="url(#grid)"/>
 <rect width="1600" height="1000" fill="url(#glow)"/>
 <g fill="none" stroke="#c8ccd2">
-<circle cx="800" cy="-260" r="620" stroke-opacity="0.09" stroke-width="1"/>
-<circle cx="800" cy="-260" r="760" stroke-opacity="0.05" stroke-width="1"/>
-<circle cx="800" cy="-260" r="900" stroke-opacity="0.03" stroke-width="1"/>
-<path d="M-80 690 C 320 620, 560 720, 860 690 S 1420 640, 1700 700" stroke-opacity="0.06" stroke-width="1"/>
-<path d="M-80 760 C 320 690, 560 790, 860 760 S 1420 710, 1700 770" stroke-opacity="0.04" stroke-width="1"/>
+<circle cx="800" cy="-300" r="600" stroke-opacity="0.34" stroke-width="1.5"/>
+<circle cx="800" cy="-300" r="740" stroke-opacity="0.20" stroke-width="1"/>
+<circle cx="800" cy="-300" r="880" stroke-opacity="0.11" stroke-width="1"/>
+<circle cx="800" cy="-300" r="1020" stroke-opacity="0.06" stroke-width="1"/>
+<path d="M-60 620 C 300 545, 560 655, 800 620 S 1300 560, 1660 630" stroke-opacity="0.20" stroke-width="1.5"/>
+<path d="M-60 700 C 300 625, 560 735, 800 700 S 1300 640, 1660 710" stroke-opacity="0.12" stroke-width="1"/>
+<path d="M-60 780 C 300 705, 560 815, 800 780 S 1300 720, 1660 790" stroke-opacity="0.07" stroke-width="1"/>
 </g>
-<rect width="1600" height="1000" fill="url(#fade)"/>
+<g stroke="#c8ccd2" stroke-opacity="0.14" stroke-width="1">
+<path d="M1120 250 L 1120 316"/><path d="M1120 250 L 1186 250"/>
+<path d="M480 250 L 480 316"/><path d="M480 250 L 414 250"/>
+</g>
+<rect y="420" width="1600" height="580" fill="url(#column)"/>
 </svg>"##;
 
 /// Obsidian with a faint grid: the quietest option.
@@ -290,6 +297,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_default_backdrop_is_actually_visible() {
+        let svg = svg(DEFAULT_WALLPAPER).expect("the default backdrop exists");
+        // Some part of it has to paint brighter than a hairline, or the wallpaper
+        // is a rumour. This is the bug 1.0.2 fixes: the first pass was so faint
+        // that a screenshot looked like a flat page.
+        let opacities: Vec<f64> = svg
+            .split("stroke-opacity=\"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .filter_map(|value| value.parse::<f64>().ok())
+            .collect();
+        assert!(
+            opacities.iter().any(|value| *value >= 0.2),
+            "the default wallpaper has no stroke brighter than 0.2: {opacities:?}"
+        );
+        let glow: Vec<f64> = svg
+            .split("stop-opacity=\"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .filter_map(|value| value.parse::<f64>().ok())
+            .collect();
+        assert!(
+            glow.iter().any(|value| *value >= 0.25),
+            "the default wallpaper has no glow worth the name: {glow:?}"
+        );
     }
 
     #[test]

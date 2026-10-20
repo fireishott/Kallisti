@@ -60,6 +60,11 @@ pub const SETTING_PROVIDER_KEY_REF: &str = "provider.api_key_ref";
 /// `settings` key: the JSON array of model ids the probe listed.
 pub const SETTING_PROVIDER_MODELS: &str = "provider.models";
 
+/// `settings` key: the context window each probed model declared, as a JSON
+/// object of id to token count. Written by the probe, read by the chat surface so
+/// a context percentage is a number the provider published rather than a guess.
+pub const SETTING_PROVIDER_CONTEXTS: &str = "provider.context_lengths";
+
 /// `settings` key: when the last successful probe happened.
 pub const SETTING_PROVIDER_PROBED_AT: &str = "provider.probed_at";
 
@@ -699,6 +704,29 @@ impl SetupEngine {
             return Ok(Vec::new());
         };
         Ok(serde_json::from_str(&json).unwrap_or_default())
+    }
+
+    /// The context windows the last probe declared, keyed by model id.
+    pub fn provider_contexts(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, u64>, OnboardingError> {
+        let Some(json) = self.setting(SETTING_PROVIDER_CONTEXTS)? else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+        Ok(serde_json::from_str(&json).unwrap_or_default())
+    }
+
+    /// Replace the stored context windows with what this probe declared.
+    ///
+    /// Empty is a real value: a gateway that publishes no windows clears the map
+    /// rather than leaving a previous endpoint's numbers behind for a model id
+    /// that survived the switch.
+    pub fn set_provider_contexts(
+        &self,
+        contexts: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<(), OnboardingError> {
+        let json = serde_json::to_string(contexts).unwrap_or_else(|_| "{}".to_owned());
+        self.set_setting(SETTING_PROVIDER_CONTEXTS, &json)
     }
 
     /// Store the default model, which must be in the probe's list.

@@ -1810,6 +1810,7 @@ async fn provider(
     {
         return fail(&state, as_html, form_error(&error));
     }
+    let _ = state.engine.set_provider_contexts(&catalog.context_lengths);
 
     if as_html {
         see_other("/setup")
@@ -2174,6 +2175,7 @@ async fn rotate_provider(
             {
                 return refusal(form_error(&error));
             }
+            let _ = state.engine.set_provider_contexts(&catalog.context_lengths);
             if as_html {
                 render_dashboard_ok(&state, format!("probe ok: {} models", catalog.models.len()))
             } else {
@@ -2182,6 +2184,7 @@ async fn rotate_provider(
                     "base_url": base_url,
                     "model_count": catalog.models.len(),
                     "models": catalog.models,
+                    "context_lengths": catalog.context_lengths,
                 }))
             }
         }
@@ -2815,19 +2818,40 @@ fn build_chat_view(state: &AppState) -> Result<ChatView, FormError> {
                 failed: message.state == chat::State::Failed,
                 error_code: message.error_code.clone(),
                 pending: message.state == chat::State::Streaming,
+                model: message.model.clone(),
+                prompt_tokens: message.prompt_tokens,
+                completion_tokens: message.completion_tokens,
+                cached_tokens: message.cached_tokens,
+                duration_ms: message.duration_ms,
             }
         })
         .collect();
+
+    let models = state.engine.provider_models().unwrap_or_default();
+    let selected_model = if model.is_empty() {
+        models.first().cloned().unwrap_or_default()
+    } else {
+        model
+    };
+    let context_window = state
+        .engine
+        .provider_contexts()
+        .ok()
+        .and_then(|contexts| contexts.get(&selected_model).copied());
 
     Ok(ChatView {
         chrome: state.chrome(),
         state: state.engine.state().unwrap_or(crate::db::SetupState::Ready),
         version: VERSION.to_owned(),
-        model,
+        model: selected_model.clone(),
         wallpaper_url: url,
         messages,
         provider_ready: provider_ready(state),
         error: None,
+        stats: chat::stats(&transcript),
+        models,
+        selected_model,
+        context_window,
     })
 }
 
@@ -2891,6 +2915,21 @@ async fn chat_send(
         return fail_dashboard(&state, wants_html(&headers), error);
     };
 
+    // Which model answers: the composer's choice when it sent one, otherwise the
+    // stored default. A choice outside the probe's list is refused by name rather
+    // than silently replaced, because a picker that lies about itself is worse
+    // than one that is missing.
+    let requested = field(&fields, "model").trim().to_owned();
+    let model = match resolve_chat_model(&state, &requested, &config.model) {
+        Ok(model) => model,
+        Err(error) => return fail_dashboard(&state, wants_html(&headers), error),
+    };
+    let context_window = state
+        .engine
+        .provider_contexts()
+        .ok()
+        .and_then(|contexts| contexts.get(&model).copied());
+
     let db = state.engine.db().clone();
     if let Err(error) = chat::append(
         &db,
@@ -2903,17 +2942,16 @@ async fn chat_send(
     }
 
     // The assistant row exists before the first token, so a refresh mid-answer
-    // shows the partial reply rather than nothing at all.
-    let answer_id = match chat::append(
-        &db,
-        chat::CONVERSATION_ID,
-        chat::Role::Assistant,
-        "",
-        chat::State::Streaming,
-    ) {
+    // shows the partial reply rather than nothing at all, and it carries the
+    // model and window now so a half-finished row is still readable.
+    let answer_id = match chat::append_answer(&db, chat::CONVERSATION_ID, &model, context_window) {
         Ok(id) => id,
         Err(error) => return refusal(FormError::new(None, "chat_write_failed", error.to_string())),
     };
+    // The turn may run on a model other than the stored default, so the turn
+    // config is rebuilt with the chosen id.
+    let mut config = config;
+    config.model = model.clone();
 
     let transcript = match chat::load(&db, chat::CONVERSATION_ID) {
         Ok(transcript) => transcript,
@@ -2937,6 +2975,45 @@ async fn chat_send(
     Sse::new(UnboundedReceiverStream::new(rx))
         .keep_alive(SseKeepAlive::default())
         .into_response()
+}
+
+/// Which model this turn runs on.
+///
+/// The picker's value when it sent one, checked against the probe's list so a
+/// hand-crafted form cannot send a model the endpoint never offered; the stored
+/// default otherwise. An empty value is the default, not an error: the plain form
+/// posts no model field at all.
+fn resolve_chat_model(
+    state: &AppState,
+    requested: &str,
+    default_model: &str,
+) -> Result<String, FormError> {
+    if requested.is_empty() {
+        return Ok(default_model.to_owned());
+    }
+    if requested.len() > 200 {
+        return Err(FormError::new(
+            Some("model"),
+            "model_invalid",
+            "that model id is longer than any endpoint serves",
+        ));
+    }
+    match state.engine.provider_models() {
+        Ok(known) if !known.is_empty() => {
+            if known.iter().any(|id| id == requested) {
+                Ok(requested.to_owned())
+            } else {
+                Err(FormError::new(
+                    Some("model"),
+                    "model_not_in_probe",
+                    format!("`{requested}` is not in the model list this endpoint returned"),
+                ))
+            }
+        }
+        // No probe has run. The endpoint is the authority, so the request is
+        // taken at face value rather than refused for want of a list.
+        _ => Ok(requested.to_owned()),
+    }
 }
 
 /// `POST /dashboard/chat/clear`.
@@ -3006,18 +3083,32 @@ fn spawn_turn(
             streamed.push_str(fragment);
             send_terminal(&sender, "delta", serde_json::json!({ "text": fragment }));
         };
+        let started = std::time::Instant::now();
         let outcome = chat::run_turn(&config, system, history, &mut sink);
+        let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         drop(sink);
 
         match outcome {
             Ok((text, usage)) => {
-                let _ = chat::settle(&db, &answer_id, &text, usage.as_ref());
+                let accounting = chat::Accounting {
+                    prompt_tokens: usage.input_tokens(),
+                    completion_tokens: usage.output_tokens(),
+                    cached_tokens: usage.cache_read_tokens(),
+                    duration_ms: Some(duration_ms),
+                };
+                let raw = serde_json::to_value(usage).ok();
+                let _ = chat::settle(&db, &answer_id, &text, raw.as_ref(), accounting);
                 send_terminal(
                     &sender,
                     "done",
                     serde_json::json!({
                         "id": answer_id,
                         "text": text,
+                        "model": config.model,
+                        "prompt_tokens": accounting.prompt_tokens,
+                        "completion_tokens": accounting.completion_tokens,
+                        "cached_tokens": accounting.cached_tokens,
+                        "duration_ms": accounting.duration_ms,
                     }),
                 );
             }

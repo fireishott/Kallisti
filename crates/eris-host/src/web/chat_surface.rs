@@ -105,6 +105,96 @@ fn the_chat_page_needs_a_session_and_renders_the_default_wallpaper() {
 }
 
 #[test]
+fn the_page_shows_the_usage_the_transcript_carries() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(
+        db,
+        CONVERSATION_ID,
+        Role::User,
+        "how big is the window",
+        State::Complete,
+    )
+    .unwrap();
+    // The default model is the picker's starting point, so the window it states
+    // has to be the default model's window.
+    engine
+        .set_setting(crate::onboarding::SETTING_MODEL, "m/watch")
+        .unwrap();
+    engine
+        .set_provider_contexts(&std::collections::BTreeMap::from([(
+            "m/watch".to_owned(),
+            272_000,
+        )]))
+        .unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/watch", Some(272_000)).unwrap();
+    chat::settle(
+        db,
+        &answer,
+        "big enough",
+        None,
+        chat::Accounting {
+            prompt_tokens: Some(1_200),
+            completion_tokens: Some(18),
+            cached_tokens: Some(1_150),
+            duration_ms: Some(900),
+        },
+    )
+    .unwrap();
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+    // Per answer: the model, both token counts, the cache share, the duration.
+    assert!(body.contains("m/watch"), "the model that answered is named");
+    assert!(body.contains("1.2k in"), "prompt tokens are shown");
+    assert!(body.contains("18 out"), "completion tokens are shown");
+    assert!(
+        body.contains("48% cache"),
+        "cache share is derived from the row"
+    );
+    assert!(body.contains("900ms"), "duration is shown");
+    // Per conversation: the header chips and the status strip.
+    assert!(body.contains("chat-stats"), "the stats row renders");
+    assert!(
+        body.contains("272.0k window"),
+        "the declared window is stated beside the picker: {body}"
+    );
+    assert!(body.contains("statusbar"), "the status strip renders");
+    assert!(
+        body.contains("cache hit 48%"),
+        "the strip repeats the cache share"
+    );
+    assert!(body.contains("context unknown") || body.contains("context 0%"));
+}
+
+#[test]
+fn a_model_outside_the_probe_is_refused_by_name() {
+    let (_dir, engine, app, cookie) = ready_app();
+    engine
+        .set_setting(
+            crate::onboarding::SETTING_PROVIDER_MODELS,
+            r#"["m/one","m/two"]"#,
+        )
+        .unwrap();
+
+    let refused = block_on(send(
+        &app,
+        Call::post(ROUTE_CHAT_SEND, "message=hello&model=m/other").cookie(Some(&cookie)),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "model_not_in_probe");
+    assert_eq!(
+        chat::count(engine.db(), CONVERSATION_ID).unwrap(),
+        0,
+        "a refused model writes nothing"
+    );
+}
+
+#[test]
 fn an_empty_message_is_refused_by_name_and_writes_nothing() {
     let (_dir, engine, app, cookie) = ready_app();
     let reply = block_on(send(

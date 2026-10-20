@@ -17,6 +17,8 @@ use std::time::Duration;
 use core_domain::{LlmError, ProviderProfile};
 use reqwest::Client;
 
+use std::collections::BTreeMap;
+
 use super::{SecretKey, classify};
 
 /// A slow gateway is a fact of life; a gateway that will not accept a TCP
@@ -27,10 +29,23 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The model list one probe returned.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelCatalog {
     /// Model ids, deduplicated and sorted, exactly as the provider spelled them.
     pub models: Vec<String>,
+    /// The context window each entry declared, for the entries that declared
+    /// one. Absent is absent: a gateway that does not publish a window does not
+    /// get a guessed one, and the UI says "unknown" rather than inventing a
+    /// percentage from a number nobody sent.
+    pub context_lengths: BTreeMap<String, u64>,
+}
+
+impl ModelCatalog {
+    /// The declared window for one model, when the provider published it.
+    #[must_use]
+    pub fn context_length(&self, model: &str) -> Option<u64> {
+        self.context_lengths.get(model).copied()
+    }
 }
 
 /// Ask a configured endpoint which models it serves.
@@ -103,6 +118,7 @@ pub fn parse_model_list(body: &str) -> Result<ModelCatalog, String> {
     };
 
     let mut models: Vec<String> = Vec::with_capacity(entries.len());
+    let mut context_lengths: BTreeMap<String, u64> = BTreeMap::new();
     for entry in entries {
         let id = match entry {
             serde_json::Value::Object(object) => object
@@ -118,6 +134,17 @@ pub fn parse_model_list(body: &str) -> Result<ModelCatalog, String> {
         if id.is_empty() {
             continue;
         }
+        // Three spellings are in the wild for the same fact. Any positive one is
+        // the window; anything else is treated as unreported.
+        if let serde_json::Value::Object(object) = entry {
+            let declared = ["context_length", "context_window", "max_context_tokens"]
+                .iter()
+                .filter_map(|key| object.get(*key).and_then(serde_json::Value::as_u64))
+                .find(|value| *value > 0);
+            if let Some(tokens) = declared {
+                context_lengths.insert(id.to_owned(), tokens);
+            }
+        }
         models.push(id.to_owned());
     }
     models.sort();
@@ -125,7 +152,10 @@ pub fn parse_model_list(body: &str) -> Result<ModelCatalog, String> {
     if models.is_empty() {
         return Err("the list names no models".to_owned());
     }
-    Ok(ModelCatalog { models })
+    Ok(ModelCatalog {
+        models,
+        context_lengths,
+    })
 }
 
 #[cfg(test)]
@@ -139,6 +169,29 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(catalog.models, vec!["a/model", "b/model"]);
+    }
+
+    #[test]
+    fn a_declared_context_window_is_kept_and_a_missing_one_stays_missing() {
+        let catalog = parse_model_list(
+            r#"{"data":[
+                 {"id":"a/model","context_length":272000},
+                 {"id":"b/model","context_window":128000},
+                 {"id":"c/model","max_context_tokens":8000},
+                 {"id":"d/model"},
+                 {"id":"e/model","context_length":0}
+               ]}"#,
+        )
+        .expect("parses");
+        assert_eq!(catalog.context_length("a/model"), Some(272_000));
+        assert_eq!(catalog.context_length("b/model"), Some(128_000));
+        assert_eq!(catalog.context_length("c/model"), Some(8_000));
+        assert_eq!(catalog.context_length("d/model"), None);
+        assert_eq!(
+            catalog.context_length("e/model"),
+            None,
+            "a zero is not a window"
+        );
     }
 
     #[test]

@@ -611,11 +611,10 @@ pre.code {
 
 .muted-line { color: var(--muted); margin: 0; font-style: italic; }
 
-.code-block { position: relative; margin: 12px 0; }
+.code-block { margin: 12px 0; min-width: 16rem; }
 .code-lang {
-  position: absolute;
-  top: 8px;
-  right: 10px;
+  display: block;
+  padding: 6px 14px 0;
   font-size: 9.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -629,7 +628,6 @@ pre.code {
   background: var(--deep);
 }
 .msg .bubble .code-block pre.code { border: 0; border-radius: 0; background: transparent; }
-.msg .bubble .code-block .code-lang { top: 10px; right: 14px; }
 
 .chat-empty {
   display: grid;
@@ -687,9 +685,8 @@ pre.code {
   resize: none;
 }
 .composer textarea:focus { outline: none; border-color: transparent; }
-.composer-actions { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
-.composer-actions .hint { margin-right: auto; font-size: 11px; color: var(--muted); }
-.composer-actions button[hidden] { display: none; }
+.composer .hint { font-size: 11px; color: var(--muted); }
+.composer button[hidden] { display: none; }
 
 .sr-only {
   position: absolute;
@@ -702,6 +699,104 @@ pre.code {
   white-space: nowrap;
   border: 0;
 }
+
+
+/* Session stats, the model picker, and the status strip ---------------- */
+
+.chat-stats {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 18px;
+}
+.stat-chip {
+  display: grid;
+  gap: 2px;
+  min-width: 104px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+}
+.stat-chip.wide { flex: 1 1 260px; }
+.stat-chip .n {
+  font-size: 15px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.stat-chip .k {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.meter {
+  height: 3px;
+  margin-top: 7px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  overflow: hidden;
+}
+.meter-fill { height: 100%; background: var(--platinum); border-radius: 999px; }
+
+.msg .meta-model {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--platinum);
+  opacity: 0.75;
+}
+.msg .meta-usage {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.msg .meta > * + *::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--line-strong);
+}
+
+.composer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.composer-pick { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.composer-pick select {
+  width: auto;
+  max-width: 260px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--raise);
+  color: var(--text);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+.composer-pick .nowrap { white-space: nowrap; }
+.composer-send { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+
+.statusbar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 2px 0;
+  color: var(--muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+.statusbar .dot { color: var(--line-strong); }
 
 /* The wizard rail -------------------------------------------------------- */
 

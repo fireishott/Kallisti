@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -86,6 +86,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "0005_chat_messages",
         sql: MIGRATION_0005,
+    },
+    Migration {
+        version: 6,
+        name: "0006_chat_accounting",
+        sql: MIGRATION_0006,
     },
 ];
 
@@ -303,6 +308,27 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation
     ON chat_messages (conversation_id, created_at);
+";
+
+/// Migration 0006: what a turn cost, on the row that was already there.
+///
+/// Six columns, no new table. `model` is the id that actually answered, which is
+/// not always the default: the composer can pick one per turn. The three token
+/// columns are the numbers the provider reported, kept beside `usage_json` (the
+/// raw record) so a page can sum a transcript without parsing JSON per row.
+/// `context_window` is the window the probe declared for that model, frozen onto
+/// the row: a later probe against a different gateway must not retroactively
+/// change what an old answer's percentage meant. `duration_ms` is wall time from
+/// first byte to last, which is the only way to show tokens per second honestly.
+const MIGRATION_0006: &str = r"
+ALTER TABLE chat_messages ADD COLUMN model TEXT;
+ALTER TABLE chat_messages ADD COLUMN prompt_tokens INTEGER;
+ALTER TABLE chat_messages ADD COLUMN completion_tokens INTEGER;
+ALTER TABLE chat_messages ADD COLUMN cached_tokens INTEGER;
+ALTER TABLE chat_messages ADD COLUMN context_window INTEGER;
+ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_model ON chat_messages (model);
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

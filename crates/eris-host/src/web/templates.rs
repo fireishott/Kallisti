@@ -2477,6 +2477,62 @@ pub struct ChatLine {
     pub error_code: Option<String>,
     /// True while the answer is still arriving.
     pub pending: bool,
+    /// The model that answered this row, when it is an answer.
+    pub model: Option<String>,
+    /// Prompt tokens the provider reported.
+    pub prompt_tokens: Option<u64>,
+    /// Completion tokens the provider reported.
+    pub completion_tokens: Option<u64>,
+    /// Prompt tokens served from cache.
+    pub cached_tokens: Option<u64>,
+    /// Wall time from request to last byte.
+    pub duration_ms: Option<u64>,
+}
+
+impl ChatLine {
+    /// The numbers this answer cost, as one line: `1.2k in / 18 out / 97% cache`.
+    ///
+    /// A number the provider did not report is left out rather than shown as
+    /// zero, so a row never claims a cost it did not measure.
+    #[must_use]
+    pub fn usage_line(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(prompt) = self.prompt_tokens {
+            parts.push(format!("{} in", human_tokens(prompt)));
+        }
+        if let Some(out) = self.completion_tokens {
+            parts.push(format!("{} out", human_tokens(out)));
+        }
+        if let (Some(cached), Some(prompt)) = (self.cached_tokens, self.prompt_tokens)
+            && let Some(pct) = (cached * 100).checked_div(prompt + cached)
+        {
+            parts.push(format!("{pct}% cache"));
+        }
+        if let Some(ms) = self.duration_ms {
+            if ms >= 1000 {
+                parts.push(format!("{:.1}s", ms as f64 / 1000.0));
+            } else {
+                parts.push(format!("{ms}ms"));
+            }
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" / "))
+        }
+    }
+}
+
+/// A token count for a human: `812`, `2.4k`, `61.1M`.
+#[must_use]
+pub fn human_tokens(count: u64) -> String {
+    if count < 1_000 {
+        return count.to_string();
+    }
+    if count < 1_000_000 {
+        return format!("{:.1}k", count as f64 / 1_000.0);
+    }
+    format!("{:.1}M", count as f64 / 1_000_000.0)
 }
 
 /// Everything the chat surface needs.
@@ -2498,6 +2554,14 @@ pub struct ChatView {
     pub provider_ready: bool,
     /// A refusal to show above the transcript.
     pub error: Option<FormError>,
+    /// What this conversation has cost so far.
+    pub stats: crate::web::chat::Stats,
+    /// Every model the last probe returned, for the composer's picker.
+    pub models: Vec<String>,
+    /// The model the picker starts on.
+    pub selected_model: String,
+    /// The window declared for the selected model, when one is known.
+    pub context_window: Option<u64>,
 }
 
 /// The clock time from a database timestamp, for the line under a bubble.
@@ -2561,6 +2625,85 @@ pub fn blocks(text: &str) -> Markup {
     html! { @for piece in pieces { (piece) } }
 }
 
+/// The numbers a conversation has cost, as a row of chips.
+///
+/// Shown above the transcript so the state of the conversation is readable
+/// without scrolling to the bottom of it.
+fn chat_stats(view: &ChatView) -> Markup {
+    let stats = &view.stats;
+    let context = match (stats.context_pct, stats.context_used, stats.context_window) {
+        (Some(pct), Some(used), Some(window)) => format!(
+            "{pct}% of {} ({})",
+            human_tokens(window),
+            human_tokens(used)
+        ),
+        (None, Some(used), _) => format!("{} used", human_tokens(used)),
+        _ => "context unknown".to_owned(),
+    };
+    let cache = match stats.cache_hit_pct {
+        Some(pct) => format!("{pct}% cache"),
+        None => "cache unknown".to_owned(),
+    };
+    html! {
+        div .chat-stats aria-label="Conversation usage" {
+            div .stat-chip {
+                span .n { (stats.turns) }
+                span .k { "turns" }
+            }
+            div .stat-chip {
+                span .n { (human_tokens(stats.total_tokens)) }
+                span .k { "tokens" }
+            }
+            div .stat-chip {
+                span .n { (cache) }
+                span .k { "prompt cache" }
+            }
+            div .stat-chip.wide {
+                span .n { (context) }
+                span .k { "context" }
+                @if let Some(pct) = stats.context_pct {
+                    div .meter aria-hidden="true" {
+                        div .meter-fill style=(format!("width:{pct}%")) {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The strip under the composer: the same facts as a single line, which is where
+/// an operator looks while a turn is running.
+fn chat_status_strip(view: &ChatView) -> Markup {
+    let stats = &view.stats;
+    let rate = match stats.tokens_per_second {
+        Some(rate) => format!("{rate} tok/s"),
+        None => "tok/s unknown".to_owned(),
+    };
+    let cache = match stats.cache_hit_pct {
+        Some(pct) => format!("cache hit {pct}%"),
+        None => "cache unknown".to_owned(),
+    };
+    let context = match stats.context_pct {
+        Some(pct) => format!("context {pct}%"),
+        None => "context unknown".to_owned(),
+    };
+    html! {
+        div .statusbar aria-label="Session status" {
+            span { (stats.turns) " turns" }
+            span .dot { "·" }
+            span { (human_tokens(stats.prompt_tokens)) " in" }
+            span .dot { "·" }
+            span { (human_tokens(stats.completion_tokens)) " out" }
+            span .dot { "·" }
+            span { (rate) }
+            span .dot { "·" }
+            span { (cache) }
+            span .dot { "·" }
+            span { (context) }
+        }
+    }
+}
+
 /// The chat surface: the transcript, the composer, and the backdrop behind it.
 ///
 /// The form is a real POST, so the page works with no script at all and `curl`
@@ -2585,9 +2728,7 @@ pub fn chat_page(view: &ChatView) -> Markup {
                 }
             }
             div .chat-meta {
-                @if view.provider_ready {
-                    span .tag { (view.model) }
-                } @else {
+                @if !view.provider_ready {
                     span .badge.expired { "no provider" }
                 }
                 @if !view.messages.is_empty() {
@@ -2599,6 +2740,9 @@ pub fn chat_page(view: &ChatView) -> Markup {
             }
         }
         (alert_region(view.error.as_ref(), None))
+        @if view.provider_ready {
+            (chat_stats(view))
+        }
         section .thread id="thread" aria-label="Conversation" {
             @if view.messages.is_empty() {
                 div .chat-empty {
@@ -2626,6 +2770,12 @@ pub fn chat_page(view: &ChatView) -> Markup {
                     div .bubble .failed[line.failed] { (blocks(&line.body)) }
                     div .meta {
                         span .mono { (line.stamp) }
+                        @if let Some(model) = &line.model {
+                            span .meta-model { (model) }
+                        }
+                        @if let Some(usage) = line.usage_line() {
+                            span .meta-usage { (usage) }
+                        }
                         @if let Some(code) = &line.error_code {
                             span .tag { (code) }
                         }
@@ -2639,12 +2789,26 @@ pub fn chat_page(view: &ChatView) -> Markup {
                 label .sr-only for="composer" { "Message" }
                 textarea id="composer" name="message" rows="1" spellcheck="false"
                     placeholder="Message Eris" {}
-                div .composer-actions {
-                    span .hint id="composer-status" {}
-                    button type="button" id="stop" class="secondary" hidden { "Stop" }
-                    button type="submit" id="send" { "Send" }
+                div .composer-bar {
+                    div .composer-pick {
+                        label .sr-only for="model" { "Model" }
+                        select id="model" name="model" aria-label="Model" {
+                            @for id in &view.models {
+                                option value=(id) selected[*id == view.selected_model] { (id) }
+                            }
+                        }
+                        @if let Some(window) = view.context_window {
+                            span .small .nowrap { (human_tokens(window)) " window" }
+                        }
+                    }
+                    div .composer-send {
+                        span .hint id="composer-status" {}
+                        button type="button" id="stop" class="secondary" hidden { "Stop" }
+                        button type="submit" id="send" { "Send" }
+                    }
                 }
             }
+            (chat_status_strip(view))
         } @else {
             p .empty {
                 strong { "No provider yet" }
@@ -2686,10 +2850,42 @@ const CHAT_JS: &str = r##"(function () {
     bubble.className = "bubble";
     var text = document.createElement("p");
     bubble.appendChild(text);
+    var meta = document.createElement("div");
+    meta.className = "meta";
     article.appendChild(label);
     article.appendChild(bubble);
+    article.appendChild(meta);
     thread.appendChild(article);
-    return { article: article, bubble: bubble, text: text };
+    return { article: article, bubble: bubble, text: text, meta: meta };
+  }
+
+  function human(count) {
+    if (count === null || count === undefined) { return ""; }
+    if (count < 1000) { return String(count); }
+    if (count < 1000000) { return (count / 1000).toFixed(1) + "k"; }
+    return (count / 1000000).toFixed(1) + "M";
+  }
+
+  function metaFor(payload) {
+    var parts = [];
+    if (payload.model) { parts.push(payload.model); }
+    if (typeof payload.prompt_tokens === "number") {
+      parts.push(human(payload.prompt_tokens) + " in");
+    }
+    if (typeof payload.completion_tokens === "number") {
+      parts.push(human(payload.completion_tokens) + " out");
+    }
+    var prompt = payload.prompt_tokens || 0;
+    var cached = payload.cached_tokens || 0;
+    if (prompt + cached > 0) {
+      parts.push(Math.round((cached * 100) / (prompt + cached)) + "% cache");
+    }
+    if (payload.duration_ms) {
+      parts.push(payload.duration_ms >= 1000
+        ? (payload.duration_ms / 1000).toFixed(1) + "s"
+        : payload.duration_ms + "ms");
+    }
+    return parts.join(" · ");
   }
 
   function setBusy(next) {
@@ -2719,6 +2915,8 @@ const CHAT_JS: &str = r##"(function () {
   async function send() {
     var text = box.value.trim();
     if (text === "" || busy) { return; }
+    var picker = document.getElementById("model");
+    var chosen = picker === null ? "" : picker.value;
     var userLine = document.createElement("article");
     userLine.className = "msg user";
     var userWho = document.createElement("div");
@@ -2747,7 +2945,7 @@ const CHAT_JS: &str = r##"(function () {
           "Accept": "text/event-stream",
           "Content-Type": "application/x-www-form" + "-urlencoded"
         },
-        body: new URLSearchParams({ message: text }),
+        body: new URLSearchParams({ message: text, model: chosen }),
         signal: controller.signal
       });
       if (response.ok === false) { throw new Error("HTTP " + response.status); }
@@ -2768,10 +2966,16 @@ const CHAT_JS: &str = r##"(function () {
             target.text.textContent = answer;
             toBottom();
           }
-          if (parsed.event === "done") { answer = JSON.parse(parsed.data).text; }
+          if (parsed.event === "done") {
+            var final = JSON.parse(parsed.data);
+            answer = final.text;
+            target.meta.textContent = metaFor(final);
+          }
           if (parsed.event === "error") {
+            var failure = JSON.parse(parsed.data);
             target.bubble.className = "bubble failed";
-            target.text.textContent = JSON.parse(parsed.data).message;
+            target.text.textContent = failure.message;
+            target.meta.textContent = failure.code;
           }
         }
       }
