@@ -651,10 +651,7 @@ pub fn as_chat_message(message: &Message) -> ChatMessage {
         Role::User => ChatRole::User,
         Role::Assistant => ChatRole::Assistant,
     };
-    ChatMessage {
-        role,
-        content: message.body.clone(),
-    }
+    ChatMessage::text(role, message.body.clone())
 }
 
 /// The context a turn carries: settled messages only, newest window, oldest

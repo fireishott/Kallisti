@@ -3259,10 +3259,10 @@ async fn chat_send(
     if !files.is_empty() {
         let described = chat::describe_attachments(&files);
         if !described.trim().is_empty() {
-            history.push(core_runtime::provider::ChatMessage {
-                role: core_runtime::provider::ChatRole::User,
-                content: described,
-            });
+            history.push(core_runtime::provider::ChatMessage::text(
+                core_runtime::provider::ChatRole::User,
+                described,
+            ));
         }
     }
 

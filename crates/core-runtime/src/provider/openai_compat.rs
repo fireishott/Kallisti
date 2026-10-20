@@ -105,11 +105,49 @@ impl OpenAiCompatProvider {
                 "content": system,
             }));
         }
-        messages.extend(request.messages.iter().map(|message| {
-            serde_json::json!({
+        messages.extend(request.messages.iter().map(|message| match message.role {
+            ChatRole::Tool => serde_json::json!({
+                "role": ChatRole::Tool.as_str(),
+                // Never invented: a message with no id serializes as null and
+                // the provider rejects it, which is louder than guessing.
+                "tool_call_id": message.tool_call_id,
+                "content": message.content,
+            }),
+            ChatRole::Assistant if !message.tool_calls.is_empty() => {
+                let calls: Vec<serde_json::Value> = message
+                    .tool_calls
+                    .iter()
+                    .map(|call| {
+                        serde_json::json!({
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                // The wire format carries arguments as a JSON
+                                // string, not as an object.
+                                "arguments": call.arguments.to_string(),
+                            }
+                        })
+                    })
+                    .collect();
+                // A call-only assistant turn has no text. Several
+                // OpenAI-compatible servers reject an empty string here, so
+                // absence is null rather than "".
+                let content = if message.content.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(message.content.clone())
+                };
+                serde_json::json!({
+                    "role": ChatRole::Assistant.as_str(),
+                    "content": content,
+                    "tool_calls": calls,
+                })
+            }
+            _ => serde_json::json!({
                 "role": message.role.as_str(),
                 "content": message.content,
-            })
+            }),
         }));
 
         let mut body = serde_json::json!({
@@ -307,6 +345,61 @@ mod tests {
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "get_weather");
         assert_eq!(body["messages"][1]["role"], "system");
+    }
+
+    #[test]
+    fn a_tool_result_reaches_the_wire_as_a_tool_message() {
+        let request =
+            ChatRequest::user_text("weather?").with_tool_result("call_1", r#"{"temp_c":21}"#);
+        let body = provider().build_body(&request);
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
+        assert_eq!(body["messages"][1]["content"], r#"{"temp_c":21}"#);
+    }
+
+    #[test]
+    fn an_assistant_turn_carries_its_tool_calls_back_as_a_json_string() {
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "read_file",
+            serde_json::json!({"path": "a.txt"}),
+        )
+        .expect("a call");
+        let request = ChatRequest::user_text("read a.txt").with_tool_calls(vec![call]);
+        let body = provider().build_body(&request);
+
+        assert_eq!(body["messages"][1]["role"], "assistant");
+        assert!(
+            body["messages"][1]["content"].is_null(),
+            "a call-only turn sends null content, not an empty string"
+        );
+        assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(body["messages"][1]["tool_calls"][0]["type"], "function");
+        assert_eq!(
+            body["messages"][1]["tool_calls"][0]["function"]["name"],
+            "read_file"
+        );
+
+        // Arguments travel as a JSON string, not as a nested object.
+        let arguments = body["messages"][1]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .expect("arguments must be a string on the wire");
+        let parsed: serde_json::Value =
+            serde_json::from_str(arguments).expect("arguments must be valid JSON");
+        assert_eq!(parsed["path"], "a.txt");
+    }
+
+    #[test]
+    fn a_plain_assistant_message_carries_no_tool_calls_key() {
+        let request = ChatRequest::user_text("hi").with_message(ChatRole::Assistant, "hello");
+        let body = provider().build_body(&request);
+        assert_eq!(body["messages"][1]["role"], "assistant");
+        assert_eq!(body["messages"][1]["content"], "hello");
+        assert!(
+            body["messages"][1].get("tool_calls").is_none(),
+            "a text-only turn must not grow a tool_calls key"
+        );
     }
 
     #[test]

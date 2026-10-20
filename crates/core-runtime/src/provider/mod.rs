@@ -109,6 +109,8 @@ pub enum ChatRole {
     User,
     /// A previous model turn.
     Assistant,
+    /// The result of a call this turn asked for.
+    Tool,
 }
 
 impl ChatRole {
@@ -119,17 +121,69 @@ impl ChatRole {
             Self::System => "system",
             Self::User => "user",
             Self::Assistant => "assistant",
+            Self::Tool => "tool",
         }
     }
 }
 
 /// One message in the prompt.
+///
+/// A message is one of three shapes, and the shape is decided by `role`:
+///
+/// - `System` and `User` carry text and nothing else.
+/// - `Assistant` carries text, and may also carry the `tool_calls` it asked
+///   for. A model turn that only asks for tools has empty text, which is
+///   serialized as a null `content` because several OpenAI-compatible servers
+///   reject an empty string there.
+/// - `Tool` carries the result of exactly one call, named by `tool_call_id`.
+///
+/// The two tool fields are kept on one type rather than split into an enum so a
+/// replayed transcript stays a flat `Vec`, which is what every provider expects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatMessage {
     /// Who said it.
     pub role: ChatRole,
-    /// What they said. Text only in 1.0.
+    /// What they said. Empty for a call-only assistant turn and for nothing else.
     pub content: String,
+    /// Calls the assistant requested. Empty unless the role is `Assistant`.
+    pub tool_calls: Vec<core_domain::ToolCall>,
+    /// Which call this message answers. `Some` if and only if the role is `Tool`.
+    pub tool_call_id: Option<String>,
+}
+
+impl ChatMessage {
+    /// A plain text message.
+    #[must_use]
+    pub fn text(role: ChatRole, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+
+    /// An assistant turn that asked for tools and said nothing.
+    #[must_use]
+    pub fn assistant_calls(tool_calls: Vec<core_domain::ToolCall>) -> Self {
+        Self {
+            role: ChatRole::Assistant,
+            content: String::new(),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    /// The result of one call, addressed by the provider-assigned id.
+    #[must_use]
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: ChatRole::Tool,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(call_id.into()),
+        }
+    }
 }
 
 /// A tool the model may call.
@@ -165,10 +219,7 @@ impl ChatRequest {
     #[must_use]
     pub fn user_text(text: impl Into<String>) -> Self {
         Self {
-            messages: vec![ChatMessage {
-                role: ChatRole::User,
-                content: text.into(),
-            }],
+            messages: vec![ChatMessage::text(ChatRole::User, text)],
             ..Self::default()
         }
     }
@@ -183,10 +234,7 @@ impl ChatRequest {
         let system = system.filter(|text| !text.trim().is_empty());
         Self {
             system,
-            messages: vec![ChatMessage {
-                role: ChatRole::User,
-                content: text.into(),
-            }],
+            messages: vec![ChatMessage::text(ChatRole::User, text)],
             ..Self::default()
         }
     }
@@ -194,10 +242,25 @@ impl ChatRequest {
     /// Add a message.
     #[must_use]
     pub fn with_message(mut self, role: ChatRole, content: impl Into<String>) -> Self {
-        self.messages.push(ChatMessage {
-            role,
-            content: content.into(),
-        });
+        self.messages.push(ChatMessage::text(role, content));
+        self
+    }
+
+    /// Add the result of one tool call, addressed by the id the model saw.
+    #[must_use]
+    pub fn with_tool_result(
+        mut self,
+        call_id: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        self.messages.push(ChatMessage::tool_result(call_id, content));
+        self
+    }
+
+    /// Add the assistant turn that requested these calls.
+    #[must_use]
+    pub fn with_tool_calls(mut self, tool_calls: Vec<core_domain::ToolCall>) -> Self {
+        self.messages.push(ChatMessage::assistant_calls(tool_calls));
         self
     }
 }
