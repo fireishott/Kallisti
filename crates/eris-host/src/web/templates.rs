@@ -408,7 +408,10 @@ pub fn shell(
                 @if let Some(url) = &chrome.wallpaper_url {
                     // The backdrop is a field: the artwork's own edges fade to the
                     // page colour, so `cover` has nothing to seam against.
-                    div .app-wall style=(format!("background-image:url('{url}')")) {}
+                    @let art = url.ends_with(".jpg") || url.ends_with(".jpeg")
+                        || url.ends_with(".png") || url.ends_with("custom");
+                    div class=(if art { "app-wall art" } else { "app-wall" })
+                        style=(format!("background-image:url('{url}')")) {}
                 }
                 div .app {
                     header .side {
@@ -1351,6 +1354,8 @@ pub struct SettingsView {
     pub device_listener: bool,
     /// Whether this process has bound the device port.
     pub device_listener_bound: bool,
+    /// What the operator calls the assistant.
+    pub assistant_name: String,
     /// The persona text the daemon would send, as the file holds it.
     pub persona_text: String,
     /// Whether the persona is switched on.
@@ -1386,6 +1391,7 @@ impl SettingsView {
             paired_devices: 0,
             device_listener: false,
             device_listener_bound: false,
+            assistant_name: crate::persona::DEFAULT_ASSISTANT_NAME.to_owned(),
             persona_text: String::new(),
             persona_enabled: true,
             persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
@@ -1620,6 +1626,15 @@ fn persona_group(view: &SettingsView) -> Markup {
     html! {
         form method="post" action="/dashboard/settings/persona" novalidate {
             (group_region(view, SettingsGroup::Persona))
+            div .field {
+                label for="assistant_name" { "Name" }
+                input id="assistant_name" type="text" name="assistant_name" value=(view.assistant_name)
+                    autocomplete="off" spellcheck="false";
+                span .hint {
+                    "What the chat surface calls the assistant: the composer placeholder and the "
+                    "label on every answer. It is a label, not part of the system prompt."
+                }
+            }
             div .field {
                 label for="persona_text" { "Assistant identity" }
                 textarea id="persona_text" name="persona_text" rows="12" spellcheck="false"
@@ -2713,6 +2728,8 @@ pub struct ChatView {
     pub selected_model: String,
     /// The greeting an empty conversation opens with.
     pub greeting: String,
+    /// What the operator calls the assistant, for the composer and the labels.
+    pub assistant_name: String,
     /// The sandbox mode the composer's picker starts on.
     pub sandbox_mode: String,
     /// Whether full host mode may be offered in that picker at all.
@@ -2842,13 +2859,8 @@ fn session_line(view: &ChatView) -> Markup {
 pub fn chat_page(view: &ChatView) -> Markup {
     let body = html! {
         div .chat-shell .new-chat[view.messages.is_empty()]
-            data-conversation=(view.conversation.clone()) {
-        div .chat-head {
-            h1 { "Chat" }
-            @if !view.provider_ready {
-                span .badge.expired { "no provider" }
-            }
-        }
+            data-conversation=(view.conversation.clone())
+            data-assistant=(view.assistant_name.clone()) {
         (alert_region(view.error.as_ref(), None))
         section .thread id="thread" aria-label="Conversation" {
             @let last_answer = view.messages.iter().rposition(|line| !line.user);
@@ -2885,6 +2897,12 @@ pub fn chat_page(view: &ChatView) -> Markup {
                 p .hint { "Ask anything. The reply streams in." }
             }
         }
+        @if !view.provider_ready {
+            p .small .chat-note {
+                "No provider is configured yet. Set the endpoint and model on the settings page and "
+                "the composer appears."
+            }
+        }
         @if view.provider_ready {
             form .composer id="composer-form" method="post"
                 action=(crate::admin::ROUTE_CHAT_SEND) novalidate
@@ -2892,8 +2910,15 @@ pub fn chat_page(view: &ChatView) -> Markup {
                 input type="hidden" name="conversation" value=(view.conversation);
                 label .sr-only for="composer" { "Message" }
                 textarea id="composer" name="message" rows="1" spellcheck="false"
-                    placeholder="Message Eris" {}
+                    placeholder=(format!("Message {}", view.assistant_name)) {}
                 div .composer-bar {
+                    label .attach for="attachment" title="Attach a file" {
+                        span aria-hidden="true" { "+" }
+                        span .sr-only { "Attach a file" }
+                    }
+                    input type="file" id="attachment" name="file" .attach-input
+                        aria-label="Attach a file";
+                    span .attach-name id="attach-name" {}
                     div .composer-pick {
                         label .sr-only for="mode" { "Access" }
                         select id="mode" name="mode" aria-label="Access level" {
@@ -2910,13 +2935,6 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                 }
                             }
                         }
-                        label .attach for="attachment" title="Attach a file" {
-                            span aria-hidden="true" { "+" }
-                            span .sr-only { "Attach a file" }
-                        }
-                        input type="file" id="attachment" name="file" .attach-input
-                            aria-label="Attach a file";
-                        span .attach-name id="attach-name" {}
                         label .sr-only for="model" { "Model" }
                         select id="model" name="model" aria-label="Model" {
                             @for id in &view.models {
@@ -3062,7 +3080,9 @@ const CHAT_JS: &str = r##"(function () {
     box.value = "";
     setBusy(true);
     toBottom();
-    var target = line("assistant", "Eris");
+    var shellName = document.querySelector(".chat-shell");
+  var assistantName = shellName === null ? "assistant" : (shellName.getAttribute("data-assistant") || "assistant");
+  var target = line("assistant", assistantName);
     target.article.className = "msg assistant pending";
     var answer = "";
     controller = new AbortController();

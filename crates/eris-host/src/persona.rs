@@ -27,6 +27,16 @@ use crate::config::{ConfigError, Paths, expand_tilde};
 /// so a persona that fits here cannot fail to compile on size.
 pub const MAX_PERSONA_BYTES: usize = MAX_SYSTEM_BYTES;
 
+/// The `settings` row that holds the assistant's display name.
+///
+/// The identity file says who the assistant is; this row says what to call it.
+/// They are separate because a name is a label ("Message Ignyte"), not a claim
+/// the model has to be told about on every turn.
+pub const SETTING_ASSISTANT_NAME: &str = "assistant.name";
+
+/// The name the dashboard uses before the operator sets one.
+pub const DEFAULT_ASSISTANT_NAME: &str = "Ignyte";
+
 /// The `settings` row that remembers the operator's on/off choice.
 ///
 /// The `[persona] enabled` key in `config.toml` is the default; a row here is

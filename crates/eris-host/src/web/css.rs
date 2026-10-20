@@ -73,6 +73,11 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   min-height: 100vh;
 }
 
+/* A raster wallpaper is a picture, and a picture at full strength competes with
+   the conversation. The chrome is opaque on its own; the art is dimmed so it
+   reads as a room, not as a poster. */
+.app-wall.art { opacity: 0.42; }
+
 .app-wall {
   position: fixed;
   top: 0;
@@ -671,8 +676,11 @@ pre.code {
 .chat-greeting {
   position: relative;
   z-index: 1;
-  text-align: center;
-  margin: 0 0 18px;
+  /* Offset, not centred: a hero line on the exact middle of the screen reads as
+     a splash page, and this page is a workspace. It lines up with the composer. */
+  text-align: left;
+  margin: 0 0 14px;
+  padding-left: 14px;
 }
 .chat-greeting .hello {
   margin: 0;
@@ -686,17 +694,6 @@ pre.code {
   font-size: 13px;
   color: var(--muted);
 }
-.chat-head {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px 20px;
-  margin: 0 0 14px;
-}
-.chat-head h1 { margin: 0; }
 .chat-title .lede { margin-bottom: 0; max-width: 62ch; }
 .chat-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .chat-meta form { margin: 0; }
@@ -1095,7 +1092,6 @@ pre.code {
   /* The figure sits right of centre in the artwork. Cropped to a phone's width
      the centre of the frame is empty sky, so the frame is anchored where she is. */
   .app-wall { background-position: 88% center; }
-  .chat-head { align-items: flex-start; }
   .msg { max-width: 100%; }
   .composer { bottom: 8px; }
 }

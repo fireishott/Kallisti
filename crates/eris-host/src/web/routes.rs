@@ -501,6 +501,13 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     let mut view = SettingsView::new(engine.state().map_err(|error| form_error(&error))?, VERSION);
     view.chrome = state.chrome();
     view.allow_full = state.allow_full();
+    view.assistant_name = engine
+        .setting(crate::persona::SETTING_ASSISTANT_NAME)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| crate::persona::DEFAULT_ASSISTANT_NAME.to_owned());
     view.allow_full_from_flag = state.allow_full;
     view.allow_full_stored = matches!(
         engine.setting(crate::onboarding::SETTING_ALLOW_FULL),
@@ -2630,6 +2637,36 @@ async fn save_persona(
     };
     let text = fields.get("persona_text").cloned().unwrap_or_default();
 
+    // The name is a label, not persona text: it is stored even when the persona
+    // is off, and an empty box means "the documented default" rather than "".
+    let name = field(&fields, "assistant_name").trim().to_owned();
+    let name = if name.is_empty() {
+        crate::persona::DEFAULT_ASSISTANT_NAME.to_owned()
+    } else {
+        name
+    };
+    if name.chars().count() > 40 {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("assistant_name"),
+                "name_too_long",
+                "the assistant name must be 40 characters or fewer",
+            ),
+        );
+    }
+    if let Err(error) = state
+        .engine
+        .set_setting(crate::persona::SETTING_ASSISTANT_NAME, &name)
+    {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(None, "settings_unwritable", error.to_string()),
+        );
+    }
+
     if text.len() > MAX_PERSONA_BYTES {
         return fail_settings(
             &state,
@@ -2813,6 +2850,14 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         .ok()
         .flatten()
         .unwrap_or_default();
+    let assistant_name = state
+        .engine
+        .setting(crate::persona::SETTING_ASSISTANT_NAME)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| crate::persona::DEFAULT_ASSISTANT_NAME.to_owned());
     let messages = transcript
         .iter()
         .map(|message| {
@@ -2822,7 +2867,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                 who: if user {
                     "You".to_owned()
                 } else {
-                    "Eris".to_owned()
+                    assistant_name.clone()
                 },
                 body: message.body.clone(),
                 stamp: chat_clock(&message.created_at),
@@ -2874,6 +2919,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         stats: chat::stats(&transcript),
         models,
         selected_model,
+        assistant_name,
         greeting: crate::web::templates::greeting_for(chat::local_hour(db).unwrap_or(9)).to_owned(),
         sandbox_mode: state
             .engine

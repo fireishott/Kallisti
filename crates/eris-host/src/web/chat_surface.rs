@@ -204,6 +204,46 @@ fn a_model_outside_the_probe_is_refused_by_name() {
 }
 
 #[test]
+fn the_assistant_name_is_a_setting_the_composer_reads() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    // The documented default, before anyone sets one.
+    let page = block_on(send(&app, Call::get(ROUTE_CHAT).html().cookie(cookie)));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(r#"placeholder="Message Ignyte""#),
+        "the composer uses the profile name: {}",
+        page.body
+    );
+
+    // Set it on the persona card and the label follows without a restart.
+    let saved = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PERSONA,
+            "assistant_name=Kallisti&persona_enabled=true&persona_text=You are a daemon.",
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
+
+    let page = block_on(send(&app, Call::get(ROUTE_CHAT).html().cookie(cookie)));
+    assert!(
+        page.body.contains(r#"placeholder="Message Kallisti""#),
+        "the new name reaches the composer: {}",
+        page.body
+    );
+    assert_eq!(
+        engine
+            .setting(crate::persona::SETTING_ASSISTANT_NAME)
+            .unwrap()
+            .as_deref(),
+        Some("Kallisti")
+    );
+}
+
+#[test]
 fn the_greeting_follows_the_hour_and_an_empty_chat_centres_the_composer() {
     use crate::web::templates::greeting_for;
     assert_eq!(greeting_for(0), "Good night");
@@ -517,7 +557,10 @@ fn a_settled_transcript_renders_both_speakers_keeps_code_and_clears() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     let body = &page.body;
     assert!(body.contains(">You<"), "the operator is named: {body}");
-    assert!(body.contains(">Eris<"), "the assistant is named: {body}");
+    assert!(
+        body.contains(">Ignyte<"),
+        "the assistant is named from the default profile: {body}"
+    );
     assert!(body.contains("how do I list files"));
     assert!(
         body.contains(r#"<pre class="code">ls -la</pre>"#),
