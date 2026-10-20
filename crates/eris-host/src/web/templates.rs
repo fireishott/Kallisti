@@ -3055,9 +3055,20 @@ const CHAT_JS: &str = r##"(function () {
     return { event: event, data: data };
   }
 
+  // A conversation stops being new the moment a turn starts: drop the empty-state
+  // layout so the transcript is visible. Without this the thread stays
+  // `display: none` and every reply is written into a hidden element.
+  function leaveEmptyState() {
+    var shell = document.querySelector(".chat-shell");
+    if (shell) { shell.classList.remove("new-chat"); }
+    var greeting = document.querySelector(".chat-greeting");
+    if (greeting) { greeting.remove(); }
+  }
+
   async function send() {
     var text = box.value.trim();
     if (text === "" || busy) { return; }
+    leaveEmptyState();
     var picker = document.getElementById("model");
     var chosen = picker === null ? "" : picker.value;
     var attachment = document.getElementById("attachment");
@@ -3106,6 +3117,16 @@ const CHAT_JS: &str = r##"(function () {
         signal: controller.signal
       });
       if (response.ok === false) { throw new Error("HTTP " + response.status); }
+      if (response.body === null || typeof response.body.getReader === "undefined") {
+        // No streaming in this browser: hand the turn to the plain form, whose
+        // answer arrives rendered. Better a reload than a silent nothing.
+        target.article.remove();
+        userLine.remove();
+        box.value = text;
+        setBusy(false);
+        form.submit();
+        return;
+      }
       var reader = response.body.getReader();
       var decoder = new TextDecoder();
       var buffer = "";
