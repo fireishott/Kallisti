@@ -59,25 +59,60 @@ a { color: var(--platinum); text-decoration: none; text-underline-offset: 3px; }
 a:hover { text-decoration: underline; }
 a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; border-radius: 4px; }
 
-.wrap { max-width: 1120px; margin: 0 auto; padding: 30px 28px 72px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 34px 30px 72px; width: 100%; }
 
 /* The shell -------------------------------------------------------------- */
 
-.top {
+/* The application shell: a fixed rail, and a surface the wallpaper sits on. */
+
+.app {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.app-wall {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+
+.side {
   position: sticky;
   top: 0;
-  z-index: 10;
+  align-self: start;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 14px 26px;
-  margin: 0 -28px 36px;
-  padding: 16px 28px;
-  border-bottom: 1px solid var(--line);
+  flex-direction: column;
+  gap: 26px;
+  height: 100vh;
+  padding: 22px 16px;
+  border-right: 1px solid var(--line);
   background: var(--bg);
 }
 
-.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.side-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.side-foot .badge { align-self: flex-start; }
+.side-foot .ver {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+}
+
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 2px 4px 0; }
 .brand .mark {
   display: grid;
   place-items: center;
@@ -103,11 +138,15 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   white-space: nowrap;
 }
 
-.nav { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-left: auto; }
+.nav { display: flex; flex-direction: column; gap: 2px; }
 .nav a {
-  padding: 7px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px 9px 14px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-left: 2px solid transparent;
+  border-radius: 9px;
   font-size: 13.5px;
   color: var(--muted);
   transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
@@ -116,10 +155,11 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
 .nav a[aria-current=page] {
   color: var(--text);
   background: var(--raise);
-  border-color: var(--line-strong);
+  border-color: var(--line);
+  border-left-color: var(--platinum);
   font-weight: 620;
 }
-.nav .soon { font-size: 13.5px; color: var(--muted); opacity: 0.55; padding: 7px 12px; }
+.nav .soon { font-size: 13.5px; color: var(--muted); opacity: 0.55; padding: 9px 12px; }
 .nav .soon .tag { margin-left: 5px; }
 .soon { opacity: 0.55; cursor: not-allowed; }
 
@@ -520,16 +560,13 @@ pre.code {
 
 /* The chat surface ------------------------------------------------------- */
 
-.chat-shell { max-width: 880px; margin: 0 auto; }
-.chat-wall {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  background-position: center;
-  background-size: cover;
-  background-repeat: no-repeat;
-  opacity: 0.9;
-  pointer-events: none;
+.chat-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: calc(100vh - 150px);
+  max-width: 880px;
+  margin: 0 auto;
 }
 .chat-head {
   position: relative;
@@ -550,8 +587,10 @@ pre.code {
   z-index: 1;
   display: grid;
   gap: 18px;
-  padding: 4px 2px 10px;
-  max-height: 58vh;
+  align-content: start;
+  padding: 4px 2px 12px;
+  min-height: 0;
+  flex: 1 1 auto;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -657,12 +696,12 @@ pre.code {
 .prompts { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px; }
 
 .composer {
-  position: sticky;
-  bottom: 14px;
+  position: relative;
   z-index: 2;
   display: grid;
+  flex: 0 0 auto;
   gap: 8px;
-  margin-top: 16px;
+  margin-top: 10px;
   padding: 12px 12px 10px;
   border: 1px solid var(--line-strong);
   border-radius: 14px;
@@ -851,13 +890,28 @@ pre.code {
 
 /* Small screens ---------------------------------------------------------- */
 
-@media (max-width: 820px) {
-  .wrap { padding: 22px 18px 56px; }
-  .top { margin: 0 -18px 26px; padding: 13px 18px; gap: 10px 16px; }
+@media (max-width: 900px) {
+  .app { display: block; }
+  .side {
+    /* Static on a phone: a rail that sticks while the transcript scrolls puts the
+       navigation in the middle of the conversation. */
+    position: static;
+    z-index: 2;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+    padding: 12px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
   .brand .ver { display: none; }
-  .badge { order: 2; margin-left: auto; }
-  .nav { order: 3; margin-left: 0; width: 100%; gap: 2px; }
-  .nav a { padding: 6px 9px; font-size: 13px; }
+  .nav { flex-direction: row; flex-wrap: wrap; width: 100%; gap: 2px; }
+  .nav a { padding: 7px 10px; font-size: 13px; border-left-width: 1px; }
+  .side-foot { flex-direction: row; align-items: center; margin-top: 0; padding-top: 0; border-top: 0; margin-left: auto; gap: 10px; }
+  .side-foot .ver { display: none; }
+  .wrap { padding: 22px 18px 56px; }
   h1 { font-size: 26px; }
   .card { padding: 18px 18px; border-radius: 12px; }
   .kv { grid-template-columns: 1fr; gap: 0; }
@@ -865,6 +919,7 @@ pre.code {
   .kv dd { padding-top: 2px; }
   .stats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
   .auth { margin-top: 4vh; }
+  .chat-shell { height: auto; }
   .thread { max-height: 52vh; }
   .chat-head { align-items: flex-start; }
   .msg { max-width: 100%; }

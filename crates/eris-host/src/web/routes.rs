@@ -528,6 +528,9 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .map_err(|error| form_error(&error))?
             .as_deref(),
     );
+    let (selected, custom_present) = wallpaper_choice(state)?;
+    view.wallpaper = selected;
+    view.wallpaper_custom = custom_present;
     Ok(view)
 }
 
@@ -2794,14 +2797,6 @@ fn build_chat_view(state: &AppState) -> Result<ChatView, FormError> {
         .ok()
         .flatten()
         .unwrap_or_default();
-    let (selected, custom_present) = wallpaper_choice(state)?;
-    let url = if selected == wallpaper::CUSTOM && !custom_present {
-        // `custom` with no file behind it: paint the default rather than a hole.
-        wallpaper::url(wallpaper::DEFAULT_WALLPAPER)
-    } else {
-        wallpaper::url(&selected)
-    };
-
     let messages = transcript
         .iter()
         .map(|message| {
@@ -2844,7 +2839,6 @@ fn build_chat_view(state: &AppState) -> Result<ChatView, FormError> {
         state: state.engine.state().unwrap_or(crate::db::SetupState::Ready),
         version: VERSION.to_owned(),
         model: selected_model.clone(),
-        wallpaper_url: url,
         messages,
         provider_ready: provider_ready(state),
         error: None,

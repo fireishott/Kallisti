@@ -288,6 +288,12 @@ pub struct Chrome {
     pub listeners: Vec<SocketAddr>,
     /// `admin.public_url`, when one is configured.
     pub public_url: Option<String>,
+    /// The backdrop every signed-in page sits on, when one is chosen.
+    ///
+    /// It lives here rather than on one page because the wallpaper is the
+    /// application's desk, not a chat decoration: Settings, Sessions and the
+    /// dashboard all sit on the same surface.
+    pub wallpaper_url: Option<String>,
 }
 
 impl Default for Chrome {
@@ -299,6 +305,9 @@ impl Default for Chrome {
                     .expect("the default admin address is a literal ip:port"),
             ],
             public_url: None,
+            // The documented default, so a page rendered without a resolved
+            // settings row still paints the Kallisti backdrop.
+            wallpaper_url: super::wallpaper::url(super::wallpaper::DEFAULT_WALLPAPER),
         }
     }
 }
@@ -379,8 +388,11 @@ pub fn shell(
                 style { (PreEscaped(APP_CSS)) }
             }
             body {
-                div .wrap {
-                    header .top {
+                @if let Some(url) = &chrome.wallpaper_url {
+                    div .app-wall style=(format!("background-image:url('{url}')")) {}
+                }
+                div .app {
+                    header .side {
                         div .brand {
                             span .mark aria-hidden="true" { "K" }
                             span .word {
@@ -389,19 +401,24 @@ pub fn shell(
                             }
                         }
                         @if let Some(current) = nav { (nav_bar(current)) }
-                        span class=(state_class) { (state.as_str()) }
-                    }
-                    (body)
-                    footer {
-                        span .facts {
-                            "Eris " (VERSION)
-                            " | admin listener " (chrome.footer_line())
-                            @if let Some(url) = &chrome.public_url {
-                                " | public URL " (url)
-                            }
-                            " | configured in config.toml"
+                        div .side-foot {
+                            span class=(state_class) { (state.as_str()) }
+                            span .ver { "Eris " (VERSION) }
                         }
-                        span .sign { "to the most beautiful" }
+                    }
+                    div .wrap {
+                        (body)
+                        footer {
+                            span .facts {
+                                "Eris " (VERSION)
+                                " | admin listener " (chrome.footer_line())
+                                @if let Some(url) = &chrome.public_url {
+                                    " | public URL " (url)
+                                }
+                                " | configured in config.toml"
+                            }
+                            span .sign { "to the most beautiful" }
+                        }
                     }
                 }
             }
@@ -2546,8 +2563,6 @@ pub struct ChatView {
     pub version: String,
     /// The configured model, shown as a chip so the answer has a return address.
     pub model: String,
-    /// The backdrop, when one is chosen.
-    pub wallpaper_url: Option<String>,
     /// The transcript, oldest first.
     pub messages: Vec<ChatLine>,
     /// False until a provider is stored; the composer is disabled when it is.
@@ -2714,9 +2729,6 @@ fn chat_status_strip(view: &ChatView) -> Markup {
 /// script-free.
 pub fn chat_page(view: &ChatView) -> Markup {
     let body = html! {
-        @if let Some(url) = &view.wallpaper_url {
-            div .chat-wall style=(format!("background-image:url('{url}')")) {}
-        }
         div .chat-shell {
         div .chat-head {
             div .chat-title {

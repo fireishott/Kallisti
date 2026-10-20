@@ -287,6 +287,27 @@ impl AppState {
         Chrome {
             listeners: self.bound_listeners(),
             public_url: self.access.public_url.clone(),
+            wallpaper_url: self.wallpaper_url(),
+        }
+    }
+
+    /// The backdrop every signed-in page sits on.
+    ///
+    /// Resolved here rather than per page so the answer cannot drift between
+    /// pages: one settings row, one uploaded file, one URL. A `custom` choice
+    /// with no file behind it falls back to the default instead of a hole.
+    fn wallpaper_url(&self) -> Option<String> {
+        let stored = self
+            .engine
+            .setting(crate::web::wallpaper::SETTING_WALLPAPER)
+            .ok()
+            .flatten();
+        let selected = crate::web::wallpaper::current(stored.as_deref());
+        let custom_present = crate::web::wallpaper::custom_file(self.engine.paths()).is_file();
+        if selected == crate::web::wallpaper::CUSTOM && !custom_present {
+            crate::web::wallpaper::url(crate::web::wallpaper::DEFAULT_WALLPAPER)
+        } else {
+            crate::web::wallpaper::url(&selected)
         }
     }
 
@@ -648,7 +669,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.0.2");
+        assert_eq!(VERSION, "1.0.3");
     }
 
     #[test]
