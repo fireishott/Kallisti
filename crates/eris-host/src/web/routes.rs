@@ -1360,9 +1360,23 @@ async fn mint_pairing_code(
     if as_html {
         match build_devices_view(&state) {
             Ok(mut view) => {
+                // The address a phone can reach, preferring a non-loopback bind:
+                // a QR carrying 127.0.0.1 is a code that cannot work.
+                let bind = state.device.bind();
+                let address = bind
+                    .iter()
+                    .find(|address| !address.ip().is_loopback())
+                    .or_else(|| bind.first())
+                    .map(std::string::ToString::to_string)
+                    .unwrap_or_else(|| crate::device::DEVICE_ADDR.to_owned());
+                let relay = format!("http://{address}");
+                let pairing = crate::web::qr::Pairing::new(issued.code(), &relay);
+                let qr = crate::web::qr::svg(&pairing.payload(), 6).unwrap_or_default();
                 view.issued = Some(IssuedCodeView {
                     code: issued.code().to_owned(),
                     expires_at,
+                    relay,
+                    qr,
                 });
                 page(devices_page(&view))
             }

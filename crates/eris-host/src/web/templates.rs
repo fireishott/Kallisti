@@ -2996,6 +2996,10 @@ pub struct IssuedCodeView {
     pub code: String,
     /// When it stops redeeming.
     pub expires_at: String,
+    /// The address a phone should call, as the QR carries it.
+    pub relay: String,
+    /// The pairing payload drawn as an SVG a camera can read.
+    pub qr: String,
 }
 
 /// Everything the devices page needs.
@@ -3051,6 +3055,15 @@ pub fn devices_page(view: &DevicesView) -> Markup {
                 }
                 p .pairing-code .mono { (issued.code) }
                 p .small { "Expires " (issued.expires_at) "." }
+                @if !issued.qr.is_empty() {
+                    div .pairing-scan {
+                        div .pairing-qr { (PreEscaped(&issued.qr)) }
+                        p .small {
+                            "Or scan it. The code carries the address your phone should reach: "
+                            span .mono { (&issued.relay) }
+                        }
+                    }
+                }
             }
         }
         section .card aria-labelledby="devices-heading" {
