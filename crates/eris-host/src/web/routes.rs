@@ -616,6 +616,14 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .and_then(|stored| crate::mcp::parse(&stored).ok())
         .map(|servers| crate::mcp::to_json(&servers))
         .unwrap_or_else(|| "[]".to_owned());
+    view.tool_log_mode = {
+        let stored = state
+            .engine
+            .setting(chat::SETTING_SHOW_TOOL_LOG)
+            .ok()
+            .flatten();
+        chat::tool_log(stored.as_deref()).as_str().to_owned()
+    };
     view.show_tool_log = chat::show_tool_log(
         state
             .engine
@@ -2768,7 +2776,11 @@ async fn save_tools(
     };
 
     let enabled = flag(&fields, "tools_enabled");
-    let show_log = flag(&fields, "show_tool_log");
+    let mode = match field(&fields, "tool_log").trim() {
+        "off" => "off",
+        "summary" => "summary",
+        _ => "full",
+    };
     let raw = field(&fields, "tool_rounds").trim().to_owned();
     let rounds: u32 = match raw.parse::<u32>() {
         Ok(rounds) if (1..=crate::tools::MAX_TOOL_ROUNDS_CEILING).contains(&rounds) => rounds,
@@ -2802,18 +2814,14 @@ async fn save_tools(
     ) {
         return store_failure(&request_id.0, crate::tools::SETTING_TOOL_ROUNDS, error);
     }
-    if let Err(error) = store::settings_put(
-        state.engine.db(),
-        chat::SETTING_SHOW_TOOL_LOG,
-        if show_log { "true" } else { "false" },
-    ) {
+    if let Err(error) = store::settings_put(state.engine.db(), chat::SETTING_SHOW_TOOL_LOG, mode) {
         return store_failure(&request_id.0, chat::SETTING_SHOW_TOOL_LOG, error);
     }
     if let Err(error) = state.engine.auth().audit(
         "loopback",
         "settings.tools",
         Some(&format!(
-            "enabled={enabled}; max_rounds={rounds}; run_log={show_log}"
+            "enabled={enabled}; max_rounds={rounds}; run_log={mode}"
         )),
     ) {
         return audit_failure(&request_id.0, "settings.tools", error);
@@ -3467,6 +3475,16 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                 .flatten()
                 .as_deref(),
         ),
+        tool_log_mode: chat::tool_log(
+            state
+                .engine
+                .setting(chat::SETTING_SHOW_TOOL_LOG)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+        .as_str()
+        .to_owned(),
         greeting: crate::web::templates::greeting_for(crate::zone::hour_in(offset)).to_owned(),
         sandbox_mode: state
             .engine

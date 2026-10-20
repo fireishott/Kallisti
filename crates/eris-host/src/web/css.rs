@@ -858,6 +858,16 @@ pre.code {
 }
 .msg .exec > summary::-webkit-details-marker { display: none; }
 .msg .exec-count { margin-left: auto; opacity: 0.7; }
+/* Summary mode: one line naming the last call, truncated so it stays one line. */
+.msg .exec.compact > summary { text-transform: none; letter-spacing: 0; font-size: 11.5px; }
+.msg .exec.compact .exec-last {
+  color: var(--text);
+  opacity: 0.85;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .msg .exec-call {
   padding: 9px 12px;
   border-top: 1px dashed var(--line);
@@ -868,8 +878,17 @@ pre.code {
   cursor: pointer;
   list-style: none;
   display: flex;
-  flex-wrap: wrap;
+  /* One line when closed: a long argument string is an ellipsis, not four
+     wrapped rows that make fifteen calls look like a wall again. */
+  flex-wrap: nowrap;
   gap: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.msg .exec-call[open] > summary {
+  flex-wrap: wrap;
+  white-space: normal;
 }
 .msg .exec-call > summary::-webkit-details-marker { display: none; }
 .msg .exec-call > summary::before {
@@ -879,7 +898,10 @@ pre.code {
 }
 .msg .exec-call[open] > summary::before { content: "\25BE"; }
 .msg .exec-call[open] > summary { margin-bottom: 6px; }
-.msg .exec-head { display: flex; flex-wrap: wrap; gap: 8px; }
+.msg .exec-head { display: flex; gap: 8px; min-width: 0; }
+/* The body of the log scrolls, so twenty calls cost one window rather than the
+   whole conversation. */
+.msg .exec-body { max-height: 46vh; overflow-y: auto; }
 .msg .exec-name { color: var(--text); }
 .msg .exec-args { color: var(--muted); overflow-wrap: anywhere; }
 .msg .exec-call.failed .exec-name { color: var(--bad); }

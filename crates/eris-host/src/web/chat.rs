@@ -1423,13 +1423,53 @@ pub fn show_reasoning(stored: Option<&str>) -> bool {
 /// hiding the record is the operator's choice rather than the starting state.
 pub const SETTING_SHOW_TOOL_LOG: &str = "assistant.show_tool_log";
 
-/// Whether to render and stream the run log.
+/// How much of the run log to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolLog {
+    /// One window per call, each openable.
+    Full,
+    /// One collapsed line for the whole turn, openable for the detail.
+    Summary,
+    /// Not rendered and not streamed.
+    Off,
+}
+
+impl ToolLog {
+    /// The stored spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Summary => "summary",
+            Self::Off => "off",
+        }
+    }
+
+    /// Whether anything at all is rendered or streamed.
+    #[must_use]
+    pub fn any(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+/// The `settings` value for the run log mode.
 ///
-/// Anything other than an explicit `false` leaves it on, so a corrupt row cannot
+/// The boolean that shipped first is still honoured: `false` is `off`, `true` is
+/// `full`, and anything unrecognised falls back to `full` so a corrupt row cannot
 /// silently hide what a turn did.
 #[must_use]
+pub fn tool_log(store: Option<&str>) -> ToolLog {
+    match store.map(str::trim) {
+        Some("off") | Some("false") => ToolLog::Off,
+        Some("summary") => ToolLog::Summary,
+        _ => ToolLog::Full,
+    }
+}
+
+/// Whether to render and stream the run log at all.
+#[must_use]
 pub fn show_tool_log(stored: Option<&str>) -> bool {
-    !matches!(stored.map(str::trim), Some("false"))
+    tool_log(stored).any()
 }
 
 /// What the operator configured about tool use for this turn.
@@ -1910,6 +1950,30 @@ mod tests {
         assert_eq!(ids, vec![first.as_str(), second.as_str(), third.as_str()]);
         assert_eq!(transcript[1].role, Role::Assistant);
         assert_eq!(transcript[1].body, "hi");
+    }
+
+    #[test]
+    fn the_run_log_has_three_modes_and_the_old_boolean_still_maps() {
+        assert_eq!(tool_log(None), ToolLog::Full);
+        assert_eq!(
+            tool_log(Some("true")),
+            ToolLog::Full,
+            "the old on means full"
+        );
+        assert_eq!(tool_log(Some("summary")), ToolLog::Summary);
+        assert_eq!(tool_log(Some("off")), ToolLog::Off);
+        assert_eq!(
+            tool_log(Some("false")),
+            ToolLog::Off,
+            "the old off means off"
+        );
+        assert_eq!(
+            tool_log(Some("nonsense")),
+            ToolLog::Full,
+            "junk cannot hide it"
+        );
+        assert!(!ToolLog::Off.any());
+        assert!(ToolLog::Summary.any());
     }
 
     #[test]

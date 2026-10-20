@@ -36,11 +36,16 @@ run.
   call in the turn alone. Previously the row kept saying `pending_approval` forever.
 - **Thinking bubble is open by default** with a control that lifts it out of the
   column.
-- **Run log as a window.** Each executed call renders as a closed one-line entry
-  naming the tool and its arguments; opening it shows the output in a short scroll
-  box that stays bounded when expanded, so a long stdout cannot take over the
-  conversation. Settings gains "Show the run log"; off means it is neither rendered
-  nor streamed, so command output does not leave the daemon.
+- **Run log as a window, with three modes.** Settings > Tools offers Full, Summary
+  and Off.
+  *Full* renders one closed one-line entry per call - tool and arguments on a single
+  truncated line - and opening it shows the output in a short scroll box that stays
+  bounded when expanded. The log body scrolls, so twenty calls cost one window
+  rather than the conversation.
+  *Summary* collapses the whole turn into a single collapsed strip: call count plus
+  the last call, truncated, opening to the full list.
+  *Off* means neither rendered nor streamed, so command output does not leave the
+  daemon. The original on/off boolean is still read and maps to full/off.
 
 ## 1.3.0
 

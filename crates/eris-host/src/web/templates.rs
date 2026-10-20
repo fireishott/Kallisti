@@ -1396,6 +1396,8 @@ pub struct SettingsView {
     pub show_reasoning: bool,
     /// Whether the run log is shown at all.
     pub show_tool_log: bool,
+    /// `full`, `summary` or `off`, for the select.
+    pub tool_log_mode: String,
     /// The clock every stamp is shown in: `host`, `UTC`, or an offset.
     pub timezone: String,
     /// The file the persona lives in, stated on the page.
@@ -1454,6 +1456,7 @@ impl SettingsView {
             persona_enabled: true,
             show_reasoning: true,
             show_tool_log: true,
+            tool_log_mode: "full".to_owned(),
             timezone: crate::zone::HOST.to_owned(),
             persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
             wallpaper: wallpaper::DEFAULT_WALLPAPER.to_owned(),
@@ -1880,14 +1883,20 @@ fn tools_group(view: &SettingsView) -> Markup {
                 }
             }
             div .field {
-                label for="show_tool_log" {
-                    input type="checkbox" id="show_tool_log" name="show_tool_log" value="true"
-                        checked[view.show_tool_log];
-                    " Show the run log under each answer"
+                label for="tool_log" { "Run log" }
+                select id="tool_log" name="tool_log" {
+                    option value="full" selected[view.tool_log_mode == "full"] {
+                        "Full - one openable window per call"
+                    }
+                    option value="summary" selected[view.tool_log_mode == "summary"] {
+                        "Summary - one collapsed line for the whole turn"
+                    }
+                    option value="off" selected[view.tool_log_mode == "off"] { "Off - do not show it" }
                 }
                 span .hint {
-                    "What the turn executed, one collapsible window per call. Off means it is "
-                    "neither rendered nor streamed, so a turn that ran commands shows only its answer."
+                    "What the turn executed. Summary keeps a single line naming the last call, which "
+                    "opens to the full list when you want it. Off means it is neither rendered nor "
+                    "streamed, so a turn that ran commands shows only its answer."
                 }
             }
             div .field {
@@ -3091,6 +3100,8 @@ pub struct ChatView {
     pub show_reasoning: bool,
     /// Whether to render the run log at all.
     pub show_tool_log: bool,
+    /// `full` or `summary`, choosing how it renders.
+    pub tool_log_mode: String,
     /// The greeting an empty conversation opens with.
     pub greeting: String,
     /// What the operator calls the assistant, for the composer and the labels.
@@ -3268,21 +3279,51 @@ pub fn chat_page(view: &ChatView) -> Markup {
                     }
                     @if view.show_tool_log {
                         @if !line.tools.is_empty() {
-                            details .exec open {
-                                summary {
-                                    span .exec-label { "Run log" }
-                                    span .exec-count {
-                                        (line.tools.len())
-                                        @if line.tools.len() == 1 { " call" } @else { " calls" }
+                            @if view.tool_log_mode == "summary" {
+                                details .exec .compact {
+                                    summary {
+                                        span .exec-label { "Run log" }
+                                        span .exec-count {
+                                            (line.tools.len())
+                                            @if line.tools.len() == 1 { " call" } @else { " calls" }
+                                        }
+                                        @if let Some(last) = line.tools.last() {
+                                            span .exec-last {
+                                                (last.name) " " (last.arguments)
+                                            }
+                                        }
+                                    }
+                                    div .exec-body {
+                                        @for tool in &line.tools {
+                                            details .exec-call .failed[tool.is_error] {
+                                                summary .exec-head {
+                                                    span .exec-name { (tool.name) }
+                                                    span .exec-args { (tool.arguments) }
+                                                }
+                                                pre .exec-out { (tool.output) }
+                                            }
+                                        }
                                     }
                                 }
-                                @for tool in &line.tools {
-                                    details .exec-call .failed[tool.is_error] {
-                                        summary .exec-head {
-                                            span .exec-name { (tool.name) }
-                                            span .exec-args { (tool.arguments) }
+                            } @else {
+                                details .exec open {
+                                    summary {
+                                        span .exec-label { "Run log" }
+                                        span .exec-count {
+                                            (line.tools.len())
+                                            @if line.tools.len() == 1 { " call" } @else { " calls" }
                                         }
-                                        pre .exec-out { (tool.output) }
+                                    }
+                                    div .exec-body {
+                                        @for tool in &line.tools {
+                                            details .exec-call .failed[tool.is_error] {
+                                                summary .exec-head {
+                                                    span .exec-name { (tool.name) }
+                                                    span .exec-args { (tool.arguments) }
+                                                }
+                                                pre .exec-out { (tool.output) }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -3450,7 +3491,13 @@ const CHAT_JS: &str = r##"(function () {
     function addTool(tool) {
       calls += 1;
       execCount.textContent = calls + (calls === 1 ? " call" : " calls");
-      var call = document.createElement("details");
+      var body = document.querySelector(".msg:last-of-type .exec-body");
+    if (body === null) {
+      body = document.createElement("div");
+      body.className = "exec-body";
+      exec.appendChild(body);
+    }
+    var call = document.createElement("details");
       call.className = "exec-call" + (tool.is_error === true ? " failed" : "");
       var head = document.createElement("summary");
       head.className = "exec-head";
@@ -3467,7 +3514,7 @@ const CHAT_JS: &str = r##"(function () {
       out.textContent = tool.output;
       call.appendChild(head);
       call.appendChild(out);
-      exec.appendChild(call);
+      body.appendChild(call);
       exec.hidden = false;
     }
     var bubble = document.createElement("div");

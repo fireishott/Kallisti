@@ -181,9 +181,12 @@ fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
     // Off is stored by the tools form and read by the page.
     let reply = block_on(send(
         &app,
-        Call::post(ROUTE_SETTINGS_TOOLS, "tools_enabled=true&tool_rounds=4")
-            .html()
-            .cookie(Some(&cookie)),
+        Call::post(
+            ROUTE_SETTINGS_TOOLS,
+            "tools_enabled=true&tool_rounds=4&tool_log=off",
+        )
+        .html()
+        .cookie(Some(&cookie)),
     ));
     assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
     assert_eq!(
@@ -191,8 +194,8 @@ fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
             .setting(chat::SETTING_SHOW_TOOL_LOG)
             .unwrap()
             .as_deref(),
-        Some("false"),
-        "an unchecked box is stored as off, not left out"
+        Some("off"),
+        "the off option is stored as off, not left out"
     );
 
     let page = block_on(send(
@@ -208,6 +211,64 @@ fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
         !page.body.contains("echo hi"),
         "and no command output either: off means not sent"
     );
+}
+
+#[test]
+fn summary_mode_collapses_the_whole_turn_to_one_line_naming_the_last_call() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "run both", State::Complete).unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    let record = |name: &str, args: &str, out: &str| chat::ToolRecord {
+        name: name.to_owned(),
+        arguments: args.to_owned(),
+        output: out.to_owned(),
+        is_error: false,
+    };
+    chat::settle(
+        db,
+        &answer,
+        "ran both",
+        None,
+        &[
+            record("run_command", r#"{"command":"ls"}"#, "a b c"),
+            record("run_command", r#"{"command":"du -sh db"}"#, "1.2G"),
+        ],
+        None,
+        chat::Accounting::default(),
+    )
+    .unwrap();
+
+    let reply = block_on(send(
+        &app,
+        Call::post(
+            ROUTE_SETTINGS_TOOLS,
+            "tools_enabled=true&tool_rounds=4&tool_log=summary",
+        )
+        .html()
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+    assert!(
+        body.contains(r#"<details class="exec compact">"#),
+        "summary mode is one collapsed strip"
+    );
+    assert!(
+        body.contains("du -sh db"),
+        "the strip names the last call, like a status line"
+    );
+    assert!(
+        !body.contains(r#"<details class="exec compact" open"#),
+        "it starts collapsed"
+    );
+    assert!(body.contains("2 calls"), "the count is kept");
 }
 
 #[test]

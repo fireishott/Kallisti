@@ -302,8 +302,13 @@ while IFS= read -r line; do
   esac
 done
 "#;
-        std::fs::write(&path, script).expect("write fixture");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // Write beside the target and rename, so a parallel exec never sees a
+        // file that is still open for writing: that is ETXTBSY, and it made this
+        // fixture flaky under a loaded test run.
+        let staging = dir.join(format!("{name}-mcp.sh.tmp"));
+        std::fs::write(&staging, script).expect("write fixture");
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::rename(&staging, &path).expect("activate fixture");
         Server {
             name: name.to_owned(),
             command: path.display().to_string(),
