@@ -1017,6 +1017,40 @@ pub fn count(db: &Db, conversation: &str) -> Result<i64, DbError> {
     })
 }
 
+/// Which answer rows are still marked streaming in one conversation.
+///
+/// A `streaming` row is the daemon's own record that a turn is writing that row
+/// right now, which is the only honest reading of "a turn is running here": the
+/// web path keeps no in-memory table of its turns, and a row survives a restart
+/// precisely so this question is answered from the database rather than from
+/// process memory. Newest first, so a stop reads the turn that matters first.
+pub fn streaming(db: &Db, conversation: &str) -> Result<Vec<String>, DbError> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT id FROM chat_messages
+              WHERE conversation_id = ?1 AND state = 'streaming'
+              ORDER BY id DESC",
+        )?;
+        let rows = statement.query_map(params![conversation], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    })
+}
+
+/// Whether one answer row is still streaming.
+///
+/// Read immediately before a finished turn is settled: a row that is no longer
+/// streaming was stopped or failed by something else, and settling over it would
+/// replace that decision with an answer the operator already cancelled.
+pub fn still_streaming(db: &Db, id: &str) -> Result<bool, DbError> {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT state = 'streaming' FROM chat_messages WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, bool>(0),
+        )
+    })
+}
+
 /// Delete a conversation. Returns how many rows went.
 pub fn clear(db: &Db, conversation: &str) -> Result<usize, DbError> {
     db.with_conn(|conn| {
@@ -1955,7 +1989,8 @@ pub enum GateDecision {
 /// streams while it runs.
 ///
 /// Named rather than spelled inline because the closure takes a closure, which
-/// is exactly the nested type a reader needs a name for.
+/// is exactly the nested type a reader needs a name for - and a signature clippy
+/// rightly calls complex.
 pub type ToolExecute<'a> =
     dyn FnMut(&core_domain::ToolCall, &mut dyn FnMut(&str)) -> crate::tools::ToolResult + 'a;
 

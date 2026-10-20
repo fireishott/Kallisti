@@ -1710,3 +1710,305 @@ fn a_rail_with_no_projects_says_so() {
         page.body
     );
 }
+
+// ---------------------------------------------------------------------------
+// Slash commands
+// ---------------------------------------------------------------------------
+
+/// The newest row of one conversation, which is what a command answered into.
+fn newest_row(
+    engine: &crate::onboarding::SetupEngine,
+    conversation: &str,
+) -> crate::web::chat::Message {
+    chat::load(engine.db(), conversation)
+        .expect("a readable transcript")
+        .pop()
+        .expect("a transcript row")
+}
+
+/// Post one command and return the reply, so each test reads as the operator's
+/// own sentence rather than as a form body.
+fn post_command(app: &axum::Router, cookie: &str, message: &str) -> crate::web::harness::Reply {
+    block_on(send(
+        app,
+        Call::post(
+            crate::admin::ROUTE_CHAT_SEND,
+            &format!("message={}", encode(message)),
+        )
+        .cookie(Some(cookie)),
+    ))
+}
+
+#[test]
+fn help_is_answered_by_the_daemon_and_never_becomes_a_turn() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let reply = post_command(&app, &cookie, "/help");
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+    assert_eq!(
+        reply.location().as_deref(),
+        Some(format!("/dashboard/chat/{CONVERSATION_ID}").as_str()),
+        "the operator goes back to the conversation the answer is in"
+    );
+
+    let rows = chat::load(engine.db(), CONVERSATION_ID).expect("a readable transcript");
+    assert_eq!(rows.len(), 1, "one row, the answer itself: {rows:?}");
+    assert_eq!(rows[0].role, Role::Assistant, "the daemon spoke");
+    assert_eq!(
+        rows[0].state,
+        State::Complete,
+        "the answer is whole the moment it is written"
+    );
+    for (name, _) in crate::commands::SUPPORTED {
+        assert!(
+            rows[0].body.contains(&format!("/{name}")),
+            "/{name} is listed: {}",
+            rows[0].body
+        );
+    }
+
+    // The turn path writes the operator's question before it touches a provider,
+    // so a transcript with no user row is a turn that never started. That is the
+    // by-construction proof that a command spends no tokens.
+    assert!(
+        !rows.iter().any(|row| row.role == Role::User),
+        "no question row was written: {rows:?}"
+    );
+    assert_eq!(rows[0].prompt_tokens, None, "no prompt was billed");
+    assert_eq!(rows[0].completion_tokens, None, "no completion was billed");
+}
+
+#[test]
+fn an_unknown_command_is_refused_by_name_and_still_costs_nothing() {
+    let (_dir, engine, app, cookie) = ready_app();
+    for name in ["goal", "restart", "doesnotexist"] {
+        let reply = post_command(&app, &cookie, &format!("/{name}"));
+        assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+        let row = newest_row(&engine, CONVERSATION_ID);
+        assert_eq!(row.role, Role::Assistant);
+        assert!(
+            row.body.contains(&format!("/{name}")),
+            "the refusal names it: {}",
+            row.body
+        );
+        assert!(
+            row.body.contains("not supported"),
+            "the refusal says so: {}",
+            row.body
+        );
+        assert_eq!(row.prompt_tokens, None, "nothing was sent to a model");
+    }
+
+    // The two commands operators arrive with are named as somebody else's
+    // features rather than quietly failing.
+    let row = newest_row(&engine, CONVERSATION_ID);
+    assert!(row.body.contains("/goal"), "{}", row.body);
+    assert!(row.body.contains("/restart"), "{}", row.body);
+    assert!(
+        row.body.contains("not Kallisti features"),
+        "the copy is explicit about whose they are: {}",
+        row.body
+    );
+    assert_eq!(
+        chat::count(engine.db(), CONVERSATION_ID).unwrap() as usize,
+        3,
+        "one row per command, and no question rows"
+    );
+}
+
+#[test]
+fn a_command_is_answered_even_with_no_provider_stored() {
+    let (_dir, engine, app, cookie) = ready_app();
+    engine
+        .db()
+        .with_conn(|conn| {
+            conn.execute("DELETE FROM settings WHERE key LIKE 'provider.%'", [])?;
+            Ok(())
+        })
+        .unwrap();
+
+    // An ordinary message is refused here, because a daemon with no endpoint has
+    // not accepted it. A command is not a message to a model, so it answers.
+    let reply = post_command(&app, &cookie, "/help");
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+    let row = newest_row(&engine, CONVERSATION_ID);
+    assert_eq!(row.role, Role::Assistant);
+    assert!(row.body.contains("/help"), "{}", row.body);
+}
+
+#[test]
+fn a_model_command_sets_the_default_only_for_an_id_in_the_list() {
+    let (_dir, engine, app, cookie) = ready_app();
+    engine
+        .set_provider(
+            "http://127.0.0.1:20128/v1",
+            "env:NINEROUTER_API_KEY",
+            &["m/one".to_owned(), "m/two".to_owned()],
+        )
+        .expect("a provider with two models");
+    engine.set_model("m/one").expect("the first is the default");
+
+    let changed = post_command(&app, &cookie, "/model m/two");
+    assert_eq!(changed.status, StatusCode::SEE_OTHER, "{}", changed.body);
+    assert_eq!(
+        engine.model().unwrap(),
+        Some("m/two".to_owned()),
+        "the stored default moved"
+    );
+    assert!(
+        newest_row(&engine, CONVERSATION_ID).body.contains("m/two"),
+        "the answer says what it became"
+    );
+
+    let refused = post_command(&app, &cookie, "/model m/three");
+    assert_eq!(refused.status, StatusCode::SEE_OTHER, "{}", refused.body);
+    assert_eq!(
+        engine.model().unwrap(),
+        Some("m/two".to_owned()),
+        "an id outside the list leaves the default alone"
+    );
+    let row = newest_row(&engine, CONVERSATION_ID);
+    assert!(row.body.contains("m/three"), "it is named: {}", row.body);
+    assert!(
+        row.body.contains("not changed"),
+        "the refusal says nothing moved: {}",
+        row.body
+    );
+}
+
+#[test]
+fn a_memory_command_sets_the_backend_and_refuses_anything_else_by_name() {
+    let (_dir, engine, app, cookie) = ready_app();
+
+    for backend in ["off", "gbrain", "vault"] {
+        let reply = post_command(&app, &cookie, &format!("/memory {backend}"));
+        assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+        let stored = engine
+            .setting(crate::memory::SETTING_BACKEND)
+            .expect("a readable setting");
+        assert_eq!(stored.as_deref(), Some(backend), "the backend moved");
+    }
+
+    let refused = post_command(&app, &cookie, "/memory postgres");
+    assert_eq!(refused.status, StatusCode::SEE_OTHER, "{}", refused.body);
+    let stored = engine
+        .setting(crate::memory::SETTING_BACKEND)
+        .expect("a readable setting");
+    assert_eq!(
+        stored.as_deref(),
+        Some("vault"),
+        "an unknown backend leaves the stored one alone"
+    );
+    let row = newest_row(&engine, CONVERSATION_ID);
+    assert!(
+        row.body.contains("postgres"),
+        "the refusal names it: {}",
+        row.body
+    );
+    assert!(
+        row.body.contains("gbrain"),
+        "it lists the three that exist: {}",
+        row.body
+    );
+}
+
+#[test]
+fn a_clear_command_empties_the_transcript_and_leaves_its_own_answer() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "first", State::Complete).unwrap();
+    chat::append(
+        db,
+        CONVERSATION_ID,
+        Role::Assistant,
+        "second",
+        State::Complete,
+    )
+    .unwrap();
+
+    let reply = post_command(&app, &cookie, "/clear");
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+
+    let rows = chat::load(db, CONVERSATION_ID).expect("a readable transcript");
+    assert_eq!(rows.len(), 1, "only the answer is left: {rows:?}");
+    assert_eq!(rows[0].role, Role::Assistant);
+    assert!(
+        rows[0].body.contains("Cleared this conversation"),
+        "the answer says what happened: {}",
+        rows[0].body
+    );
+    assert!(
+        rows[0].body.contains("2 messages"),
+        "it counts what went: {}",
+        rows[0].body
+    );
+}
+
+#[test]
+fn a_new_command_creates_a_conversation_and_answers_into_it() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let reply = post_command(&app, &cookie, "/new");
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+    let location = reply.location().expect("a redirect");
+    let created = location
+        .strip_prefix("/dashboard/chat/")
+        .expect("a conversation path")
+        .to_owned();
+    assert_ne!(
+        created, CONVERSATION_ID,
+        "a conversation that did not exist"
+    );
+    assert!(
+        chat::conversation_exists(engine.db(), &created).unwrap(),
+        "the new conversation is stored"
+    );
+    assert_eq!(
+        chat::count(engine.db(), &created).unwrap(),
+        1,
+        "the answer landed in the new conversation"
+    );
+    assert_eq!(
+        chat::count(engine.db(), CONVERSATION_ID).unwrap(),
+        0,
+        "the previous conversation was left alone"
+    );
+}
+
+#[test]
+fn a_stop_command_refuses_when_nothing_runs_and_cancels_a_row_that_does() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+
+    let idle = post_command(&app, &cookie, "/stop");
+    assert_eq!(idle.status, StatusCode::SEE_OTHER, "{}", idle.body);
+    let row = newest_row(&engine, CONVERSATION_ID);
+    assert!(
+        row.body.contains("Nothing was running"),
+        "it says there was nothing to stop: {}",
+        row.body
+    );
+
+    // A row still marked streaming is exactly what a running turn leaves behind,
+    // so this is the state the command has to cancel.
+    let running = chat::append_answer(db, CONVERSATION_ID, "m/one", None).expect("a running row");
+    assert!(chat::still_streaming(db, &running).unwrap());
+
+    let stopped = post_command(&app, &cookie, "/stop");
+    assert_eq!(stopped.status, StatusCode::SEE_OTHER, "{}", stopped.body);
+    assert!(
+        !chat::still_streaming(db, &running).unwrap(),
+        "the running row is no longer streaming"
+    );
+    let cancelled = chat::load(db, CONVERSATION_ID)
+        .expect("a readable transcript")
+        .into_iter()
+        .find(|row| row.id == running)
+        .expect("the row is still there");
+    assert_eq!(cancelled.state, State::Failed);
+    assert_eq!(cancelled.error_code.as_deref(), Some("cancelled"));
+    assert!(
+        newest_row(&engine, CONVERSATION_ID)
+            .body
+            .contains("Stopped"),
+        "the answer says it stopped"
+    );
+}
