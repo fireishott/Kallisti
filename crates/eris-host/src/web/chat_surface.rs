@@ -161,18 +161,23 @@ fn the_page_shows_the_usage_the_transcript_carries() {
         "cache share is derived from the row"
     );
     assert!(body.contains("900ms"), "duration is shown");
-    // Per conversation: the header chips and the status strip.
-    assert!(body.contains("chat-stats"), "the stats row renders");
+    // Per conversation: the totals ride inside the last reply, not in a bar.
+    assert!(
+        body.contains(r#"class="meta-session""#),
+        "the conversation totals render inside the reply: {body}"
+    );
+    assert!(
+        !body.contains(r#"class="statusbar""#),
+        "nothing floats under the composer: {body}"
+    );
     assert!(
         body.contains("272.0k window"),
         "the declared window is stated beside the picker: {body}"
     );
-    assert!(body.contains("statusbar"), "the status strip renders");
     assert!(
         body.contains("cache hit 48%"),
-        "the strip repeats the cache share"
+        "the folded line repeats the cache share"
     );
-    assert!(body.contains("context unknown") || body.contains("context 0%"));
 }
 
 #[test]
@@ -195,6 +200,60 @@ fn a_model_outside_the_probe_is_refused_by_name() {
         chat::count(engine.db(), CONVERSATION_ID).unwrap(),
         0,
         "a refused model writes nothing"
+    );
+}
+
+#[test]
+fn the_greeting_follows_the_hour_and_an_empty_chat_centres_the_composer() {
+    use crate::web::templates::greeting_for;
+    assert_eq!(greeting_for(0), "Good night");
+    assert_eq!(greeting_for(4), "Good night");
+    assert_eq!(greeting_for(5), "Good morning");
+    assert_eq!(greeting_for(11), "Good morning");
+    assert_eq!(greeting_for(12), "Good afternoon");
+    assert_eq!(greeting_for(16), "Good afternoon");
+    assert_eq!(greeting_for(17), "Good evening");
+    assert_eq!(greeting_for(21), "Good evening");
+    assert_eq!(greeting_for(22), "Good night");
+    assert_eq!(greeting_for(23), "Good night");
+
+    let (_dir, _engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    // A conversation with nothing in it: greeting shown, shell centred.
+    let empty = block_on(send(&app, Call::get(ROUTE_CHAT).html().cookie(cookie)));
+    assert_eq!(empty.status, StatusCode::OK, "{}", empty.body);
+    assert!(
+        empty.body.contains("chat-shell new-chat"),
+        "an empty conversation marks the shell: {}",
+        empty.body
+    );
+    assert!(
+        empty.body.contains(r#"class="hello""#),
+        "it greets by the hour: {}",
+        empty.body
+    );
+
+    // Once it has a turn, the greeting is gone and the shell is a normal column.
+    chat::append(
+        _engine.db(),
+        chat::CONVERSATION_ID,
+        chat::Role::User,
+        "hello there",
+        chat::State::Complete,
+    )
+    .unwrap();
+    let busy = block_on(send(&app, Call::get(ROUTE_CHAT).html().cookie(cookie)));
+    assert_eq!(busy.status, StatusCode::OK, "{}", busy.body);
+    assert!(
+        !busy.body.contains(r#"class="chat-greeting""#),
+        "a conversation with turns carries no greeting element: {}",
+        busy.body
+    );
+    assert!(
+        !busy.body.contains("chat-shell new-chat"),
+        "the shell is a column again: {}",
+        busy.body
     );
 }
 

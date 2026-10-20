@@ -653,9 +653,38 @@ pre.code {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* The composer lives at the bottom of the screen, not wherever the transcript
+     happens to end. dvh follows the mobile viewport without the jump vh brings. */
   height: calc(100vh - 150px);
+  height: calc(100dvh - 150px);
   max-width: 880px;
   margin: 0 auto;
+}
+
+/* A conversation with nothing in it is a different page: greeting and composer,
+   together in the middle, because there is no transcript to sit under. The
+   heading stays at the top; only the group below it is centred, which the auto
+   margins do without moving the header. */
+.chat-shell.new-chat .thread { display: none; }
+.chat-shell.new-chat .chat-greeting { margin-top: auto; }
+.chat-shell.new-chat > .composer { margin-bottom: auto; }
+.chat-greeting {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  margin: 0 0 18px;
+}
+.chat-greeting .hello {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+.chat-greeting .hint {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
 }
 .chat-head {
   position: relative;
@@ -950,20 +979,22 @@ pre.code {
   color: var(--platinum);
 }
 
-.statusbar {
-  position: relative;
-  z-index: 1;
+/* The conversation totals ride inside the last reply, under a hairline, instead
+   of floating over the wallpaper in a bar of their own. */
+.meta-session {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin: 8px 2px 0;
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--line);
   color: var(--muted);
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 10.5px;
   letter-spacing: 0.02em;
 }
-.statusbar .dot { color: var(--line-strong); }
+.meta-session .dot { color: var(--line-strong); }
 
 /* The wizard rail -------------------------------------------------------- */
 
@@ -1050,8 +1081,20 @@ pre.code {
   .kv dd { padding-top: 2px; }
   .stats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
   .auth { margin-top: 4vh; }
-  .chat-shell { height: auto; }
-  .thread { max-height: 52vh; }
+  /* The composer still belongs at the bottom on a phone: the rail becomes a
+     top bar, so the shell measures what is left of the viewport. */
+  .chat-shell { height: calc(100dvh - 132px); }
+  .thread { max-height: none; }
+  /* Two selects, an attach control and a button do not fit on one row of a
+     phone. They wrap onto a second row instead of pushing Send off the edge. */
+  .composer-bar { flex-wrap: wrap; row-gap: 8px; }
+  .composer-pick { flex-wrap: wrap; row-gap: 6px; min-width: 0; }
+  .composer-pick select { max-width: 100%; }
+  .composer-pick #mode { max-width: 132px; }
+  .composer-send { width: 100%; justify-content: flex-end; }
+  /* The figure sits right of centre in the artwork. Cropped to a phone's width
+     the centre of the frame is empty sky, so the frame is anchored where she is. */
+  .app-wall { background-position: 88% center; }
   .chat-head { align-items: flex-start; }
   .msg { max-width: 100%; }
   .composer { bottom: 8px; }

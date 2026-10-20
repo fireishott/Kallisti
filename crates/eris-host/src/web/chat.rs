@@ -162,6 +162,22 @@ pub fn record_attachment(db: &Db, conversation: &str, file: &Attachment) -> Resu
     })
 }
 
+/// The hour of the day in the host's own timezone.
+///
+/// Read from SQLite rather than pulling a timezone crate in: the database already
+/// knows what `localtime` means on this host, and the greeting should follow the
+/// clock of the machine the operator is actually sitting at.
+pub fn local_hour(db: &Db) -> Result<u32, DbError> {
+    db.with_conn(|conn| {
+        let hour: i64 = conn.query_row(
+            "SELECT CAST(strftime('%H', 'now', 'localtime') AS INTEGER)",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(hour.clamp(0, 23) as u32)
+    })
+}
+
 /// The prompt text that tells the model what came with the message.
 ///
 /// Text files are pasted in full up to a budget, because a path the model cannot

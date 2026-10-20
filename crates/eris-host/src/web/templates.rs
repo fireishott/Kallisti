@@ -2711,12 +2711,27 @@ pub struct ChatView {
     pub models: Vec<String>,
     /// The model the picker starts on.
     pub selected_model: String,
+    /// The greeting an empty conversation opens with.
+    pub greeting: String,
     /// The sandbox mode the composer's picker starts on.
     pub sandbox_mode: String,
     /// Whether full host mode may be offered in that picker at all.
     pub allow_full: bool,
     /// The window declared for the selected model, when one is known.
     pub context_window: Option<u64>,
+}
+
+/// The greeting a fresh conversation opens with, from the hour of the day.
+///
+/// Pure so the boundaries can be tested without waiting for the clock to move.
+#[must_use]
+pub fn greeting_for(hour: u32) -> &'static str {
+    match hour {
+        5..=11 => "Good morning",
+        12..=16 => "Good afternoon",
+        17..=21 => "Good evening",
+        _ => "Good night",
+    }
 }
 
 /// The clock time from a database timestamp, for the line under a bubble.
@@ -2780,9 +2795,12 @@ pub fn blocks(text: &str) -> Markup {
     html! { @for piece in pieces { (piece) } }
 }
 
-/// The strip under the composer: the same facts as a single line, which is where
-/// an operator looks while a turn is running.
-fn chat_status_strip(view: &ChatView) -> Markup {
+/// The conversation's running totals, as the last line inside a reply.
+///
+/// These used to sit in a bar under the composer, floating over the wallpaper and
+/// saying nothing about which turn produced them. They belong to the answer being
+/// read, so they ride inside it.
+fn session_line(view: &ChatView) -> Markup {
     let stats = &view.stats;
     let rate = match stats.tokens_per_second {
         Some(rate) => format!("{rate} tok/s"),
@@ -2797,7 +2815,7 @@ fn chat_status_strip(view: &ChatView) -> Markup {
         None => "context unknown".to_owned(),
     };
     html! {
-        div .statusbar aria-label="Session status" {
+        div .meta-session aria-label="Conversation totals" {
             span { (stats.turns) " turns" }
             span .dot { "·" }
             span { (human_tokens(stats.prompt_tokens)) " in" }
@@ -2823,7 +2841,8 @@ fn chat_status_strip(view: &ChatView) -> Markup {
 /// script-free.
 pub fn chat_page(view: &ChatView) -> Markup {
     let body = html! {
-        div .chat-shell data-conversation=(view.conversation.clone()) {
+        div .chat-shell .new-chat[view.messages.is_empty()]
+            data-conversation=(view.conversation.clone()) {
         div .chat-head {
             h1 { "Chat" }
             @if !view.provider_ready {
@@ -2832,7 +2851,8 @@ pub fn chat_page(view: &ChatView) -> Markup {
         }
         (alert_region(view.error.as_ref(), None))
         section .thread id="thread" aria-label="Conversation" {
-            @for line in &view.messages {
+            @let last_answer = view.messages.iter().rposition(|line| !line.user);
+            @for (index, line) in view.messages.iter().enumerate() {
                 @let klass = format!(
                     "msg {}{}",
                     if line.user { "user" } else { "assistant" },
@@ -2853,7 +2873,16 @@ pub fn chat_page(view: &ChatView) -> Markup {
                             span .tag { (code) }
                         }
                     }
+                    @if Some(index) == last_answer && !line.pending && view.provider_ready {
+                        (session_line(view))
+                    }
                 }
+            }
+        }
+        @if view.messages.is_empty() {
+            div .chat-greeting {
+                p .hello { (view.greeting) }
+                p .hint { "Ask anything. The reply streams in." }
             }
         }
         @if view.provider_ready {
@@ -2905,7 +2934,6 @@ pub fn chat_page(view: &ChatView) -> Markup {
                     }
                 }
             }
-            (chat_status_strip(view))
         } @else {
             p .empty {
                 strong { "No provider yet" }

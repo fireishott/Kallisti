@@ -2874,6 +2874,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         stats: chat::stats(&transcript),
         models,
         selected_model,
+        greeting: crate::web::templates::greeting_for(chat::local_hour(db).unwrap_or(9)).to_owned(),
         sandbox_mode: state
             .engine
             .permissions()
