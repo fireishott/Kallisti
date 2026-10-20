@@ -137,6 +137,43 @@ fn deepest_existing(path: &Path) -> Option<PathBuf> {
     }
 }
 
+/// `settings` row: whether a turn may call tools at all.
+///
+/// Default on. Off means the model is offered nothing, so it answers from the
+/// prompt alone rather than spending a round trip discovering a refusal.
+pub const SETTING_TOOLS_ENABLED: &str = "tools.enabled";
+
+/// `settings` row: how many tool rounds one turn may take.
+pub const SETTING_TOOL_ROUNDS: &str = "tools.max_rounds";
+
+/// The default tool-round budget.
+pub const DEFAULT_TOOL_ROUNDS: usize = 12;
+
+/// The most rounds an operator may configure.
+///
+/// Bounded because each round is a provider call that bills, and a number typed
+/// with a stray zero should be refused rather than obeyed.
+pub const MAX_TOOL_ROUNDS_CEILING: u32 = 40;
+
+/// Whether tools are enabled, from a stored value.
+///
+/// Anything but an explicit `false` leaves them on: a corrupt row must not
+/// silently remove a capability the operator relies on.
+#[must_use]
+pub fn enabled(stored: Option<&str>) -> bool {
+    !matches!(stored.map(str::trim), Some("false"))
+}
+
+/// The tool-round budget, clamped to something a turn can actually finish.
+#[must_use]
+pub fn max_rounds(stored: Option<&str>) -> usize {
+    stored
+        .map(str::trim)
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .filter(|rounds| *rounds >= 1 && *rounds <= MAX_TOOL_ROUNDS_CEILING)
+        .map_or(DEFAULT_TOOL_ROUNDS, |rounds| rounds as usize)
+}
+
 /// Where a turn may work, and how much it may do there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sandbox {

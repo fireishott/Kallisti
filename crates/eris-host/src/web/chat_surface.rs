@@ -807,3 +807,155 @@ fn a_settings_view_defaults_to_the_kallisti_backdrop() {
     assert_eq!(view.wallpaper, wallpaper::DEFAULT_WALLPAPER);
     assert!(!view.wallpaper_custom);
 }
+
+#[test]
+fn tool_settings_round_trip_and_a_bad_budget_is_refused_by_field() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    let saved = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_TOOLS,
+            "tools_enabled=true&tool_rounds=20",
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
+    assert_eq!(
+        engine.setting(crate::tools::SETTING_TOOL_ROUNDS).unwrap(),
+        Some("20".to_owned())
+    );
+    assert_eq!(
+        engine.setting(crate::tools::SETTING_TOOLS_ENABLED).unwrap(),
+        Some("true".to_owned())
+    );
+
+    // Off is stored as off, not as an absent row.
+    block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_TOOLS, "tool_rounds=8").cookie(cookie),
+    ));
+    assert_eq!(
+        engine.setting(crate::tools::SETTING_TOOLS_ENABLED).unwrap(),
+        Some("false".to_owned()),
+        "an unchecked box means off"
+    );
+
+    let refused = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_TOOLS, "tool_rounds=0").cookie(cookie),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.json()["field"], "tool_rounds");
+    assert_eq!(
+        engine.setting(crate::tools::SETTING_TOOL_ROUNDS).unwrap(),
+        Some("8".to_owned()),
+        "a refusal leaves the stored budget alone"
+    );
+}
+
+#[test]
+fn an_auxiliary_role_can_be_pinned_to_a_model_the_probe_serves() {
+    let (_dir, engine, app, cookie) = ready_app();
+    engine
+        .set_setting(
+            crate::onboarding::SETTING_PROVIDER_MODELS,
+            r#"["m/one","m/two"]"#,
+        )
+        .unwrap();
+    let cookie = Some(cookie.as_str());
+
+    let body = "aux_vision=m/two&aux_compression=primary";
+    let saved = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_AUX, body).cookie(cookie),
+    ));
+    assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
+    assert_eq!(
+        engine.setting(&crate::aux::setting_key("vision")).unwrap(),
+        Some("m/two".to_owned())
+    );
+    assert_eq!(
+        engine
+            .setting(&crate::aux::setting_key("compression"))
+            .unwrap(),
+        Some(crate::aux::INHERIT.to_owned()),
+        "the sentinel is stored, not a copy of the primary model"
+    );
+
+    let refused = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_AUX, "aux_vision=m/nope").cookie(cookie),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.json()["field"], "aux_vision");
+    assert_eq!(
+        engine.setting(&crate::aux::setting_key("vision")).unwrap(),
+        Some("m/two".to_owned()),
+        "a refusal changes nothing"
+    );
+}
+
+#[test]
+fn the_mcp_list_is_validated_and_stored_as_json() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    let body = format!(
+        "mcp_servers={}",
+        encode(r#"[{"name":"vault","command":"mcp-vault","args":["--root","/tmp"]}]"#)
+    );
+    let saved = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_MCP, &body).cookie(cookie),
+    ));
+    assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
+
+    let stored = engine
+        .setting(crate::mcp::SETTING_SERVERS)
+        .unwrap()
+        .expect("a row");
+    let servers = crate::mcp::parse(&stored).expect("still valid json");
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0].name, "vault");
+
+    let refused = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_MCP,
+            &format!("mcp_servers={}", encode("not json")),
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.json()["field"], "mcp_servers");
+}
+
+#[test]
+fn the_settings_page_states_the_tools_aux_and_mcp_surfaces() {
+    let (_dir, engine, app, cookie) = ready_app();
+    engine
+        .set_setting(crate::onboarding::SETTING_PROVIDER_MODELS, r#"["m/one"]"#)
+        .unwrap();
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK);
+    let body = &page.body;
+    assert!(
+        body.contains("Tool rounds per turn"),
+        "the budget is offered"
+    );
+    assert!(body.contains("Auxiliary models"), "the roles are listed");
+    assert!(
+        body.contains(crate::mcp::STATUS),
+        "the MCP section says no client exists"
+    );
+    assert!(
+        body.contains("Nothing reads this row yet"),
+        "an unconsumed role says so rather than looking wired"
+    );
+}

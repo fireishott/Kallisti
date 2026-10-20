@@ -64,9 +64,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 23;
+pub const BUILD: u32 = 24;
 
-/// `1.0.9 build 10`, for the places that state the whole identity.
+/// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
 pub fn version_line() -> String {
     format!("{VERSION} build {BUILD}")
@@ -135,6 +135,15 @@ pub const ROUTE_SETTINGS_REASONING: &str = "/dashboard/settings/reasoning";
 
 /// `POST /dashboard/settings/timezone` - the clock every stamp is shown in.
 pub const ROUTE_SETTINGS_TIMEZONE: &str = "/dashboard/settings/timezone";
+
+/// `POST /dashboard/settings/tools` - tool calling on or off, and its budget.
+pub const ROUTE_SETTINGS_TOOLS: &str = "/dashboard/settings/tools";
+
+/// `POST /dashboard/settings/aux` - the auxiliary model roles.
+pub const ROUTE_SETTINGS_AUX: &str = "/dashboard/settings/aux";
+
+/// `POST /dashboard/settings/mcp` - the configured MCP server list.
+pub const ROUTE_SETTINGS_MCP: &str = "/dashboard/settings/mcp";
 
 /// `POST /dashboard/sidebar` - show or hide the conversation rail.
 pub const ROUTE_SIDEBAR: &str = "/dashboard/sidebar";
@@ -234,6 +243,9 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_REASONING,
     ROUTE_SETTINGS_TIMEZONE,
+    ROUTE_SETTINGS_TOOLS,
+    ROUTE_SETTINGS_AUX,
+    ROUTE_SETTINGS_MCP,
     ROUTE_SIDEBAR,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",
@@ -788,7 +800,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.0.9");
+        assert_eq!(VERSION, "1.1.0");
     }
 
     #[test]

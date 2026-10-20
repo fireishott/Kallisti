@@ -1338,6 +1338,21 @@ impl SettingsGroup {
     }
 }
 
+/// One auxiliary role as the settings page shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuxRow {
+    /// The settings-row segment and form field suffix.
+    pub key: String,
+    /// The label.
+    pub label: String,
+    /// One line on what the job does.
+    pub purpose: String,
+    /// The model chosen, or `primary`.
+    pub selected: String,
+    /// What consumes it today, when anything does.
+    pub consumed_by: Option<String>,
+}
+
 /// Everything the settings page needs.
 #[derive(Debug, Clone)]
 pub struct SettingsView {
@@ -1385,6 +1400,18 @@ pub struct SettingsView {
     pub wallpaper: String,
     /// Whether an uploaded image is on disk and usable.
     pub wallpaper_custom: bool,
+    /// Whether a turn may call tools at all.
+    pub tools_enabled: bool,
+    /// How many tool rounds one turn may take.
+    pub tool_rounds: String,
+    /// One row per auxiliary role: what it is, what it does, what it uses.
+    pub aux_roles: Vec<AuxRow>,
+    /// The models the last probe returned, for every picker on the page.
+    pub models: Vec<String>,
+    /// The stored MCP server list, as the editor shows it.
+    pub mcp_servers: String,
+    /// The sentence stating that no MCP client exists in this build.
+    pub mcp_status: String,
     /// The failure to show, when this render follows a refused post.
     pub error: Option<FormError>,
     /// The group that was saved and the sentence to show, after a redirect.
@@ -1418,6 +1445,12 @@ impl SettingsView {
             persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
             wallpaper: wallpaper::DEFAULT_WALLPAPER.to_owned(),
             wallpaper_custom: false,
+            tools_enabled: true,
+            tool_rounds: crate::tools::DEFAULT_TOOL_ROUNDS.to_string(),
+            aux_roles: Vec::new(),
+            models: Vec::new(),
+            mcp_servers: "[]".to_owned(),
+            mcp_status: crate::mcp::STATUS.to_owned(),
             error: None,
             notice: None,
         }
@@ -1769,6 +1802,104 @@ fn clock_group(view: &SettingsView) -> Markup {
     }
 }
 
+/// Tools: whether a turn may call one, and how many rounds it gets.
+fn tools_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_TOOLS) novalidate {
+            div .field {
+                label for="tools_enabled" {
+                    input type="checkbox" id="tools_enabled" name="tools_enabled" value="true"
+                        checked[view.tools_enabled];
+                    " Let a turn call tools"
+                }
+                span .hint {
+                    "Off means the model is offered nothing and answers from the prompt alone. "
+                    "On, it can read, write and run commands within the sandbox mode above."
+                }
+            }
+            div .field {
+                label for="tool_rounds" { "Tool rounds per turn" }
+                input id="tool_rounds" type="number" name="tool_rounds" value=(view.tool_rounds)
+                    min="1" max=(crate::tools::MAX_TOOL_ROUNDS_CEILING) step="1"
+                    autofocus[focuses("tool_rounds")];
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("tool_rounds")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "How many times the model may call a tool before the last round is forced to "
+                    "answer with what it has. Each round is a billed provider call. The ceiling is "
+                    (crate::tools::MAX_TOOL_ROUNDS_CEILING) "."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save tools" }
+            }
+        }
+    }
+}
+
+/// Auxiliary models: one picker per role.
+fn aux_group(view: &SettingsView) -> Markup {
+    let mut options: Vec<String> = Vec::with_capacity(view.models.len() + 1);
+    options.push(crate::aux::INHERIT.to_owned());
+    options.extend(view.models.iter().cloned());
+
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_AUX) novalidate {
+            @for row in &view.aux_roles {
+                div .field {
+                    label for=(format!("aux_{}", row.key)) { (row.label) }
+                    select id=(format!("aux_{}", row.key)) name=(format!("aux_{}", row.key)) {
+                        @for option in &options {
+                            option value=(option) selected[row.selected == *option] { (option) }
+                        }
+                    }
+                    span .hint {
+                        (row.purpose)
+                        @if let Some(consumer) = &row.consumed_by {
+                            " Used by " (consumer) "."
+                        } @else {
+                            " Nothing reads this row yet, so it is stored only."
+                        }
+                    }
+                }
+            }
+            div .actions {
+                button type="submit" { "Save auxiliary models" }
+            }
+        }
+    }
+}
+
+/// MCP servers: an editor for a list nothing runs yet.
+fn mcp_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_MCP) novalidate {
+            div .field {
+                label for="mcp_servers" { "Servers" }
+                textarea id="mcp_servers" name="mcp_servers" rows="8" spellcheck="false"
+                    autofocus[error.is_some_and(|error| error.field.as_deref() == Some("mcp_servers"))] {
+                    (view.mcp_servers)
+                }
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("mcp_servers")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "A JSON array of {\"name\", \"command\", \"args\"}. Validation rejects a "
+                    "missing name or command and a duplicate name."
+                }
+            }
+            p .small .warn { (view.mcp_status) }
+            div .actions {
+                button type="submit" { "Save MCP servers" }
+            }
+        }
+    }
+}
+
 /// The settings page: four forms, then the rows that are read-only by design.
 pub fn settings_page(view: &SettingsView) -> Markup {
     let page_error = view.error.as_ref().filter(|error| error.field.is_none());
@@ -1895,6 +2026,35 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "stored in UTC and converted for display, so changing this never rewrites history."
             }
             (clock_group(view))
+        }
+
+        section .card aria-labelledby="tools-heading" {
+            h2 id="tools-heading" { "Tools" }
+            p .small {
+                "What a turn may call, and how long it may keep calling. The sandbox mode above "
+                "decides what each tool is allowed to touch."
+            }
+            (tools_group(view))
+        }
+
+        section .card aria-labelledby="aux-heading" {
+            h2 id="aux-heading" { "Auxiliary models" }
+            p .small {
+                "A turn answers with the primary model. These are the jobs beside it. A role set to "
+                "primary follows whatever the provider section uses; a role pinned to a model keeps "
+                "that model when the primary moves."
+            }
+            p .small {
+                "Stored now, read by nothing yet: this build routes every turn through the primary "
+                "model. Each row says so, so a pinned model is a note for later rather than a switch "
+                "that is quietly doing nothing."
+            }
+            (aux_group(view))
+        }
+
+        section .card aria-labelledby="mcp-heading" {
+            h2 id="mcp-heading" { "MCP servers" }
+            (mcp_group(view))
         }
 
         section .card aria-labelledby="appearance-heading" {

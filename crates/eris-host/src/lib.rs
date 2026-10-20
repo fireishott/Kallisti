@@ -26,12 +26,14 @@
 pub mod admin;
 pub mod approvals;
 pub mod auth;
+pub mod aux;
 pub mod backup;
 pub mod config;
 pub mod db;
 pub mod device;
 pub mod doctor;
 pub mod error;
+pub mod mcp;
 pub mod onboarding;
 pub mod persona;
 pub mod probe;

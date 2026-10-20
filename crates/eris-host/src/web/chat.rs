@@ -770,6 +770,15 @@ pub fn show_reasoning(stored: Option<&str>) -> bool {
     !matches!(stored.map(str::trim), Some("false"))
 }
 
+/// What the operator configured about tool use for this turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnSettings {
+    /// Whether a turn may call tools at all.
+    pub tools: bool,
+    /// How many tool rounds it may take before the last one is forced to answer.
+    pub max_rounds: usize,
+}
+
 /// One thing the turn produced while it was still running.
 ///
 /// The two are kept apart all the way to the database because they mean different
@@ -794,6 +803,7 @@ pub fn run_turn(
     messages: Vec<ChatMessage>,
     sandbox: &crate::tools::Sandbox,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
+    settings: TurnSettings,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> Result<TurnOutcome, TurnFailure> {
     let profile =
@@ -830,24 +840,30 @@ pub fn run_turn(
         _ => {}
     };
 
-    let outcome = drive_tool_loop(sandbox, messages, gate, |round, tools_allowed| {
-        let request = ChatRequest {
-            system: system.clone(),
-            messages: round.to_vec(),
-            // Offered on every round that may still call one: the model needs
-            // them again to answer the result it just received. Withheld on the
-            // last round so the turn ends in an answer instead of a refusal.
-            tools: if tools_allowed {
-                crate::tools::specs(sandbox.mode())
-            } else {
-                Vec::new()
-            },
-            ..ChatRequest::default()
-        };
-        runtime
-            .block_on(provider.stream_chat(&request, &key, &mut forward))
-            .map_err(|error| (error.kind().to_owned(), error.to_string()))
-    })?;
+    let outcome = drive_tool_loop(
+        sandbox,
+        messages,
+        gate,
+        settings.max_rounds,
+        |round, tools_allowed| {
+            let request = ChatRequest {
+                system: system.clone(),
+                messages: round.to_vec(),
+                // Offered on every round that may still call one: the model needs
+                // them again to answer the result it just received. Withheld on the
+                // last round so the turn ends in an answer instead of a refusal.
+                tools: if tools_allowed && settings.tools {
+                    crate::tools::specs(sandbox.mode())
+                } else {
+                    Vec::new()
+                },
+                ..ChatRequest::default()
+            };
+            runtime
+                .block_on(provider.stream_chat(&request, &key, &mut forward))
+                .map_err(|error| (error.kind().to_owned(), error.to_string()))
+        },
+    )?;
 
     Ok(outcome)
 }
@@ -999,11 +1015,13 @@ pub fn drive_tool_loop(
     sandbox: &crate::tools::Sandbox,
     mut messages: Vec<ChatMessage>,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
+    max_rounds: usize,
     mut stream: impl FnMut(
         &[ChatMessage],
         bool,
     ) -> Result<core_runtime::provider::Completion, TurnFailure>,
 ) -> Result<TurnOutcome, TurnFailure> {
+    let max_rounds = max_rounds.max(1);
     let mut usage: Option<core_domain::Usage> = None;
     let mut reasoning = String::new();
     let mut rounds = 0usize;
@@ -1013,7 +1031,7 @@ pub fn drive_tool_loop(
         // round with another call used to end the turn with nothing; instead it
         // now has to say what it found with what it already has, which is a
         // usable answer rather than a shrug.
-        let tools_allowed = rounds < MAX_TOOL_ROUNDS;
+        let tools_allowed = rounds < max_rounds;
         let completion = stream(&messages, tools_allowed)?;
 
         usage = Some(match usage {
@@ -1506,6 +1524,7 @@ mod tests {
             &sandbox,
             vec![ChatMessage::text(ChatRole::User, "read a.txt")],
             &mut |_call| GateDecision::Run,
+            MAX_TOOL_ROUNDS,
             |messages, _tools| {
                 seen.push(messages.to_vec());
                 round += 1;
@@ -1567,6 +1586,7 @@ mod tests {
             &sandbox,
             vec![ChatMessage::text(ChatRole::User, "loop forever")],
             &mut |_call| GateDecision::Run,
+            MAX_TOOL_ROUNDS,
             |_messages, tools| {
                 round += 1;
                 tools_offered.push(tools);
@@ -1621,6 +1641,7 @@ mod tests {
             &sandbox,
             vec![ChatMessage::text(ChatRole::User, "hi")],
             &mut |_call| GateDecision::Run,
+            MAX_TOOL_ROUNDS,
             |_messages, _tools| Ok(completion_with_calls(Vec::new(), "ok")),
         )
         .expect("a turn");
@@ -1661,6 +1682,7 @@ mod tests {
             &mut |_call| GateDecision::Park {
                 approval_id: "ap_1".to_owned(),
             },
+            MAX_TOOL_ROUNDS,
             |messages, _tools| {
                 seen.push(messages.to_vec());
                 round += 1;

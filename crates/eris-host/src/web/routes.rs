@@ -29,9 +29,10 @@ use crate::admin::{
     ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_ID, ROUTE_CHAT_MODE,
     ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES,
     ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
-    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_TIMEZONE,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
+    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_PERMISSIONS,
+    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_REASONING,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
+    VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -101,6 +102,9 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_REASONING, post(save_reasoning))
         .route(ROUTE_SETTINGS_TIMEZONE, post(save_timezone))
         .route(ROUTE_SIDEBAR, post(toggle_sidebar))
+        .route(ROUTE_SETTINGS_TOOLS, post(save_tools))
+        .route(ROUTE_SETTINGS_AUX, post(save_aux))
+        .route(ROUTE_SETTINGS_MCP, post(save_mcp))
         .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
@@ -559,6 +563,44 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .as_deref(),
     )
     .as_str();
+    view.tools_enabled = crate::tools::enabled(
+        engine
+            .setting(crate::tools::SETTING_TOOLS_ENABLED)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
+    view.tool_rounds = engine
+        .setting(crate::tools::SETTING_TOOL_ROUNDS)
+        .map_err(|error| form_error(&error))?
+        .map(|stored| crate::tools::max_rounds(Some(&stored)))
+        .unwrap_or_else(|| crate::tools::DEFAULT_TOOL_ROUNDS)
+        .to_string();
+    view.models = engine.provider_models().unwrap_or_default();
+    view.aux_roles = crate::aux::ROLES
+        .iter()
+        .map(|role| {
+            let stored = engine
+                .setting(&crate::aux::setting_key(role.key))
+                .ok()
+                .flatten();
+            crate::web::templates::AuxRow {
+                key: role.key.to_owned(),
+                label: role.label.to_owned(),
+                purpose: role.purpose.to_owned(),
+                selected: stored
+                    .as_deref()
+                    .map(crate::aux::store_value)
+                    .unwrap_or_else(|| crate::aux::INHERIT.to_owned()),
+                consumed_by: role.consumed_by.map(str::to_owned),
+            }
+        })
+        .collect();
+    view.mcp_servers = engine
+        .setting(crate::mcp::SETTING_SERVERS)
+        .map_err(|error| form_error(&error))?
+        .and_then(|stored| crate::mcp::parse(&stored).ok())
+        .map(|servers| crate::mcp::to_json(&servers))
+        .unwrap_or_else(|| "[]".to_owned());
     view.show_reasoning = chat::show_reasoning(
         engine
             .setting(chat::SETTING_SHOW_REASONING)
@@ -2380,6 +2422,15 @@ const SAVED_WORKSPACE: &str = "/dashboard/settings?saved=workspace";
 /// Where the reasoning toggle returns to.
 const SAVED_REASONING: &str = "/dashboard/settings?saved=reasoning";
 
+/// Where the tools settings return to.
+const SAVED_TOOLS: &str = "/dashboard/settings?saved=tools";
+
+/// Where the auxiliary roles return to.
+const SAVED_AUX: &str = "/dashboard/settings?saved=aux";
+
+/// Where the MCP list returns to.
+const SAVED_MCP: &str = "/dashboard/settings?saved=mcp";
+
 /// Where the clock setting returns to.
 const SAVED_TIMEZONE: &str = "/dashboard/settings?saved=timezone";
 const SAVED_PERMISSIONS: &str = "/dashboard/settings?saved=permissions";
@@ -2672,6 +2723,167 @@ async fn toggle_sidebar(
         .filter(|path| path.starts_with('/') && !path.starts_with("//"))
         .unwrap_or_else(|| crate::admin::ROUTE_CHAT.to_owned());
     see_other_to(back)
+}
+
+/// `POST /dashboard/settings/tools` - tool calling and its round budget.
+async fn save_tools(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    let enabled = flag(&fields, "tools_enabled");
+    let raw = field(&fields, "tool_rounds").trim().to_owned();
+    let rounds: u32 = match raw.parse::<u32>() {
+        Ok(rounds) if (1..=crate::tools::MAX_TOOL_ROUNDS_CEILING).contains(&rounds) => rounds,
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("tool_rounds"),
+                    "tool_rounds_invalid",
+                    format!(
+                        "tool rounds must be a whole number from 1 to {}",
+                        crate::tools::MAX_TOOL_ROUNDS_CEILING
+                    ),
+                ),
+            );
+        }
+    };
+
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::tools::SETTING_TOOLS_ENABLED,
+        if enabled { "true" } else { "false" },
+    ) {
+        return store_failure(&request_id.0, crate::tools::SETTING_TOOLS_ENABLED, error);
+    }
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::tools::SETTING_TOOL_ROUNDS,
+        &rounds.to_string(),
+    ) {
+        return store_failure(&request_id.0, crate::tools::SETTING_TOOL_ROUNDS, error);
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.tools",
+        Some(&format!("enabled={enabled}; max_rounds={rounds}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.tools", error);
+    }
+
+    see_other(SAVED_TOOLS)
+}
+
+/// `POST /dashboard/settings/aux` - one model per auxiliary role.
+///
+/// A pinned model is checked against the probe when the probe has anything to
+/// say: storing an id the gateway does not serve would be a setting that looks
+/// configured and fails at the first use.
+async fn save_aux(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let known = state.engine.provider_models().unwrap_or_default();
+
+    let mut stored_any = 0usize;
+    for role in crate::aux::ROLES {
+        let field_name = format!("aux_{}", role.key);
+        let value = crate::aux::store_value(field(&fields, &field_name));
+        if value != crate::aux::INHERIT && !known.is_empty() && !known.iter().any(|m| m == &value) {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some(&field_name),
+                    "aux_model_unknown",
+                    format!(
+                        "`{value}` is not a model the last probe returned, so it would never answer"
+                    ),
+                ),
+            );
+        }
+        if let Err(error) = store::settings_put(
+            state.engine.db(),
+            &crate::aux::setting_key(role.key),
+            &value,
+        ) {
+            return store_failure(&request_id.0, &crate::aux::setting_key(role.key), error);
+        }
+        stored_any += 1;
+    }
+
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.aux",
+        Some(&format!("roles={stored_any}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.aux", error);
+    }
+
+    see_other(SAVED_AUX)
+}
+
+/// `POST /dashboard/settings/mcp` - the configured MCP server list.
+async fn save_mcp(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let servers = match crate::mcp::parse(field(&fields, "mcp_servers")) {
+        Ok(servers) => servers,
+        Err(error) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(Some("mcp_servers"), "mcp_invalid", error.message),
+            );
+        }
+    };
+    let stored = crate::mcp::to_json(&servers);
+    if let Err(error) = store::settings_put(state.engine.db(), crate::mcp::SETTING_SERVERS, &stored)
+    {
+        return store_failure(&request_id.0, crate::mcp::SETTING_SERVERS, error);
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.mcp",
+        Some(&format!("servers={}", servers.len())),
+    ) {
+        return audit_failure(&request_id.0, "settings.mcp", error);
+    }
+
+    see_other(SAVED_MCP)
 }
 
 /// `POST /dashboard/settings/permissions` - the closed permission tuple.
@@ -3799,6 +4011,22 @@ fn spawn_turn(
             .flatten()
             .as_deref(),
     );
+    let tools_enabled = crate::tools::enabled(
+        state
+            .engine
+            .setting(crate::tools::SETTING_TOOLS_ENABLED)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    let tool_rounds = crate::tools::max_rounds(
+        state
+            .engine
+            .setting(crate::tools::SETTING_TOOL_ROUNDS)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
     let stored_enabled = state
         .engine
         .setting(crate::persona::SETTING_PERSONA_ENABLED)
@@ -3862,7 +4090,18 @@ fn spawn_turn(
             }
         };
         let started = std::time::Instant::now();
-        let outcome = chat::run_turn(&config, system, history, &sandbox, &mut gate, &mut sink);
+        let outcome = chat::run_turn(
+            &config,
+            system,
+            history,
+            &sandbox,
+            &mut gate,
+            chat::TurnSettings {
+                tools: tools_enabled,
+                max_rounds: tool_rounds,
+            },
+            &mut sink,
+        );
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         drop(sink);
 
