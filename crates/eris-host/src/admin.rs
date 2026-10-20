@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 25;
+pub const BUILD: u32 = 26;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -138,6 +138,9 @@ pub const ROUTE_SETTINGS_TIMEZONE: &str = "/dashboard/settings/timezone";
 
 /// `POST /dashboard/settings/tools` - tool calling on or off, and its budget.
 pub const ROUTE_SETTINGS_TOOLS: &str = "/dashboard/settings/tools";
+
+/// `POST /dashboard/settings/providers` - the provider registry and its primary.
+pub const ROUTE_SETTINGS_PROVIDERS: &str = "/dashboard/settings/providers";
 
 /// `POST /dashboard/settings/aux` - the auxiliary model roles.
 pub const ROUTE_SETTINGS_AUX: &str = "/dashboard/settings/aux";
@@ -244,6 +247,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_REASONING,
     ROUTE_SETTINGS_TIMEZONE,
     ROUTE_SETTINGS_TOOLS,
+    ROUTE_SETTINGS_PROVIDERS,
     ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_MCP,
     ROUTE_SIDEBAR,
@@ -800,7 +804,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.2.0");
+        assert_eq!(VERSION, "1.3.0");
     }
 
     #[test]

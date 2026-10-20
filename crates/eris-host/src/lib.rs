@@ -37,6 +37,7 @@ pub mod mcp;
 pub mod onboarding;
 pub mod persona;
 pub mod probe;
+pub mod providers;
 pub mod tools;
 pub mod web;
 pub mod zone;

@@ -1400,6 +1400,12 @@ pub struct SettingsView {
     pub wallpaper: String,
     /// Whether an uploaded image is on disk and usable.
     pub wallpaper_custom: bool,
+    /// The provider registry, as the editor shows it.
+    pub providers_json: String,
+    /// The id of the primary provider.
+    pub providers_primary: String,
+    /// Every provider id in the registry, for the primary picker.
+    pub provider_ids: Vec<String>,
     /// Whether a turn may call tools at all.
     pub tools_enabled: bool,
     /// How many tool rounds one turn may take.
@@ -1445,6 +1451,9 @@ impl SettingsView {
             persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
             wallpaper: wallpaper::DEFAULT_WALLPAPER.to_owned(),
             wallpaper_custom: false,
+            providers_json: "[]".to_owned(),
+            providers_primary: crate::providers::DEFAULT_ID.to_owned(),
+            provider_ids: Vec::new(),
             tools_enabled: true,
             tool_rounds: crate::tools::DEFAULT_TOOL_ROUNDS.to_string(),
             aux_roles: Vec::new(),
@@ -1802,6 +1811,49 @@ fn clock_group(view: &SettingsView) -> Markup {
     }
 }
 
+/// The provider registry: every endpoint this daemon may talk to.
+fn providers_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_PROVIDERS) novalidate {
+            div .field {
+                label for="providers_registry" { "Providers" }
+                textarea id="providers_registry" name="providers_registry" rows="10"
+                    spellcheck="false" autofocus[focuses("providers_registry")] {
+                    (view.providers_json)
+                }
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("providers_registry")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "A JSON array of {\"id\", \"name\", \"base_url\", \"key_ref\"}. The id is "
+                    "what auxiliary roles point at. A key reference like env:NAME, never a key."
+                }
+            }
+            div .field {
+                label for="providers_primary" { "Primary" }
+                select id="providers_primary" name="providers_primary"
+                    autofocus[focuses("providers_primary")] {
+                    @for id in &view.provider_ids {
+                        option value=(id) selected[view.providers_primary == *id] { (id) }
+                    }
+                }
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("providers_primary")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "The endpoint a turn uses unless a role says otherwise. When the registry is "
+                    "empty the three provider fields above still seed a default entry."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save providers" }
+            }
+        }
+    }
+}
+
 /// Tools: whether a turn may call one, and how many rounds it gets.
 fn tools_group(view: &SettingsView) -> Markup {
     let error = view.error.as_ref();
@@ -2026,6 +2078,16 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "stored in UTC and converted for display, so changing this never rewrites history."
             }
             (clock_group(view))
+        }
+
+
+        section .card aria-labelledby="providers-heading" {
+            h2 id="providers-heading" { "Providers" }
+            p .small {
+                "Every endpoint this daemon may talk to. One of them is primary, and the auxiliary "
+                "roles below can point at any of them."
+            }
+            (providers_group(view))
         }
 
         section .card aria-labelledby="tools-heading" {

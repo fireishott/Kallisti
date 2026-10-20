@@ -960,3 +960,92 @@ fn the_settings_page_states_the_tools_aux_and_mcp_surfaces() {
         "an unconsumed role says so rather than looking wired"
     );
 }
+
+#[test]
+fn the_provider_registry_round_trips_and_the_turn_resolves_the_primary() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+    let registry = r#"[{"id":"alpha","name":"Alpha","base_url":"http://127.0.0.1:20001/v1","key_ref":"env:ALPHA_KEY"},{"id":"beta","name":"Beta","base_url":"http://127.0.0.1:20002/v1","key_ref":"env:BETA_KEY"}]"#;
+    let body = format!(
+        "providers_registry={}&providers_primary=beta",
+        encode(registry)
+    );
+    let saved = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_PROVIDERS, &body).cookie(cookie),
+    ));
+    assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
+
+    assert_eq!(
+        engine.setting(crate::providers::SETTING_PRIMARY).unwrap(),
+        Some("beta".to_owned())
+    );
+    let resolved = crate::web::chat::turn_config(&engine)
+        .expect("turn config")
+        .expect("a provider");
+    assert_eq!(
+        resolved.base_url, "http://127.0.0.1:20002/v1",
+        "the turn answers through the primary"
+    );
+}
+
+#[test]
+fn a_provider_registry_with_a_key_value_is_refused_by_field() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+    let bad = r#"[{"id":"alpha","name":"Alpha","base_url":"http://x/v1","key_ref":"sk-live-123"}]"#;
+    let body = format!("providers_registry={}", encode(bad));
+
+    let refused = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_PROVIDERS, &body).cookie(cookie),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.json()["field"], "providers_registry");
+}
+
+#[test]
+fn the_last_provider_cannot_be_removed_while_a_model_is_configured() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    let refused = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PROVIDERS,
+            "providers_registry=%5B%5D",
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.json()["field"], "providers_registry");
+}
+
+#[test]
+fn the_settings_page_lists_the_registry_and_its_primary() {
+    let (_dir, engine, app, cookie) = ready_app();
+    engine
+        .set_setting(
+            crate::providers::SETTING_REGISTRY,
+            r#"[{"id":"alpha","name":"Alpha","base_url":"http://127.0.0.1:20001/v1","key_ref":"env:ALPHA_KEY"}]"#,
+        )
+        .unwrap();
+    engine
+        .set_setting(crate::providers::SETTING_PRIMARY, "alpha")
+        .unwrap();
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("Providers"), "the section is present");
+    assert!(
+        page.body.contains("env:ALPHA_KEY"),
+        "the stored registry is shown as it is stored"
+    );
+    assert!(
+        page.body.contains(r#"<option value="alpha" selected"#),
+        "the primary is preselected"
+    );
+}

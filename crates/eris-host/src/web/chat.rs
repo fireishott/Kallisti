@@ -765,20 +765,55 @@ pub struct TurnConfig {
 
 /// The stored provider settings, or `None` when onboarding never wrote them.
 pub fn turn_config(engine: &SetupEngine) -> Result<Option<TurnConfig>, OnboardingError> {
-    let base_url = engine.setting(SETTING_PROVIDER_BASE_URL)?;
-    let key_ref = engine.setting(SETTING_PROVIDER_KEY_REF)?;
     let model = engine.setting(SETTING_MODEL)?;
-    let (Some(base_url), Some(key_ref), Some(model)) = (base_url, key_ref, model) else {
+    let Some(model) = model else {
         return Ok(None);
     };
-    let Ok(key_ref) = SecretRef::try_from(key_ref.as_str()) else {
+
+    let registry = provider_registry(engine)?;
+    let primary = engine
+        .setting(crate::providers::SETTING_PRIMARY)?
+        .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned());
+    let Some(chosen) = crate::providers::resolve(&registry, &primary) else {
         return Ok(None);
     };
+    let Ok(key_ref) = SecretRef::try_from(chosen.key_ref.as_str()) else {
+        return Ok(None);
+    };
+
     Ok(Some(TurnConfig {
-        base_url,
+        base_url: chosen.base_url.clone(),
         key_ref,
         model,
     }))
+}
+
+/// The configured providers, seeded from the legacy rows when the registry has
+/// never been written.
+///
+/// A registry that does not parse falls back to the legacy rows rather than
+/// disabling every turn: the settings page refuses to store an invalid document,
+/// so this can only be a hand-edited database, and a daemon that answers is more
+/// useful than one that will not start. The settings page shows the registry it
+/// actually read, so the fallback is visible.
+pub fn provider_registry(
+    engine: &SetupEngine,
+) -> Result<Vec<crate::providers::Provider>, OnboardingError> {
+    let legacy_url = engine.setting(SETTING_PROVIDER_BASE_URL)?;
+    let legacy_key = engine.setting(SETTING_PROVIDER_KEY_REF)?;
+
+    if let Some(raw) = engine.setting(crate::providers::SETTING_REGISTRY)?
+        && !raw.trim().is_empty()
+        && let Ok(parsed) = crate::providers::parse(&raw)
+        && !parsed.is_empty()
+    {
+        return Ok(parsed);
+    }
+
+    Ok(match (legacy_url, legacy_key) {
+        (Some(base_url), Some(key_ref)) => crate::providers::seed(&base_url, &key_ref),
+        _ => Vec::new(),
+    })
 }
 
 /// Why a turn could not be sent, in the two halves the page shows: a stable code

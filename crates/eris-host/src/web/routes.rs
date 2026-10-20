@@ -30,9 +30,9 @@ use crate::admin::{
     ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES,
     ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
     ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_PERMISSIONS,
-    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_REASONING,
-    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
-    VERSION, session_path,
+    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
+    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -103,6 +103,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_TIMEZONE, post(save_timezone))
         .route(ROUTE_SIDEBAR, post(toggle_sidebar))
         .route(ROUTE_SETTINGS_TOOLS, post(save_tools))
+        .route(ROUTE_SETTINGS_PROVIDERS, post(save_providers))
         .route(ROUTE_SETTINGS_AUX, post(save_aux))
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
         .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
@@ -563,6 +564,13 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .as_deref(),
     )
     .as_str();
+    let registry = chat::provider_registry(engine).unwrap_or_default();
+    view.provider_ids = registry.iter().map(|p| p.id.clone()).collect();
+    view.providers_json = crate::providers::to_json(&registry);
+    view.providers_primary = engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .map_err(|error| form_error(&error))?
+        .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned());
     view.tools_enabled = crate::tools::enabled(
         engine
             .setting(crate::tools::SETTING_TOOLS_ENABLED)
@@ -2422,6 +2430,9 @@ const SAVED_WORKSPACE: &str = "/dashboard/settings?saved=workspace";
 /// Where the reasoning toggle returns to.
 const SAVED_REASONING: &str = "/dashboard/settings?saved=reasoning";
 
+/// Where the provider registry returns to.
+const SAVED_PROVIDERS: &str = "/dashboard/settings?saved=providers";
+
 /// Where the tools settings return to.
 const SAVED_TOOLS: &str = "/dashboard/settings?saved=tools";
 
@@ -2784,6 +2795,91 @@ async fn save_tools(
     }
 
     see_other(SAVED_TOOLS)
+}
+
+/// `POST /dashboard/settings/providers` - the registry and its primary.
+///
+/// An empty registry is only allowed while no model is configured: once a turn
+/// can run, it needs somewhere to run, and a save that quietly removed the last
+/// endpoint would be a save that stopped the product answering.
+async fn save_providers(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let providers = match crate::providers::parse(field(&fields, "providers_registry")) {
+        Ok(providers) => providers,
+        Err(error) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("providers_registry"),
+                    "providers_invalid",
+                    error.message,
+                ),
+            );
+        }
+    };
+    let model_configured = state
+        .engine
+        .setting(crate::onboarding::SETTING_MODEL)
+        .ok()
+        .flatten()
+        .is_some_and(|model| !model.trim().is_empty());
+    if providers.is_empty() && model_configured {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("providers_registry"),
+                "providers_empty",
+                "a model is configured, so at least one provider is needed for a turn to answer",
+            ),
+        );
+    }
+
+    let requested_primary = field(&fields, "providers_primary").trim().to_owned();
+    let primary = if providers.iter().any(|p| p.id == requested_primary) {
+        requested_primary
+    } else {
+        providers
+            .first()
+            .map_or_else(|| crate::providers::DEFAULT_ID.to_owned(), |p| p.id.clone())
+    };
+
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::providers::SETTING_REGISTRY,
+        &crate::providers::to_json(&providers),
+    ) {
+        return store_failure(&request_id.0, crate::providers::SETTING_REGISTRY, error);
+    }
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::providers::SETTING_PRIMARY,
+        &primary,
+    ) {
+        return store_failure(&request_id.0, crate::providers::SETTING_PRIMARY, error);
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.providers",
+        Some(&format!("providers={}; primary={primary}", providers.len())),
+    ) {
+        return audit_failure(&request_id.0, "settings.providers", error);
+    }
+
+    see_other(SAVED_PROVIDERS)
 }
 
 /// `POST /dashboard/settings/aux` - one model per auxiliary role.
