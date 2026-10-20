@@ -38,6 +38,7 @@ pub mod db;
 pub mod device;
 pub mod doctor;
 pub mod error;
+pub mod greeting;
 pub mod mcp;
 pub mod memory;
 pub mod onboarding;

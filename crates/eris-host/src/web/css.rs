@@ -948,6 +948,15 @@ pre.code {
   font-size: 13px;
   color: var(--muted);
 }
+/* The generated line. Quiet on purpose: it sits under a 30px salutation and
+   must not compete with it, and it is absent entirely until a line exists. */
+.chat-greeting .line {
+  margin: 6px 0 0;
+  max-width: 56ch;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--muted);
+}
 .chat-title .lede { margin-bottom: 0; max-width: 62ch; }
 .chat-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .chat-meta form { margin: 0; }

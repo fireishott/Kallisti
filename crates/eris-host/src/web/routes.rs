@@ -30,10 +30,11 @@ use crate::admin::{
     ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD,
     ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN,
     ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
-    ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
-    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
-    ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_TIMEZONE,
-    ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
+    ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP,
+    ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
+    VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -111,6 +112,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_PROVIDERS, post(save_providers))
         .route(ROUTE_SETTINGS_AUX, post(save_aux))
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
+        .route(ROUTE_SETTINGS_GREETING, post(save_greeting))
         .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
@@ -637,6 +639,25 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .map(|stored| crate::tools::max_rounds(Some(&stored)))
         .unwrap_or_else(|| crate::tools::DEFAULT_TOOL_ROUNDS)
         .to_string();
+    view.greeting_enabled = crate::greeting::enabled(
+        engine
+            .setting(crate::greeting::SETTING_GREETING_ENABLED)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
+    view.greeting_model = engine
+        .setting(crate::greeting::SETTING_GREETING_MODEL)
+        .map_err(|error| form_error(&error))?
+        .map(|stored| crate::greeting::store_model(&stored))
+        .unwrap_or_else(|| crate::greeting::INHERIT.to_owned());
+    view.greeting_refresh = crate::greeting::Refresh::parse(
+        engine
+            .setting(crate::greeting::SETTING_GREETING_REFRESH)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    )
+    .as_str()
+    .to_owned();
     view.models = engine.provider_models().unwrap_or_default();
     view.aux_roles = crate::aux::ROLES
         .iter()
@@ -2766,6 +2787,7 @@ fn saved_group(uri: &Uri) -> Option<SettingsGroup> {
             "workspace" => Some(SettingsGroup::Workspace),
             "permissions" => Some(SettingsGroup::Permissions),
             "persona" => Some(SettingsGroup::Persona),
+            "greeting" => Some(SettingsGroup::Greeting),
             _ => None,
         };
     }
@@ -3390,6 +3412,78 @@ async fn save_aux(
     see_other(SAVED_AUX)
 }
 
+/// Where the greeting form returns to.
+const SAVED_GREETING: &str = "/dashboard/settings?saved=greeting";
+
+/// `POST /dashboard/settings/greeting` - the generated line on an empty page.
+///
+/// Three rows, one form. A model the last probe did not return is refused next to
+/// the picker, for the same reason the auxiliary roles refuse it: a model that is
+/// not in the catalogue would never write anything. A refresh value outside the
+/// closed set is stored as the default rather than refused, because the select
+/// cannot produce one and a hand-edited row is not worth a failed save.
+async fn save_greeting(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    // An unchecked box sends nothing at all, so absence is the off signal.
+    let enabled = crate::greeting::enabled(Some(field(&fields, "greeting_enabled")));
+    let model = crate::greeting::store_model(field(&fields, "greeting_model"));
+    let known = state.engine.provider_models().unwrap_or_default();
+    if model != crate::greeting::INHERIT
+        && !known.is_empty()
+        && !known.iter().any(|candidate| candidate == &model)
+    {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("greeting_model"),
+                "greeting_model_unknown",
+                format!(
+                    "`{model}` is not a model the last probe returned, so no line would be written"
+                ),
+            ),
+        );
+    }
+    let refresh = crate::greeting::Refresh::parse(Some(field(&fields, "greeting_refresh")));
+    let stored_enabled = if enabled { "true" } else { "false" };
+
+    for (key, value) in [
+        (crate::greeting::SETTING_GREETING_ENABLED, stored_enabled),
+        (crate::greeting::SETTING_GREETING_MODEL, model.as_str()),
+        (crate::greeting::SETTING_GREETING_REFRESH, refresh.as_str()),
+    ] {
+        if let Err(error) = store::settings_put(state.engine.db(), key, value) {
+            return store_failure(&request_id.0, key, error);
+        }
+    }
+
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.greeting",
+        Some(&format!(
+            "enabled={stored_enabled}; model={model}; refresh={}",
+            refresh.as_str()
+        )),
+    ) {
+        return audit_failure(&request_id.0, "settings.greeting", error);
+    }
+
+    see_other(SAVED_GREETING)
+}
+
 /// `POST /dashboard/settings/mcp` - the configured MCP server list.
 async fn save_mcp(
     State(state): State<AppState>,
@@ -3887,6 +3981,9 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         .as_str()
         .to_owned(),
         greeting: crate::web::templates::greeting_for(crate::zone::hour_in(offset)).to_owned(),
+        // Filled by the handlers, which are the only place a refresh can be
+        // awaited. A view built anywhere else renders the salutation alone.
+        line: None,
         sandbox_mode: state
             .engine
             .permissions()
@@ -3894,6 +3991,66 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
             .unwrap_or_else(|_| crate::onboarding::SandboxMode::DEFAULT.as_str().to_owned()),
         allow_full: state.allow_full(),
         context_window,
+    })
+}
+
+/// How long a page will wait for a new line before serving the stored one.
+///
+/// A greeting is a decoration, so it is the first thing to drop. The stored line,
+/// or the bare salutation, is always an answer.
+const GREETING_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// The line under the salutation, refreshing it when it is due.
+///
+/// Three rules, in order: off means nothing is rendered, a line inside its
+/// refresh window is served from the database, and only a due one reaches a
+/// provider. The provider call blocks, so it is moved onto a blocking thread
+/// whenever there is an executor to move it to, and the page falls back to the
+/// stored line when the call fails or the deadline passes. A page never waits on
+/// a model with no ceiling.
+async fn greeting_line(state: &AppState) -> Option<String> {
+    let engine = &state.engine;
+    let read = |key: &str| engine.setting(key).ok().flatten();
+    if !crate::greeting::enabled(read(crate::greeting::SETTING_GREETING_ENABLED).as_deref()) {
+        return None;
+    }
+    let refresh =
+        crate::greeting::Refresh::parse(read(crate::greeting::SETTING_GREETING_REFRESH).as_deref());
+    let cached = crate::greeting::stored(engine.db());
+    let now = crate::auth::now().unix_timestamp();
+    if let Some(cached) = &cached
+        && !crate::greeting::is_due(cached.made_at, refresh, now)
+    {
+        return Some(cached.text.clone());
+    }
+    let Some(config) = greeting_config(state) else {
+        return cached.map(|cached| cached.text);
+    };
+    let db = engine.db().clone();
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        // No executor: this is the synchronous path, and the call runs here.
+        return crate::greeting::regenerate(&db, &config, now).or_else(|| cached.map(|c| c.text));
+    };
+    let task = handle.spawn_blocking(move || crate::greeting::regenerate(&db, &config, now));
+    // A cancelled blocking task cannot be stopped, so the timeout is about the
+    // page and not about the call: what is dropped is the wait, not the thread.
+    match tokio::time::timeout(GREETING_WAIT, task).await {
+        Ok(Ok(Some(line))) => Some(line),
+        _ => cached.map(|cached| cached.text),
+    }
+}
+
+/// Where a line is written: the greeting model, or the chat model.
+fn greeting_config(state: &AppState) -> Option<chat::TurnConfig> {
+    let primary = chat::turn_config(&state.engine).ok().flatten()?;
+    let stored = state
+        .engine
+        .setting(crate::greeting::SETTING_GREETING_MODEL)
+        .ok()
+        .flatten();
+    Some(chat::TurnConfig {
+        model: crate::greeting::model_for(stored.as_deref(), &primary.model),
+        ..primary
     })
 }
 
@@ -3907,7 +4064,12 @@ async fn chat_page_handler(
         return no_dashboard_session(&headers, &request_id.0);
     }
     match build_chat_view(&state, None) {
-        Ok(view) => page(chat_page(&view)),
+        Ok(mut view) => {
+            if view.messages.is_empty() {
+                view.line = greeting_line(&state).await;
+            }
+            page(chat_page(&view))
+        }
         Err(error) => refusal(error),
     }
 }
@@ -3923,7 +4085,12 @@ async fn chat_conversation_handler(
         return no_dashboard_session(&headers, &request_id.0);
     }
     match build_chat_view(&state, Some(&id)) {
-        Ok(view) => page(chat_page(&view)),
+        Ok(mut view) => {
+            if view.messages.is_empty() {
+                view.line = greeting_line(&state).await;
+            }
+            page(chat_page(&view))
+        }
         Err(error) => refusal(error),
     }
 }

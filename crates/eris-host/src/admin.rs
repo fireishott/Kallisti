@@ -166,6 +166,9 @@ pub const ROUTE_SETTINGS_AUX: &str = "/dashboard/settings/aux";
 /// `POST /dashboard/settings/mcp` - the configured MCP server list.
 pub const ROUTE_SETTINGS_MCP: &str = "/dashboard/settings/mcp";
 
+/// `POST /dashboard/settings/greeting` - the generated line on an empty chat page.
+pub const ROUTE_SETTINGS_GREETING: &str = "/dashboard/settings/greeting";
+
 /// `POST /dashboard/sidebar` - show or hide the conversation rail.
 pub const ROUTE_SIDEBAR: &str = "/dashboard/sidebar";
 
@@ -271,6 +274,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_PROVIDERS,
     ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_MCP,
+    ROUTE_SETTINGS_GREETING,
     ROUTE_SIDEBAR,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",

@@ -2012,3 +2012,54 @@ fn a_stop_command_refuses_when_nothing_runs_and_cancels_a_row_that_does() {
         "the answer says it stopped"
     );
 }
+
+#[test]
+fn an_empty_chat_shows_the_generated_line_only_when_it_is_switched_on() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    let now = crate::auth::now().unix_timestamp();
+
+    // A stored line with the switch off renders nothing at all: the salutation
+    // stands alone exactly as it did before the setting existed.
+    crate::greeting::remember(db, "Light through the window", now).expect("store a line");
+    let off = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(off.status, StatusCode::OK, "{}", off.body);
+    assert!(
+        !off.body.contains("Light through the window"),
+        "the line is not rendered while the setting is off: {}",
+        off.body
+    );
+    assert!(
+        !off.body.contains(r#"class="line""#),
+        "there is no line element at all: {}",
+        off.body
+    );
+    assert!(
+        off.body.contains(r#"class="hello""#),
+        "the salutation is still there: {}",
+        off.body
+    );
+
+    // Switched on, with a line inside its window, the page serves the stored
+    // line: a cached render does not reach a provider.
+    crate::web::store::settings_put(db, crate::greeting::SETTING_GREETING_ENABLED, "true")
+        .expect("on");
+    let on = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert!(
+        on.body.contains("Light through the window"),
+        "the stored line is under the salutation: {}",
+        on.body
+    );
+    assert!(
+        on.body.contains(r#"class="line""#),
+        "it is rendered as its own quiet line: {}",
+        on.body
+    );
+}
