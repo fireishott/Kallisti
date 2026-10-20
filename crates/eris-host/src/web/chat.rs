@@ -1146,6 +1146,68 @@ pub fn extract_readable(config: &TurnConfig, page: &str) -> Option<String> {
     (!extracted.is_empty()).then_some(extracted)
 }
 
+/// What the approval role thinks of a parked call.
+///
+/// Advice, never a decision: the row still waits for a person. The point is to
+/// hand that person a reading of the call rather than a raw JSON argument blob at
+/// the moment they have to say yes or no.
+///
+/// Best effort. A role that cannot answer leaves the queue exactly as it was.
+#[must_use]
+pub fn advise_approval(
+    config: &TurnConfig,
+    tool: &str,
+    arguments: &str,
+    sandbox_mode: &str,
+) -> Option<String> {
+    let profile =
+        ProviderProfile::new("approval", config.base_url.clone(), config.key_ref.clone()).ok()?;
+    let provider = OpenAiCompatProvider::new(
+        profile,
+        ModelProfile::new(config.model.clone()),
+        Capabilities::openai_compatible(),
+    )
+    .ok()?;
+    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+
+    let request = ChatRequest {
+        system: Some(
+            "You review a single tool call an assistant wants to run on the operator's machine. \
+             Reply with one line: a verdict of SAFE, CAREFUL or RISKY, then a dash, then one \
+             sentence saying why. Nothing else. Judge blast radius: what it writes, what it \
+             reaches, whether it is reversible."
+                .to_owned(),
+        ),
+        messages: vec![ChatMessage::text(
+            ChatRole::User,
+            format!(
+                "Sandbox mode: {sandbox_mode}\nTool: {tool}\nArguments: {}",
+                arguments.chars().take(2000).collect::<String>()
+            ),
+        )],
+        ..ChatRequest::default()
+    };
+
+    let mut sink = |_event: ProviderEvent| {};
+    let completion = runtime
+        .block_on(provider.stream_chat(&request, &key, &mut sink))
+        .ok()?;
+    let advice: String = completion
+        .text
+        .trim()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(240)
+        .collect();
+    (!advice.trim().is_empty()).then_some(advice.trim().to_owned())
+}
+
 /// Trim and validate what the browser typed.
 ///
 /// An empty message is a refusal by name rather than a silently dropped turn, and

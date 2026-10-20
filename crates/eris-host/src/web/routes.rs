@@ -4204,6 +4204,9 @@ fn spawn_turn(
     let web_extract = chat::aux_pinned_config(&state.engine, "web_extract")
         .ok()
         .flatten();
+    let approval_role = chat::aux_pinned_config(&state.engine, "approval")
+        .ok()
+        .flatten();
     let tool_rounds = crate::tools::max_rounds(
         state
             .engine
@@ -4248,7 +4251,30 @@ fn spawn_turn(
             if !gated || approval_policy == crate::onboarding::permissions::ApprovalPolicy::Never {
                 return chat::GateDecision::Run;
             }
-            match crate::approvals::queue(&db, &conversation, &call.name, &call.arguments) {
+            // Advice before the row: the person deciding sees a reading, and the
+            // reading is never what decides.
+            let advice = approval_role.as_ref().and_then(|config| {
+                chat::advise_approval(
+                    config,
+                    &call.name,
+                    &call.arguments.to_string(),
+                    sandbox.mode().as_str(),
+                )
+            });
+            if approval_role.is_some() {
+                let detail = match &advice {
+                    Some(text) => text.clone(),
+                    None => "no advice".to_owned(),
+                };
+                let _ = title_audit.audit("loopback", "chat.approval", Some(&detail));
+            }
+            match crate::approvals::queue(
+                &db,
+                &conversation,
+                &call.name,
+                &call.arguments,
+                advice.as_deref(),
+            ) {
                 Ok(approval_id) => chat::GateDecision::Park { approval_id },
                 Err(error) => chat::GateDecision::Refuse {
                     reason: format!(

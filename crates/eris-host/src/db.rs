@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -120,6 +120,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 11,
         name: "0011_chat_tools",
         sql: MIGRATION_0011,
+    },
+    Migration {
+        version: 12,
+        name: "0012_approval_advice",
+        sql: MIGRATION_0012,
     },
 ];
 
@@ -456,6 +461,16 @@ ALTER TABLE chat_messages ADD COLUMN reasoning TEXT;
 /// was reached. Null when a turn called nothing, which is most turns.
 const MIGRATION_0011: &str = r"
 ALTER TABLE chat_messages ADD COLUMN tools TEXT;
+";
+
+/// Migration 0012: what the approval role thought of a parked call.
+///
+/// A recommendation, not a decision. The row still needs a human: the column
+/// exists so the person deciding has the model's reading in front of them, which
+/// is the whole point of the role. Nothing in the daemon reads this to decide
+/// anything.
+const MIGRATION_0012: &str = r"
+ALTER TABLE approvals ADD COLUMN advice TEXT;
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

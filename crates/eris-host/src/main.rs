@@ -297,6 +297,7 @@ fn run_approvals(json: bool, state_dir: Option<PathBuf>, command: ApprovalsComma
                             "tool": row.tool,
                             "arguments": row.arguments,
                             "created_at": row.created_at,
+                            "advice": row.advice,
                         })
                     })
                     .collect();
@@ -306,6 +307,11 @@ fn run_approvals(json: bool, state_dir: Option<PathBuf>, command: ApprovalsComma
             } else {
                 for row in &waiting {
                     println!("{}  {}  {}", row.id, row.tool, row.arguments);
+                    // Advice is printed under the call, never in place of it: the
+                    // decision is still the operator's.
+                    if let Some(advice) = &row.advice {
+                        println!("    advice: {advice}");
+                    }
                 }
             }
             ExitCode::SUCCESS

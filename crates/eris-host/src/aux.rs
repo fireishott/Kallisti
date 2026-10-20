@@ -63,8 +63,8 @@ pub const ROLES: &[Role] = &[
     Role {
         key: "approval",
         label: "Approval",
-        purpose: "Judges a parked tool call before it runs.",
-        consumed_by: None,
+        purpose: "Reads a parked tool call and says what it would do.",
+        consumed_by: Some("a call parked for approval, once this role is pinned"),
     },
     Role {
         key: "mcp",
@@ -257,7 +257,13 @@ mod tests {
             .collect();
         assert_eq!(
             wired,
-            vec!["vision", "web_extract", "compression", "title_generation"]
+            vec![
+                "vision",
+                "web_extract",
+                "compression",
+                "title_generation",
+                "approval"
+            ]
         );
     }
 }

@@ -45,6 +45,8 @@ pub struct PendingApproval {
     pub arguments: String,
     /// When it was parked.
     pub created_at: String,
+    /// What the approval role thought, when one is pinned. Advice only.
+    pub advice: Option<String>,
 }
 
 /// Park a call and return its id.
@@ -53,12 +55,14 @@ pub fn queue(
     conversation: &str,
     tool: &str,
     arguments: &serde_json::Value,
+    advice: Option<&str>,
 ) -> Result<String, DbError> {
     let id = uuid::Uuid::now_v7().to_string();
     db.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO approvals (id, conversation, tool, arguments) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![id, conversation, tool, arguments.to_string()],
+            "INSERT INTO approvals (id, conversation, tool, arguments, advice)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, conversation, tool, arguments.to_string(), advice],
         )
     })?;
     Ok(id)
@@ -68,7 +72,7 @@ pub fn queue(
 pub fn pending(db: &Db) -> Result<Vec<PendingApproval>, DbError> {
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT id, conversation, tool, arguments, created_at
+            "SELECT id, conversation, tool, arguments, created_at, advice
                FROM approvals
               WHERE status = 'pending'
               ORDER BY created_at, id",
@@ -80,6 +84,7 @@ pub fn pending(db: &Db) -> Result<Vec<PendingApproval>, DbError> {
                 tool: row.get(2)?,
                 arguments: row.get(3)?,
                 created_at: row.get(4)?,
+                advice: row.get(5)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -90,7 +95,7 @@ pub fn pending(db: &Db) -> Result<Vec<PendingApproval>, DbError> {
 pub fn get(db: &Db, id: &str) -> Result<Option<PendingApproval>, DbError> {
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT id, conversation, tool, arguments, created_at
+            "SELECT id, conversation, tool, arguments, created_at, advice
                FROM approvals
               WHERE id = ?1",
         )?;
@@ -101,6 +106,7 @@ pub fn get(db: &Db, id: &str) -> Result<Option<PendingApproval>, DbError> {
                 tool: row.get(2)?,
                 arguments: row.get(3)?,
                 created_at: row.get(4)?,
+                advice: row.get(5)?,
             })
         })?;
         match rows.next() {
@@ -142,7 +148,7 @@ mod tests {
         let db = db();
         let arguments = serde_json::json!({"path": "notes/a.txt", "content": "hi"});
 
-        let id = queue(&db, "conv-1", "write_file", &arguments).expect("queued");
+        let id = queue(&db, "conv-1", "write_file", &arguments, None).expect("queued");
         let waiting = pending(&db).expect("pending");
 
         assert_eq!(waiting.len(), 1);
@@ -157,7 +163,7 @@ mod tests {
     #[test]
     fn deciding_settles_the_row_and_a_second_decision_changes_nothing() {
         let db = db();
-        let id = queue(&db, "conv-1", "write_file", &serde_json::json!({})).expect("queued");
+        let id = queue(&db, "conv-1", "write_file", &serde_json::json!({}), None).expect("queued");
 
         assert!(decide(&db, &id, Decision::Approved, "curtis").expect("decided"));
         assert!(
@@ -171,9 +177,34 @@ mod tests {
     }
 
     #[test]
+    fn advice_is_kept_with_the_row_and_never_decides_it() {
+        let db = db();
+        let id = queue(
+            &db,
+            "conv-1",
+            "write_file",
+            &serde_json::json!({"path": "a.txt"}),
+            Some("CAREFUL - overwrites a file that already exists"),
+        )
+        .expect("queued");
+
+        let waiting = pending(&db).expect("pending");
+        assert_eq!(
+            waiting[0].advice.as_deref(),
+            Some("CAREFUL - overwrites a file that already exists")
+        );
+        assert_eq!(
+            pending(&db).expect("pending").len(),
+            1,
+            "advice alone must not settle the row"
+        );
+        assert!(decide(&db, &id, Decision::Approved, "curtis").expect("decided"));
+    }
+
+    #[test]
     fn a_decision_records_who_made_it() {
         let db = db();
-        let id = queue(&db, "conv-1", "write_file", &serde_json::json!({})).expect("queued");
+        let id = queue(&db, "conv-1", "write_file", &serde_json::json!({}), None).expect("queued");
         decide(&db, &id, Decision::Denied, "curtis").expect("decided");
 
         let (status, decided_by): (String, String) = db
