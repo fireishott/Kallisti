@@ -1096,6 +1096,56 @@ pub fn describe_images(config: &TurnConfig, files: &[Attachment]) -> Option<Stri
     (!text.is_empty()).then_some(text)
 }
 
+/// Pull the readable content out of a fetched page.
+///
+/// `fetch_url` already strips tags; this asks the role's model what in the page
+/// actually matters, which is the difference between a wall of navigation text
+/// and the article someone asked about. Best effort: a failure leaves the fetched
+/// text exactly as the tool returned it.
+#[must_use]
+pub fn extract_readable(config: &TurnConfig, page: &str) -> Option<String> {
+    let text = page.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let profile = ProviderProfile::new(
+        "web-extract",
+        config.base_url.clone(),
+        config.key_ref.clone(),
+    )
+    .ok()?;
+    let provider = OpenAiCompatProvider::new(
+        profile,
+        ModelProfile::new(config.model.clone()),
+        Capabilities::openai_compatible(),
+    )
+    .ok()?;
+    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+
+    let excerpt: String = text.chars().take(12_000).collect();
+    let request = ChatRequest {
+        system: Some(
+            "You extract the meaningful content of a web page. Return only what a reader \
+             came for: the article, the data, the answer. Drop navigation, cookie banners, \
+             related links and boilerplate. Keep it under 300 words."
+                .to_owned(),
+        ),
+        messages: vec![ChatMessage::text(ChatRole::User, excerpt)],
+        ..ChatRequest::default()
+    };
+
+    let mut sink = |_event: ProviderEvent| {};
+    let completion = runtime
+        .block_on(provider.stream_chat(&request, &key, &mut sink))
+        .ok()?;
+    let extracted = completion.text.trim().to_owned();
+    (!extracted.is_empty()).then_some(extracted)
+}
+
 /// Trim and validate what the browser typed.
 ///
 /// An empty message is a refusal by name rather than a silently dropped turn, and
@@ -1246,6 +1296,7 @@ pub fn run_turn(
     sandbox: &crate::tools::Sandbox,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     mcp: Option<&crate::mcp::Pool>,
+    web_extract: Option<&TurnConfig>,
     settings: TurnSettings,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> Result<TurnOutcome, TurnFailure> {
@@ -1288,7 +1339,24 @@ pub fn run_turn(
                 Err(error) => crate::tools::ToolResult::refused(&error.message),
             };
         }
-        crate::tools::execute(&call.name, &call.arguments, sandbox)
+        let result = crate::tools::execute(&call.name, &call.arguments, sandbox);
+        // A fetched page is a wall of navigation until something reads it. With
+        // the role pinned, its model reads it; without one the tool's own text
+        // stands, which is exactly what the tool was doing before the role
+        // existed.
+        if call.name == "fetch_url"
+            && !result.is_error
+            && let Some(config) = web_extract
+            && let Ok(payload) = serde_json::from_str::<serde_json::Value>(&result.content)
+            && let Some(text) = payload.get("text").and_then(serde_json::Value::as_str)
+            && let Some(extracted) = extract_readable(config, text)
+        {
+            return crate::tools::ToolResult::ok(serde_json::json!({
+                "url": payload.get("url").cloned().unwrap_or(serde_json::Value::Null),
+                "extracted": extracted,
+            }));
+        }
+        result
     };
 
     let outcome = drive_tool_loop(

@@ -46,7 +46,7 @@ pub const ROLES: &[Role] = &[
         key: "web_extract",
         label: "Web extract",
         purpose: "Pulls the readable text out of a fetched page.",
-        consumed_by: None,
+        consumed_by: Some("a turn that fetches a URL, once this role is pinned"),
     },
     Role {
         key: "compression",
@@ -255,6 +255,9 @@ mod tests {
             .filter(|role| role.consumed_by.is_some())
             .map(|role| role.key)
             .collect();
-        assert_eq!(wired, vec!["vision", "compression", "title_generation"]);
+        assert_eq!(
+            wired,
+            vec!["vision", "web_extract", "compression", "title_generation"]
+        );
     }
 }

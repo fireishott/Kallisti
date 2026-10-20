@@ -220,7 +220,8 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
-    fn ok(payload: serde_json::Value) -> Self {
+    /// A successful result carrying a JSON payload.
+    pub fn ok(payload: serde_json::Value) -> Self {
         Self {
             content: payload.to_string(),
             is_error: false,
@@ -341,6 +342,20 @@ pub fn specs(mode: SandboxMode) -> Vec<ToolSpec> {
                 "required": ["path", "content"]
             }),
         },
+        ToolSpec {
+            name: "fetch_url".to_owned(),
+            description: "Fetch a web page and return its readable text.".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "An http or https URL. Private and loopback addresses are refused."
+                    }
+                },
+                "required": ["url"]
+            }),
+        },
     ];
 
     // Command execution is offered only where the sandbox will honour it. A tool
@@ -375,6 +390,7 @@ pub fn execute(name: &str, arguments: &serde_json::Value, sandbox: &Sandbox) -> 
         "read_file" => read_file(arguments, sandbox),
         "write_file" => write_file(arguments, sandbox),
         "run_command" => run_command(arguments, sandbox),
+        "fetch_url" => fetch_url(arguments, sandbox),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
 }
@@ -488,6 +504,179 @@ fn write_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
         })),
         Err(error) => ToolResult::error(format!("{requested}: {error}")),
     }
+}
+
+/// The most of a page that is fetched or handed back.
+pub const MAX_FETCH_BYTES: usize = 512 * 1024;
+
+/// How long a fetch may take.
+pub const FETCH_TIMEOUT_SECS: u64 = 15;
+
+/// The most redirects a fetch will follow.
+pub const MAX_FETCH_REDIRECTS: usize = 5;
+
+/// Whether a host may be fetched at all.
+///
+/// A model can be talked into fetching anything, so the guard is here rather than
+/// in the prompt: loopback, link-local and private ranges are refused by name.
+/// This does not stop a public hostname that resolves to a private address - a
+/// full answer needs resolution-time checking - and that limitation is stated
+/// rather than papered over.
+pub fn fetch_allowed(url: &str) -> Result<(), String> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .ok_or_else(|| format!("`{url}` is not an http or https URL"))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_creds, host)| host);
+    let host = host.split(':').next().unwrap_or("").to_ascii_lowercase();
+    if host.is_empty() {
+        return Err("the URL has no host".to_owned());
+    }
+    let forbidden = host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host == "[::1]"
+        || host.starts_with("127.")
+        || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || host.starts_with("169.254.")
+        || (host.starts_with("172.") && {
+            let second = host
+                .split('.')
+                .nth(1)
+                .and_then(|part| part.parse::<u8>().ok())
+                .unwrap_or(0);
+            (16..=31).contains(&second)
+        });
+    if forbidden {
+        return Err(format!(
+            "`{host}` is a private or loopback address, and fetching it is refused"
+        ));
+    }
+    Ok(())
+}
+
+/// Turn an HTML document into readable text.
+///
+/// Not a parser: script and style bodies are dropped, tags are removed, a few
+/// entities are decoded and whitespace is collapsed. Enough to read an article,
+/// and deliberately not enough to pretend it understands a page.
+#[must_use]
+pub fn html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        let lower = after.to_ascii_lowercase();
+
+        // A script or style body is not content: skip to its closing tag in one
+        // move. Falling through to the generic tag branch would drop only the
+        // opening tag and leave the code behind, which is worse than nothing.
+        let mut skipped = false;
+        for tag in ["script", "style"] {
+            if lower.starts_with(&format!("<{tag}")) {
+                if let Some(end) = lower.find(&format!("</{tag}>")) {
+                    rest = &after[end + tag.len() + 3..];
+                    out.push(' ');
+                    skipped = true;
+                }
+                break;
+            }
+        }
+        if skipped {
+            continue;
+        }
+
+        match after.find('>') {
+            Some(end) => rest = &after[end + 1..],
+            None => break,
+        }
+    }
+    out.push_str(rest);
+
+    let decoded = out
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn fetch_url(arguments: &serde_json::Value, _sandbox: &Sandbox) -> ToolResult {
+    let url = match string_arg(arguments, "url") {
+        Ok(url) => url.trim().to_owned(),
+        Err(error) => return error,
+    };
+    if let Err(refusal) = fetch_allowed(&url) {
+        return ToolResult::refused(&refusal);
+    }
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return ToolResult::error(format!("cannot start a fetch: {error}")),
+    };
+
+    let response = runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::limited(MAX_FETCH_REDIRECTS))
+            .build()?;
+        client
+            .get(&url)
+            .header(reqwest::header::USER_AGENT, "kallisti-mcp/1.4")
+            .send()
+            .await
+    });
+
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => return ToolResult::error(format!("cannot fetch {url}: {error}")),
+    };
+    if !response.status().is_success() {
+        return ToolResult::error(format!("{url} answered {}", response.status()));
+    }
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown")
+        .to_owned();
+
+    let body = match runtime.block_on(response.text()) {
+        Ok(body) => body,
+        Err(error) => return ToolResult::error(format!("cannot read {url}: {error}")),
+    };
+    let truncated = body.len() > MAX_FETCH_BYTES;
+    let body = if truncated {
+        body.chars().take(MAX_FETCH_BYTES).collect::<String>()
+    } else {
+        body
+    };
+
+    let text = if content_type.contains("html") {
+        html_to_text(&body)
+    } else {
+        body.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+
+    ToolResult::ok(serde_json::json!({
+        "url": url,
+        "status": status,
+        "content_type": content_type,
+        "truncated": truncated,
+        "text": text,
+    }))
 }
 
 fn run_command(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
@@ -778,6 +967,67 @@ mod tests {
     }
 
     #[test]
+    fn a_fetch_reaches_the_public_web_and_refuses_the_local_one() {
+        assert!(super::fetch_allowed("https://example.com/page").is_ok());
+        assert!(super::fetch_allowed("http://example.com:8080/x?y=1").is_ok());
+
+        for blocked in [
+            "http://localhost:7340/healthz",
+            "http://127.0.0.1/",
+            "http://10.1.2.3/",
+            "http://192.168.68.51/",
+            "http://169.254.169.254/latest/meta-data",
+            "http://172.16.0.1/",
+            "http://printer.local/",
+        ] {
+            assert!(
+                super::fetch_allowed(blocked).is_err(),
+                "{blocked} should be refused"
+            );
+        }
+        assert!(
+            super::fetch_allowed("ftp://example.com/x").is_err(),
+            "only http and https"
+        );
+        assert!(
+            super::fetch_allowed("http://172.32.0.1/").is_ok(),
+            "172.32 is public, only 172.16-31 is private"
+        );
+    }
+
+    #[test]
+    fn a_page_becomes_readable_text_without_its_scripts() {
+        let html = "<html><head><style>body{color:red}</style>\
+                    <script>var secret = 1;</script></head>\
+                    <body><h1>Title</h1><p>First &amp; second</p>\
+                    <p>third</p></body></html>";
+        let text = super::html_to_text(html);
+        assert!(text.contains("Title"), "{text}");
+        assert!(text.contains("First & second"), "{text}");
+        assert!(text.contains("third"), "{text}");
+        assert!(!text.contains("var secret"), "scripts are dropped: {text}");
+        assert!(!text.contains("color:red"), "styles are dropped: {text}");
+        assert!(!text.contains('<'), "no tags survive: {text}");
+    }
+
+    #[test]
+    fn a_fetch_of_the_local_admin_port_is_refused_before_it_runs() {
+        let scratch = Scratch::new("fetchguard");
+        let sandbox = sandbox(&scratch, super::SandboxMode::ReadOnly);
+        let result = super::execute(
+            "fetch_url",
+            &serde_json::json!({"url": "http://127.0.0.1:7340/healthz"}),
+            &sandbox,
+        );
+        assert!(result.is_error, "{result:?}");
+        assert!(
+            result.content.contains("refused"),
+            "the refusal says so: {}",
+            result.content
+        );
+    }
+
+    #[test]
     fn an_mcp_result_keeps_its_server_and_its_failure_flag() {
         let ok = super::ToolResult::from_mcp(
             "echo__ping",
@@ -860,6 +1110,20 @@ mod tests {
             "a failed command is not a success: {result:?}"
         );
         assert!(result.content.contains('3'), "{}", result.content);
+    }
+
+    #[test]
+    fn fetching_is_offered_even_when_the_sandbox_is_narrow() {
+        // Reading a public page is a network read, not a filesystem write, so a
+        // read-only workspace does not remove it.
+        let offered: Vec<String> = super::specs(super::SandboxMode::ReadOnly)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(
+            offered.contains(&"fetch_url".to_owned()),
+            "a read-only turn may still read the web: {offered:?}"
+        );
     }
 
     #[test]

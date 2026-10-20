@@ -4201,6 +4201,9 @@ fn spawn_turn(
         .ok()
         .flatten();
     let title_audit = state.engine.auth().clone();
+    let web_extract = chat::aux_pinned_config(&state.engine, "web_extract")
+        .ok()
+        .flatten();
     let tool_rounds = crate::tools::max_rounds(
         state
             .engine
@@ -4340,6 +4343,7 @@ fn spawn_turn(
             &sandbox,
             &mut gate,
             Some(&mcp),
+            web_extract.as_ref(),
             chat::TurnSettings {
                 tools: tools_enabled,
                 max_rounds: tool_rounds,
