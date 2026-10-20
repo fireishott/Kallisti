@@ -253,7 +253,8 @@ impl ChatRequest {
         call_id: impl Into<String>,
         content: impl Into<String>,
     ) -> Self {
-        self.messages.push(ChatMessage::tool_result(call_id, content));
+        self.messages
+            .push(ChatMessage::tool_result(call_id, content));
         self
     }
 
