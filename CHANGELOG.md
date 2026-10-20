@@ -6,7 +6,9 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
-Nothing yet.
+- **MIT.** The repository now carries a `LICENSE` with the MIT terms, every crate
+  declares `license = "MIT"`, and the README states it. The earlier README reserved
+  all rights because no licence file existed; this replaces that.
 
 ## 1.4.0
 

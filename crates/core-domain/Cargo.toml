@@ -1,6 +1,7 @@
 [package]
 name = "core-domain"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Kallisti 1.0 domain types: ids, events, capabilities, device context. No I/O."

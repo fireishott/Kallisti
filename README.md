@@ -111,5 +111,6 @@ Named so that no surface has to pretend:
 
 ## Licence
 
-No licence file is present yet. Treat this as all rights reserved until one is
-added.
+MIT. See [`LICENSE`](LICENSE). In short: use it, change it, ship it, sell it, as
+long as the copyright notice and permission notice travel with it and the software
+comes with no warranty.

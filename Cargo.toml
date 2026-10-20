@@ -11,6 +11,7 @@ members = [
 version = "1.4.0"
 edition = "2024"
 rust-version = "1.99"
+license = "MIT"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

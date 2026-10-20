@@ -1,6 +1,7 @@
 [package]
 name = "eris-host"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Kallisti Eris daemon: config, SQLite state, and the loopback admin listener."
