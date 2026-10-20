@@ -20,7 +20,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
-use crate::admin::{ROUTE_CHAT, ROUTE_CHAT_SEND, ROUTE_SETTINGS};
+use crate::admin::{ROUTE_CHAT, ROUTE_CHAT_SEND, ROUTE_SETTINGS, ROUTE_SETTINGS_TOOLS};
 use crate::web::chat::{self, CONVERSATION_ID, Role, State};
 use crate::web::templates::SettingsView;
 use crate::web::wallpaper;
@@ -105,6 +105,108 @@ fn the_chat_page_needs_a_session_and_renders_the_default_wallpaper() {
         body.matches("<script").count(),
         1,
         "one inline script, as the shell sweep documents"
+    );
+}
+
+#[test]
+fn a_tool_call_renders_as_a_closed_window_that_can_be_opened() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "run it", State::Complete).unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    chat::settle(
+        db,
+        &answer,
+        "ran it",
+        None,
+        &[chat::ToolRecord {
+            name: "run_command".to_owned(),
+            arguments: r#"{"command":"psql -c 'select 1'"}"#.to_owned(),
+            output: "one column\n---\n 1".to_owned(),
+            is_error: false,
+        }],
+        None,
+        chat::Accounting::default(),
+    )
+    .unwrap();
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+
+    assert!(
+        body.contains(r#"<details class="exec-call""#),
+        "each call is its own window"
+    );
+    assert!(
+        body.contains(r#"<summary class="exec-head""#),
+        "the summary line names the call"
+    );
+    assert!(
+        !body.contains(r#"<details class="exec-call" open"#),
+        "the output starts closed, so a long stdout cannot take over the page"
+    );
+    assert!(body.contains("run_command"), "the call is named");
+    assert!(
+        body.contains("select 1"),
+        "the arguments are visible closed"
+    );
+}
+
+#[test]
+fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "run it", State::Complete).unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    chat::settle(
+        db,
+        &answer,
+        "ran it",
+        None,
+        &[chat::ToolRecord {
+            name: "run_command".to_owned(),
+            arguments: r#"{"command":"echo hi"}"#.to_owned(),
+            output: "hi".to_owned(),
+            is_error: false,
+        }],
+        None,
+        chat::Accounting::default(),
+    )
+    .unwrap();
+
+    // Off is stored by the tools form and read by the page.
+    let reply = block_on(send(
+        &app,
+        Call::post(ROUTE_SETTINGS_TOOLS, "tools_enabled=true&tool_rounds=4")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+    assert_eq!(
+        engine
+            .setting(chat::SETTING_SHOW_TOOL_LOG)
+            .unwrap()
+            .as_deref(),
+        Some("false"),
+        "an unchecked box is stored as off, not left out"
+    );
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        !page.body.contains(r#"class="exec"#),
+        "with the log off the page carries no run log at all"
+    );
+    assert!(
+        !page.body.contains("echo hi"),
+        "and no command output either: off means not sent"
     );
 }
 

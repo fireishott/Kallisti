@@ -1417,6 +1417,21 @@ pub fn show_reasoning(stored: Option<&str>) -> bool {
     !matches!(stored.map(str::trim), Some("false"))
 }
 
+/// The `settings` row that remembers whether the run log is shown.
+///
+/// Default on: a turn that ran something should say so. The log is a record, and
+/// hiding the record is the operator's choice rather than the starting state.
+pub const SETTING_SHOW_TOOL_LOG: &str = "assistant.show_tool_log";
+
+/// Whether to render and stream the run log.
+///
+/// Anything other than an explicit `false` leaves it on, so a corrupt row cannot
+/// silently hide what a turn did.
+#[must_use]
+pub fn show_tool_log(stored: Option<&str>) -> bool {
+    !matches!(stored.map(str::trim), Some("false"))
+}
+
 /// What the operator configured about tool use for this turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnSettings {
@@ -1895,6 +1910,14 @@ mod tests {
         assert_eq!(ids, vec![first.as_str(), second.as_str(), third.as_str()]);
         assert_eq!(transcript[1].role, Role::Assistant);
         assert_eq!(transcript[1].body, "hi");
+    }
+
+    #[test]
+    fn the_run_log_is_on_unless_it_says_otherwise() {
+        assert!(show_tool_log(None), "a fresh install shows what it ran");
+        assert!(show_tool_log(Some("true")));
+        assert!(show_tool_log(Some("garbage")), "a corrupt row keeps it on");
+        assert!(!show_tool_log(Some("false")));
     }
 
     #[test]

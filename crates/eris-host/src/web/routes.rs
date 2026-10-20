@@ -616,6 +616,14 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .and_then(|stored| crate::mcp::parse(&stored).ok())
         .map(|servers| crate::mcp::to_json(&servers))
         .unwrap_or_else(|| "[]".to_owned());
+    view.show_tool_log = chat::show_tool_log(
+        state
+            .engine
+            .setting(chat::SETTING_SHOW_TOOL_LOG)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
     view.show_reasoning = chat::show_reasoning(
         engine
             .setting(chat::SETTING_SHOW_REASONING)
@@ -2760,6 +2768,7 @@ async fn save_tools(
     };
 
     let enabled = flag(&fields, "tools_enabled");
+    let show_log = flag(&fields, "show_tool_log");
     let raw = field(&fields, "tool_rounds").trim().to_owned();
     let rounds: u32 = match raw.parse::<u32>() {
         Ok(rounds) if (1..=crate::tools::MAX_TOOL_ROUNDS_CEILING).contains(&rounds) => rounds,
@@ -2793,10 +2802,19 @@ async fn save_tools(
     ) {
         return store_failure(&request_id.0, crate::tools::SETTING_TOOL_ROUNDS, error);
     }
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        chat::SETTING_SHOW_TOOL_LOG,
+        if show_log { "true" } else { "false" },
+    ) {
+        return store_failure(&request_id.0, chat::SETTING_SHOW_TOOL_LOG, error);
+    }
     if let Err(error) = state.engine.auth().audit(
         "loopback",
         "settings.tools",
-        Some(&format!("enabled={enabled}; max_rounds={rounds}")),
+        Some(&format!(
+            "enabled={enabled}; max_rounds={rounds}; run_log={show_log}"
+        )),
     ) {
         return audit_failure(&request_id.0, "settings.tools", error);
     }
@@ -3437,6 +3455,14 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
             state
                 .engine
                 .setting(chat::SETTING_SHOW_REASONING)
+                .ok()
+                .flatten()
+                .as_deref(),
+        ),
+        show_tool_log: chat::show_tool_log(
+            state
+                .engine
+                .setting(chat::SETTING_SHOW_TOOL_LOG)
                 .ok()
                 .flatten()
                 .as_deref(),
@@ -4186,6 +4212,14 @@ fn spawn_turn(
         .permissions()
         .map(|permissions| permissions.approval_policy)
         .unwrap_or(crate::onboarding::permissions::ApprovalPolicy::Ask);
+    let show_tool_log = chat::show_tool_log(
+        state
+            .engine
+            .setting(chat::SETTING_SHOW_TOOL_LOG)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
     let show_reasoning = chat::show_reasoning(
         state
             .engine
@@ -4357,18 +4391,21 @@ fn spawn_turn(
                 output,
                 is_error,
             } => {
-                // Always sent: this is what the turn is doing, not what the model
-                // is thinking, so it does not sit behind the reasoning toggle.
-                send_terminal(
-                    &sender,
-                    "tool",
-                    serde_json::json!({
-                        "name": name,
-                        "arguments": arguments,
-                        "output": output,
-                        "is_error": is_error,
-                    }),
-                );
+                // Behind its own switch, not the reasoning one. Off means the run
+                // log is neither rendered nor streamed, so a disabled log does not
+                // still ship command output to the browser.
+                if show_tool_log {
+                    send_terminal(
+                        &sender,
+                        "tool",
+                        serde_json::json!({
+                            "name": name,
+                            "arguments": arguments,
+                            "output": output,
+                            "is_error": is_error,
+                        }),
+                    );
+                }
             }
         };
         let started = std::time::Instant::now();

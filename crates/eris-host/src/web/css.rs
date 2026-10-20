@@ -862,6 +862,23 @@ pre.code {
   padding: 9px 12px;
   border-top: 1px dashed var(--line);
 }
+/* One call is one window: closed it is a single line naming the call, open it is
+   a short scroll box so a 40-line stdout cannot take over the conversation. */
+.msg .exec-call > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.msg .exec-call > summary::-webkit-details-marker { display: none; }
+.msg .exec-call > summary::before {
+  content: "\25B8";
+  color: var(--muted);
+  margin-right: 2px;
+}
+.msg .exec-call[open] > summary::before { content: "\25BE"; }
+.msg .exec-call[open] > summary { margin-bottom: 6px; }
 .msg .exec-head { display: flex; flex-wrap: wrap; gap: 8px; }
 .msg .exec-name { color: var(--text); }
 .msg .exec-args { color: var(--muted); overflow-wrap: anywhere; }
@@ -873,9 +890,12 @@ pre.code {
   overflow-wrap: anywhere;
   color: var(--text);
   opacity: 0.9;
-  max-height: 280px;
+  max-height: 132px;
   overflow-y: auto;
+  padding-right: 4px;
 }
+/* Expanded stays bounded: a bigger window, not the whole file. */
+.msg .exec-call[open] .exec-out { max-height: 320px; }
 .msg .think > summary::-webkit-details-marker { display: none; }
 .msg .think > summary::before {
   content: "▸ ";

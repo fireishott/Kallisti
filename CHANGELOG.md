@@ -35,8 +35,12 @@ run.
   record with what actually ran, keeping the approval id, and leaves every other
   call in the turn alone. Previously the row kept saying `pending_approval` forever.
 - **Thinking bubble is open by default** with a control that lifts it out of the
-  column, and a run log beside each answer showing the command line, its arguments
-  and its output.
+  column.
+- **Run log as a window.** Each executed call renders as a closed one-line entry
+  naming the tool and its arguments; opening it shows the output in a short scroll
+  box that stays bounded when expanded, so a long stdout cannot take over the
+  conversation. Settings gains "Show the run log"; off means it is neither rendered
+  nor streamed, so command output does not leave the daemon.
 
 ## 1.3.0
 
