@@ -155,11 +155,11 @@ fn the_rail_carries_new_chat_the_sessions_and_the_cog() {
         body.contains(r#"aria-label="Settings""#),
         "the cog is labelled"
     );
-    // The section nav is shell furniture: every page carries it, so the one
-    // thing an operator came to do is never behind a menu.
+    // The dashboard does carry the section row: it is a control surface, and the
+    // row is how you leave it.
     assert!(
         body.contains(r#"class="sections""#),
-        "every page carries the section list: {body}"
+        "the dashboard carries the section list: {body}"
     );
 
     // Settings is where the sections live, and it marks itself.
@@ -251,6 +251,22 @@ fn the_settings_page_reaches_every_section_and_none_is_a_placeholder() {
             "{route} keeps the cog: {}",
             page.body
         );
+        // Every surface except the conversation carries the section row. Chat is
+        // the conversation: the row fights the transcript, and the cog is the way
+        // out of it.
+        if route == ROUTE_CHAT {
+            assert!(
+                !page.body.contains(r#"class="sections""#),
+                "chat stays clear of the section row: {}",
+                page.body
+            );
+        } else {
+            assert!(
+                page.body.contains(r#"class="sections""#),
+                "{route} carries the section list: {}",
+                page.body
+            );
+        }
     }
 }
 

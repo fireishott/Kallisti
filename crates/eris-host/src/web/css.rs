@@ -198,6 +198,25 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   white-space: nowrap;
 }
 
+.wrap-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+.cog-floating {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 12px;
+}
+.cog-floating:hover { color: var(--text); border-color: var(--line-strong); }
 .top-nav {
   position: sticky;
   top: 0;

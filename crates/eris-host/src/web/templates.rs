@@ -496,16 +496,30 @@ pub fn shell(
                     }
                     div .wrap {
                         @if chrome.rail_hidden {
-                            form .rail-show method="post" action=(crate::admin::ROUTE_SIDEBAR) {
-                                input type="hidden" name="rail" value="shown";
-                                button type="submit" title="Show the sidebar"
-                                    aria-label="Show the sidebar" { "\u{00BB}" }
+                            div .wrap-tools {
+                                form .rail-show method="post" action=(crate::admin::ROUTE_SIDEBAR) {
+                                    input type="hidden" name="rail" value="shown";
+                                    button type="submit" title="Show the sidebar"
+                                        aria-label="Show the sidebar" { "\u{00BB}" }
+                                }
+                                /* The cog lives in the sidebar's foot, so hiding the
+                                   rail would take settings with it. With the rail
+                                   hidden the cog moves out here. */
+                                @if nav.is_some() {
+                                    a .cog .cog-floating href=(crate::admin::ROUTE_SETTINGS)
+                                        aria-label="Settings"
+                                        aria-current=[(nav == Some(Nav::Settings)).then_some("page")] {
+                                        span .cog-glyph aria-hidden="true" { "\u{2699}" }
+                                    }
+                                }
                             }
                         }
-                        /* The section nav is shell furniture, not a card on the
-                           settings page: every surface is one click from every
-                           other, including the conversation. */
-                        @if let Some(current) = nav {
+                        /* The section nav is shell furniture, except on the
+                           conversation: chat is the surface, and a row of section
+                           chips above the transcript fights it. Every other page
+                           carries the row, and the cog in the rail reaches
+                           settings from chat. */
+                        @if let Some(current) = nav.filter(|current| *current != Nav::Chat) {
                             div .top-nav { (nav_bar(current)) }
                         }
                         (body)
