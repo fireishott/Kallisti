@@ -198,6 +198,13 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   white-space: nowrap;
 }
 
+.top-nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 6px 0 10px;
+  background: linear-gradient(to bottom, var(--bg) 70%, transparent);
+}
 .sections { display: flex; flex-wrap: wrap; gap: 8px; }
 .sections a {
   display: inline-flex;
@@ -930,17 +937,39 @@ pre.code {
 .msg .win-dot.yellow { background: var(--warn); }
 .msg .win-dot.green { background: var(--ok); }
 .msg .win-title { font-size: 11px; letter-spacing: 0.04em; color: var(--muted); }
-.msg .win-size { margin-left: auto; font-size: 10.5px; color: var(--muted); opacity: 0.8; }
+/* The live dot: the window says it is still being written, in the same green the
+   palette uses for a thing that is working, and vanishes when the call settles. */
+.msg .win-live {
+  margin-left: auto;
+  font-size: 8px;
+  color: var(--ok);
+  animation: caret 1.1s steps(1) infinite;
+}
+.msg .win-size { font-size: 10.5px; color: var(--muted); opacity: 0.8; }
+/* With no live dot the size takes the far edge; with one, the dot leads it. */
+.msg .win-live[hidden] + .win-size { margin-left: auto; }
+/* The body is lines, not one block of pre: a command's output is a prompt line
+   and then what it printed, and stderr has to be paintable without colouring the
+   whole window. Monospace, because output is output. */
 .msg .win-body {
   margin: 0;
   padding: 10px 12px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
   color: var(--text);
   opacity: 0.9;
   max-height: 132px;
-  overflow-y: auto;
+  overflow: auto;
 }
+.msg .term-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The command reads like the command, in the accent, because it is the line the
+   operator typed and the rest answers it. */
+.msg .term-line.prompt { color: var(--platinum); opacity: 0.85; }
+.msg .term-line.err { color: var(--bad); }
+/* A notice is this window talking, not the tool: muted, so an exit status never
+   reads as output the command produced. */
+.msg .term-line.notice { color: var(--muted); }
 /* Expanded stays bounded: a bigger window, not the whole file. */
 .msg .exec-call[open] .win-body { max-height: 340px; }
 .msg .think > summary::-webkit-details-marker { display: none; }
@@ -1182,16 +1211,127 @@ pre.code {
   clip-path: inset(50%);
   border: 0;
 }
-.attach-input:focus-visible + .attach-name { outline: 2px solid var(--platinum); outline-offset: 2px; }
-.attach-name {
-  max-width: 150px;
+.attach-input:focus-visible + .attach-queue { outline: 2px solid var(--platinum); outline-offset: 2px; }
+
+/* The queue of files waiting to go with the message. A chip per file, its size
+   stated, and its own remove button, because a mis-picked file should cost one
+   click rather than a reload. It wraps under the bar on a phone. */
+.attach-queue {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 220px;
+  order: 5;
+}
+.attach-queue[hidden] { display: none; }
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 3px 4px 3px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--raise);
+  color: var(--text);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.attach-chip-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 10.5px;
-  color: var(--platinum);
 }
+.attach-chip-size { color: var(--muted); flex: 0 0 auto; }
+.attach-chip-drop {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.attach-chip-drop:hover { background: var(--line-strong); color: var(--text); }
+
+/* A drop landing on the composer says so: the one gesture everybody tries first
+   has to look like it was received. */
+.composer.dropping { border-color: var(--platinum); background: var(--raise); }
+.composer.dropping::after {
+  content: "drop to attach";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+  background: rgba(12, 12, 16, 0.72);
+  color: var(--platinum);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+/* What a sent message carried, under its own words: the files by name and size,
+   so the transcript says what went with the question. An image is shown as the
+   picture, because a screenshot nobody can see is a filename. */
+.msg .attached {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.msg .attached-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.6;
+  text-decoration: none;
+}
+a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
+.msg .attached-image {
+  display: block;
+  max-width: 260px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  overflow: hidden;
+  line-height: 0;
+}
+.msg .attached-image img { display: block; width: 100%; height: auto; }
+.msg .attached-image:hover { border-color: var(--platinum); }
+
+/* The one control that undoes following the bottom. It sits above the composer,
+   where the eye already is when the page stops moving. */
+.jump-latest {
+  align-self: center;
+  margin: 0 0 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--platinum);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.jump-latest:hover { border-color: var(--platinum); }
+.jump-latest[hidden] { display: none; }
+
+/* A call that is still writing keeps its head visible without the caret that a
+   pending bubble uses: the live dot in the window is the signal. */
+.msg .exec-call.streaming .exec-name { color: var(--platinum); }
 
 /* The conversation totals ride inside the last reply, under a hairline, instead
    of floating over the wallpaper in a bar of their own. */

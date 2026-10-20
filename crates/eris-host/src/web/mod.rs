@@ -15,6 +15,7 @@ pub mod qr;
 pub mod routes;
 pub mod store;
 pub mod templates;
+pub mod term;
 pub mod wallpaper;
 
 /// P11 acceptance for the sign-in route. Test-only: the handlers live with the

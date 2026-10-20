@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 62;
+pub const BUILD: u32 = 63;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -108,6 +108,10 @@ pub const ROUTE_CHAT_ID: &str = "/dashboard/chat/{id}";
 /// `GET /dashboard/chat/sessions.json` - the rail's list, for a page that stays
 /// open while conversations change underneath it.
 pub const ROUTE_CHAT_SESSIONS: &str = "/dashboard/chat/sessions.json";
+
+/// One attached file, by the id the transcript carries. Session-gated like every
+/// other dashboard route: an upload is the operator's, not the world's.
+pub const ROUTE_CHAT_FILE: &str = "/dashboard/chat/file/{id}";
 
 /// `POST /dashboard/chat/new` - start a conversation.
 pub const ROUTE_CHAT_NEW: &str = "/dashboard/chat/new";

@@ -67,6 +67,19 @@ pub struct Attachment {
 /// The largest single attachment a message may carry.
 pub const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
 
+/// The most files one message may carry.
+///
+/// A screenshot and a log and a JSON file and a PDF is a normal turn; fifty is a
+/// mistake. The cap exists so a drop of a whole folder is a refusal with a
+/// number in it rather than a turn that writes a directory into the workspace.
+pub const MAX_ATTACHMENTS: usize = 8;
+
+/// The most bytes one message may carry across every file.
+///
+/// Eight files at the single-file ceiling is 200 MB, which is a workspace write
+/// nobody asked for. The total is the budget that actually matters.
+pub const MAX_ATTACHMENT_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+
 /// How much of a text file is pasted into the prompt.
 pub const INLINE_TEXT_BYTES: usize = 8 * 1024;
 
@@ -159,6 +172,107 @@ pub fn record_attachment(db: &Db, conversation: &str, file: &Attachment) -> Resu
             ],
         )?;
         Ok(())
+    })
+}
+
+/// Tie the files a message carried to the message itself.
+///
+/// The row is written when the file lands, which is before the message exists: a
+/// turn that is refused must not leave a message behind, and a file that is
+/// refused must not leave a row. Once the message has an id, the files that came
+/// with it are claimed, which is what lets a reloaded transcript say what went
+/// with the question.
+///
+/// Returns how many rows were claimed, so a caller can tell "the files were
+/// recorded" from "the files were recorded and are now attached to this line".
+pub fn claim_attachments(
+    db: &Db,
+    conversation: &str,
+    message_id: &str,
+    ids: &[String],
+) -> Result<usize, DbError> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    db.with_conn(|conn| {
+        let mut claimed = 0usize;
+        for id in ids {
+            claimed += conn.execute(
+                "UPDATE chat_attachments
+                    SET message_id = ?3
+                  WHERE id = ?1 AND conversation_id = ?2 AND message_id IS NULL",
+                params![id, conversation, message_id],
+            )?;
+        }
+        Ok(claimed)
+    })
+}
+
+/// The files each message in a conversation carried, keyed by message id.
+///
+/// Read once per page rather than once per line: the transcript is one query
+/// already, and a second query per message is how a page with forty turns
+/// becomes forty round trips.
+pub fn attachments_by_message(
+    db: &Db,
+    conversation: &str,
+) -> Result<std::collections::BTreeMap<String, Vec<Attachment>>, DbError> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT message_id, id, name, path, size, media_type
+               FROM chat_attachments
+              WHERE conversation_id = ?1 AND message_id IS NOT NULL
+              ORDER BY created_at ASC",
+        )?;
+        let rows = statement.query_map(params![conversation], |row| {
+            let message_id: String = row.get(0)?;
+            let media_type: Option<String> = row.get(5)?;
+            let size: i64 = row.get(4)?;
+            Ok((
+                message_id,
+                Attachment {
+                    id: row.get(1)?,
+                    name: row.get(2)?,
+                    path: row.get(3)?,
+                    size: size.max(0) as u64,
+                    media_type,
+                },
+            ))
+        })?;
+        let mut out: std::collections::BTreeMap<String, Vec<Attachment>> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            let (message_id, attachment) = row?;
+            out.entry(message_id).or_default().push(attachment);
+        }
+        Ok(out)
+    })
+}
+
+/// One attachment row, by the id a transcript link carries.
+///
+/// The row is the authority on where the bytes are, so the serving route never
+/// builds a path out of anything a browser sent: an id that is not in this table
+/// is a 404, not a filesystem read.
+pub fn attachment(db: &Db, id: &str) -> Result<Option<Attachment>, DbError> {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT id, name, path, size, media_type
+               FROM chat_attachments
+              WHERE id = ?1",
+            params![id],
+            |row| {
+                let size: i64 = row.get(3)?;
+                Ok(Attachment {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    path: row.get(2)?,
+                    size: size.max(0) as u64,
+                    media_type: row.get(4)?,
+                })
+            },
+        )
+        .optional()
     })
 }
 
@@ -1502,6 +1616,18 @@ pub enum StreamPart<'a> {
         /// Whether it reported a failure.
         is_error: bool,
     },
+    /// Output from a call that is still running.
+    ///
+    /// A command that takes twenty seconds used to look like a turn that was
+    /// thinking very hard about nothing, and then produced its output all at
+    /// once. This is that same output as it arrives, which is what makes the run
+    /// log read like a terminal rather than like a receipt printed afterwards.
+    ToolOutput {
+        /// The tool that is currently writing.
+        name: &'a str,
+        /// What it wrote, this chunk.
+        chunk: &'a str,
+    },
 }
 
 /// Run one turn to completion, handing each fragment to `sink`.
@@ -1553,7 +1679,9 @@ pub fn run_turn(
     // A namespaced name belongs to an MCP server; anything else is a local tool.
     // The split is by shape, not by a lookup, so a server that failed to start
     // still reports "that tool is MCP" rather than "unknown tool".
-    let mut execute = |call: &core_domain::ToolCall| -> crate::tools::ToolResult {
+    let mut execute = |call: &core_domain::ToolCall,
+                       chunks: &mut dyn FnMut(&str)|
+     -> crate::tools::ToolResult {
         if crate::mcp::protocol::split_qualified(&call.name).is_some() {
             let Some(pool) = mcp else {
                 return crate::tools::ToolResult::refused(
@@ -1602,7 +1730,7 @@ pub fn run_turn(
             }));
         }
 
-        let result = crate::tools::execute(&call.name, &call.arguments, sandbox);
+        let result = crate::tools::execute_streaming(&call.name, &call.arguments, sandbox, chunks);
         // A fetched page is a wall of navigation until something reads it. With
         // the role pinned, its model reads it; without one the tool's own text
         // stands, which is exactly what the tool was doing before the role
@@ -1830,7 +1958,10 @@ pub enum GateDecision {
 /// be stopped from touching the filesystem. It is called even for read-only
 /// tools so a policy can decide for itself; the shipped policy parks writes.
 pub fn drive_tool_loop(
-    execute: &mut dyn FnMut(&core_domain::ToolCall) -> crate::tools::ToolResult,
+    execute: &mut dyn FnMut(
+        &core_domain::ToolCall,
+        &mut dyn FnMut(&str),
+    ) -> crate::tools::ToolResult,
     mut messages: Vec<ChatMessage>,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     max_rounds: usize,
@@ -1892,13 +2023,23 @@ pub fn drive_tool_loop(
         rounds += 1;
         messages.push(ChatMessage::assistant_calls(completion.tool_calls.clone()));
         for call in &completion.tool_calls {
+            // A running call may write while it runs. The chunk goes out ahead of
+            // the result, on the same sink, so a live turn and a reloaded
+            // transcript tell the same story in the same order.
+            let mut live = |chunk: &str| {
+                sink(StreamPart::ToolOutput {
+                    name: &call.name,
+                    chunk,
+                });
+            };
             let result = match gate(call) {
-                GateDecision::Run => execute(call),
+                GateDecision::Run => execute(call, &mut live),
                 GateDecision::Park { approval_id } => {
                     crate::tools::ToolResult::parked(&approval_id, &call.name)
                 }
                 GateDecision::Refuse { reason } => crate::tools::ToolResult::refused(&reason),
             };
+            drop(live);
             let record = ToolRecord {
                 name: call.name.clone(),
                 arguments: call.arguments.to_string(),
@@ -2058,7 +2199,7 @@ mod tests {
         let mut offered = 0usize;
         let mut executed: Vec<String> = Vec::new();
         let outcome = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall| {
+            &mut |call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str)| {
                 executed.push(call.name.clone());
                 crate::tools::ToolResult::ok(serde_json::json!({ "rows": 3 }))
             },
@@ -2748,8 +2889,8 @@ mod tests {
         let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
         let mut round = 0usize;
         let outcome = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall| {
-                crate::tools::execute(&call.name, &call.arguments, &sandbox)
+            &mut |call: &core_domain::ToolCall, chunks: &mut dyn FnMut(&str)| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
             },
             vec![ChatMessage::text(ChatRole::User, "read a.txt")],
             &mut |_call| GateDecision::Run,
@@ -2813,8 +2954,8 @@ mod tests {
         let mut round = 0usize;
         let mut tools_offered: Vec<bool> = Vec::new();
         let outcome = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall| {
-                crate::tools::execute(&call.name, &call.arguments, &sandbox)
+            &mut |call: &core_domain::ToolCall, chunks: &mut dyn FnMut(&str)| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
             },
             vec![ChatMessage::text(ChatRole::User, "loop forever")],
             &mut |_call| GateDecision::Run,
@@ -2871,8 +3012,8 @@ mod tests {
 
         let mut offered: Vec<String> = Vec::new();
         let _ = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall| {
-                crate::tools::execute(&call.name, &call.arguments, &sandbox)
+            &mut |call: &core_domain::ToolCall, chunks: &mut dyn FnMut(&str)| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
             },
             vec![ChatMessage::text(ChatRole::User, "hi")],
             &mut |_call| GateDecision::Run,
@@ -2913,8 +3054,8 @@ mod tests {
         let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
         let mut round = 0usize;
         let outcome = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall| {
-                crate::tools::execute(&call.name, &call.arguments, &sandbox)
+            &mut |call: &core_domain::ToolCall, chunks: &mut dyn FnMut(&str)| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
             },
             vec![ChatMessage::text(ChatRole::User, "write x")],
             &mut |_call| GateDecision::Park {

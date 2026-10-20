@@ -31,6 +31,13 @@ pub const COMMAND_TIMEOUT_SECS: u64 = 30;
 /// How much of a command's output is handed back to the model.
 pub const MAX_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
 
+/// How much of a command's output is streamed to a watching browser.
+///
+/// The same budget as the capture, so what the operator watches and what the
+/// model reads are the same size. A command that prints past it keeps running;
+/// the live view simply stops growing, and the final record states the omission.
+pub const MAX_LIVE_OUTPUT_BYTES: usize = MAX_COMMAND_OUTPUT_BYTES;
+
 /// Why a tool could not do the thing it was asked to do.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -389,11 +396,26 @@ pub fn specs(mode: SandboxMode) -> Vec<ToolSpec> {
 
 /// Run one call. Never panics and never returns success for a failure.
 pub fn execute(name: &str, arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
+    execute_streaming(name, arguments, sandbox, &mut |_chunk| {})
+}
+
+/// Run one call, handing output to `sink` while it is still being produced.
+///
+/// Only `run_command` produces anything before it returns; every other tool is a
+/// single filesystem or network read and reports once. The sink exists because a
+/// command that takes twenty seconds should look like a command that takes twenty
+/// seconds, not like a turn that is thinking hard about nothing.
+pub fn execute_streaming(
+    name: &str,
+    arguments: &serde_json::Value,
+    sandbox: &Sandbox,
+    sink: &mut dyn FnMut(&str),
+) -> ToolResult {
     match name {
         "list_dir" => list_dir(arguments, sandbox),
         "read_file" => read_file(arguments, sandbox),
         "write_file" => write_file(arguments, sandbox),
-        "run_command" => run_command(arguments, sandbox),
+        "run_command" => run_command(arguments, sandbox, sink),
         "fetch_url" => fetch_url(arguments, sandbox),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
@@ -683,7 +705,22 @@ fn fetch_url(arguments: &serde_json::Value, _sandbox: &Sandbox) -> ToolResult {
     }))
 }
 
-fn run_command(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
+/// Run one command, streaming what it writes while it writes it.
+///
+/// One pipe, not two. The shell merges its stderr into its stdout before the
+/// command starts (`exec 2>&1`), so what arrives is the order the command wrote
+/// it in, which is the whole point of a terminal view. Two pipes would need two
+/// readers and produce two streams whose relative order the daemon cannot know.
+///
+/// A reader thread drains the pipe into a channel and the caller's own thread
+/// hands chunks to the sink, so the sink never has to be `Send`. Nothing here
+/// blocks on the child while the pipe is full: the reader runs from the moment
+/// the process starts until it closes its output.
+fn run_command(
+    arguments: &serde_json::Value,
+    sandbox: &Sandbox,
+    sink: &mut dyn FnMut(&str),
+) -> ToolResult {
     if sandbox.mode() != SandboxMode::Full {
         return ToolResult::error(format!(
             "run_command is refused: the sandbox mode is {} and running commands needs full host",
@@ -702,50 +739,120 @@ fn run_command(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
     // `timeout` rather than a Rust timer: the child is killed by the kernel and
     // exit 124 says so, which is a failure the model can see instead of a hang
     // that looks like the daemon dying.
-    let output = std::process::Command::new("timeout")
+    let mut child = match std::process::Command::new("timeout")
         .arg(format!("{COMMAND_TIMEOUT_SECS}s"))
         .arg("sh")
         .arg("-c")
-        .arg(command)
+        .arg(format!("exec 2>&1\n{command}"))
         .current_dir(sandbox.workspace())
-        .output();
-
-    let output = match output {
-        Ok(output) => output,
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
         Err(error) => return ToolResult::error(format!("cannot run the command: {error}")),
     };
 
-    let stdout = truncate(&output.stdout);
-    let stderr = truncate(&output.stderr);
-    let exit_code = output.status.code();
+    let pipe = child.stdout.take();
+    let (sender, receiver) = std::sync::mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || read_pipe(pipe, &sender));
 
+    let mut captured: Vec<u8> = Vec::new();
+    let mut streamed = 0usize;
+    while let Ok(chunk) = receiver.recv() {
+        captured.extend_from_slice(chunk.as_bytes());
+        // The live view is bounded too: a command that prints all day must not
+        // turn into all-day traffic to one browser.
+        if streamed < MAX_LIVE_OUTPUT_BYTES {
+            streamed += chunk.len();
+            sink(&chunk);
+        }
+    }
+    // Kept, not merely counted: the head of the output is the part worth
+    // reading, and the omission is stated rather than silently dropped.
+    let omitted = captured.len().saturating_sub(MAX_COMMAND_OUTPUT_BYTES);
+    captured.truncate(MAX_COMMAND_OUTPUT_BYTES);
+    // The reader ends at end of file, which the kernel delivers when the last
+    // writer closes: the process is finished, so waiting cannot block.
+    let _ = reader.join();
+    let status = child.wait();
+
+    let text = truncate_bytes(&captured, omitted);
+    let exit_code = status
+        .as_ref()
+        .ok()
+        .and_then(std::process::ExitStatus::code);
+    // The key is `stdout` even though the pipe was merged, because that is the
+    // name the model has been reading and the name the transcript renderer
+    // knows. `stderr` is empty rather than absent, so a shape with two streams
+    // still has two, and `streams` states plainly that the two were interleaved
+    // to keep the order a terminal would have shown.
     let body = serde_json::json!({
         "command": command,
         "exit_code": exit_code,
-        "stdout": stdout,
-        "stderr": stderr,
+        "streams": "merged",
+        "stdout": text,
+        "stderr": "",
     });
 
-    if output.status.success() {
-        ToolResult::ok(body)
-    } else {
-        // A non-zero exit is a failure with evidence attached, never a success
-        // the model has to notice on its own.
-        ToolResult {
+    match status {
+        // A command that could not be reaped is a failure with evidence
+        // attached, never a success the model has to notice on its own.
+        Err(error) => ToolResult::error(format!("cannot collect the command: {error}")),
+        Ok(status) if status.success() => ToolResult::ok(body),
+        Ok(_) => ToolResult {
             content: body.to_string(),
             is_error: true,
-        }
+        },
     }
 }
 
-/// Trim captured output to the budget, saying so when it did.
-fn truncate(bytes: &[u8]) -> String {
-    let limit = MAX_COMMAND_OUTPUT_BYTES.min(bytes.len());
-    let text = String::from_utf8_lossy(&bytes[..limit]).into_owned();
-    if bytes.len() > MAX_COMMAND_OUTPUT_BYTES {
-        format!("{text}\n[truncated: {} bytes omitted]", bytes.len() - limit)
-    } else {
+/// Drain one pipe into the channel, emitting text only on character boundaries.
+///
+/// A read lands wherever the kernel says it does, which can be the middle of a
+/// multi-byte character. Decoding each read on its own would put replacement
+/// characters in the middle of an operator's output, so the incomplete tail is
+/// carried into the next read.
+fn read_pipe(pipe: Option<std::process::ChildStdout>, sender: &std::sync::mpsc::Sender<String>) {
+    use std::io::Read as _;
+
+    let Some(mut pipe) = pipe else { return };
+    let mut buffer = [0u8; 8192];
+    let mut carry: Vec<u8> = Vec::new();
+    loop {
+        match pipe.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                carry.extend_from_slice(&buffer[..count]);
+                let valid = match std::str::from_utf8(&carry) {
+                    Ok(_) => carry.len(),
+                    Err(error) => error.valid_up_to(),
+                };
+                if valid == 0 {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&carry[..valid]).into_owned();
+                carry.drain(..valid);
+                if sender.send(text).is_err() {
+                    return;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if !carry.is_empty() {
+        let _ = sender.send(String::from_utf8_lossy(&carry).into_owned());
+    }
+}
+
+/// The captured bytes as text, with the omission stated when there was one.
+fn truncate_bytes(bytes: &[u8], omitted: usize) -> String {
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    if omitted == 0 {
         text
+    } else {
+        format!("{text}\n[truncated: {omitted} bytes omitted]")
     }
 }
 

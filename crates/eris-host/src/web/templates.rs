@@ -188,6 +188,18 @@ pub struct DashboardView {
     pub probed_at: Option<String>,
     /// How many model ids the last probe listed.
     pub model_count: usize,
+    /// Calls parked and waiting for a person. Non-zero blocks turns.
+    pub approvals_waiting: usize,
+    /// MCP servers configured, and how many are currently failing.
+    pub mcp_servers: usize,
+    /// MCP servers whose last start or call failed.
+    pub mcp_errors: usize,
+    /// Which memory backend a turn recalls from.
+    pub memory_backend: String,
+    /// The last finished turn, as one line, when there is one.
+    pub last_turn: Option<String>,
+    /// The database file size, as a human string.
+    pub db_size: String,
     /// Known devices.
     pub devices: Vec<DeviceRow>,
     /// Current permission tuple.
@@ -226,6 +238,12 @@ impl DashboardView {
             model: None,
             probed_at: None,
             model_count: 0,
+            approvals_waiting: 0,
+            mcp_servers: 0,
+            mcp_errors: 0,
+            memory_backend: crate::memory::DEFAULT_BACKEND.to_owned(),
+            last_turn: None,
+            db_size: String::new(),
             devices: Vec::new(),
             permissions: Permissions::DEFAULT,
             permission_rows: Vec::new(),
@@ -483,6 +501,12 @@ pub fn shell(
                                 button type="submit" title="Show the sidebar"
                                     aria-label="Show the sidebar" { "\u{00BB}" }
                             }
+                        }
+                        /* The section nav is shell furniture, not a card on the
+                           settings page: every surface is one click from every
+                           other, including the conversation. */
+                        @if let Some(current) = nav {
+                            div .top-nav { (nav_bar(current)) }
                         }
                         (body)
                         footer {
@@ -1071,6 +1095,43 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
         h1 { "Dashboard" }
         p .lede { "Health, provider, devices and the kill switches for this host." }
         (alert_region(error, notice))
+
+        section .card aria-labelledby="at-a-glance" {
+            h2 id="at-a-glance" { "At a glance" }
+            p .small {
+                "Only things the daemon can prove. Nothing here is a guess, and a number that is not "
+                "known says so instead of showing zero."
+            }
+            dl .kv {
+                dt { "Approvals waiting" }
+                dd {
+                    @if view.approvals_waiting == 0 {
+                        "none"
+                    } @else {
+                        strong { (view.approvals_waiting) } " parked, blocking the turns that asked"
+                    }
+                }
+                dt { "MCP servers" }
+                dd {
+                    (view.mcp_servers) " configured"
+                    @if view.mcp_errors > 0 {
+                        " - " span .warn { (view.mcp_errors) " failing" }
+                    }
+                }
+                dt { "Memory" }
+                dd { (view.memory_backend) }
+                dt { "Last answer" }
+                dd {
+                    @if let Some(line) = &view.last_turn {
+                        span .mono { (line) }
+                    } @else {
+                        "nothing answered yet"
+                    }
+                }
+                dt { "Database" }
+                dd { (view.db_size) " on disk" }
+            }
+        }
 
         section .card aria-labelledby="quick-actions" {
             h2 id="quick-actions" { "Quick actions" }
@@ -3193,6 +3254,25 @@ pub struct ChatLine {
     pub reasoning: Option<String>,
     /// The tool calls behind this reply, in the order they ran.
     pub tools: Vec<crate::web::chat::ToolRecord>,
+    /// The files this message carried, by name and size.
+    ///
+    /// Kept on the line rather than looked up per message: the page reads them
+    /// in one query and hands each row its own list, so a transcript with forty
+    /// turns costs the same as one with four.
+    pub files: Vec<Attachment>,
+}
+
+/// One file a message carried, as the transcript states it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    /// What it was called when it arrived.
+    pub name: String,
+    /// Size in bytes, for the chip.
+    pub size: u64,
+    /// Whether it can be shown as a picture rather than named.
+    pub is_image: bool,
+    /// Where the browser may fetch it, when the file is one this route serves.
+    pub url: Option<String>,
 }
 
 impl ChatLine {
@@ -3417,8 +3497,17 @@ pub fn context_share(used: Option<u64>, window: Option<u64>) -> String {
 /// inline (no `src`, no network, no third party), and every other page is still
 /// script-free.
 /// One tool call's output as an application window, the way the iOS client draws
-/// it: traffic lights, a title, the byte count, then the text.
+/// it: traffic lights, a title, the line count, then the readout.
+///
+/// The body is not the tool's JSON. A result is parsed by [`super::term`] into a
+/// prompt line and the lines the command actually printed, because a window
+/// titled `stdout` whose body was `{"stdout":"...\n..."}` was showing the wire
+/// format instead of the terminal. One `div` per line rather than one `pre`: a
+/// monospace `pre` is fine for a paragraph, but stderr has to be paintable and a
+/// thousand-line log has to be scrollable, and both want structure.
 fn tool_window(tool: &crate::web::chat::ToolRecord) -> Markup {
+    let term = super::term::render(&tool.name, &tool.arguments, &tool.output, tool.is_error);
+    let total = term.lines.len();
     html! {
         div .win {
             div .win-bar {
@@ -3428,9 +3517,21 @@ fn tool_window(tool: &crate::web::chat::ToolRecord) -> Markup {
                     span .win-dot .green {}
                 }
                 span .win-title { "kallisti \u{2014} stdout" }
-                span .win-size { (tool.output.chars().count()) " chars" }
+                // The live dot is present and hidden: a settled call has no dot,
+                // and the markup a live turn builds is this same markup, so the
+                // title bar does not reflow when the last chunk lands.
+                span .win-live hidden aria-label="Streaming" { "\u{25CF}" }
+                span .win-size {
+                    (total)
+                    @if total == 1 { " line" } @else { " lines" }
+                }
             }
-            pre .win-body { (tool.output) }
+            div .win-body {
+                div .term-line .prompt { (term.prompt) }
+                @for line in &term.lines {
+                    div class=(line.kind.class()) { (line.text) }
+                }
+            }
         }
     }
 }
@@ -3517,7 +3618,31 @@ pub fn chat_page(view: &ChatView) -> Markup {
                             }
                         }
                     }
-                    div .bubble .failed[line.failed] { (blocks(&line.body)) }
+                    div .bubble .failed[line.failed] {
+                        (blocks(&line.body))
+                        @if !line.files.is_empty() {
+                            div .attached {
+                                @for file in &line.files {
+                                    @if file.is_image {
+                                        @if let Some(url) = &file.url {
+                                            a .attached-image href=(url) target="_blank" rel="noreferrer" {
+                                                img src=(url) alt=(file.name) loading="lazy";
+                                            }
+                                        } @else {
+                                            span .attached-chip { (file.name) }
+                                        }
+                                    } @else {
+                                        @if let Some(url) = &file.url {
+                                            a .attached-chip href=(url)
+                                                download=(file.name) { (file.name) }
+                                        } @else {
+                                            span .attached-chip { (file.name) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     div .meta {
                         span .mono { (line.stamp) }
                         @if let Some(model) = &line.model {
@@ -3557,13 +3682,17 @@ pub fn chat_page(view: &ChatView) -> Markup {
                 textarea id="composer" name="message" rows="1" spellcheck="false"
                     placeholder=(format!("Message {}", view.assistant_name)) {}
                 div .composer-bar {
-                    label .attach for="attachment" title="Attach a file" {
+                    label .attach for="attachment" title="Attach files" {
                         span aria-hidden="true" { "+" }
-                        span .sr-only { "Attach a file" }
+                        span .sr-only { "Attach files" }
                     }
-                    input type="file" id="attachment" name="file" .attach-input
-                        aria-label="Attach a file";
-                    span .attach-name id="attach-name" {}
+                    // `multiple`, so one trip to the picker can carry a screenshot,
+                    // a log and a JSON file. The no-script path posts every part to
+                    // the same route under the same name; the script below collects
+                    // them into a queue so a second trip adds to the first.
+                    input type="file" id="attachment" name="file" .attach-input multiple
+                        aria-label="Attach files";
+                    div .attach-queue id="attach-queue" {}
                     div .composer-pick {
                         label .sr-only for="mode" { "Access" }
                         select id="mode" name="mode" aria-label="Access level" {
@@ -3621,12 +3750,122 @@ const CHAT_JS: &str = r##"(function () {
   var thread = document.getElementById("thread");
   var stop = document.getElementById("stop");
   var status = document.getElementById("composer-status");
+  var attachmentInput = document.getElementById("attachment");
   if (form === null || box === null || thread === null) { return; }
 
   var busy = false;
   var controller = null;
 
-  function toBottom() { thread.scrollTop = thread.scrollHeight; }
+  // ---- Follow the bottom, unless the operator scrolled up ----------------
+  // Following every fragment is what a live turn should do. Yanking the page
+  // back after someone has deliberately scrolled up to read is what makes a
+  // long turn unreadable, so the pin is released by a scroll and restored by
+  // the jump control.
+  var pinned = true;
+  var NEAR = 64;
+  function atBottom() {
+    return thread.scrollHeight - thread.scrollTop - thread.clientHeight <= NEAR;
+  }
+  function toBottom() {
+    if (pinned) { thread.scrollTop = thread.scrollHeight; }
+  }
+
+  var jump = document.createElement("button");
+  jump.type = "button";
+  jump.className = "jump-latest";
+  jump.textContent = "Jump to latest";
+  jump.hidden = true;
+  jump.addEventListener("click", function () {
+    pinned = true;
+    jump.hidden = true;
+    thread.scrollTop = thread.scrollHeight;
+  });
+  if (form.parentNode) {
+    form.parentNode.insertBefore(jump, form);
+  }
+
+  thread.addEventListener("scroll", function () {
+    var next = atBottom();
+    if (next === pinned) { return; }
+    pinned = next;
+    jump.hidden = next;
+  });
+
+  // ---- One window per call, streamed -------------------------------------
+  // The daemon sends `tool_output` while a command runs and one `tool` event
+  // when it settles. The window opens on the first chunk, so a twenty second
+  // command looks like a terminal filling in rather than a receipt printed at
+  // the end. `tool` then replaces the provisional body with the same lines the
+  // server would have rendered, so a live turn and a reload agree.
+  function windowFor(call) {
+    var win = document.createElement("div");
+    win.className = "win";
+    var bar = document.createElement("div");
+    bar.className = "win-bar";
+    var dots = document.createElement("span");
+    dots.className = "win-dots";
+    ["red", "yellow", "green"].forEach(function (tone) {
+      var dot = document.createElement("span");
+      dot.className = "win-dot " + tone;
+      dots.appendChild(dot);
+    });
+    var title = document.createElement("span");
+    title.className = "win-title";
+    title.textContent = "kallisti \u2014 stdout";
+    var live = document.createElement("span");
+    live.className = "win-live";
+    live.textContent = "\u25CF";
+    live.hidden = true;
+    live.setAttribute("aria-label", "Streaming");
+    var size = document.createElement("span");
+    size.className = "win-size";
+    size.textContent = "0 lines";
+    bar.appendChild(dots);
+    bar.appendChild(title);
+    bar.appendChild(live);
+    bar.appendChild(size);
+    var out = document.createElement("div");
+    out.className = "win-body";
+    win.appendChild(bar);
+    win.appendChild(out);
+    call.appendChild(win);
+    return { win: win, out: out, live: live, size: size };
+  }
+
+  function countLines(text) {
+    if (text === "") { return 0; }
+    return text.split("\n").length;
+  }
+
+  // Write the settled reading into a window: a prompt line, then one row per
+  // line. An older daemon sends no `term`, and the raw result is still the
+  // truth, so it is shown as one block instead of being dropped.
+  function paint(parts, tool) {
+    parts.out.textContent = "";
+    var term = tool.term;
+    if (term === undefined || term === null) {
+      var fallback = document.createElement("div");
+      fallback.className = "term-line";
+      fallback.textContent = tool.output;
+      parts.out.appendChild(fallback);
+      parts.size.textContent = "1 line";
+      return;
+    }
+    var prompt = document.createElement("div");
+    prompt.className = "term-line prompt";
+    prompt.textContent = term.prompt;
+    parts.out.appendChild(prompt);
+    (term.lines || []).forEach(function (entry) {
+      var row = document.createElement("div");
+      row.className = entry.kind === "err"
+        ? "term-line err"
+        : (entry.kind === "notice" ? "term-line notice" : "term-line");
+      row.textContent = entry.text;
+      parts.out.appendChild(row);
+    });
+    var total = (term.lines || []).length;
+    parts.size.textContent = total + (total === 1 ? " line" : " lines");
+  }
 
   function line(role, who) {
     var article = document.createElement("article");
@@ -3634,8 +3873,8 @@ const CHAT_JS: &str = r##"(function () {
     var label = document.createElement("div");
     label.className = "who";
     label.textContent = who;
-    // Collapsed by default and hidden until the first reasoning fragment, so a
-    // turn that never thinks does not leave an empty shell above its answer.
+    // Hidden until the first reasoning fragment, so a turn that never thinks
+    // does not leave an empty shell above its answer.
     var think = document.createElement("details");
     think.className = "think";
     think.hidden = true;
@@ -3675,60 +3914,106 @@ const CHAT_JS: &str = r##"(function () {
     execSummary.appendChild(execLabel);
     execSummary.appendChild(execCount);
     exec.appendChild(execSummary);
+    var body = document.createElement("div");
+    body.className = "exec-body";
+    exec.appendChild(body);
+
     var calls = 0;
-    function addTool(tool) {
-      calls += 1;
+    var open = [];
+    function refreshCount() {
       execCount.textContent = calls + (calls === 1 ? " call" : " calls");
-      var body = document.querySelector(".msg:last-of-type .exec-body");
-    if (body === null) {
-      body = document.createElement("div");
-      body.className = "exec-body";
-      exec.appendChild(body);
     }
-    var call = document.createElement("details");
-      call.className = "exec-call" + (tool.is_error === true ? " failed" : "");
+
+    function attachHead(head, name) {
+      var headName = document.createElement("span");
+      headName.className = "exec-name";
+      headName.textContent = name;
+      var headArgs = document.createElement("span");
+      headArgs.className = "exec-args";
+      head.appendChild(headName);
+      head.appendChild(headArgs);
+      return headArgs;
+    }
+
+    // A provisional call, opened by its first chunk of output.
+    function streamStart(name) {
+      for (var index = 0; index < open.length; index += 1) {
+        if (open[index].name === name) { return open[index]; }
+      }
+      calls += 1;
+      refreshCount();
+      var call = document.createElement("details");
+      call.className = "exec-call streaming";
+      call.open = true;
       var head = document.createElement("summary");
       head.className = "exec-head";
-      var name = document.createElement("span");
-      name.className = "exec-name";
-      name.textContent = tool.name;
-      var args = document.createElement("span");
-      args.className = "exec-args";
-      args.textContent = tool.arguments;
-      head.appendChild(name);
-      head.appendChild(args);
-      // Same window chrome the server renders, so a live turn and a reloaded
-      // transcript are the same page.
-      var win = document.createElement("div");
-      win.className = "win";
-      var bar = document.createElement("div");
-      bar.className = "win-bar";
-      var dots = document.createElement("span");
-      dots.className = "win-dots";
-      ["red", "yellow", "green"].forEach(function (tone) {
-        var dot = document.createElement("span");
-        dot.className = "win-dot " + tone;
-        dots.appendChild(dot);
-      });
-      var title = document.createElement("span");
-      title.className = "win-title";
-      title.textContent = "kallisti \u2014 stdout";
-      var size = document.createElement("span");
-      size.className = "win-size";
-      size.textContent = tool.output.length + " chars";
-      bar.appendChild(dots);
-      bar.appendChild(title);
-      bar.appendChild(size);
-      var out = document.createElement("pre");
-      out.className = "win-body";
-      out.textContent = tool.output;
-      win.appendChild(bar);
-      win.appendChild(out);
+      var args = attachHead(head, name);
+      args.textContent = "";
       call.appendChild(head);
-      call.appendChild(win);
+      var parts = windowFor(call);
+      parts.live.hidden = false;
       body.appendChild(call);
       exec.hidden = false;
+      var entry = {
+        name: name,
+        call: call,
+        head: head,
+        args: args,
+        parts: parts,
+        buffer: ""
+      };
+      open.push(entry);
+      return entry;
     }
+
+    function streamChunk(name, chunk) {
+      var entry = streamStart(name);
+      // Bounded like the server's own window: a command that prints all day
+      // stops growing here rather than in the tab's memory.
+      if (entry.buffer.length < 131072) {
+        entry.buffer += chunk;
+      }
+      entry.parts.out.textContent = entry.buffer;
+      entry.parts.size.textContent = countLines(entry.buffer) + " lines";
+      entry.parts.out.scrollTop = entry.parts.out.scrollHeight;
+      exec.open = true;
+      toBottom();
+    }
+
+    // The settled reading for one call. A provisional window with the same name
+    // is finished in place, which keeps it where it appeared.
+    function addTool(tool) {
+      var entry = null;
+      for (var index = 0; index < open.length; index += 1) {
+        if (open[index].name === tool.name) {
+          entry = open[index];
+          open.splice(index, 1);
+          break;
+        }
+      }
+      if (entry === null) {
+        calls += 1;
+        refreshCount();
+        entry = { name: tool.name, call: document.createElement("details") };
+        entry.call.className = "exec-call";
+        entry.head = document.createElement("summary");
+        entry.head.className = "exec-head";
+        entry.args = attachHead(entry.head, tool.name);
+        entry.call.appendChild(entry.head);
+        entry.parts = windowFor(entry.call);
+        body.appendChild(entry.call);
+      }
+      if (tool.is_error === true) {
+        entry.call.className = "exec-call failed";
+      } else {
+        entry.call.className = "exec-call";
+      }
+      entry.args.textContent = tool.arguments;
+      entry.parts.live.hidden = true;
+      paint(entry.parts, tool);
+      exec.hidden = false;
+    }
+
     var bubble = document.createElement("div");
     bubble.className = "bubble";
     var text = document.createElement("p");
@@ -3748,6 +4033,7 @@ const CHAT_JS: &str = r##"(function () {
       meta: meta,
       think: think,
       thinkBody: thinkBody,
+      streamChunk: streamChunk,
       addTool: addTool
     };
   }
@@ -3790,7 +4076,7 @@ const CHAT_JS: &str = r##"(function () {
         ? (payload.duration_ms / 1000).toFixed(1) + "s"
         : payload.duration_ms + "ms");
     }
-    return parts.join(" · ");
+    return parts.join(" \u00b7 ");
   }
 
   function setBusy(next) {
@@ -3817,9 +4103,8 @@ const CHAT_JS: &str = r##"(function () {
     return { event: event, data: data };
   }
 
-  // A conversation stops being new the moment a turn starts: drop the empty-state
-  // layout so the transcript is visible. Without this the thread stays
-  // `display: none` and every reply is written into a hidden element.
+  // A conversation stops being new the moment a turn starts: drop the empty
+  // state layout so the transcript is visible.
   function leaveEmptyState() {
     var shell = document.querySelector(".chat-shell");
     if (shell) { shell.classList.remove("new-chat"); }
@@ -3827,13 +4112,117 @@ const CHAT_JS: &str = r##"(function () {
     if (greeting) { greeting.remove(); }
   }
 
+  // ---- Files: a queue, not one slot --------------------------------------
+  // A multiple picker plus a second trip to the picker plus a drag plus a paste
+  // all land in the same queue, and every file leaves as its own `file` part on
+  // the same message. Files are held in memory until the turn is sent, so a
+  // mis-picked file is one click to remove rather than a reload.
+  var queue = [];
+  var LIMIT = 8;
+  var queueBox = document.getElementById("attach-queue");
+
+  function humanSize(bytes) {
+    if (bytes < 1024) { return bytes + " B"; }
+    if (bytes < 1048576) { return Math.round(bytes / 1024) + " kB"; }
+    return (bytes / 1048576).toFixed(1) + " MB";
+  }
+
+  function renderQueue() {
+    if (queueBox === null) { return; }
+    queueBox.textContent = "";
+    queue.forEach(function (file, index) {
+      var chip = document.createElement("span");
+      chip.className = "attach-chip";
+      var name = document.createElement("span");
+      name.className = "attach-chip-name";
+      name.textContent = file.name;
+      name.title = file.name;
+      var size = document.createElement("span");
+      size.className = "attach-chip-size";
+      size.textContent = humanSize(file.size);
+      var drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "attach-chip-drop";
+      drop.setAttribute("aria-label", "Remove " + file.name);
+      drop.textContent = "\u00d7";
+      drop.addEventListener("click", function () {
+        queue.splice(index, 1);
+        renderQueue();
+      });
+      chip.appendChild(name);
+      chip.appendChild(size);
+      chip.appendChild(drop);
+      queueBox.appendChild(chip);
+    });
+    queueBox.hidden = queue.length === 0;
+  }
+
+  function addFiles(list) {
+    var refused = 0;
+    for (var index = 0; index < list.length; index += 1) {
+      var file = list[index];
+      if (queue.length >= LIMIT) { refused += 1; continue; }
+      var duplicate = queue.some(function (existing) {
+        return existing.name === file.name && existing.size === file.size;
+      });
+      if (duplicate) { continue; }
+      queue.push(file);
+    }
+    renderQueue();
+    if (status) {
+      status.textContent = refused > 0
+        ? "at most " + LIMIT + " files per message"
+        : "";
+    }
+  }
+
+  if (attachmentInput) {
+    attachmentInput.addEventListener("change", function () {
+      // The input is emptied straight away so the same file can be picked
+      // again after a removal; the queue holds the File objects themselves.
+      addFiles(attachmentInput.files);
+      attachmentInput.value = "";
+    });
+  }
+
+  // A drop anywhere on the composer is a file for the message, which is the
+  // one gesture everybody tries first.
+  ["dragenter", "dragover"].forEach(function (name) {
+    form.addEventListener(name, function (event) {
+      event.preventDefault();
+      form.classList.add("dropping");
+    });
+  });
+  ["dragleave", "drop"].forEach(function (name) {
+    form.addEventListener(name, function (event) {
+      event.preventDefault();
+      if (name === "dragleave" && form.contains(event.relatedTarget)) { return; }
+      form.classList.remove("dropping");
+    });
+  });
+  form.addEventListener("drop", function (event) {
+    if (event.dataTransfer === null) { return; }
+    if (event.dataTransfer.files.length > 0) {
+      addFiles(event.dataTransfer.files);
+    }
+  });
+
+  // A screenshot pasted straight into the composer is the same as an attach.
+  box.addEventListener("paste", function (event) {
+    if (event.clipboardData === null) { return; }
+    var files = event.clipboardData.files;
+    if (files && files.length > 0) {
+      event.preventDefault();
+      addFiles(files);
+    }
+  });
+
   async function send() {
     var text = box.value.trim();
     if (text === "" || busy) { return; }
     leaveEmptyState();
     var picker = document.getElementById("model");
     var chosen = picker === null ? "" : picker.value;
-    var attachment = document.getElementById("attachment");
     var shell = document.querySelector(".chat-shell");
     var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
     var userLine = document.createElement("article");
@@ -3846,16 +4235,28 @@ const CHAT_JS: &str = r##"(function () {
     var userText = document.createElement("p");
     userText.textContent = text;
     userBubble.appendChild(userText);
+    if (queue.length > 0) {
+      var listed = document.createElement("div");
+      listed.className = "attached";
+      queue.forEach(function (file) {
+        var chip = document.createElement("span");
+        chip.className = "attached-chip";
+        chip.textContent = file.name + " \u00b7 " + humanSize(file.size);
+        listed.appendChild(chip);
+      });
+      userBubble.appendChild(listed);
+    }
     userLine.appendChild(userWho);
     userLine.appendChild(userBubble);
     thread.appendChild(userLine);
 
+    var sending = queue.slice();
     box.value = "";
     setBusy(true);
     toBottom();
     var shellName = document.querySelector(".chat-shell");
-  var assistantName = shellName === null ? "assistant" : (shellName.getAttribute("data-assistant") || "assistant");
-  var target = line("assistant", assistantName);
+    var assistantName = shellName === null ? "assistant" : (shellName.getAttribute("data-assistant") || "assistant");
+    var target = line("assistant", assistantName);
     target.article.className = "msg assistant pending";
     var answer = "";
     var thinking = "";
@@ -3872,21 +4273,29 @@ const CHAT_JS: &str = r##"(function () {
           body.append("message", text);
           body.append("model", chosen);
           body.append("conversation", conversation);
-          if (attachment && attachment.files.length > 0) {
-            body.append("file", attachment.files[0], attachment.files[0].name);
-          }
+          sending.forEach(function (file) {
+            body.append("file", file, file.name);
+          });
           return body;
         })(),
         signal: controller.signal
       });
       if (response.ok === false) { throw new Error("HTTP " + response.status); }
+      queue = [];
+      renderQueue();
       if (response.body === null || typeof response.body.getReader === "undefined") {
         // No streaming in this browser: hand the turn to the plain form, whose
-        // answer arrives rendered. Better a reload than a silent nothing.
+        // answer arrives rendered. The queue is written back into the picker so
+        // the files are not lost on the way.
         target.article.remove();
         userLine.remove();
         box.value = text;
         setBusy(false);
+        if (attachmentInput && typeof DataTransfer === "object") {
+          var carrier = new DataTransfer();
+          sending.forEach(function (file) { carrier.items.add(file); });
+          attachmentInput.files = carrier.files;
+        }
         form.submit();
         return;
       }
@@ -3907,6 +4316,10 @@ const CHAT_JS: &str = r##"(function () {
             target.text.textContent = answer;
             toBottom();
           }
+          if (parsed.event === "tool_output") {
+            var output = JSON.parse(parsed.data);
+            target.streamChunk(output.name, output.chunk);
+          }
           if (parsed.event === "tool") {
             target.addTool(JSON.parse(parsed.data));
             toBottom();
@@ -3915,6 +4328,9 @@ const CHAT_JS: &str = r##"(function () {
             thinking += JSON.parse(parsed.data).text;
             target.thinkBody.textContent = thinking;
             target.think.hidden = false;
+            // The bubble is bounded and scrolls itself, so the newest thought
+            // stays visible without the bubble growing over the answer.
+            target.thinkBody.scrollTop = target.thinkBody.scrollHeight;
             toBottom();
           }
           if (parsed.event === "done") {
@@ -3954,11 +4370,6 @@ const CHAT_JS: &str = r##"(function () {
     setBusy(false);
     toBottom();
     await refreshRail();
-    if (attachment) {
-      attachment.value = "";
-      var cleared = document.getElementById("attach-name");
-      if (cleared) { cleared.textContent = ""; }
-    }
     box.focus();
   }
 
@@ -3979,15 +4390,15 @@ const CHAT_JS: &str = r##"(function () {
   // the turn keeps the list honest.
   async function refreshRail() {
     var rail = document.getElementById("rail-sessions");
-    var shell = document.querySelector(".chat-shell");
-    if (rail === null || shell === null) { return; }
+    if (rail === null) { return; }
     try {
       var response = await fetch("/dashboard/chat/sessions.json", {
         headers: { "Accept": "application/json" }
       });
       if (response.ok === false) { return; }
       var payload = await response.json();
-      var open = shell.getAttribute("data-conversation");
+      var shell = document.querySelector(".chat-shell");
+      var openId = shell === null ? "" : shell.getAttribute("data-conversation");
       rail.textContent = "";
       if (payload.sessions.length === 0) {
         var empty = document.createElement("span");
@@ -4001,7 +4412,7 @@ const CHAT_JS: &str = r##"(function () {
         var link = document.createElement("a");
         link.href = "/dashboard/chat/" + session.id;
         link.title = session.title;
-        if (session.id === open) { link.setAttribute("aria-current", "page"); }
+        if (session.id === openId) { link.setAttribute("aria-current", "page"); }
         var title = document.createElement("span");
         title.className = "session-title";
         title.textContent = session.title;
@@ -4044,14 +4455,6 @@ const CHAT_JS: &str = r##"(function () {
       }
     });
     mode.setAttribute("data-last", mode.value);
-  }
-
-  if (attachment) {
-    attachment.addEventListener("change", function () {
-      var label = document.getElementById("attach-name");
-      if (label === null) { return; }
-      label.textContent = attachment.files.length > 0 ? attachment.files[0].name : "";
-    });
   }
 
   if (stop) {

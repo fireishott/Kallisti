@@ -295,7 +295,7 @@ fn a_dropped_stream_is_described_in_words_the_operator_can_use() {
 }
 
 #[test]
-fn a_calls_output_renders_as_a_window_with_lights_and_a_size() {
+fn a_calls_output_renders_as_a_window_with_lights_and_a_line_count() {
     let (_dir, engine, app, cookie) = ready_app();
     let db = engine.db();
     chat::append(db, CONVERSATION_ID, Role::User, "run it", State::Complete).unwrap();
@@ -308,7 +308,13 @@ fn a_calls_output_renders_as_a_window_with_lights_and_a_size() {
         &[chat::ToolRecord {
             name: "run_command".to_owned(),
             arguments: r#"{"command":"echo hi"}"#.to_owned(),
-            output: "hi".to_owned(),
+            output: serde_json::json!({
+                "command": "echo hi",
+                "exit_code": 0,
+                "stdout": "hi\n",
+                "stderr": "",
+            })
+            .to_string(),
             is_error: false,
         }],
         None,
@@ -327,13 +333,128 @@ fn a_calls_output_renders_as_a_window_with_lights_and_a_size() {
     assert!(body.contains("kallisti"), "the window is titled");
     assert!(body.contains("stdout"), "and says what it is");
     assert!(
-        body.contains("2 chars"),
-        "the size is stated: {}",
-        body.len()
+        body.contains("1 line<"),
+        "the line count is stated, not a character count: {body}"
     );
     assert!(
         !body.contains(r#"class="exec-out""#),
         "the bare pre is gone, so live and stored markup agree"
+    );
+}
+
+/// The complaint that produced the terminal body: a command whose stdout is a
+/// code snippet was being shown as escaped JSON inside the window. The window is
+/// now the terminal's reading of the result, so the escapes are resolved and the
+/// prompt line is the command that was typed.
+#[test]
+fn a_commands_stdout_is_lines_not_escaped_json() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "grep it", State::Complete).unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    let snippet = "assert!(full.contains(&\"run_command\".to_owned()));\nassert!(confined);";
+    chat::settle(
+        db,
+        &answer,
+        "found it",
+        None,
+        &[chat::ToolRecord {
+            name: "run_command".to_owned(),
+            arguments: r#"{"command":"grep -n assert src/tools/mod.rs"}"#.to_owned(),
+            output: serde_json::json!({
+                "command": "grep -n assert src/tools/mod.rs",
+                "exit_code": 0,
+                "stdout": snippet,
+                "stderr": "",
+            })
+            .to_string(),
+            is_error: false,
+        }],
+        None,
+        chat::Accounting::default(),
+    )
+    .unwrap();
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    let body = &page.body;
+    assert!(
+        body.contains("term-line prompt"),
+        "the command leads the window: {body}"
+    );
+    assert!(
+        body.contains("$ grep -n assert src/tools/mod.rs"),
+        "and is the line that was actually run: {body}"
+    );
+    // The escaped form the complaint was about, checked inside the window rather
+    // than across the page: the inline script legitimately carries `\n` in its
+    // own string literals, and the window body carries none.
+    let window = body
+        .split(r#"<div class="win-body">"#)
+        .nth(1)
+        .and_then(|rest| rest.split(r#"</div></div>"#).next())
+        .expect("the window body is on the page");
+    assert!(
+        !window.contains("\\n"),
+        "a literal backslash-n is not a line break: {window}"
+    );
+    // The snippet appears as source, with its own quotes, in two rows.
+    assert!(
+        body.contains("assert!(full.contains(&amp;"),
+        "the code reads as code: {body}"
+    );
+    assert!(
+        body.matches(r#"<div class="term-line"#).count() >= 3,
+        "a prompt line and two output lines: {body}"
+    );
+}
+
+/// A failing command states its exit status inside the window, and its stderr is
+/// paintable, so a turn that ran something that broke does not look like a turn
+/// that ran something quiet.
+#[test]
+fn a_failed_call_paints_stderr_and_states_the_exit_status() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "build it", State::Complete).unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    chat::settle(
+        db,
+        &answer,
+        "it broke",
+        None,
+        &[chat::ToolRecord {
+            name: "run_command".to_owned(),
+            arguments: r#"{"command":"cargo build"}"#.to_owned(),
+            output: serde_json::json!({
+                "command": "cargo build",
+                "exit_code": 101,
+                "stdout": "",
+                "stderr": "error: expected one of",
+            })
+            .to_string(),
+            is_error: true,
+        }],
+        None,
+        chat::Accounting::default(),
+    )
+    .unwrap();
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    let body = &page.body;
+    assert!(
+        body.contains(r#"class="term-line err""#),
+        "stderr has its own line: {body}"
+    );
+    assert!(body.contains("error: expected one of"), "{body}");
+    assert!(
+        body.contains(r#"class="term-line notice""#) && body.contains("exit 101"),
+        "the exit status is in the window: {body}"
     );
 }
 

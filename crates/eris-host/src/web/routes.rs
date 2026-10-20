@@ -26,11 +26,11 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
-    ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_ID, ROUTE_CHAT_MODE,
-    ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES,
-    ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_MCP,
-    ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_FILE, ROUTE_CHAT_ID,
+    ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD,
+    ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS,
+    ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS,
+    ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING,
     ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
     VERSION, session_path,
@@ -49,10 +49,11 @@ use crate::web::chat;
 use crate::web::proxy::ClientContext;
 use crate::web::store;
 use crate::web::templates::{
-    ActivityView, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT, DashboardView, DeviceRow,
-    DevicesView, FormError, IssuedCodeView, SessionDetailView, SessionsView, SettingsGroup,
-    SettingsView, SetupView, activity_page, backups_page, chat_page, dashboard_page, devices_page,
-    error_page, login_page, session_page, sessions_page, settings_page, setup_page,
+    ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
+    DashboardView, DeviceRow, DevicesView, FormError, IssuedCodeView, SessionDetailView,
+    SessionsView, SettingsGroup, SettingsView, SetupView, activity_page, backups_page, chat_page,
+    dashboard_page, devices_page, error_page, login_page, session_page, sessions_page,
+    settings_page, setup_page,
 };
 use crate::web::wallpaper;
 
@@ -125,6 +126,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_CHAT_MODE, post(chat_mode))
         .route(ROUTE_CHAT_NEW, post(chat_new))
         .route(ROUTE_CHAT_SESSIONS, get(chat_sessions))
+        .route(ROUTE_CHAT_FILE, get(chat_file))
         .route(ROUTE_CHAT_ID, get(chat_conversation_handler))
         .route(ROUTE_CHAT_DELETE, post(chat_delete))
         .route(wallpaper::ROUTE_WALLPAPER_SAVE, post(save_wallpaper))
@@ -478,6 +480,52 @@ fn build_dashboard_view(state: &AppState) -> Result<DashboardView, FormError> {
         .paired_device_count()
         .map_err(|error| form_error(&error))?;
     view.jobs = store::jobs_by_status(db).map_err(|error| db_error(&error))?;
+    // Facts this page was missing while the rest of the list grew: what is
+    // waiting on the operator, what is broken, and when the last answer landed.
+    view.approvals_waiting = crate::approvals::pending(db)
+        .map(|rows| rows.len())
+        .unwrap_or(0);
+    view.mcp_servers = state.mcp.names().len();
+    view.mcp_errors = state.mcp.errors().len();
+    view.memory_backend = crate::memory::backend(
+        state
+            .engine
+            .setting(crate::memory::SETTING_BACKEND)
+            .ok()
+            .flatten()
+            .as_deref(),
+    )
+    .as_str()
+    .to_owned();
+    view.last_turn = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT created_at, coalesce(model, 'unknown model'), state
+                   FROM chat_messages WHERE role = 'assistant'
+                  ORDER BY created_at DESC LIMIT 1",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .ok()
+        .and_then(|rows| rows.into_iter().next())
+        .map(|(at, model, state)| format!("{at} - {model} - {state}"));
+    view.db_size = std::fs::metadata(engine.paths().db_file.as_path())
+        .map(|meta| {
+            let bytes = meta.len();
+            if bytes > 1_048_576 {
+                format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
+            } else {
+                format!("{:.0} KiB", bytes as f64 / 1024.0)
+            }
+        })
+        .unwrap_or_else(|_| "unknown".to_owned());
     view.provider_base_url = engine
         .provider_base_url()
         .map_err(|error| form_error(&error))?;
@@ -3702,11 +3750,28 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| crate::persona::DEFAULT_ASSISTANT_NAME.to_owned());
+    // One query for every file the conversation carries, then each line takes
+    // its own: a page with forty turns costs two queries, not forty-one.
+    let carried = chat::attachments_by_message(db, &conversation).unwrap_or_default();
     let messages = transcript
         .iter()
         .map(|message| {
             let user = message.role == chat::Role::User;
+            let files = carried
+                .get(&message.id)
+                .map(|rows| {
+                    rows.iter()
+                        .map(|file| ChatAttachment {
+                            name: file.name.clone(),
+                            size: file.size,
+                            is_image: chat::is_image(file),
+                            url: Some(format!("/dashboard/chat/file/{}", file.id)),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             ChatLine {
+                files,
                 user,
                 who: if user {
                     "You".to_owned()
@@ -3832,6 +3897,74 @@ async fn chat_conversation_handler(
         Ok(view) => page(chat_page(&view)),
         Err(error) => refusal(error),
     }
+}
+
+/// `GET /dashboard/chat/file/{id}` - one file that came with a message.
+///
+/// Behind the same admin session as the transcript it appears in, because an
+/// uploaded screenshot is the operator's own material. The path comes from the
+/// attachment row, never from the URL: an id that is not in the table is a 404
+/// rather than a way to read a file by guessing its name.
+async fn chat_file(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let row = match chat::attachment(state.engine.db(), &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return ApiError::not_found(
+                "file".to_owned(),
+                "no attachment with that id is recorded",
+            )
+            .into_response();
+        }
+        Err(error) => {
+            return refusal(FormError::new(None, "chat_unreadable", error.to_string()));
+        }
+    };
+    let bytes = match std::fs::read(&row.path) {
+        Ok(bytes) => bytes,
+        // A row whose bytes have been cleaned off disk is not a 500: the honest
+        // answer to a direct request is that the file is gone.
+        Err(_) => {
+            return ApiError::not_found(
+                "file".to_owned(),
+                "that attachment is recorded but its bytes are not on disk",
+            )
+            .into_response();
+        }
+    };
+    let media_type = row
+        .media_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_owned());
+    // An image is inline, because the transcript shows it. Anything else is an
+    // attachment, so a browser downloads a .html upload rather than executing it
+    // in this origin.
+    let disposition = if media_type.starts_with("image/") {
+        "inline"
+    } else {
+        "attachment"
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, media_type),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("{disposition}; filename=\"{}\"", row.name),
+            ),
+            (header::CACHE_CONTROL, "private, max-age=300".to_owned()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 /// `GET /dashboard/chat/sessions.json`.
@@ -4102,15 +4235,23 @@ async fn chat_send(
             return refusal(FormError::new(None, "chat_unreadable", error.to_string()));
         }
     };
-    if let Err(error) = chat::append(
+    let question_id = match chat::append(
         &db,
         &conversation,
         chat::Role::User,
         &text,
         chat::State::Complete,
     ) {
-        return refusal(FormError::new(None, "chat_write_failed", error.to_string()));
-    }
+        Ok(id) => id,
+        Err(error) => {
+            return refusal(FormError::new(None, "chat_write_failed", error.to_string()));
+        }
+    };
+    // The files landed before the message existed. Now that it does, they are
+    // claimed by it, so a reloaded transcript can say what went with the
+    // question rather than showing a bare sentence.
+    let attachment_ids: Vec<String> = files.iter().map(|file| file.id.clone()).collect();
+    let _ = chat::claim_attachments(&db, &conversation, &question_id, &attachment_ids);
 
     // The assistant row exists before the first token, so a refresh mid-answer
     // shows the partial reply rather than nothing at all, and it carries the
@@ -4239,13 +4380,19 @@ fn resolve_chat_model(
     }
 }
 
-/// Read a chat form that may carry one file.
+/// Read a chat form that may carry files.
 ///
 /// Everything the composer needs fits in one multipart body, so the no-script
 /// path is the same route: the browser posts `message`, `model`, `conversation`
-/// and an optional `file`. The file is written into the workspace before the
-/// turn runs, and the row that records it is written here too, so a file on disk
-/// always has a row and a row always has a file.
+/// and any number of `file` parts, up to the caps in [`chat`]. Each file is
+/// written into the workspace before the turn runs, and the row that records it
+/// is written here too, so a file on disk always has a row and a row always has
+/// a file.
+///
+/// The part name is `file` whichever way it arrives: a browser picker names its
+/// parts itself, and a script that appends several files under `file` is the same
+/// shape. `files` is accepted as a spelling too, because a form that collects a
+/// multiple picker naturally calls the field by its plural.
 async fn read_multipart_chat(
     state: AppState,
     request: axum::extract::Request,
@@ -4268,6 +4415,7 @@ async fn read_multipart_chat(
 
     let mut fields = std::collections::BTreeMap::new();
     let mut files: Vec<chat::Attachment> = Vec::new();
+    let mut total_bytes = 0usize;
     while let Some(mut field) = multipart.next_field().await.map_err(|error| {
         FormError::new(
             None,
@@ -4276,12 +4424,24 @@ async fn read_multipart_chat(
         )
     })? {
         let name = field.name().unwrap_or_default().to_owned();
-        if name != "file" {
+        if name != "file" && name != "files" {
             let value = field.text().await.map_err(|error| {
                 FormError::new(None, "upload_unreadable", format!("field {name}: {error}"))
             })?;
             fields.insert(name, value);
             continue;
+        }
+        // The cap is checked before the bytes are read, so a ninth file is
+        // refused without first being written to memory.
+        if files.len() >= chat::MAX_ATTACHMENTS {
+            return Err(FormError::new(
+                Some("file"),
+                "too_many_attachments",
+                format!(
+                    "a message may carry at most {} files; this one carries more",
+                    chat::MAX_ATTACHMENTS
+                ),
+            ));
         }
         // A file part. An empty picker sends an empty part with no filename, and
         // that is "no attachment", not an error.
@@ -4317,11 +4477,22 @@ async fn read_multipart_chat(
                     ),
                 ));
             }
+            if total_bytes + bytes.len() + chunk.len() > chat::MAX_ATTACHMENT_TOTAL_BYTES {
+                return Err(FormError::new(
+                    Some("file"),
+                    "upload_too_large",
+                    format!(
+                        "the attachments on one message must total under {} bytes",
+                        chat::MAX_ATTACHMENT_TOTAL_BYTES
+                    ),
+                ));
+            }
             bytes.extend_from_slice(&chunk);
         }
         if bytes.is_empty() {
             continue;
         }
+        total_bytes += bytes.len();
         let safe = chat::safe_file_name(&original);
         let conversation = chat::resolve_conversation(
             state.engine.db(),
@@ -4772,6 +4943,12 @@ fn spawn_turn(
                 // log is neither rendered nor streamed, so a disabled log does not
                 // still ship command output to the browser.
                 if show_tool_log {
+                    // The window's own reading of the result, computed here so the
+                    // streaming script and the rendered page cannot disagree about
+                    // what a command printed. `output` still rides along: it is what
+                    // the transcript stores, and a script that wanted the raw
+                    // result should not have to reconstruct it.
+                    let term = crate::web::term::render(name, arguments, output, is_error);
                     send_terminal(
                         &sender,
                         "tool",
@@ -4780,7 +4957,19 @@ fn spawn_turn(
                             "arguments": arguments,
                             "output": output,
                             "is_error": is_error,
+                            "term": term,
                         }),
+                    );
+                }
+            }
+            chat::StreamPart::ToolOutput { name, chunk } => {
+                // The same switch as the finished call, for the same reason: a
+                // log that is off must not stream a command's output either.
+                if show_tool_log {
+                    send_terminal(
+                        &sender,
+                        "tool_output",
+                        serde_json::json!({ "name": name, "chunk": chunk }),
                     );
                 }
             }

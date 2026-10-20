@@ -155,10 +155,11 @@ fn the_rail_carries_new_chat_the_sessions_and_the_cog() {
         body.contains(r#"aria-label="Settings""#),
         "the cog is labelled"
     );
-    // The admin sections are NOT in the rail any more.
+    // The section nav is shell furniture: every page carries it, so the one
+    // thing an operator came to do is never behind a menu.
     assert!(
-        !body.contains(r#"class="sections""#),
-        "the dashboard does not carry the section list: {body}"
+        body.contains(r#"class="sections""#),
+        "every page carries the section list: {body}"
     );
 
     // Settings is where the sections live, and it marks itself.
