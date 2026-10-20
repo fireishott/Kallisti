@@ -1016,6 +1016,86 @@ pub fn summarise(config: &TurnConfig, dropped: &[Message]) -> Option<String> {
     (!summary.is_empty()).then_some(summary)
 }
 
+/// Whether an attachment is an image a vision model could read.
+#[must_use]
+pub fn is_image(file: &Attachment) -> bool {
+    let name = file.name.to_ascii_lowercase();
+    matches!(
+        file.media_type.as_deref(),
+        Some("image/png") | Some("image/jpeg") | Some("image/webp") | Some("image/gif")
+    ) || name.ends_with(".png")
+        || name.ends_with(".jpg")
+        || name.ends_with(".jpeg")
+        || name.ends_with(".webp")
+        || name.ends_with(".gif")
+}
+
+/// The largest image handed to a vision model in one turn, in bytes.
+pub const MAX_VISION_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Ask a vision model what is in the attached images.
+///
+/// This is the one role whose output is not a side effect: the operator attached
+/// a picture, so the picture has to reach a model or the attachment is a filename
+/// and nothing more. Best effort like every role - a provider that cannot see
+/// leaves the turn with the same filename description it had before.
+#[must_use]
+pub fn describe_images(config: &TurnConfig, files: &[Attachment]) -> Option<String> {
+    use base64::Engine as _;
+
+    let mut urls: Vec<String> = Vec::new();
+    for file in files.iter().filter(|file| is_image(file)) {
+        if file.size > MAX_VISION_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&file.path) else {
+            continue;
+        };
+        let media = file
+            .media_type
+            .clone()
+            .unwrap_or_else(|| "image/png".to_owned());
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        urls.push(format!("data:{media};base64,{encoded}"));
+    }
+    if urls.is_empty() {
+        return None;
+    }
+
+    let profile =
+        ProviderProfile::new("vision", config.base_url.clone(), config.key_ref.clone()).ok()?;
+    let provider = OpenAiCompatProvider::new(
+        profile,
+        ModelProfile::new(config.model.clone()),
+        Capabilities::openai_compatible(),
+    )
+    .ok()?;
+    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+
+    let request = ChatRequest {
+        system: Some(
+            "Describe what is in the attached image for someone who cannot see it. \
+             Transcribe any text exactly. Be specific and brief: what it is, what it says, \
+             anything that looks wrong."
+                .to_owned(),
+        ),
+        messages: vec![ChatMessage::text(ChatRole::User, "What is in this image?")],
+        images: urls,
+        ..ChatRequest::default()
+    };
+
+    let mut sink = |_event: ProviderEvent| {};
+    let completion = runtime
+        .block_on(provider.stream_chat(&request, &key, &mut sink))
+        .ok()?;
+    let text = completion.text.trim().to_owned();
+    (!text.is_empty()).then_some(text)
+}
+
 /// Trim and validate what the browser typed.
 ///
 /// An empty message is a refusal by name rather than a silently dropped turn, and
@@ -1519,6 +1599,30 @@ mod tests {
         assert_eq!(ids, vec![first.as_str(), second.as_str(), third.as_str()]);
         assert_eq!(transcript[1].role, Role::Assistant);
         assert_eq!(transcript[1].body, "hi");
+    }
+
+    #[test]
+    fn an_image_attachment_is_recognised_and_a_text_file_is_not() {
+        let png = Attachment {
+            id: "a".to_owned(),
+            name: "shot.png".to_owned(),
+            path: "/tmp/shot.png".to_owned(),
+            size: 10,
+            media_type: Some("image/png".to_owned()),
+        };
+        let named_jpg = Attachment {
+            media_type: None,
+            name: "photo.JPG".to_owned(),
+            ..png.clone()
+        };
+        let notes = Attachment {
+            name: "notes.txt".to_owned(),
+            media_type: Some("text/plain".to_owned()),
+            ..png.clone()
+        };
+        assert!(is_image(&png));
+        assert!(is_image(&named_jpg), "a missing media type still counts");
+        assert!(!is_image(&notes));
     }
 
     #[test]

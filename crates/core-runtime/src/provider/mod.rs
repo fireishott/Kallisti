@@ -212,6 +212,13 @@ pub struct ChatRequest {
     pub max_output_tokens: Option<u32>,
     /// Tools offered to the model. Empty means none.
     pub tools: Vec<ToolSpec>,
+    /// Image data URLs to attach to the last message, in order.
+    ///
+    /// Kept here rather than on a message because only one thing sends images: a
+    /// vision request, which is one user message and nothing else. A request with
+    /// images therefore carries them on its final message and the adapter emits a
+    /// content array; a request without them is byte-for-byte what it was.
+    pub images: Vec<String>,
 }
 
 impl ChatRequest {

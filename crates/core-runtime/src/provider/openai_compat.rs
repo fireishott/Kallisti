@@ -105,49 +105,74 @@ impl OpenAiCompatProvider {
                 "content": system,
             }));
         }
-        messages.extend(request.messages.iter().map(|message| match message.role {
-            ChatRole::Tool => serde_json::json!({
-                "role": ChatRole::Tool.as_str(),
-                // Never invented: a message with no id serializes as null and
-                // the provider rejects it, which is louder than guessing.
-                "tool_call_id": message.tool_call_id,
-                "content": message.content,
-            }),
-            ChatRole::Assistant if !message.tool_calls.is_empty() => {
-                let calls: Vec<serde_json::Value> = message
-                    .tool_calls
-                    .iter()
-                    .map(|call| {
-                        serde_json::json!({
-                            "id": call.id,
-                            "type": "function",
-                            "function": {
-                                "name": call.name,
-                                // The wire format carries arguments as a JSON
-                                // string, not as an object.
-                                "arguments": call.arguments.to_string(),
-                            }
-                        })
+        // A vision request carries its images on the final message. Everything
+        // else takes the plain-text path it always took, so adding this cannot
+        // change the bytes of a request that has no images.
+        let last = request.messages.len().saturating_sub(1);
+        messages.extend(request.messages.iter().enumerate().map(|(index, message)| {
+            match message.role {
+                ChatRole::User if index == last && !request.images.is_empty() => {
+                    let mut parts: Vec<serde_json::Value> = Vec::new();
+                    if !message.content.trim().is_empty() {
+                        parts.push(serde_json::json!({
+                            "type": "text",
+                            "text": message.content,
+                        }));
+                    }
+                    for url in &request.images {
+                        parts.push(serde_json::json!({
+                            "type": "image_url",
+                            "image_url": { "url": url },
+                        }));
+                    }
+                    serde_json::json!({
+                        "role": ChatRole::User.as_str(),
+                        "content": parts,
                     })
-                    .collect();
-                // A call-only assistant turn has no text. Several
-                // OpenAI-compatible servers reject an empty string here, so
-                // absence is null rather than "".
-                let content = if message.content.is_empty() {
-                    serde_json::Value::Null
-                } else {
-                    serde_json::Value::String(message.content.clone())
-                };
-                serde_json::json!({
-                    "role": ChatRole::Assistant.as_str(),
-                    "content": content,
-                    "tool_calls": calls,
-                })
+                }
+                ChatRole::Tool => serde_json::json!({
+                    "role": ChatRole::Tool.as_str(),
+                    // Never invented: a message with no id serializes as null and
+                    // the provider rejects it, which is louder than guessing.
+                    "tool_call_id": message.tool_call_id,
+                    "content": message.content,
+                }),
+                ChatRole::Assistant if !message.tool_calls.is_empty() => {
+                    let calls: Vec<serde_json::Value> = message
+                        .tool_calls
+                        .iter()
+                        .map(|call| {
+                            serde_json::json!({
+                                "id": call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.name,
+                                    // The wire format carries arguments as a JSON
+                                    // string, not as an object.
+                                    "arguments": call.arguments.to_string(),
+                                }
+                            })
+                        })
+                        .collect();
+                    // A call-only assistant turn has no text. Several
+                    // OpenAI-compatible servers reject an empty string here, so
+                    // absence is null rather than "".
+                    let content = if message.content.is_empty() {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::String(message.content.clone())
+                    };
+                    serde_json::json!({
+                        "role": ChatRole::Assistant.as_str(),
+                        "content": content,
+                        "tool_calls": calls,
+                    })
+                }
+                _ => serde_json::json!({
+                    "role": message.role.as_str(),
+                    "content": message.content,
+                }),
             }
-            _ => serde_json::json!({
-                "role": message.role.as_str(),
-                "content": message.content,
-            }),
         }));
 
         let mut body = serde_json::json!({
@@ -399,6 +424,33 @@ mod tests {
         assert!(
             body["messages"][1].get("tool_calls").is_none(),
             "a text-only turn must not grow a tool_calls key"
+        );
+    }
+
+    #[test]
+    fn images_ride_as_a_content_array_on_the_last_message() {
+        let request = ChatRequest {
+            images: vec!["data:image/png;base64,AAA".to_owned()],
+            ..ChatRequest::user_text("what is this")
+        };
+        let body = provider().build_body(&request);
+        let content = &body["messages"][0]["content"];
+        assert!(
+            content.is_array(),
+            "an image request sends parts: {content}"
+        );
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "what is this");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,AAA");
+    }
+
+    #[test]
+    fn a_request_without_images_keeps_the_plain_string_content() {
+        let body = provider().build_body(&ChatRequest::user_text("no pictures here"));
+        assert_eq!(
+            body["messages"][0]["content"], "no pictures here",
+            "a text turn must not change shape because a vision path exists"
         );
     }
 

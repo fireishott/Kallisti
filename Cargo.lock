@@ -553,6 +553,7 @@ version = "1.4.0"
 dependencies = [
  "argon2",
  "axum",
+ "base64",
  "clap",
  "core-domain",
  "core-runtime",

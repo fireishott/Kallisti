@@ -34,7 +34,7 @@ pub const ROLES: &[Role] = &[
         key: "vision",
         label: "Vision",
         purpose: "Reads an image attached to a turn.",
-        consumed_by: None,
+        consumed_by: Some("a turn that carries an image, once this role is pinned"),
     },
     Role {
         key: "image",
@@ -255,6 +255,6 @@ mod tests {
             .filter(|role| role.consumed_by.is_some())
             .map(|role| role.key)
             .collect();
-        assert_eq!(wired, vec!["compression", "title_generation"]);
+        assert_eq!(wired, vec!["vision", "compression", "title_generation"]);
     }
 }

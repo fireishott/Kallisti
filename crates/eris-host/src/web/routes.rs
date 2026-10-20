@@ -3780,6 +3780,9 @@ async fn chat_send(
     let compression = chat::aux_pinned_config(&state.engine, "compression")
         .ok()
         .flatten();
+    let vision = chat::aux_pinned_config(&state.engine, "vision")
+        .ok()
+        .flatten();
     // Attachments ride after the question, as a second user message built for
     // this turn only: the transcript keeps what the operator typed, and the
     // model still learns what came with it.
@@ -3807,6 +3810,8 @@ async fn chat_send(
                 question: text,
                 answer_id,
                 compression,
+                vision,
+                files: files.clone(),
                 dropped,
                 history,
             },
@@ -3825,6 +3830,8 @@ async fn chat_send(
             question: text,
             answer_id,
             compression,
+            vision,
+            files: files.clone(),
             dropped,
             history,
         },
@@ -4123,6 +4130,8 @@ struct TurnJob {
     question: String,
     answer_id: String,
     compression: Option<chat::TurnConfig>,
+    vision: Option<chat::TurnConfig>,
+    files: Vec<chat::Attachment>,
     dropped: Vec<chat::Message>,
     history: Vec<core_runtime::provider::ChatMessage>,
 }
@@ -4143,6 +4152,8 @@ fn spawn_turn(
         question,
         answer_id,
         compression,
+        vision,
+        files,
         dropped,
         history,
     } = job;
@@ -4243,6 +4254,25 @@ fn spawn_turn(
                 },
             }
         };
+
+        // The picture has to reach a model that can see, before the turn runs.
+        let vision_note = vision
+            .as_ref()
+            .and_then(|config| chat::describe_images(config, &files));
+        if vision.is_some() {
+            let detail = match &vision_note {
+                Some(text) => format!("images={}; description_chars={}", files.len(), text.len()),
+                None => format!("images={}; no description", files.len()),
+            };
+            let _ = title_audit.audit("loopback", "chat.vision", Some(&detail));
+        }
+        let mut history = history;
+        if let Some(text) = &vision_note {
+            history.push(core_runtime::provider::ChatMessage::text(
+                core_runtime::provider::ChatRole::User,
+                format!("What the vision model sees in the attached image:\n{text}"),
+            ));
+        }
 
         let summary = compression
             .as_ref()
