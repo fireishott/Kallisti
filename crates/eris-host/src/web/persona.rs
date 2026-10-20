@@ -36,7 +36,7 @@ fn the_settings_page_shows_the_persona_and_its_size() {
     let (dir, engine, app, cookie) = ready_app();
     let path = crate::config::Paths::for_root(dir.path()).persona_file();
     std::fs::create_dir_all(path.parent().expect("a parent")).expect("config dir");
-    let text = "You are Ignyte, Curtis's chief of staff.\n";
+    let text = "You are Kallisti, Sam's chief of staff.\n";
     std::fs::write(&path, text).expect("write");
 
     let reply = block_on(send(
@@ -59,7 +59,7 @@ fn the_settings_page_shows_the_persona_and_its_size() {
     );
 
     // The text that would be sent is the text on the page.
-    assert!(page.contains("You are Ignyte, Curtis"), "{page}");
+    assert!(page.contains("You are Kallisti, Sam"), "{page}");
 
     // The size, and the plain-English consequence.
     assert!(
@@ -85,7 +85,7 @@ fn the_settings_page_shows_the_persona_and_its_size() {
 #[test]
 fn saving_the_persona_writes_the_file_and_audits_the_size_only() {
     let (dir, engine, app, cookie) = ready_app();
-    let text = "You are Ignyte, Curtis's chief of staff.\nShort lines only.";
+    let text = "You are Kallisti, Sam's chief of staff.\nShort lines only.";
     let reply = block_on(send(
         &app,
         Call::post(PERSONA_POST, &persona_body(text, Some(true)))
@@ -136,7 +136,7 @@ fn saving_the_persona_writes_the_file_and_audits_the_size_only() {
     );
     assert!(detail.contains("enabled=true"), "{detail}");
     assert!(
-        !detail.contains("Ignyte"),
+        !detail.contains("Kallisti"),
         "the persona text never reaches the audit log: {detail}"
     );
     assert_eq!(row.actor, "loopback");
@@ -155,7 +155,7 @@ fn saving_the_persona_writes_the_file_and_audits_the_size_only() {
         page.body
     );
     assert!(
-        page.body.contains("You are Ignyte, Curtis"),
+        page.body.contains("You are Kallisti, Sam"),
         "the textarea holds the saved text: {}",
         page.body
     );

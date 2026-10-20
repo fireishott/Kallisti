@@ -40,7 +40,7 @@ generation from leaving a half-updated tree behind.
 
 - The Rust types are load-bearing for two other languages, so a breaking change
   to them is a breaking wire change. That is the intent: one place to change.
-- The generated Swift must compile on the MBP, which is the only machine with
+- The generated Swift must compile on the build Mac, which is the only machine with
   Xcode. A TS-only pass is not proof.
 - If Typeshare cannot express an internally tagged enum faithfully, the fallback
   is Typify plus Draft 2020-12, which changes the pipeline for all three
@@ -51,7 +51,7 @@ generation from leaving a half-updated tree behind.
 - VERIFY: Typeshare 1.0.5 turns `#[serde(tag = "type")]` on `EventKind` into a
   TypeScript discriminated union rather than a single flat interface.
 - VERIFY: Typeshare 1.0.5 emits a Swift enum with associated values for the same
-  type, and it compiles under the pinned Xcode on the MBP.
+  type, and it compiles under the pinned Xcode on the build Mac.
 - VERIFY: Schemars 1.2.3 derives from the identical type without needing
   `#[schemars(...)]` attributes that contradict the serde ones, in particular for
   `Option<T>` and for the internally tagged enum.
@@ -64,7 +64,7 @@ generation from leaving a half-updated tree behind.
 - VERIFY: a union round-trips under Typify plus Draft 2020-12, before the fallback
   is adopted for real.
 - VERIFY: UniFFI 0.32.2 proc-macro surface builds on this host for
-  `x86_64-unknown-linux-gnu` and generates Swift bindings on the MBP.
+  `x86_64-unknown-linux-gnu` and generates Swift bindings on the build Mac.
 - VERIFY: `cargo build` cost of the added proc-macro crates is acceptable in CI.
 
 ## Not in this ADR

@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn the_persona_block_is_first_in_the_compiled_prompt() {
         let inputs = PromptInputs {
-            persona: Some("You are Ignyte.".to_owned()),
+            persona: Some("You are Kallisti.".to_owned()),
             workspace: Some("/home/operator/kallisti-workspace".to_owned()),
             ..PromptInputs::default()
         };
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn compilation_is_deterministic() {
         let build = || PromptInputs {
-            persona: Some("You are Ignyte.".to_owned()),
+            persona: Some("You are Kallisti.".to_owned()),
             product_policy: Some("Never send mail unapproved.".to_owned()),
             workspace: Some("/w".to_owned()),
             volatile_tail: Some("recent turns: none".to_owned()),

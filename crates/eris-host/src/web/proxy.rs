@@ -564,13 +564,13 @@ fn a_trusted_peer_may_send_forwarded_headers() {
 
     // A configured LAN proxy is trusted too, once it is in the list.
     let access =
-        AdminAccess::parse(&["192.168.68.0/24".to_owned()], None).expect("a LAN CIDR parses");
+        AdminAccess::parse(&["192.168.1.0/24".to_owned()], None).expect("a LAN CIDR parses");
     let (_lan_dir, lan_engine, _lan_passphrase) = ready_engine();
     let lan_app = router_with(AppState::new(lan_engine, false).with_access(access));
     let reply = block_on(send(
         &lan_app,
         Call::get(ROUTE_HEALTHZ)
-            .peer(SocketAddr::from(([192, 168, 68, 20], 4000)))
+            .peer(SocketAddr::from(([192, 168, 1, 20], 4000)))
             .header("x-forwarded-for", "203.0.113.9"),
     ));
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
@@ -584,7 +584,7 @@ fn an_untrusted_peer_sending_forwarded_headers_is_403() {
     // A LAN peer, a public peer, and a request with no peer information at all:
     // all three are untrusted, so the forwarded header is a spoof attempt.
     for peer in [
-        SocketAddr::from(([192, 168, 68, 9], 4444)),
+        SocketAddr::from(([192, 168, 1, 9], 4444)),
         SocketAddr::from(([203, 0, 113, 9], 4444)),
     ] {
         let reply = block_on(send(
@@ -608,7 +608,7 @@ fn an_untrusted_peer_sending_forwarded_headers_is_403() {
     // refusal is about the spoof, not about who is asking.
     let plain = block_on(send(
         &app,
-        Call::get(ROUTE_HEALTHZ).peer(SocketAddr::from(([192, 168, 68, 9], 4444))),
+        Call::get(ROUTE_HEALTHZ).peer(SocketAddr::from(([192, 168, 1, 9], 4444))),
     ));
     assert_eq!(plain.status, StatusCode::OK, "{}", plain.body);
 }

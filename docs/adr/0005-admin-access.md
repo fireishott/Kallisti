@@ -147,7 +147,7 @@ listen = ["127.0.0.1:7340"]
 ```
 
 Reach it at `http://127.0.0.1:7340`, or tunnel in with
-`ssh -L 7340:127.0.0.1:7340 fihadmin@fih-ai-host`.
+`ssh -L 7340:127.0.0.1:7340 operator@the daemon host`.
 
 Consequence: no other machine can open a socket to the listener. An SSH tunnel
 gives a remote operator access without exposing a port, at the cost of a login.
@@ -158,11 +158,11 @@ to sniff.
 
 ```toml
 [admin]
-listen = ["127.0.0.1:7340", "192.168.68.51:7340"]
+listen = ["127.0.0.1:7340", "192.168.1.10:7340"]
 trusted_proxies = ["127.0.0.1/32", "::1/128"]
 ```
 
-Reach it at `http://192.168.68.51:7340` from any device on `192.168.68.0/24`.
+Reach it at `http://192.168.1.10:7340` from any device on `192.168.1.0/24`.
 
 Consequence: every device on the LAN is one TCP connection away from the login
 form, over plain HTTP. The admin passphrase is typed across a shared network.
@@ -175,10 +175,10 @@ in front with TLS (example e) and leave the daemon on loopback.
 
 ```toml
 [admin]
-listen = ["127.0.0.1:7340", "100.89.211.80:7340"]
+listen = ["127.0.0.1:7340", "100.64.0.10:7340"]
 ```
 
-Reach it at `http://100.89.211.80:7340` from any device on the tailnet, with no
+Reach it at `http://100.64.0.10:7340` from any device on the tailnet, with no
 `tailscale serve` and no tunnel. (`tailscale serve` in front of loopback is the
 other, equally valid shape, and it needs no `trusted_proxies` change because Serve
 connects from `127.0.0.1`.)

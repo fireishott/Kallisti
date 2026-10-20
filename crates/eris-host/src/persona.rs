@@ -30,12 +30,12 @@ pub const MAX_PERSONA_BYTES: usize = MAX_SYSTEM_BYTES;
 /// The `settings` row that holds the assistant's display name.
 ///
 /// The identity file says who the assistant is; this row says what to call it.
-/// They are separate because a name is a label ("Message Ignyte"), not a claim
+/// They are separate because a name is a label ("Message Kallisti"), not a claim
 /// the model has to be told about on every turn.
 pub const SETTING_ASSISTANT_NAME: &str = "assistant.name";
 
 /// The name the dashboard uses before the operator sets one.
-pub const DEFAULT_ASSISTANT_NAME: &str = "Ignyte";
+pub const DEFAULT_ASSISTANT_NAME: &str = "Kallisti";
 
 /// The `settings` row that remembers the operator's on/off choice.
 ///
@@ -358,16 +358,16 @@ mod tests {
     fn the_context_file_is_appended_after_the_persona() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("persona.md");
-        fs::write(&path, "you are Ignyte").expect("write persona");
+        fs::write(&path, "you are Kallisti").expect("write persona");
         fs::write(dir.path().join("context.md"), "the warehouse is here").expect("write context");
 
         let combined = PersonaConfig::at_path(path).load(None).expect("loads");
 
         let combined = combined.expect("a system block");
-        assert!(combined.contains("you are Ignyte"), "{combined}");
+        assert!(combined.contains("you are Kallisti"), "{combined}");
         assert!(combined.contains("the warehouse is here"), "{combined}");
         assert!(
-            combined.find("you are Ignyte") < combined.find("the warehouse is here"),
+            combined.find("you are Kallisti") < combined.find("the warehouse is here"),
             "identity first, environment second: {combined}"
         );
     }
@@ -388,11 +388,11 @@ mod tests {
     fn a_missing_context_file_leaves_the_persona_alone() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("persona.md");
-        fs::write(&path, "you are Ignyte").expect("write persona");
+        fs::write(&path, "you are Kallisti").expect("write persona");
 
         let block = PersonaConfig::at_path(path).load(None).expect("loads");
 
-        assert_eq!(block, Some("you are Ignyte".to_owned()));
+        assert_eq!(block, Some("you are Kallisti".to_owned()));
     }
 
     #[test]

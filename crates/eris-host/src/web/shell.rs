@@ -68,7 +68,7 @@ fn the_dashboard_lists_every_bound_listener() {
     let state = AppState::new(engine, false);
     let bound: Vec<std::net::SocketAddr> = vec![
         "127.0.0.1:7340".parse().expect("a literal address"),
-        "192.168.68.51:7340".parse().expect("a literal address"),
+        "192.168.1.10:7340".parse().expect("a literal address"),
     ];
     state.set_bound_listeners(bound);
     let app = router_with(state);
@@ -80,7 +80,7 @@ fn the_dashboard_lists_every_bound_listener() {
     ));
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
 
-    for addr in ["127.0.0.1:7340", "192.168.68.51:7340"] {
+    for addr in ["127.0.0.1:7340", "192.168.1.10:7340"] {
         assert!(
             page.body.contains(addr),
             "the System card lists the bound address {addr}: {}",

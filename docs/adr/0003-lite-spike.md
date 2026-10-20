@@ -81,7 +81,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 what library-mode binding generation reads, and `rlib` keeps `cargo test` and any
 future workspace dependent working. All three build on this host today.
 
-## What P3 actually proved (host target, on fih-ai-host)
+## What P3 actually proved (host target, on the daemon host)
 
 - `cargo test -p ios-host`: 9 tests pass. `run_fake_turn("x").text == "fixture-ok: x"`.
 - `cargo test --workspace`: 38 tests pass (P2 left 30).
@@ -99,18 +99,18 @@ These are host facts. None of them is a device fact.
 ## The device gate is UNPROVEN
 
 **The device half of the Lite gate has not run.** It is `unproven` until the
-following executes on the MBP (M3 Max, `192.168.68.27`) with the radio off and
+following executes on the build Mac with the radio off and
 the app returns `fixture-ok: x` on screen. No claim in this repo, in the plan, or
 in any report may say the device gate passed before that happens.
 
-The commands below are the intended sequence, written down so the MBP run is a
+The commands below are the intended sequence, written down so the Mac run is a
 transcription rather than a design exercise. Every one of them is `VERIFY:`
 because none has been executed.
 
-### 1. Toolchain and targets on the MBP
+### 1. Toolchain and targets on the build Mac
 
 ```bash
-# VERIFY: rustup on the MBP has 1.99.1 and the iOS targets are installed.
+# VERIFY: rustup on the build Mac has 1.99.1 and the iOS targets are installed.
 rustup toolchain install 1.99.1 --profile default
 rustup target add --toolchain 1.99.1 aarch64-apple-ios aarch64-apple-ios-sim
 

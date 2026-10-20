@@ -322,11 +322,11 @@ mod tests {
         let block = first_run_block(
             "acid acorn acre acts afar also",
             &path,
-            "fihadmin",
+            "operator",
             "host",
             7340,
         );
-        assert!(block.contains("ssh -L 7340:127.0.0.1:7340 fihadmin@host"));
+        assert!(block.contains("ssh -L 7340:127.0.0.1:7340 operator@host"));
         assert!(block.contains("http://127.0.0.1:7340/setup"));
         assert!(block.contains("acid acorn acre acts afar also"));
         assert!(block.contains(&path.display().to_string()));

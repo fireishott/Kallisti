@@ -1060,7 +1060,7 @@ KALLISTI_API_KEY_REF=sk-not-a-reference
         // startup error and not a silent surprise later.
         let full = TomlConfig::parse(
             "[admin]\npublic_url = \"https://kallisti.example.com\"\n\
-             trusted_proxies = [\"127.0.0.1/32\", \"192.168.68.0/24\"]\n",
+             trusted_proxies = [\"127.0.0.1/32\", \"192.168.1.0/24\"]\n",
             &toml_path(),
         )
         .expect("a documented admin table");
@@ -1072,7 +1072,7 @@ KALLISTI_API_KEY_REF=sk-not-a-reference
             full.admin()
                 .access()
                 .trusted
-                .contains("192.168.68.20".parse().expect("ip"))
+                .contains("192.168.1.20".parse().expect("ip"))
         );
 
         let bad_listen =

@@ -261,7 +261,7 @@ fn the_assistant_name_is_a_setting_the_composer_reads() {
     let page = block_on(send(&app, Call::get(ROUTE_CHAT).html().cookie(cookie)));
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(
-        page.body.contains(r#"placeholder="Message Ignyte""#),
+        page.body.contains(r#"placeholder="Message Kallisti""#),
         "the composer uses the profile name: {}",
         page.body
     );
@@ -607,7 +607,7 @@ fn a_settled_transcript_renders_both_speakers_keeps_code_and_clears() {
     let body = &page.body;
     assert!(body.contains(">You<"), "the operator is named: {body}");
     assert!(
-        body.contains(">Ignyte<"),
+        body.contains(">Kallisti<"),
         "the assistant is named from the default profile: {body}"
     );
     assert!(body.contains("how do I list files"));

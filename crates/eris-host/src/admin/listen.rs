@@ -231,7 +231,7 @@ async fn multiple_addresses_are_all_bound() {
 
 #[test]
 fn a_wildcard_bind_subsumes_the_same_port_loopback() {
-    // Curtis's live config: loopback first, then the wildcard on the same port.
+    // A live config: loopback first, then the wildcard on the same port.
     // The kernel refuses the second bind, and the wildcard already serves
     // loopback, so the wildcard is kept and the loopback entry is reported as
     // covered rather than as an error.
@@ -257,7 +257,7 @@ fn a_wildcard_bind_subsumes_the_same_port_loopback() {
     assert_eq!(covered.len(), 1);
 
     // Two specific addresses on one port are not redundant with each other.
-    let specific = vec!["127.0.0.1:7340".to_owned(), "192.168.68.51:7340".to_owned()];
+    let specific = vec!["127.0.0.1:7340".to_owned(), "192.168.1.10:7340".to_owned()];
     let (effective, covered) =
         effective_binds(&parse_listen_list(&specific).expect("two specific binds"));
     assert_eq!(effective.len(), 2);
@@ -292,7 +292,7 @@ fn a_duplicate_address_is_a_config_error() {
 fn a_malformed_address_is_a_config_error() {
     for raw in [
         "localhost:7340",
-        "fih-ai-host.tail4d497d.ts.net:7340",
+        "daemon.example.ts.net:7340",
         "127.0.0.1",
         "0.0.0.0",
         "https://kallisti.example.com",
@@ -339,7 +339,7 @@ fn the_flag_adds_to_the_config_list() {
 fn a_hostname_is_refused() {
     for raw in [
         "localhost:7340",
-        "fih-ai-host.tail4d497d.ts.net:7340",
+        "daemon.example.ts.net:7340",
         "example.com:7340",
     ] {
         let error = parse_listen_entry(raw).expect_err("a hostname is refused");
