@@ -789,13 +789,13 @@ pre.code {
    machinery behind the answer rather than as the answer. */
 .msg .think {
   margin: 0 0 8px;
-  padding: 8px 12px;
+  padding: 12px 14px;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: transparent;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.025);
   color: var(--muted);
   font-size: 12.5px;
-  line-height: 1.55;
+  line-height: 1.6;
 }
 .msg .think > summary {
   cursor: pointer;
@@ -905,19 +905,44 @@ pre.code {
 .msg .exec-name { color: var(--text); }
 .msg .exec-args { color: var(--muted); overflow-wrap: anywhere; }
 .msg .exec-call.failed .exec-name { color: var(--bad); }
-.msg .exec-out {
+/* Output as an application window: traffic lights, a title, the size, the text.
+   It reads as a thing that ran rather than as prose that arrived. */
+.msg .win {
   margin: 7px 0 0;
-  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(8, 8, 10, 0.72);
+}
+.msg .win-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+.msg .win-dots { display: flex; gap: 5px; }
+.msg .win-dot { width: 9px; height: 9px; border-radius: 50%; display: block; }
+/* Traffic lights from the palette, not from macOS: the stylesheet test refuses a
+   hex that is not a palette entry, and a fourth red would be a second truth. */
+.msg .win-dot.red { background: var(--bad); }
+.msg .win-dot.yellow { background: var(--warn); }
+.msg .win-dot.green { background: var(--ok); }
+.msg .win-title { font-size: 11px; letter-spacing: 0.04em; color: var(--muted); }
+.msg .win-size { margin-left: auto; font-size: 10.5px; color: var(--muted); opacity: 0.8; }
+.msg .win-body {
+  margin: 0;
+  padding: 10px 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--text);
   opacity: 0.9;
   max-height: 132px;
   overflow-y: auto;
-  padding-right: 4px;
 }
 /* Expanded stays bounded: a bigger window, not the whole file. */
-.msg .exec-call[open] .exec-out { max-height: 320px; }
+.msg .exec-call[open] .win-body { max-height: 340px; }
 .msg .think > summary::-webkit-details-marker { display: none; }
 .msg .think > summary::before {
   content: "▸ ";

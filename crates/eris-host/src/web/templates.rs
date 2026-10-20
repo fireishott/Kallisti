@@ -3247,6 +3247,25 @@ pub fn context_share(used: Option<u64>, window: Option<u64>) -> String {
 /// event stream, and appends what arrives. It is the only script in the UI, it is
 /// inline (no `src`, no network, no third party), and every other page is still
 /// script-free.
+/// One tool call's output as an application window, the way the iOS client draws
+/// it: traffic lights, a title, the byte count, then the text.
+fn tool_window(tool: &crate::web::chat::ToolRecord) -> Markup {
+    html! {
+        div .win {
+            div .win-bar {
+                span .win-dots {
+                    span .win-dot .red {}
+                    span .win-dot .yellow {}
+                    span .win-dot .green {}
+                }
+                span .win-title { "kallisti \u{2014} stdout" }
+                span .win-size { (tool.output.chars().count()) " chars" }
+            }
+            pre .win-body { (tool.output) }
+        }
+    }
+}
+
 pub fn chat_page(view: &ChatView) -> Markup {
     let body = html! {
         div .chat-shell .new-chat[view.messages.is_empty()]
@@ -3300,7 +3319,7 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                                     span .exec-name { (tool.name) }
                                                     span .exec-args { (tool.arguments) }
                                                 }
-                                                pre .exec-out { (tool.output) }
+                                                (tool_window(tool))
                                             }
                                         }
                                     }
@@ -3321,7 +3340,7 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                                     span .exec-name { (tool.name) }
                                                     span .exec-args { (tool.arguments) }
                                                 }
-                                                pre .exec-out { (tool.output) }
+                                                (tool_window(tool))
                                             }
                                         }
                                     }
@@ -3509,11 +3528,35 @@ const CHAT_JS: &str = r##"(function () {
       args.textContent = tool.arguments;
       head.appendChild(name);
       head.appendChild(args);
+      // Same window chrome the server renders, so a live turn and a reloaded
+      // transcript are the same page.
+      var win = document.createElement("div");
+      win.className = "win";
+      var bar = document.createElement("div");
+      bar.className = "win-bar";
+      var dots = document.createElement("span");
+      dots.className = "win-dots";
+      ["red", "yellow", "green"].forEach(function (tone) {
+        var dot = document.createElement("span");
+        dot.className = "win-dot " + tone;
+        dots.appendChild(dot);
+      });
+      var title = document.createElement("span");
+      title.className = "win-title";
+      title.textContent = "kallisti \u2014 stdout";
+      var size = document.createElement("span");
+      size.className = "win-size";
+      size.textContent = tool.output.length + " chars";
+      bar.appendChild(dots);
+      bar.appendChild(title);
+      bar.appendChild(size);
       var out = document.createElement("pre");
-      out.className = "exec-out";
+      out.className = "win-body";
       out.textContent = tool.output;
+      win.appendChild(bar);
+      win.appendChild(out);
       call.appendChild(head);
-      call.appendChild(out);
+      call.appendChild(win);
       body.appendChild(call);
       exec.hidden = false;
     }

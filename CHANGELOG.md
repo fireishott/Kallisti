@@ -46,6 +46,11 @@ run.
   the last call, truncated, opening to the full list.
   *Off* means neither rendered nor streamed, so command output does not leave the
   daemon. The original on/off boolean is still read and maps to full/off.
+- **Tool output is drawn as a window**, the way the iOS client shows it: traffic
+  lights from the palette, a `kallisti - stdout` title, the character count, then
+  the text in a bounded scroll body. The thinking block is a rounded card on its
+  own surface. Streaming builds the same markup as the server, so a live turn and a
+  reloaded transcript are the same page.
 
 ## 1.3.0
 

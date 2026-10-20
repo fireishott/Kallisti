@@ -214,6 +214,49 @@ fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
 }
 
 #[test]
+fn a_calls_output_renders_as_a_window_with_lights_and_a_size() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "run it", State::Complete).unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    chat::settle(
+        db,
+        &answer,
+        "ran it",
+        None,
+        &[chat::ToolRecord {
+            name: "run_command".to_owned(),
+            arguments: r#"{"command":"echo hi"}"#.to_owned(),
+            output: "hi".to_owned(),
+            is_error: false,
+        }],
+        None,
+        chat::Accounting::default(),
+    )
+    .unwrap();
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    let body = &page.body;
+    assert!(body.contains(r#"class="win""#), "output sits in a window");
+    assert!(body.contains(r#"class="win-dot red""#), "traffic lights");
+    assert!(body.contains(r#"class="win-dot green""#));
+    assert!(body.contains("kallisti"), "the window is titled");
+    assert!(body.contains("stdout"), "and says what it is");
+    assert!(
+        body.contains("2 chars"),
+        "the size is stated: {}",
+        body.len()
+    );
+    assert!(
+        !body.contains(r#"class="exec-out""#),
+        "the bare pre is gone, so live and stored markup agree"
+    );
+}
+
+#[test]
 fn summary_mode_collapses_the_whole_turn_to_one_line_naming_the_last_call() {
     let (_dir, engine, app, cookie) = ready_app();
     let db = engine.db();
