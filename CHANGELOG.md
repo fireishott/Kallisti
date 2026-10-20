@@ -6,6 +6,19 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **Conversations over `/v1`.** A paired device can list its conversations, start
+  one, read a transcript and clear it, so a client shows history instead of firing
+  one-shot turns into the void. `GET /v1/conversations` is newest first and capped
+  at a hundred, with `count` and `truncated`; `POST /v1/conversations` starts an
+  empty one and answers 201; `GET /v1/conversations/{id}` returns the messages
+  oldest first, capped at two hundred with `truncated`, and carries the same
+  reasoning and tool records the browser stores; `POST /v1/conversations/{id}/clear`
+  runs the dashboard's own clear statement. `POST /v1/turns` takes an optional
+  `conversation` field: naming one writes the question and the answer into that
+  conversation and the response reports `conversation_id`, and an id the daemon does
+  not hold is a typed 404 `conversation_not_found` with no turn created. Every route
+  needs a bearer carrying the `sessions` scope, and both writes are audited with the
+  device as the actor.
 - **A generated greeting line, off by default.** With it on, an empty conversation
   shows one short line under the salutation, written by a model of the operator's
   choosing (or the chat model) and rewritten on an hourly, daily or weekly window.

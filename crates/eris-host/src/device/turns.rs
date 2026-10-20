@@ -771,6 +771,21 @@ fn finish_transaction(
     Ok(Some(seq))
 }
 
+/// Where a turn's answer is also written, when the client named a conversation.
+///
+/// A device turn is a row in `jobs` and a series of `job_events`; a conversation
+/// is the browser's transcript. A client that wants history after the stream ends
+/// has to have both, so a turn that names a conversation writes the assistant row
+/// the browser would have written, and settles it with the same text, reasoning
+/// and tool records the stream carried.
+#[derive(Debug, Clone)]
+pub struct ConversationTurn {
+    /// The conversation the turn belongs to.
+    pub conversation: String,
+    /// The assistant row, created before the provider is called.
+    pub answer_id: String,
+}
+
 /// The live fan-out and the worker.
 ///
 /// One `broadcast` sender per running job, created before the `202` is answered,
@@ -885,10 +900,11 @@ impl TurnHub {
         job_id: String,
         sender: broadcast::Sender<TurnFrame>,
         policy: TurnPolicy,
+        conversation: Option<ConversationTurn>,
     ) {
         let hub = Arc::clone(self);
         tokio::spawn(async move {
-            hub.run(job_id, sender, policy).await;
+            hub.run(job_id, sender, policy, conversation).await;
         });
     }
 
@@ -898,6 +914,7 @@ impl TurnHub {
         job_id: String,
         sender: broadcast::Sender<TurnFrame>,
         policy: TurnPolicy,
+        conversation: Option<ConversationTurn>,
     ) {
         let store = self.store.clone();
         let claim = {
@@ -1035,10 +1052,22 @@ impl TurnHub {
             let store = store.clone();
             let sender = sender.clone();
             let writer_job = job_id.clone();
+            // The worker owns one copy of the conversation target; `run` keeps the
+            // other, so a turn that never reached the provider can still be closed
+            // in the transcript once the worker is done.
+            let write_target = conversation.clone();
             tokio::task::spawn_blocking(move || {
+                // What the conversation row needs, accumulated as the stream
+                // passes: the same reasoning and the same tool records the frames
+                // carry, so a device transcript and a device stream cannot
+                // disagree about what a turn did.
+                let mut streamed = String::new();
+                let mut reasoning = String::new();
+                let mut tools: Vec<crate::web::chat::ToolRecord> = Vec::new();
                 while let Some(signal) = rx.blocking_recv() {
                     match signal {
                         Signal::Delta(text) => {
+                            streamed.push_str(&text);
                             let data = serde_json::json!({ "text": text });
                             if let Ok(Some(seq)) =
                                 store.append(&writer_job, FrameKind::Delta, &data)
@@ -1047,6 +1076,7 @@ impl TurnHub {
                             }
                         }
                         Signal::Reasoning(text) => {
+                            reasoning.push_str(&text);
                             let data = serde_json::json!({ "text": text });
                             if let Ok(Some(seq)) =
                                 store.append(&writer_job, FrameKind::Reasoning, &data)
@@ -1064,6 +1094,12 @@ impl TurnHub {
                             output,
                             is_error,
                         } => {
+                            tools.push(crate::web::chat::ToolRecord {
+                                name: name.clone(),
+                                arguments: arguments.clone(),
+                                output: output.clone(),
+                                is_error,
+                            });
                             let data = serde_json::json!({
                                 "name": name,
                                 "arguments": arguments,
@@ -1076,18 +1112,53 @@ impl TurnHub {
                             }
                         }
                         Signal::Done { text, usage } => {
-                            let data = serde_json::json!({ "text": text, "usage": usage });
-                            if let Ok(Some(seq)) = store.finish(&writer_job, FrameKind::Done, &data)
-                            {
-                                publish(&sender, seq, FrameKind::Done, data);
+                            let data = serde_json::json!({ "text": &text, "usage": &usage });
+                            match store.finish(&writer_job, FrameKind::Done, &data) {
+                                // The transcript row is written only by the worker
+                                // that won the terminal frame. A turn cancelled
+                                // while the provider was still answering is not
+                                // settled: the operator already ended it, and an
+                                // answer landing afterwards would overwrite that
+                                // decision. The row is closed below, from the
+                                // status the cancel left.
+                                Ok(Some(seq)) => {
+                                    if let Some(write) = &write_target {
+                                        let _ = crate::web::chat::settle(
+                                            store.db(),
+                                            &write.answer_id,
+                                            &text,
+                                            Some(&reasoning),
+                                            &tools,
+                                            Some(&usage),
+                                            accounting_from(&usage),
+                                        );
+                                    }
+                                    publish(&sender, seq, FrameKind::Done, data);
+                                }
+                                Ok(None) => {}
+                                Err(_) => {}
                             }
                         }
                         Signal::Failed { code, message } => {
-                            let data = serde_json::json!({ "code": code, "message": message });
-                            if let Ok(Some(seq)) =
-                                store.finish(&writer_job, FrameKind::Error, &data)
-                            {
-                                publish(&sender, seq, FrameKind::Error, data);
+                            let data = serde_json::json!({ "code": &code, "message": &message });
+                            match store.finish(&writer_job, FrameKind::Error, &data) {
+                                Ok(Some(seq)) => {
+                                    if let Some(write) = &write_target {
+                                        // The partial text is kept, as the browser
+                                        // keeps it: a message that failed mid-answer
+                                        // is worth more with the fragment that
+                                        // arrived than with nothing at all.
+                                        let _ = crate::web::chat::fail(
+                                            store.db(),
+                                            &write.answer_id,
+                                            &code,
+                                            &streamed,
+                                        );
+                                    }
+                                    publish(&sender, seq, FrameKind::Error, data);
+                                }
+                                Ok(None) => {}
+                                Err(_) => {}
                             }
                         }
                     }
@@ -1225,6 +1296,27 @@ impl TurnHub {
 
         let _ = turn_task.await;
         let _ = writer.await;
+        // A turn that ended without settling its transcript row leaves the
+        // conversation holding a question whose answer never arrives. The job's own
+        // status says what happened, so the row is closed from it rather than left
+        // streaming for the next start to guess at. A row the writer already
+        // settled or failed is left exactly as it was.
+        if let Some(write) = &conversation
+            && matches!(
+                crate::web::chat::still_streaming(store.db(), &write.answer_id),
+                Ok(true)
+            )
+        {
+            let status = store.status(&job_id).ok().flatten().unwrap_or_default();
+            let (code, body) = match status.as_str() {
+                "cancelled" => ("cancelled", "Stopped before it finished."),
+                _ => (
+                    "turn_unsettled",
+                    "The turn ended before it produced an answer.",
+                ),
+            };
+            let _ = crate::web::chat::fail(store.db(), &write.answer_id, code, body);
+        }
         self.retire(&job_id);
     }
 
@@ -1254,6 +1346,24 @@ impl TurnHub {
             _ => None,
         }
     }
+}
+
+/// The token accounting a conversation row keeps, read back from the usage the
+/// terminal frame carried.
+///
+/// Usage that does not read back is not a reason to lose the answer: the row still
+/// settles with the text it has and reports no numbers, which is what the browser
+/// keeps when a provider omits them. Durations are left unset because this worker
+/// times nothing: a number invented here would look measured.
+fn accounting_from(usage: &serde_json::Value) -> crate::web::chat::Accounting {
+    serde_json::from_value::<core_domain::Usage>(usage.clone())
+        .map(|usage| crate::web::chat::Accounting {
+            prompt_tokens: usage.input_tokens(),
+            completion_tokens: usage.output_tokens(),
+            cached_tokens: usage.cache_read_tokens(),
+            duration_ms: None,
+        })
+        .unwrap_or_default()
 }
 
 /// Publish one frame to whoever is listening. A send with no receivers is not an

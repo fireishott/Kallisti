@@ -1875,3 +1875,527 @@ async fn a_duplicate_project_name_is_refused_by_code() {
 
     harness.stop();
 }
+
+// ---------------------------------------------------------------------------
+// Conversations
+// ---------------------------------------------------------------------------
+
+/// A conversation row created directly, for a route that only needs an id.
+fn a_conversation(harness: &Harness) -> String {
+    eris_host::web::chat::create_conversation(harness.engine.db()).expect("a conversation row")
+}
+
+#[tokio::test]
+async fn conversations_require_a_bearer_and_the_sessions_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let scoped = token_without(&harness, "iPad", eris_host::auth::Scope::Sessions);
+    let conversation = a_conversation(&harness);
+    let one = format!("/v1/conversations/{conversation}");
+    let clear = format!("/v1/conversations/{conversation}/clear");
+    let routes = [
+        ("GET", "/v1/conversations".to_owned()),
+        ("POST", "/v1/conversations".to_owned()),
+        ("GET", one.clone()),
+        ("POST", clear.clone()),
+    ];
+
+    // No bearer: 401 on every one, with the code the rest of the surface uses.
+    for (method, path) in &routes {
+        let anonymous = harness.request(method, path, &[], None).await;
+        assert_eq!(anonymous.status, 401, "{method} {path}: {}", anonymous.body);
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+    }
+
+    // A real token without `sessions`: 403, because the token is real and the
+    // scope is simply not on it.
+    for (method, path) in &routes {
+        let denied = harness
+            .request(
+                method,
+                path,
+                &[("authorization", format!("Bearer {scoped}"))],
+                None,
+            )
+            .await;
+        assert_eq!(denied.status, 403, "{method} {path}: {}", denied.body);
+        assert_eq!(denied.json()["code"], "scope_denied");
+    }
+
+    // The device's own token still answers, so the refusal above is about scope
+    // and not about the route being unreachable.
+    let listed = harness
+        .request(
+            "GET",
+            "/v1/conversations",
+            &[("authorization", format!("Bearer {token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn conversations_create_list_and_fetch_round_trip() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let created = harness
+        .request("POST", "/v1/conversations", &auth, None)
+        .await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let body = created.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body["title"],
+        eris_host::web::chat::NEW_CONVERSATION_TITLE,
+        "a new conversation carries the existing placeholder title"
+    );
+    let conversation = body["id"].as_str().expect("a conversation id").to_owned();
+
+    let listed = harness
+        .request("GET", "/v1/conversations", &auth, None)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["count"], 1);
+    assert_eq!(body["truncated"], false);
+    let items = body["conversations"]
+        .as_array()
+        .expect("a conversation list");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], conversation.as_str());
+    assert_eq!(items[0]["title"], body["conversations"][0]["title"]);
+    assert_eq!(items[0]["message_count"], 0);
+    assert!(
+        items[0]["updated_at"]
+            .as_str()
+            .is_some_and(|at| !at.is_empty()),
+        "the row carries its stamp: {}",
+        items[0]
+    );
+    assert_eq!(items[0]["project_id"], serde_json::Value::Null);
+
+    let fetched = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(fetched.status, 200, "{}", fetched.body);
+    let body = fetched.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["id"], conversation.as_str());
+    assert_eq!(body["title"], eris_host::web::chat::NEW_CONVERSATION_TITLE);
+    assert_eq!(body["truncated"], false);
+    assert_eq!(
+        body["messages"],
+        serde_json::json!([]),
+        "a fresh conversation has no messages"
+    );
+
+    // The write is audited with the device as the actor, not `loopback`.
+    let audited: Vec<(String, String)> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT actor, action FROM audit_log WHERE action = 'conversation.created'",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(out)
+        })
+        .expect("the audit rows");
+    assert_eq!(
+        audited,
+        vec![(device_id, "conversation.created".to_owned())]
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn clearing_a_conversation_empties_its_transcript() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let conversation = a_conversation(&harness);
+    let db = harness.engine.db();
+
+    let role = |user: bool| {
+        if user {
+            eris_host::web::chat::Role::User
+        } else {
+            eris_host::web::chat::Role::Assistant
+        }
+    };
+    eris_host::web::chat::append(
+        db,
+        &conversation,
+        role(true),
+        "what is in the workspace",
+        eris_host::web::chat::State::Complete,
+    )
+    .expect("a question");
+    eris_host::web::chat::append(
+        db,
+        &conversation,
+        role(false),
+        "two files",
+        eris_host::web::chat::State::Complete,
+    )
+    .expect("an answer");
+
+    let path = format!("/v1/conversations/{conversation}");
+    let before = harness.request("GET", &path, &auth, None).await;
+    assert_eq!(before.status, 200, "{}", before.body);
+    assert_eq!(
+        before.json()["messages"]
+            .as_array()
+            .expect("a message list")
+            .len(),
+        2
+    );
+
+    let cleared = harness
+        .request("POST", &format!("{path}/clear"), &auth, None)
+        .await;
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    let body = cleared.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["cleared"], 2, "both rows went");
+
+    let after = harness.request("GET", &path, &auth, None).await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    let body = after.json();
+    assert_eq!(
+        body["messages"],
+        serde_json::json!([]),
+        "the transcript is empty"
+    );
+    assert_eq!(body["truncated"], false);
+
+    // Clearing keeps the conversation itself: the row is still listable.
+    let listed = harness
+        .request("GET", "/v1/conversations", &auth, None)
+        .await;
+    let items = listed.json()["conversations"].clone();
+    assert_eq!(items.as_array().expect("a list").len(), 1);
+    assert_eq!(items[0]["message_count"], 0);
+
+    // A second clear has nothing left to remove and says so rather than failing.
+    let again = harness
+        .request("POST", &format!("{path}/clear"), &auth, None)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["cleared"], 0);
+
+    let audited: Vec<(String, String)> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT actor, action FROM audit_log WHERE action = 'conversation.cleared'",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(out)
+        })
+        .expect("the audit rows");
+    assert_eq!(
+        audited,
+        vec![
+            (device_id.clone(), "conversation.cleared".to_owned()),
+            (device_id, "conversation.cleared".to_owned()),
+        ]
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn an_unknown_conversation_is_a_404_by_code_and_creates_no_turn() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let missing = harness
+        .request("GET", "/v1/conversations/no-such-conversation", &auth, None)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    let body = missing.json();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["code"], "conversation_not_found");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "the refusal says something: {body}"
+    );
+
+    let cleared = harness
+        .request(
+            "POST",
+            "/v1/conversations/no-such-conversation/clear",
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(cleared.status, 404, "{}", cleared.body);
+    assert_eq!(cleared.json()["code"], "conversation_not_found");
+
+    // A turn that names a conversation nobody holds is refused before a job
+    // exists: no row, and no provider call.
+    let refused = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(r#"{"text":"ok","conversation":"no-such-conversation"}"#),
+        )
+        .await;
+    assert_eq!(refused.status, 404, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "conversation_not_found");
+    let jobs = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM jobs WHERE device_id = ?1",
+                [&device_id],
+                |row| row.get::<_, i64>(0),
+            )
+        })
+        .expect("job count");
+    assert_eq!(jobs, 0, "a refused turn leaves no job behind");
+    assert_eq!(provider.hits(), 0, "and no provider call");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_turn_named_for_a_conversation_writes_both_rows_and_reports_it() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let conversation = a_conversation(&harness);
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(&format!(
+                r#"{{"text":"reply with the single word: ok","conversation":"{conversation}"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body["conversation_id"],
+        conversation.as_str(),
+        "the turn says which conversation it belongs to"
+    );
+    let job_id = body["job_id"].as_str().expect("a job id").to_owned();
+
+    // Drain the turn so its answer is certainly settled.
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+    assert_eq!(frames.last().expect("a terminal frame").event, "done");
+
+    let fetched = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(fetched.status, 200, "{}", fetched.body);
+    let body = fetched.json();
+    let messages = body["messages"].as_array().expect("a message list");
+    assert_eq!(messages.len(), 2, "a question and an answer: {body}");
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["body"], "reply with the single word: ok");
+    assert_eq!(messages[0]["state"], "complete");
+    assert!(messages[0]["id"].as_str().is_some());
+    assert!(messages[0]["created_at"].as_str().is_some());
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["body"], "ok");
+    assert_eq!(messages[1]["state"], "complete");
+    assert_eq!(
+        messages[1]["tools"],
+        serde_json::json!([]),
+        "a turn that called nothing carries an empty tool list"
+    );
+    assert_eq!(messages[1]["reasoning"], serde_json::Value::Null);
+
+    // The list reports the ground truth: two messages, and a title named from the
+    // first question rather than the placeholder.
+    let listed = harness
+        .request("GET", "/v1/conversations", &auth, None)
+        .await;
+    let items = listed.json()["conversations"].clone();
+    assert_eq!(items[0]["id"], conversation.as_str());
+    assert_eq!(items[0]["message_count"], 2);
+    assert_ne!(
+        items[0]["title"],
+        eris_host::web::chat::NEW_CONVERSATION_TITLE,
+        "the first question names the conversation: {}",
+        items[0]["title"]
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_long_transcript_and_a_long_list_are_bounded_and_say_so() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let db = harness.engine.db().clone();
+
+    // One conversation holding more messages than a page.
+    let conversation = a_conversation(&harness);
+    for index in 0..205 {
+        eris_host::web::chat::append(
+            &db,
+            &conversation,
+            eris_host::web::chat::Role::User,
+            &format!("message {index}"),
+            eris_host::web::chat::State::Complete,
+        )
+        .expect("a message");
+    }
+    let fetched = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(fetched.status, 200, "{}", fetched.body);
+    let body = fetched.json();
+    let messages = body["messages"].as_array().expect("a message list");
+    assert_eq!(messages.len(), 200, "the transcript is capped at a page");
+    assert_eq!(body["truncated"], true, "and it says the page was cut");
+    assert_eq!(messages[0]["body"], "message 0", "oldest first");
+
+    // More conversations than a page, too.
+    for _ in 0..105 {
+        a_conversation(&harness);
+    }
+    let listed = harness
+        .request("GET", "/v1/conversations", &auth, None)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["count"], 100, "the list is capped at a page");
+    assert_eq!(body["truncated"], true);
+    assert_eq!(
+        body["conversations"].as_array().expect("a list").len(),
+        100,
+        "count and the array agree"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_does_not_settle_its_conversation_answer() {
+    let provider = StubProvider::start(
+        &["a", "b", "c", "d", "e", "f", "g", "h"],
+        Duration::from_millis(150),
+    )
+    .await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let conversation = a_conversation(&harness);
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(&format!(
+                r#"{{"text":"ok","conversation":"{conversation}"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let _ = stream.next_frame(Duration::from_secs(5)).await;
+    let cancelled = harness
+        .request("POST", &format!("/v1/turns/{job_id}/cancel"), &auth, None)
+        .await;
+    assert_eq!(cancelled.status, 200, "{}", cancelled.body);
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+    assert_eq!(frames.last().expect("a terminal frame").event, "cancelled");
+
+    // The provider call finishes on its own schedule; give it time to finish and
+    // the worker time to close the row.
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+
+    let fetched = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(fetched.status, 200, "{}", fetched.body);
+    let body = fetched.json();
+    let messages = body["messages"].as_array().expect("a message list");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(
+        messages[1]["state"], "failed",
+        "the cancelled answer is closed, not settled: {}",
+        messages[1]
+    );
+    assert_eq!(messages[1]["body"], "Stopped before it finished.");
+    assert!(provider.hits() >= 1);
+
+    harness.stop();
+}

@@ -72,6 +72,29 @@ pub const ROUTE_PROJECTS: &str = "/v1/projects";
 /// `POST /v1/projects/assign` - file one conversation under a project.
 pub const ROUTE_PROJECTS_ASSIGN: &str = "/v1/projects/assign";
 
+/// `GET /v1/conversations` and `POST /v1/conversations` - the transcript list,
+/// and starting one.
+pub const ROUTE_CONVERSATIONS: &str = "/v1/conversations";
+
+/// `GET /v1/conversations/{id}` - one conversation and its messages.
+pub const ROUTE_CONVERSATION: &str = "/v1/conversations/{id}";
+
+/// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
+pub const ROUTE_CONVERSATION_CLEAR: &str = "/v1/conversations/{id}/clear";
+
+/// How many conversations one page of `GET /v1/conversations` reports.
+///
+/// A list is a shortlist, not an archive: a phone that pages through its history
+/// gets the newest hundred and is told there is more, rather than a body that
+/// grows with the account.
+pub const CONVERSATION_LIST_LIMIT: usize = 100;
+
+/// How many messages one `GET /v1/conversations/{id}` reports.
+///
+/// A transcript is unbounded in principle, so the route bounds it in practice and
+/// says when it did.
+pub const CONVERSATION_MESSAGE_LIMIT: usize = 200;
+
 /// The bodies every device-surface error uses.
 ///
 /// `ok` is always false, `code` is the thing a client branches on, and `message`
@@ -141,6 +164,20 @@ impl DeviceError {
             StatusCode::NOT_FOUND,
             "session_not_found",
             "no session with that id belongs to this device",
+        )
+    }
+
+    /// 404 for a conversation id the daemon does not hold.
+    ///
+    /// A conversation is not owned by a device: it is the operator's transcript,
+    /// so there is no ownership half to hide. An id that is not there is simply
+    /// not there.
+    #[must_use]
+    pub fn conversation_not_found() -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            "conversation_not_found",
+            "no conversation with that id exists on this daemon",
         )
     }
 
@@ -372,6 +409,12 @@ pub fn router(service: DeviceService) -> Router {
             get(handlers::projects).post(handlers::create_project),
         )
         .route(ROUTE_PROJECTS_ASSIGN, post(handlers::assign_project))
+        .route(
+            ROUTE_CONVERSATIONS,
+            get(handlers::list_conversations).post(handlers::create_conversation),
+        )
+        .route(ROUTE_CONVERSATION, get(handlers::conversation))
+        .route(ROUTE_CONVERSATION_CLEAR, post(handlers::clear_conversation))
         .fallback(not_here)
         .method_not_allowed_fallback(wrong_method)
         .layer(axum::middleware::from_fn(assign_request_id))
@@ -441,6 +484,9 @@ mod tests {
             ROUTE_SESSION,
             ROUTE_PROJECTS,
             ROUTE_PROJECTS_ASSIGN,
+            ROUTE_CONVERSATIONS,
+            ROUTE_CONVERSATION,
+            ROUTE_CONVERSATION_CLEAR,
         ] {
             assert!(route.starts_with("/v1/"), "{route} must live under /v1");
         }

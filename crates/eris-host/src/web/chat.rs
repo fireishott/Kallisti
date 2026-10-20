@@ -384,6 +384,52 @@ pub fn conversation_exists(db: &Db, id: &str) -> Result<bool, DbError> {
     })
 }
 
+/// One conversation, when it exists.
+///
+/// The single-row read a route needs before it answers a transcript or clears
+/// one: whether the row is there decides between an answer and a missing id, and
+/// the title on it is what the client shows above the messages.
+pub fn conversation(db: &Db, id: &str) -> Result<Option<Conversation>, DbError> {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT id, title, updated_at, project_id
+               FROM chat_conversations WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(Conversation {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    updated_at: row.get(2)?,
+                    project_id: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+    })
+}
+
+/// How many messages each conversation holds, keyed by conversation id.
+///
+/// One grouped query rather than one per row: a list of a hundred conversations
+/// must not cost a hundred reads of the same file, and a conversation with no
+/// messages simply has no entry.
+pub fn message_counts(db: &Db) -> Result<std::collections::BTreeMap<String, usize>, DbError> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT conversation_id, COUNT(*) FROM chat_messages GROUP BY conversation_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut counts = std::collections::BTreeMap::new();
+        for row in rows {
+            let (id, count) = row?;
+            counts.insert(id, usize::try_from(count).unwrap_or(usize::MAX));
+        }
+        Ok(counts)
+    })
+}
+
 /// Start a conversation and return its id.
 pub fn create_conversation(db: &Db) -> Result<String, DbError> {
     let id = uuid::Uuid::now_v7().to_string();
@@ -759,42 +805,85 @@ fn tokens(value: Option<i64>) -> Option<u64> {
 
 /// Read a whole conversation, oldest first.
 pub fn load(db: &Db, conversation: &str) -> Result<Vec<Message>, DbError> {
-    db.with_conn(|conn| collect(conn, conversation))
+    db.with_conn(|conn| collect(conn, conversation, None))
 }
 
-fn collect(conn: &mut Connection, conversation: &str) -> Result<Vec<Message>, rusqlite::Error> {
-    let mut statement = conn.prepare(
-        "SELECT id, role, body, state, error_code, created_at, model,
+/// Read at most `limit` messages of a conversation, oldest first, and say whether
+/// anything was left behind.
+///
+/// A transcript has no ceiling: a conversation used for a year would otherwise be
+/// answered in one body. The bound is the page rather than the row, so a caller
+/// that needs more asks again, and `true` is what tells it there is more to ask
+/// for instead of leaving it to believe it has read the whole thing.
+pub fn load_bounded(
+    db: &Db,
+    conversation: &str,
+    limit: usize,
+) -> Result<(Vec<Message>, bool), DbError> {
+    let total: i64 = db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ?1",
+            params![conversation],
+            |row| row.get(0),
+        )
+    })?;
+    let total = usize::try_from(total).unwrap_or(usize::MAX);
+    let messages = db.with_conn(|conn| collect(conn, conversation, Some(limit)))?;
+    let truncated = total > messages.len();
+    Ok((messages, truncated))
+}
+
+fn collect(
+    conn: &mut Connection,
+    conversation: &str,
+    limit: Option<usize>,
+) -> Result<Vec<Message>, rusqlite::Error> {
+    const SELECT: &str = "SELECT id, role, body, state, error_code, created_at, model,
                 prompt_tokens, completion_tokens, cached_tokens, context_window,
                 duration_ms, reasoning, tools
            FROM chat_messages
           WHERE conversation_id = ?1
-          ORDER BY created_at ASC, rowid ASC",
-    )?;
-    let rows = statement.query_map(params![conversation], |row| {
-        let role: String = row.get(1)?;
-        let state: String = row.get(3)?;
-        Ok(Message {
-            id: row.get(0)?,
-            role: Role::parse(&role).unwrap_or(Role::Assistant),
-            body: row.get(2)?,
-            state: State::parse(&state).unwrap_or(State::Failed),
-            error_code: row.get(4)?,
-            created_at: row.get(5)?,
-            model: row.get(6)?,
-            prompt_tokens: tokens(row.get(7)?),
-            completion_tokens: tokens(row.get(8)?),
-            cached_tokens: tokens(row.get(9)?),
-            context_window: tokens(row.get(10)?),
-            duration_ms: tokens(row.get(11)?),
-            reasoning: row.get(12)?,
-            tools: row
-                .get::<_, Option<String>>(13)?
-                .and_then(|raw| serde_json::from_str(&raw).ok())
-                .unwrap_or_default(),
-        })
-    })?;
-    rows.collect()
+          ORDER BY created_at ASC, rowid ASC";
+    // Two statements rather than one with a sentinel limit: SQLite's "negative
+    // means no limit" is a behaviour to lean on only when there is no clearer way
+    // to say the same thing.
+    match limit {
+        Some(limit) => {
+            let mut statement = conn.prepare(&format!("{SELECT} LIMIT ?2"))?;
+            let rows = statement.query_map(params![conversation, limit as i64], row_message)?;
+            rows.collect()
+        }
+        None => {
+            let mut statement = conn.prepare(SELECT)?;
+            let rows = statement.query_map(params![conversation], row_message)?;
+            rows.collect()
+        }
+    }
+}
+
+/// One transcript row, as the reader wants it.
+fn row_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
+    let role: String = row.get(1)?;
+    let state: String = row.get(3)?;
+    Ok(Message {
+        id: row.get(0)?,
+        role: Role::parse(&role).unwrap_or(Role::Assistant),
+        body: row.get(2)?,
+        state: State::parse(&state).unwrap_or(State::Failed),
+        error_code: row.get(4)?,
+        created_at: row.get(5)?,
+        model: row.get(6)?,
+        prompt_tokens: tokens(row.get(7)?),
+        completion_tokens: tokens(row.get(8)?),
+        cached_tokens: tokens(row.get(9)?),
+        context_window: tokens(row.get(10)?),
+        duration_ms: tokens(row.get(11)?),
+        reasoning: row.get(12)?,
+        tools: row
+            .get::<_, Option<String>>(13)?
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default(),
+    })
 }
 
 /// Append one message. The id is minted here and returned so the caller can

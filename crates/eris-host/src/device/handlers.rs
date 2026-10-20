@@ -25,8 +25,11 @@ use tokio_stream::wrappers::BroadcastStream;
 use crate::auth::{
     PairingService, Scope, ScopeSet, TokenOrigin, TokenService, VerifiedToken, format_timestamp,
 };
-use crate::device::turns::{FrameKind, TurnFrame, TurnPolicy};
-use crate::device::{DeviceError, DeviceService};
+use crate::device::turns::{ConversationTurn, FrameKind, TurnFrame, TurnPolicy};
+use crate::device::{
+    CONVERSATION_LIST_LIMIT, CONVERSATION_MESSAGE_LIMIT, DeviceError, DeviceService,
+};
+use crate::web::chat;
 
 /// The upload ceiling for one device body. A prompt is text, and text is not
 /// unbounded.
@@ -422,6 +425,29 @@ pub async fn create_turn(
             .into_response();
     }
 
+    // A conversation is optional. Naming one makes this turn a transcript row
+    // pair, so a client can read history after the stream closes; leaving it out
+    // keeps the turn a session of its own, exactly as before. An id the daemon
+    // does not hold is refused here, before anything is written, so a refused
+    // turn leaves no half a conversation behind.
+    let conversation = {
+        let requested = field(&fields, "conversation").to_owned();
+        if requested.is_empty() {
+            None
+        } else {
+            match chat::conversation(service.engine().db(), &requested) {
+                Ok(Some(row)) => Some(row.id),
+                Ok(None) => return DeviceError::conversation_not_found().into_response(),
+                Err(error) => {
+                    return DeviceError::db_unavailable(format!(
+                        "cannot read the conversation: {error}"
+                    ))
+                    .into_response();
+                }
+            }
+        }
+    };
+
     let idempotency_key = headers
         .get(IDEMPOTENCY_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -447,6 +473,7 @@ pub async fn create_turn(
                         "job_id": job_id,
                         "session_id": session_id,
                         "state": state,
+                        "conversation_id": conversation,
                     })),
                 )
                     .into_response();
@@ -468,6 +495,59 @@ pub async fn create_turn(
     if let Some(command) = crate::commands::parse(text) {
         return run_command(&service, token.device_id(), text, &command, idempotency_key);
     }
+
+    // The writing half of a named conversation: the question and the answer row
+    // are created before the provider is called, so a client that reads history
+    // mid-answer sees the question and a row that says it is still streaming,
+    // rather than a transcript that appears only after the stream closes. The
+    // prompt itself is built by the worker from the same text, so a turn cannot
+    // stream one thing and store another.
+    let conversation_turn = match &conversation {
+        None => None,
+        Some(conversation_id) => {
+            let db = service.engine().db();
+            if let Err(error) = chat::append(
+                db,
+                conversation_id,
+                chat::Role::User,
+                text,
+                chat::State::Complete,
+            ) {
+                return DeviceError::db_unavailable(format!(
+                    "cannot write the question into the conversation: {error}"
+                ))
+                .into_response();
+            }
+            let model = store
+                .provider_config()
+                .ok()
+                .flatten()
+                .map(|config| config.model)
+                .unwrap_or_default();
+            let context_window = service
+                .engine()
+                .provider_contexts()
+                .ok()
+                .and_then(|contexts| contexts.get(&model).copied());
+            let answer_id = match chat::append_answer(db, conversation_id, &model, context_window) {
+                Ok(answer_id) => answer_id,
+                Err(error) => {
+                    return DeviceError::db_unavailable(format!(
+                        "cannot open the answer row: {error}"
+                    ))
+                    .into_response();
+                }
+            };
+            // The first question names the conversation and the rail bumps it to
+            // the top, through the same two helpers the browser calls.
+            let _ = chat::name_from_first_message(db, conversation_id, text);
+            let _ = chat::touch_conversation(db, conversation_id);
+            Some(ConversationTurn {
+                conversation: conversation_id.clone(),
+                answer_id,
+            })
+        }
+    };
 
     let session_id = match store.ensure_session(token.device_id()) {
         Ok(session_id) => session_id,
@@ -493,6 +573,7 @@ pub async fn create_turn(
         job_id.clone(),
         sender,
         TurnPolicy::from_engine(service.engine()),
+        conversation_turn,
     );
 
     (
@@ -502,6 +583,7 @@ pub async fn create_turn(
             "job_id": job_id,
             "session_id": session_id,
             "state": "queued",
+            "conversation_id": conversation,
         })),
     )
         .into_response()
@@ -520,12 +602,13 @@ pub async fn create_turn(
 /// the same module the browser's send handler dispatches through.
 ///
 /// Four of the six cannot mean the same thing here as they do in the browser.
-/// `/new` and `/clear` act on a conversation transcript this surface does not
-/// have, and `/model` and `/memory` are settings writes: a device is minted
-/// `chat`, `sessions` and `files`, so changing the stored model or memory backend
-/// behind that token would be a settings write with no settings scope to check.
-/// All four are refused by name with the reason, rather than silently skipped or
-/// emulated into something that looks like it worked.
+/// `/new` and `/clear` act on the conversation the browser is showing, and a
+/// command is answered before this surface writes any transcript row, so there is
+/// nothing for either one to act on. `/model` and `/memory` are settings writes: a
+/// device is minted `chat`, `sessions` and `files`, so changing the stored model
+/// or memory backend behind that token would be a settings write with no settings
+/// scope to check. All four are refused by name with the reason, rather than
+/// silently skipped or emulated into something that looks like it worked.
 fn run_command(
     service: &DeviceService,
     device_id: &str,
@@ -551,10 +634,11 @@ fn run_command(
                 return DeviceError::bad_request(
                     "command_not_available",
                     format!(
-                        "/{other} is handled by this daemon but not on this surface: a device \
-                         turn has no conversation transcript and no settings scope, so nothing \
-                         was changed and nothing was sent to a model. /help lists what a device \
-                         turn answers."
+                        "/{other} is handled by this daemon but not on this surface: a command \
+                         is answered before a turn or a transcript write exists, and the stored \
+                         model and memory backend sit behind a settings scope this token does \
+                         not hold, so nothing was changed and nothing was sent to a model. \
+                         /help lists what a device turn answers."
                     ),
                 )
                 .into_response();
@@ -852,6 +936,228 @@ pub async fn assign_project(
         Err(error) => DeviceError::db_unavailable(format!("cannot file the conversation: {error}"))
             .into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Conversations
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/conversations` - the newest conversations, newest first.
+///
+/// A conversation is conversation state, so this is the `sessions` scope, exactly
+/// as `GET /v1/sessions/{id}` is. The page is bounded and says whether it was cut:
+/// a client that has more history than the page is told so rather than left to
+/// believe it has read everything.
+pub async fn list_conversations(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let db = service.engine().db();
+    // One row beyond the page: "there is more" is then a fact about the store
+    // rather than an assumption about the query.
+    let rows = match chat::conversations(db, CONVERSATION_LIST_LIMIT + 1) {
+        Ok(rows) => rows,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!(
+                "cannot read the conversation list: {error}"
+            ))
+            .into_response();
+        }
+    };
+    let truncated = rows.len() > CONVERSATION_LIST_LIMIT;
+    let rows: Vec<chat::Conversation> = rows.into_iter().take(CONVERSATION_LIST_LIMIT).collect();
+    let counts = match chat::message_counts(db) {
+        Ok(counts) => counts,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot count the messages: {error}"))
+                .into_response();
+        }
+    };
+    let conversations: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|row| {
+            let message_count = counts.get(&row.id).copied().unwrap_or(0);
+            serde_json::json!({
+                "id": row.id,
+                "title": row.title,
+                "updated_at": row.updated_at,
+                "project_id": row.project_id,
+                "message_count": message_count,
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "count": conversations.len(),
+        "truncated": truncated,
+        "conversations": conversations,
+    }))
+    .into_response()
+}
+
+/// `POST /v1/conversations` - start an empty conversation, `201` with its id.
+///
+/// The title is the existing placeholder constant, not a second spelling of it:
+/// the first question names the conversation through the same code the browser
+/// uses, so a device-created conversation is renameable by the browser and the
+/// other way round.
+pub async fn create_conversation(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let id = match chat::create_conversation(service.engine().db()) {
+        Ok(id) => id,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot create the conversation: {error}"))
+                .into_response();
+        }
+    };
+    // The actor is the device, not `loopback`: this row says which paired client
+    // started the conversation the transcript will be filed under.
+    if let Err(error) = service.engine().auth().audit(
+        token.device_id(),
+        "conversation.created",
+        Some(&format!("id={id}")),
+    ) {
+        return DeviceError::db_unavailable(format!(
+            "cannot append the conversation.created audit row: {error}"
+        ))
+        .into_response();
+    }
+    (
+        StatusCode::CREATED,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "id": id,
+            "title": chat::NEW_CONVERSATION_TITLE,
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /v1/conversations/{id}` - one conversation and its messages, oldest first.
+///
+/// An id the daemon does not hold is a typed 404 rather than an empty transcript:
+/// a client that asked about a conversation it lost the id of has to be able to
+/// tell "gone" from "nothing said yet".
+pub async fn conversation(
+    State(service): State<DeviceService>,
+    Path(conversation_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let db = service.engine().db();
+    let row = match chat::conversation(db, &conversation_id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return DeviceError::conversation_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the conversation: {error}"))
+                .into_response();
+        }
+    };
+    let (messages, truncated) =
+        match chat::load_bounded(db, &conversation_id, CONVERSATION_MESSAGE_LIMIT) {
+            Ok(read) => read,
+            Err(error) => {
+                return DeviceError::db_unavailable(format!(
+                    "cannot read the conversation messages: {error}"
+                ))
+                .into_response();
+            }
+        };
+    let messages: Vec<serde_json::Value> = messages
+        .into_iter()
+        .map(|message| {
+            serde_json::json!({
+                "id": message.id,
+                "role": message.role.as_str(),
+                "body": message.body,
+                "state": message.state.as_str(),
+                "created_at": message.created_at,
+                "reasoning": message.reasoning,
+                "tools": message.tools,
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "id": row.id,
+        "title": row.title,
+        "messages": messages,
+        "truncated": truncated,
+    }))
+    .into_response()
+}
+
+/// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
+///
+/// The deletion is [`chat::clear`], the same statement the dashboard's clear runs,
+/// so a device clear and a browser clear cannot leave the transcript in two
+/// different states. The conversation row stays: clearing a conversation is not
+/// deleting it.
+pub async fn clear_conversation(
+    State(service): State<DeviceService>,
+    Path(conversation_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let db = service.engine().db();
+    match chat::conversation(db, &conversation_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return DeviceError::conversation_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the conversation: {error}"))
+                .into_response();
+        }
+    }
+    let cleared = match chat::clear(db, &conversation_id) {
+        Ok(cleared) => cleared,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot clear the conversation: {error}"))
+                .into_response();
+        }
+    };
+    if let Err(error) = service.engine().auth().audit(
+        token.device_id(),
+        "conversation.cleared",
+        Some(&format!("id={conversation_id}; {cleared} messages")),
+    ) {
+        return DeviceError::db_unavailable(format!(
+            "cannot append the conversation.cleared audit row: {error}"
+        ))
+        .into_response();
+    }
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "cleared": cleared,
+    }))
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------
