@@ -2049,6 +2049,69 @@ fn mcp_group(view: &SettingsView) -> Markup {
 }
 
 /// The settings page: four forms, then the rows that are read-only by design.
+/// The security page: the one surface allowed to ask for a secret.
+///
+/// The settings page is tested to contain no `type="password"` at all, because
+/// there is nothing stored there to mask - only references. Rotating the sign-in
+/// credential is the opposite kind of surface, so it gets its own page rather than
+/// an exception.
+pub fn security_page(view: &SettingsView) -> Markup {
+    html! {
+        h1 { "Security" }
+        p .lede {
+            "The credential you sign in with, and nothing else. Changing it signs every device out."
+        }
+        (alert_region(view.error.as_ref().filter(|error| error.field.is_none()), None))
+
+        section .card aria-labelledby="credential-heading" {
+            h2 id="credential-heading" { "Sign-in credential" }
+            p .small {
+                "The six-word passphrase exists because a fresh host has to be claimable by something "
+                "long and unguessable. Once it is yours, a credential you will actually type is a "
+                "better trade - as long as it is not four digits."
+            }
+            form method="post" action=(crate::admin::ROUTE_SECURITY) novalidate {
+                div .field {
+                    label for="current_password" { "Current credential" }
+                    input id="current_password" type="password" name="current_password"
+                        autocomplete="current-password" autofocus;
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("current_password")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    label for="new_password" { "New credential" }
+                    input id="new_password" type="password" name="new_password"
+                        autocomplete="new-password";
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("new_password")) {
+                        span .error { (error.message) }
+                    }
+                    span .hint {
+                        "At least " (crate::web::routes::MIN_SIGN_IN_CHARS)
+                        " characters. Stored as an argon2id verifier, never as text."
+                    }
+                }
+                div .field {
+                    label for="confirm_password" { "Repeat it" }
+                    input id="confirm_password" type="password" name="confirm_password"
+                        autocomplete="new-password";
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("confirm_password")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Change credential" }
+                }
+            }
+            p .small .warn {
+                "Every signed-in session is dropped when this changes, including this one, so you will "
+                "sign in again with the new credential. There is no recovery e-mail on a self-hosted "
+                "daemon: if this is forgotten, the admin_credential row in eris.db is the only way back."
+            }
+        }
+    }
+}
+
 pub fn settings_page(view: &SettingsView) -> Markup {
     let page_error = view.error.as_ref().filter(|error| error.field.is_none());
     let body = html! {
@@ -2066,6 +2129,10 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "and the cog in the rail comes back to this page from anywhere."
             }
             (nav_bar(Nav::Settings))
+            p .small {
+                "The sign-in credential lives on " a href=(crate::admin::ROUTE_SECURITY) { "its own page" }
+                ", because this one is never allowed to ask for a secret."
+            }
         }
 
         section .card aria-labelledby="provider-heading" {

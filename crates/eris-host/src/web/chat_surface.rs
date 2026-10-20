@@ -20,7 +20,9 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
-use crate::admin::{ROUTE_CHAT, ROUTE_CHAT_SEND, ROUTE_SETTINGS, ROUTE_SETTINGS_TOOLS};
+use crate::admin::{
+    ROUTE_CHAT, ROUTE_CHAT_SEND, ROUTE_SECURITY, ROUTE_SETTINGS, ROUTE_SETTINGS_TOOLS,
+};
 use crate::web::chat::{self, CONVERSATION_ID, Role, State};
 use crate::web::templates::SettingsView;
 use crate::web::wallpaper;
@@ -210,6 +212,61 @@ fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
     assert!(
         !page.body.contains("echo hi"),
         "and no command output either: off means not sent"
+    );
+}
+
+#[test]
+fn the_security_page_is_the_only_place_that_asks_for_a_secret() {
+    let (_dir, _engine, app, cookie) = ready_app();
+
+    let security = block_on(send(
+        &app,
+        Call::get(ROUTE_SECURITY).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(security.status, StatusCode::OK, "{}", security.body);
+    assert!(
+        security.body.contains(r#"type="password""#),
+        "the security page asks for the credential"
+    );
+    assert!(
+        security.body.contains("admin_credential row in eris.db"),
+        "and states the recovery path honestly"
+    );
+
+    // The settings page still must not, which is the rule this page exists to keep.
+    let settings = block_on(send(
+        &app,
+        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+    ));
+    assert!(
+        !settings.body.contains(r#"type="password""#),
+        "settings stays secret-free"
+    );
+    assert!(
+        settings.body.contains(ROUTE_SECURITY),
+        "and links to the page that is not"
+    );
+}
+
+#[test]
+fn a_wrong_current_credential_changes_nothing_and_says_so() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let refused = block_on(send(
+        &app,
+        Call::post(
+            ROUTE_SECURITY,
+            "current_password=not-the-one&new_password=daily-driver-1&confirm_password=daily-driver-1",
+        )
+        .html()
+        .cookie(Some(&cookie)),
+    ));
+    assert!(
+        refused.body.contains("not the current credential"),
+        "the refusal names the field instead of silently doing nothing"
+    );
+    assert!(
+        !refused.body.contains("saved=credential"),
+        "and no change is reported"
     );
 }
 

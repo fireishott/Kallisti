@@ -28,7 +28,7 @@ use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
     ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_ID, ROUTE_CHAT_MODE,
     ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES,
-    ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
+    ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
     ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
     ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
     ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_TIMEZONE,
@@ -95,6 +95,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_LOGIN, get(login_form).post(login))
         .route(ROUTE_DASHBOARD, get(dashboard))
         .route(ROUTE_SETTINGS, get(settings))
+        .route(ROUTE_SECURITY, get(security).post(save_credential))
         .route(ROUTE_SETTINGS_PROVIDER, post(save_provider))
         .route(ROUTE_SETTINGS_WORKSPACE, post(save_workspace))
         .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
@@ -2487,6 +2488,127 @@ const SAVED_TIMEZONE: &str = "/dashboard/settings?saved=timezone";
 
 /// Where the memory form returns to.
 const SAVED_MEMORY: &str = "/dashboard/settings?saved=memory";
+
+/// The shortest sign-in credential this build accepts.
+///
+/// The six-word passphrase exists because a fresh host has to be claimable by
+/// something long and unguessable. Once it is yours, a shorter credential you will
+/// actually type is the better trade - provided it is not four digits, and provided
+/// the current credential has to be presented to change it.
+pub const MIN_SIGN_IN_CHARS: usize = 8;
+
+/// `GET /dashboard/security` - where a secret may be typed.
+///
+/// This is the only page allowed to render a password input. The settings page is
+/// tested to contain none, because nothing stored there is a secret value.
+async fn security(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match build_settings_view(&state) {
+        Ok(view) => page(crate::web::templates::security_page(&view)),
+        Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+/// A refusal on the security page renders that page, not the settings one.
+fn fail_security(state: &AppState, error: FormError) -> Response {
+    match build_settings_view(state) {
+        Ok(mut view) => {
+            view.error = Some(error);
+            page(crate::web::templates::security_page(&view))
+        }
+        Err(inner) => ApiError::internal("security", inner.message).into_response(),
+    }
+}
+
+/// `POST /dashboard/security` - rotate the sign-in credential.
+///
+/// The current credential is required even though the request already carries an
+/// admin session: a borrowed browser should not be able to lock the owner out.
+async fn save_credential(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    let current = field(&fields, "current_password");
+    let new_password = field(&fields, "new_password");
+    let confirm = field(&fields, "confirm_password");
+
+    if state.engine.auth().verify_admin_password(current).is_err() {
+        return fail_security(
+            &state,
+            FormError::new(
+                Some("current_password"),
+                "credential_rejected",
+                "that is not the current credential, so nothing changed".to_owned(),
+            ),
+        );
+    }
+    if new_password != confirm {
+        return fail_security(
+            &state,
+            FormError::new(
+                Some("confirm_password"),
+                "credential_mismatch",
+                "the two entries do not match".to_owned(),
+            ),
+        );
+    }
+    if new_password.trim().chars().count() < MIN_SIGN_IN_CHARS {
+        return fail_security(
+            &state,
+            FormError::new(
+                Some("new_password"),
+                "credential_weak",
+                format!("use at least {MIN_SIGN_IN_CHARS} characters"),
+            ),
+        );
+    }
+
+    if let Err(error) = state.engine.auth().set_admin_password(new_password) {
+        return fail_security(
+            &state,
+            FormError::new(
+                Some("new_password"),
+                "credential_store_failed",
+                format!("the credential could not be stored: {error}"),
+            ),
+        );
+    }
+
+    // Sessions minted under the old credential do not survive the rotation: a
+    // change that leaves old cookies working is not a change.
+    let dropped = state
+        .engine
+        .db()
+        .with_conn(|conn| conn.execute("DELETE FROM admin_sessions", []))
+        .unwrap_or(0);
+    let _ = state.engine.auth().audit(
+        "loopback",
+        "settings.credential",
+        Some(&format!("rotated; sessions_cleared={dropped}")),
+    );
+
+    see_other(SAVED_LOGIN)
+}
+
+/// Where a successful rotation sends the operator: back to sign in.
+const SAVED_LOGIN: &str = "/login?saved=credential";
 const SAVED_PERMISSIONS: &str = "/dashboard/settings?saved=permissions";
 const SAVED_PERSONA: &str = "/dashboard/settings?saved=persona";
 
