@@ -695,7 +695,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
                     .flatten()
                     .map(|id| crate::aux::store_value(&id))
                     .unwrap_or_else(|| crate::aux::INHERIT.to_owned()),
-                consumed_by: role.consumed_by.map(str::to_owned),
+                consumed_by: role.consumed_by.to_owned(),
             }
         })
         .collect();

@@ -27,11 +27,10 @@ pub struct Role {
     /// to an image endpoint, so a chat-model catalogue is the wrong list to hold
     /// it to and refusing the pin would be checking the wrong thing.
     pub probe_validated: bool,
-    /// What consumes it today, or `None` when nothing does yet.
-    ///
-    /// Stated rather than implied: a settings row that looks wired and is not is
-    /// the same lie as a button that does nothing.
-    pub consumed_by: Option<&'static str>,
+    /// What consumes it. Not optional on purpose: a settings row that looks wired
+    /// and is not is the same lie as a button that does nothing, so a role with no
+    /// consumer cannot be declared at all.
+    pub consumed_by: &'static str,
 }
 
 /// Every role this build knows about, in the order the page lists them.
@@ -41,84 +40,42 @@ pub const ROLES: &[Role] = &[
         label: "Vision",
         probe_validated: true,
         purpose: "Reads an image attached to a turn.",
-        consumed_by: Some("a turn that carries an image, once this role is pinned"),
+        consumed_by: ("a turn that carries an image, once this role is pinned"),
     },
     Role {
         key: "image",
         label: "Image generation",
         purpose: "Draws an image when a turn asks for one.",
         probe_validated: false,
-        consumed_by: Some("a turn that asks for a picture, once this role is pinned"),
+        consumed_by: ("a turn that asks for a picture, once this role is pinned"),
     },
     Role {
         key: "web_extract",
         label: "Web extract",
         probe_validated: true,
         purpose: "Pulls the readable text out of a fetched page.",
-        consumed_by: Some("a turn that fetches a URL, once this role is pinned"),
+        consumed_by: ("a turn that fetches a URL, once this role is pinned"),
     },
     Role {
         key: "compression",
         label: "Compression",
         probe_validated: true,
         purpose: "Summarises context that no longer fits the window.",
-        consumed_by: Some("a turn whose history has outgrown the window, once this role is pinned"),
+        consumed_by: ("a turn whose history has outgrown the window, once this role is pinned"),
     },
     Role {
         key: "title_generation",
         label: "Title generation",
         probe_validated: true,
         purpose: "Names a conversation from its first exchange.",
-        consumed_by: Some("a settled turn, once this role is pinned to a model"),
+        consumed_by: ("a settled turn, once this role is pinned to a model"),
     },
     Role {
         key: "approval",
         label: "Approval",
         probe_validated: true,
         purpose: "Reads a parked tool call and says what it would do.",
-        consumed_by: Some("a call parked for approval, once this role is pinned"),
-    },
-    Role {
-        key: "mcp",
-        label: "MCP",
-        probe_validated: true,
-        purpose: "Reasons over a tool result returned by an MCP server.",
-        consumed_by: None,
-    },
-    Role {
-        key: "skills_hub",
-        label: "Skills hub",
-        probe_validated: true,
-        purpose: "Picks the skill that fits a request.",
-        consumed_by: None,
-    },
-    Role {
-        key: "triage_specifier",
-        label: "Triage",
-        probe_validated: true,
-        purpose: "Classifies an inbound request.",
-        consumed_by: None,
-    },
-    Role {
-        key: "kanban_decomposer",
-        label: "Kanban decomposer",
-        probe_validated: true,
-        purpose: "Breaks a request into tasks.",
-        consumed_by: None,
-    },
-    Role {
-        key: "profile_describer",
-        label: "Profile describer",
-        probe_validated: true,
-        purpose: "Writes the one-line description of something.",
-        consumed_by: None,
-    },
-    Role {
-        key: "curator",
-        label: "Curator",
-        probe_validated: true,
-        purpose: "Files and links notes.",
-        consumed_by: None,
+        consumed_by: ("a call parked for approval, once this role is pinned"),
     },
 ];
 
@@ -277,16 +234,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_roles_with_a_real_consumer_claim_one() {
-        // The day another role is wired, this list is the thing to edit - and
-        // editing it is a reminder to update the page's honesty note too.
-        let wired: Vec<&str> = ROLES
-            .iter()
-            .filter(|role| role.consumed_by.is_some())
-            .map(|role| role.key)
-            .collect();
+    fn every_offered_role_names_what_reads_it() {
+        // The list is the contract: a row exists only because something calls it.
+        let keys: Vec<&str> = ROLES.iter().map(|role| role.key).collect();
         assert_eq!(
-            wired,
+            keys,
             vec![
                 "vision",
                 "image",
@@ -296,5 +248,32 @@ mod tests {
                 "approval"
             ]
         );
+        for role in ROLES {
+            assert!(
+                !role.consumed_by.trim().is_empty(),
+                "{} is offered with no consumer, which is a decorative row",
+                role.key
+            );
+        }
+    }
+
+    #[test]
+    fn a_role_nothing_reads_is_not_offered_at_all() {
+        // These were in the table with `consumed_by: None` and rendered as
+        // "Nothing reads this row yet". That is a placeholder in a settings page,
+        // so they are gone until a feature needs them.
+        for gone in [
+            "mcp",
+            "skills_hub",
+            "triage_specifier",
+            "kanban_decomposer",
+            "profile_describer",
+            "curator",
+        ] {
+            assert!(
+                ROLES.iter().all(|role| role.key != gone),
+                "{gone} is still offered with nothing behind it"
+            );
+        }
     }
 }

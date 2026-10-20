@@ -1853,11 +1853,17 @@ fn the_settings_page_states_the_tools_aux_and_mcp_surfaces() {
     assert!(body.contains("Auxiliary models"), "the roles are listed");
     assert!(
         body.contains(crate::mcp::STATUS),
-        "the MCP section says no client exists"
+        "the MCP section states what a configured server does"
+    );
+    // A role with nothing behind it is no longer offered at all, so the page has
+    // no decorative row to explain away.
+    assert!(
+        !body.contains("Nothing reads this row yet"),
+        "no offered role is decorative"
     );
     assert!(
-        body.contains("Nothing reads this row yet"),
-        "an unconsumed role says so rather than looking wired"
+        body.contains("Used by"),
+        "every listed role names what reads it"
     );
 }
 

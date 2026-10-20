@@ -1635,7 +1635,7 @@ pub struct AuxRow {
     /// The provider chosen, or `primary`.
     pub provider_selected: String,
     /// What consumes it today, when anything does.
-    pub consumed_by: Option<String>,
+    pub consumed_by: String,
 }
 
 /// Everything the settings page needs.
@@ -2396,12 +2396,7 @@ fn aux_group(view: &SettingsView) -> Markup {
                         }
                     }
                     span .hint {
-                        (row.purpose)
-                        @if let Some(consumer) = &row.consumed_by {
-                            " Used by " (consumer) "."
-                        } @else {
-                            " Nothing reads this row yet, so it is stored only."
-                        }
+                        (row.purpose) " Used by " (&row.consumed_by) "."
                     }
                 }
             }
