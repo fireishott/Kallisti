@@ -151,9 +151,13 @@ pub const DEFAULT_TOOL_ROUNDS: usize = 12;
 
 /// The most rounds an operator may configure.
 ///
-/// Bounded because each round is a provider call that bills, and a number typed
-/// with a stray zero should be refused rather than obeyed.
-pub const MAX_TOOL_ROUNDS_CEILING: u32 = 40;
+/// Operationally unbounded: the ceiling exists only to reject a number that is
+/// not a number of rounds at all, so it is set far past any turn a human would
+/// wait for rather than at a value that silently truncates real infra work. The
+/// budget is per turn and the turn is cancellable, so the guard against a
+/// runaway is the stop button and the bill, not this constant. The default of
+/// [`DEFAULT_TOOL_ROUNDS`] is what keeps an ordinary question cheap.
+pub const MAX_TOOL_ROUNDS_CEILING: u32 = 99_999;
 
 /// Whether tools are enabled, from a stored value.
 ///
