@@ -828,6 +828,67 @@ pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
     })
 }
 
+/// Replace a parked tool record with what the call actually returned.
+///
+/// The transcript is the record of what happened. If a call was parked and then
+/// approved, a row that still says "pending_approval" is a row that lies about the
+/// turn it belongs to. The approval id stays in the record so the decision remains
+/// traceable after the fact.
+///
+/// Returns how many rows changed, which is zero when the turn never stored the
+/// call, and that zero is reported rather than hidden.
+pub fn apply_approval_result(
+    db: &Db,
+    approval_id: &str,
+    output: &str,
+    is_error: bool,
+) -> Result<usize, DbError> {
+    let rows: Vec<(String, String)> = db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT id, tools FROM chat_messages
+              WHERE tools IS NOT NULL AND tools LIKE ?1",
+        )?;
+        let needle = format!("%{approval_id}%");
+        let rows = statement.query_map([needle], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+    })?;
+
+    let mut changed = 0usize;
+    for (message_id, raw) in rows {
+        let Ok(mut records) = serde_json::from_str::<Vec<ToolRecord>>(&raw) else {
+            continue;
+        };
+        let mut touched = false;
+        for record in &mut records {
+            if record.output.contains(approval_id) {
+                record.output = serde_json::json!({
+                    "status": "approved",
+                    "approval_id": approval_id,
+                    "output": output,
+                })
+                .to_string();
+                record.is_error = is_error;
+                touched = true;
+            }
+        }
+        if !touched {
+            continue;
+        }
+        let Ok(encoded) = serde_json::to_string(&records) else {
+            continue;
+        };
+        changed += db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE chat_messages SET tools = ?2 WHERE id = ?1",
+                rusqlite::params![message_id, encoded],
+            )
+        })?;
+    }
+    Ok(changed)
+}
+
 /// How many rows a conversation has.
 pub fn count(db: &Db, conversation: &str) -> Result<i64, DbError> {
     db.with_conn(|conn| {
@@ -1468,6 +1529,94 @@ mod tests {
                 .unwrap()
                 .unwrap_or_default(),
             "an unpinned provider follows the primary endpoint"
+        );
+    }
+
+    #[test]
+    fn approving_a_call_replaces_the_parked_record_with_what_it_returned() {
+        let db = db();
+        let conversation = create_conversation(&db).unwrap();
+        let answer = append_answer(&db, &conversation, "m/one", None).unwrap();
+        let parked = ToolRecord {
+            name: "write_file".to_owned(),
+            arguments: r#"{"path":"a.txt","content":"hi"}"#.to_owned(),
+            output: serde_json::json!({
+                "status": "pending_approval",
+                "approval_id": "ap-1",
+                "tool": "write_file",
+            })
+            .to_string(),
+            is_error: false,
+        };
+        let other = ToolRecord {
+            name: "list_dir".to_owned(),
+            arguments: "{}".to_owned(),
+            output: r#"{"entries":[]}"#.to_owned(),
+            is_error: false,
+        };
+        settle(
+            &db,
+            &answer,
+            "waiting on you",
+            None,
+            &[parked, other],
+            None,
+            Accounting::default(),
+        )
+        .unwrap();
+
+        let changed = apply_approval_result(&db, "ap-1", r#"{"bytes":2}"#, false).expect("apply");
+        assert_eq!(changed, 1);
+
+        let transcript = load(&db, &conversation).unwrap();
+        let records = &transcript[0].tools;
+        assert_eq!(records.len(), 2, "the other call is left alone");
+        assert_eq!(records[0].name, "write_file");
+        assert!(
+            records[0].output.contains(r#""status":"approved""#),
+            "the record says it ran: {}",
+            records[0].output
+        );
+        assert!(
+            records[0].output.contains("ap-1"),
+            "the decision stays traceable: {}",
+            records[0].output
+        );
+        assert!(
+            !records[0].output.contains("pending_approval"),
+            "a parked row must not survive a decision"
+        );
+        assert!(
+            records[1].output.contains("entries"),
+            "an unrelated call is untouched"
+        );
+    }
+
+    #[test]
+    fn approving_an_unknown_call_changes_nothing_and_says_so() {
+        let db = db();
+        let conversation = create_conversation(&db).unwrap();
+        let answer = append_answer(&db, &conversation, "m/one", None).unwrap();
+        settle(
+            &db,
+            &answer,
+            "done",
+            None,
+            &[ToolRecord {
+                name: "list_dir".to_owned(),
+                arguments: "{}".to_owned(),
+                output: r#"{"entries":[]}"#.to_owned(),
+                is_error: false,
+            }],
+            None,
+            Accounting::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            apply_approval_result(&db, "nope", "x", false).expect("apply"),
+            0,
+            "no row mentions that approval, so nothing is rewritten"
         );
     }
 

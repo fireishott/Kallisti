@@ -368,21 +368,33 @@ fn run_approvals(json: bool, state_dir: Option<PathBuf>, command: ApprovalsComma
             // A namespaced name is an MCP tool: approving it has to reach the
             // server, not the local file executor, or an approval would report a
             // refusal for a tool that exists.
-            let result = if eris_host::mcp::protocol::split_qualified(&row.tool).is_some() {
-                let servers = engine
-                    .setting(eris_host::mcp::SETTING_SERVERS)
-                    .ok()
-                    .flatten()
-                    .and_then(|raw| eris_host::mcp::parse(&raw).ok())
-                    .unwrap_or_default();
-                let pool = eris_host::mcp::Pool::new(servers);
-                match pool.call(&row.tool, &arguments) {
-                    Ok(outcome) => eris_host::tools::ToolResult::from_mcp(&row.tool, &outcome),
-                    Err(error) => eris_host::tools::ToolResult::refused(&error.message),
-                }
-            } else {
-                eris_host::tools::execute(&row.tool, &arguments, &sandbox)
-            };
+            // `display` is what the transcript keeps: a server's own words, not
+            // this run's JSON envelope, or a run log entry reads as escaped soup.
+            let (result, display) =
+                if eris_host::mcp::protocol::split_qualified(&row.tool).is_some() {
+                    let servers = engine
+                        .setting(eris_host::mcp::SETTING_SERVERS)
+                        .ok()
+                        .flatten()
+                        .and_then(|raw| eris_host::mcp::parse(&raw).ok())
+                        .unwrap_or_default();
+                    let pool = eris_host::mcp::Pool::new(servers);
+                    match pool.call(&row.tool, &arguments) {
+                        Ok(outcome) => (
+                            eris_host::tools::ToolResult::from_mcp(&row.tool, &outcome),
+                            outcome.text,
+                        ),
+                        Err(error) => {
+                            let refusal = eris_host::tools::ToolResult::refused(&error.message);
+                            let text = error.message.clone();
+                            (refusal, text)
+                        }
+                    }
+                } else {
+                    let result = eris_host::tools::execute(&row.tool, &arguments, &sandbox);
+                    let text = result.content.clone();
+                    (result, text)
+                };
             if result.is_error {
                 eprintln!(
                     "eris approvals: {} was not run, so it stays pending: {}",
@@ -390,6 +402,17 @@ fn run_approvals(json: bool, state_dir: Option<PathBuf>, command: ApprovalsComma
                 );
                 return ExitCode::from(EXIT_FAILURE);
             }
+
+            // The transcript is rewritten before the row is settled, so a
+            // decision that lands leaves a page that tells the truth. A zero here
+            // means the turn never stored the call; that is reported, not hidden.
+            let rewritten = eris_host::web::chat::apply_approval_result(
+                &db,
+                &row.id,
+                &display,
+                result.is_error,
+            )
+            .unwrap_or(0);
 
             match eris_host::approvals::decide(
                 &db,
@@ -409,6 +432,12 @@ fn run_approvals(json: bool, state_dir: Option<PathBuf>, command: ApprovalsComma
                         );
                     } else {
                         println!("approved {id}: {}", result.content);
+                        if rewritten == 0 {
+                            eprintln!(
+                                "eris approvals: the turn did not store this call, so the transcript \
+                                 still shows it as parked"
+                            );
+                        }
                     }
                     ExitCode::SUCCESS
                 }
