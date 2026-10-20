@@ -6,6 +6,18 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **Projects.** Sessions can be grouped under named projects from the rail: a compact
+  "New project" control sits under "New chat", each session row carries a menu that
+  files it, and the rail paints project headings with ungrouped conversations below.
+  No JavaScript: the menus are disclosures, so it works on an iPad and with a script
+  blocker. A fresh rail says "No projects yet" rather than showing an empty control.
+- **Slash commands.** A message starting with `/` is answered by the daemon and never
+  sent to a model, so it costs no tokens. `/help`, `/new`, `/model <id>`,
+  `/memory <gbrain|vault|off>`, `/clear` and `/stop` all work. Anything else is
+  refused by name, and the refusal says plainly that `/goal` and `/restart` are not
+  Kallisti features rather than pretending. `/stop` marks the running answer
+  cancelled and the settle path refuses to write over it; the in-flight provider
+  request is not aborted mid-stream.
 - **A security page.** Rotating the sign-in credential gets its own page at
   `/dashboard/security`, because the settings page is tested to contain no password
   input at all - nothing stored there is a secret value, only references. Rotation
