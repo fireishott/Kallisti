@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 18;
+pub const BUILD: u32 = 20;
 
 /// `1.0.9 build 10`, for the places that state the whole identity.
 #[must_use]
@@ -129,6 +129,9 @@ pub const ROUTE_SETTINGS_PERMISSIONS: &str = "/dashboard/settings/permissions";
 
 /// `POST /dashboard/settings/persona` - the assistant's identity.
 pub const ROUTE_SETTINGS_PERSONA: &str = "/dashboard/settings/persona";
+
+/// `POST /dashboard/settings/reasoning` - show or hide the thinking bubble.
+pub const ROUTE_SETTINGS_REASONING: &str = "/dashboard/settings/reasoning";
 
 /// `POST /dashboard/settings/full-access` - the operator's own switch for full
 /// host sandbox mode, behind a typed confirmation.
@@ -220,6 +223,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_WORKSPACE,
     ROUTE_SETTINGS_PERMISSIONS,
     ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_REASONING,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",
     "/dashboard/mode",

@@ -46,6 +46,13 @@ pub const SETTING_PERSONA_ENABLED: &str = "assistant.persona_enabled";
 /// The documented default path, `~/.config/kallisti/persona.md`.
 pub const DEFAULT_PERSONA_PATH: &str = "~/.config/kallisti/persona.md";
 
+/// The environment-context file, kept beside the persona.
+///
+/// `persona.md` answers "who are you"; `context.md` answers "what is this box".
+/// They are separate files so the dashboard's identity form cannot clobber the
+/// environment facts when it saves.
+pub const CONTEXT_FILE_NAME: &str = "context.md";
+
 /// Why a persona could not be used.
 #[derive(Debug, thiserror::Error)]
 pub enum PersonaError {
@@ -204,8 +211,14 @@ impl PersonaConfig {
 
     /// The system block for one turn, or `None` when there is nothing to send.
     ///
+    /// Two files make up the block, and they answer different questions:
+    /// `persona.md` says who the assistant is, and `context.md` beside it says
+    /// what this host is - which projects exist, where they live, what they do.
+    /// Identity is switchable; environment facts are not, because a turn that
+    /// forgets the box is on cannot answer a question about the box.
+    ///
     /// `None` is the ordinary case: no persona configured, the persona switched
-    /// off, or an empty file. A turn never fails because the file is missing.
+    /// off, and no context file. A turn never fails because a file is missing.
     ///
     /// # Errors
     ///
@@ -213,10 +226,52 @@ impl PersonaConfig {
     /// operator mistakes, and both refuse the turn rather than send a prompt the
     /// operator did not ask for.
     pub fn load(&self, stored_enabled: Option<&str>) -> Result<Option<String>, PersonaError> {
-        if !self.effective_enabled(stored_enabled) {
-            return Ok(None);
+        let identity = if self.effective_enabled(stored_enabled) {
+            let text = self.read_text()?;
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        } else {
+            None
+        };
+        let context = self.read_context()?;
+
+        Ok(match (identity, context) {
+            (None, None) => None,
+            (Some(identity), None) => Some(identity),
+            (None, Some(context)) => Some(context),
+            (Some(identity), Some(context)) => Some(format!("{identity}\n\n{context}")),
+        })
+    }
+
+    /// Where the environment context lives: `context.md` beside the persona.
+    #[must_use]
+    pub fn context_path(&self) -> PathBuf {
+        self.path.with_file_name(CONTEXT_FILE_NAME)
+    }
+
+    /// The environment facts for this turn, or `None` when there are none.
+    ///
+    /// Absent is normal and silent. Present but unreadable or oversized is an
+    /// operator mistake and is reported, never truncated: half a set of facts
+    /// about the host is worse than none, because the model cannot tell which
+    /// half it is missing.
+    fn read_context(&self) -> Result<Option<String>, PersonaError> {
+        let path = self.context_path();
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(PersonaError::Read { path, source }),
+        };
+        if text.len() > MAX_PERSONA_BYTES {
+            return Err(PersonaError::TooLarge {
+                path,
+                actual: text.len(),
+                limit: MAX_PERSONA_BYTES,
+            });
         }
-        let text = self.read_text()?;
         if text.trim().is_empty() {
             return Ok(None);
         }
@@ -297,6 +352,47 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let config = PersonaConfig::at_path(dir.path().join("persona.md"));
         assert_eq!(config.load(None).expect("missing is fine"), None);
+    }
+
+    #[test]
+    fn the_context_file_is_appended_after_the_persona() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("persona.md");
+        fs::write(&path, "you are Ignyte").expect("write persona");
+        fs::write(dir.path().join("context.md"), "the warehouse is here").expect("write context");
+
+        let combined = PersonaConfig::at_path(path).load(None).expect("loads");
+
+        let combined = combined.expect("a system block");
+        assert!(combined.contains("you are Ignyte"), "{combined}");
+        assert!(combined.contains("the warehouse is here"), "{combined}");
+        assert!(
+            combined.find("you are Ignyte") < combined.find("the warehouse is here"),
+            "identity first, environment second: {combined}"
+        );
+    }
+
+    #[test]
+    fn context_alone_still_reaches_the_turn_when_identity_is_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::write(dir.path().join("context.md"), "the warehouse is here").expect("write context");
+
+        let config = PersonaConfig::new(dir.path().join("persona.md"), false, None);
+        let block = config.load(None).expect("loads");
+
+        let block = block.expect("environment facts are not identity, so they still ride");
+        assert!(block.contains("the warehouse is here"), "{block}");
+    }
+
+    #[test]
+    fn a_missing_context_file_leaves_the_persona_alone() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("persona.md");
+        fs::write(&path, "you are Ignyte").expect("write persona");
+
+        let block = PersonaConfig::at_path(path).load(None).expect("loads");
+
+        assert_eq!(block, Some("you are Ignyte".to_owned()));
     }
 
     #[test]

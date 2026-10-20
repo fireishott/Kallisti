@@ -1360,6 +1360,8 @@ pub struct SettingsView {
     pub persona_text: String,
     /// Whether the persona is switched on.
     pub persona_enabled: bool,
+    /// Whether the model's reasoning is shown in a collapsed bubble.
+    pub show_reasoning: bool,
     /// The file the persona lives in, stated on the page.
     pub persona_path: String,
     /// The stored wallpaper id: a preset name, `custom`, or `none`.
@@ -1394,6 +1396,7 @@ impl SettingsView {
             assistant_name: crate::persona::DEFAULT_ASSISTANT_NAME.to_owned(),
             persona_text: String::new(),
             persona_enabled: true,
+            show_reasoning: true,
             persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
             wallpaper: wallpaper::DEFAULT_WALLPAPER.to_owned(),
             wallpaper_custom: false,
@@ -1680,6 +1683,31 @@ fn persona_group(view: &SettingsView) -> Markup {
     }
 }
 
+/// The thinking bubble: one switch, on by default.
+///
+/// Presentational only. With it off the reasoning is neither rendered nor
+/// streamed, which is the difference between "hidden" and "not sent".
+fn reasoning_group(view: &SettingsView) -> Markup {
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_REASONING) novalidate {
+            div .field {
+                label for="show_reasoning" {
+                    input type="checkbox" id="show_reasoning" name="show_reasoning" value="true"
+                        checked[view.show_reasoning];
+                    " Show the model's reasoning in a collapsed bubble"
+                }
+                span .hint {
+                    "The bubble is opaque and closed by default, and it is never part of the answer. "
+                    "Off means the reasoning is not rendered and not streamed to the browser at all."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save thinking bubble" }
+            }
+        }
+    }
+}
+
 /// The settings page: four forms, then the rows that are read-only by design.
 pub fn settings_page(view: &SettingsView) -> Markup {
     let page_error = view.error.as_ref().filter(|error| error.field.is_none());
@@ -1788,6 +1816,15 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "it is the one setting that changes how the model talks rather than what it can reach."
             }
             (persona_group(view))
+        }
+
+        section .card aria-labelledby="reasoning-heading" {
+            h2 id="reasoning-heading" { "Thinking bubble" }
+            p .small {
+                "Some models send a separate reasoning stream that is not the reply. When this is on, "
+                "it appears above the answer in a collapsed, faded bubble you can open."
+            }
+            (reasoning_group(view))
         }
 
         section .card aria-labelledby="appearance-heading" {
@@ -2641,6 +2678,11 @@ pub struct ChatLine {
     pub duration_ms: Option<u64>,
     /// The context window declared for the model that answered.
     pub context_window: Option<u64>,
+    /// The model's own reasoning for this reply, when it streamed any.
+    ///
+    /// Rendered in a collapsed bubble above the answer, and only when the
+    /// thinking bubble is switched on.
+    pub reasoning: Option<String>,
 }
 
 impl ChatLine {
@@ -2726,6 +2768,8 @@ pub struct ChatView {
     pub models: Vec<String>,
     /// The model the picker starts on.
     pub selected_model: String,
+    /// Whether to render the model's reasoning in a collapsed bubble.
+    pub show_reasoning: bool,
     /// The greeting an empty conversation opens with.
     pub greeting: String,
     /// What the operator calls the assistant, for the composer and the labels.
@@ -2872,6 +2916,14 @@ pub fn chat_page(view: &ChatView) -> Markup {
                 );
                 article class=(klass) {
                     div .who { (line.who) }
+                    @if view.show_reasoning {
+                        @if let Some(reasoning) = line.reasoning.as_ref().filter(|text| !text.trim().is_empty()) {
+                            details .think {
+                                summary { span .think-label { "Thinking" } }
+                                div .think-body { (reasoning) }
+                            }
+                        }
+                    }
                     div .bubble .failed[line.failed] { (blocks(&line.body)) }
                     div .meta {
                         span .mono { (line.stamp) }
@@ -2989,6 +3041,17 @@ const CHAT_JS: &str = r##"(function () {
     var label = document.createElement("div");
     label.className = "who";
     label.textContent = who;
+    // Collapsed by default and hidden until the first reasoning fragment, so a
+    // turn that never thinks does not leave an empty shell above its answer.
+    var think = document.createElement("details");
+    think.className = "think";
+    think.hidden = true;
+    var thinkSummary = document.createElement("summary");
+    thinkSummary.textContent = "Thinking";
+    var thinkBody = document.createElement("div");
+    thinkBody.className = "think-body";
+    think.appendChild(thinkSummary);
+    think.appendChild(thinkBody);
     var bubble = document.createElement("div");
     bubble.className = "bubble";
     var text = document.createElement("p");
@@ -2996,10 +3059,18 @@ const CHAT_JS: &str = r##"(function () {
     var meta = document.createElement("div");
     meta.className = "meta";
     article.appendChild(label);
+    article.appendChild(think);
     article.appendChild(bubble);
     article.appendChild(meta);
     thread.appendChild(article);
-    return { article: article, bubble: bubble, text: text, meta: meta };
+    return {
+      article: article,
+      bubble: bubble,
+      text: text,
+      meta: meta,
+      think: think,
+      thinkBody: thinkBody
+    };
   }
 
   function human(count) {
@@ -3096,6 +3167,7 @@ const CHAT_JS: &str = r##"(function () {
   var target = line("assistant", assistantName);
     target.article.className = "msg assistant pending";
     var answer = "";
+    var thinking = "";
     controller = new AbortController();
     try {
       var response = await fetch("/dashboard/chat/send", {
@@ -3144,10 +3216,20 @@ const CHAT_JS: &str = r##"(function () {
             target.text.textContent = answer;
             toBottom();
           }
+          if (parsed.event === "reasoning") {
+            thinking += JSON.parse(parsed.data).text;
+            target.thinkBody.textContent = thinking;
+            target.think.hidden = false;
+            toBottom();
+          }
           if (parsed.event === "done") {
             var final = JSON.parse(parsed.data);
             answer = final.text;
             target.meta.textContent = metaFor(final);
+            if (typeof final.reasoning === "string" && final.reasoning.trim().length > 0) {
+              target.thinkBody.textContent = final.reasoning;
+              target.think.hidden = false;
+            }
           }
           if (parsed.event === "error") {
             var failure = JSON.parse(parsed.data);

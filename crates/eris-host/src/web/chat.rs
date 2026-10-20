@@ -466,6 +466,11 @@ pub struct Message {
     pub context_window: Option<u64>,
     /// Wall time from request to last byte.
     pub duration_ms: Option<u64>,
+    /// The model's own reasoning, when the provider streamed any.
+    ///
+    /// Never the answer, never sent back into a later prompt, and never shown
+    /// unless the operator leaves the thinking bubble switched on.
+    pub reasoning: Option<String>,
 }
 
 /// A count from SQLite, which stores signed integers and holds no negative ones.
@@ -482,7 +487,7 @@ fn collect(conn: &mut Connection, conversation: &str) -> Result<Vec<Message>, ru
     let mut statement = conn.prepare(
         "SELECT id, role, body, state, error_code, created_at, model,
                 prompt_tokens, completion_tokens, cached_tokens, context_window,
-                duration_ms
+                duration_ms, reasoning
            FROM chat_messages
           WHERE conversation_id = ?1
           ORDER BY created_at ASC, rowid ASC",
@@ -503,6 +508,7 @@ fn collect(conn: &mut Connection, conversation: &str) -> Result<Vec<Message>, ru
             cached_tokens: tokens(row.get(9)?),
             context_window: tokens(row.get(10)?),
             duration_ms: tokens(row.get(11)?),
+            reasoning: row.get(12)?,
         })
     })?;
     rows.collect()
@@ -572,10 +578,15 @@ pub struct Accounting {
 }
 
 /// Settle a streaming row with its final text and the provider's own usage.
+///
+/// `reasoning` is the model's own thinking when it streamed some. It is stored
+/// beside the body and never merged into it: the answer is what the operator
+/// asked for, and a transcript that mixed the two could not be quoted.
 pub fn settle(
     db: &Db,
     id: &str,
     body: &str,
+    reasoning: Option<&str>,
     usage: Option<&serde_json::Value>,
     accounting: Accounting,
 ) -> Result<(), DbError> {
@@ -588,12 +599,13 @@ pub fn settle(
         cached_tokens,
         duration_ms,
     } = accounting;
+    let reasoning = reasoning.filter(|text| !text.trim().is_empty());
     db.with_conn(|conn| {
         conn.execute(
             "UPDATE chat_messages
                 SET body = ?2, state = 'complete', usage_json = ?3, error_code = NULL,
                     prompt_tokens = ?4, completion_tokens = ?5, cached_tokens = ?6,
-                    duration_ms = ?7
+                    duration_ms = ?7, reasoning = ?8
               WHERE id = ?1",
             params![
                 id,
@@ -603,6 +615,7 @@ pub fn settle(
                 completion_tokens.map(|count| count as i64),
                 cached_tokens.map(|count| count as i64),
                 duration_ms.map(|count| count as i64),
+                reasoning,
             ],
         )?;
         Ok(())
@@ -722,7 +735,34 @@ pub fn turn_config(engine: &SetupEngine) -> Result<Option<TurnConfig>, Onboardin
 /// and a sentence.
 pub type TurnFailure = (String, String);
 
-/// Run one turn to completion, handing each text fragment to `sink`.
+/// The `settings` row that remembers whether the thinking bubble is shown.
+///
+/// Default on: the bubble exists to be seen, and hiding it is the operator's
+/// choice rather than the starting state.
+pub const SETTING_SHOW_REASONING: &str = "assistant.show_reasoning";
+
+/// Whether to show and stream the model's reasoning.
+///
+/// Anything other than an explicit `false` leaves it on, so a corrupt row cannot
+/// silently hide a feature the operator asked for.
+#[must_use]
+pub fn show_reasoning(stored: Option<&str>) -> bool {
+    !matches!(stored.map(str::trim), Some("false"))
+}
+
+/// One thing the turn produced while it was still running.
+///
+/// The two are kept apart all the way to the database because they mean different
+/// things: the reply is what the operator asked for, and the reasoning is how the
+/// model got there. Merging them would make an answer impossible to quote.
+pub enum StreamPart<'a> {
+    /// Reply text.
+    Text(&'a str),
+    /// The model's own reasoning, when the provider streams one.
+    Reasoning(&'a str),
+}
+
+/// Run one turn to completion, handing each fragment to `sink`.
 ///
 /// This is deliberately a blocking call on its own thread, exactly like the
 /// device turn: `stream_chat` takes `&mut dyn FnMut`, which is not `Send`, so the
@@ -734,8 +774,8 @@ pub fn run_turn(
     messages: Vec<ChatMessage>,
     sandbox: &crate::tools::Sandbox,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
-    sink: &mut dyn FnMut(&str),
-) -> Result<(String, core_domain::Usage), TurnFailure> {
+    sink: &mut dyn FnMut(StreamPart<'_>),
+) -> Result<TurnOutcome, TurnFailure> {
     let profile =
         ProviderProfile::new("chat-turn", config.base_url.clone(), config.key_ref.clone())
             .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
@@ -760,21 +800,28 @@ pub fn run_turn(
 
     let system = system.filter(|text| !text.trim().is_empty());
 
-    let mut forward = |event: ProviderEvent| {
-        if let ProviderEvent::Text(fragment) = event
-            && !fragment.is_empty()
-        {
-            sink(&fragment);
+    let mut forward = |event: ProviderEvent| match event {
+        ProviderEvent::Text(fragment) if !fragment.is_empty() => {
+            sink(StreamPart::Text(&fragment));
         }
+        ProviderEvent::Reasoning(fragment) if !fragment.is_empty() => {
+            sink(StreamPart::Reasoning(&fragment));
+        }
+        _ => {}
     };
 
-    let outcome = drive_tool_loop(sandbox, messages, gate, |round| {
+    let outcome = drive_tool_loop(sandbox, messages, gate, |round, tools_allowed| {
         let request = ChatRequest {
             system: system.clone(),
             messages: round.to_vec(),
-            // Offered every round: the model needs them again to answer the
-            // result it just received.
-            tools: crate::tools::specs(sandbox.mode()),
+            // Offered on every round that may still call one: the model needs
+            // them again to answer the result it just received. Withheld on the
+            // last round so the turn ends in an answer instead of a refusal.
+            tools: if tools_allowed {
+                crate::tools::specs(sandbox.mode())
+            } else {
+                Vec::new()
+            },
             ..ChatRequest::default()
         };
         runtime
@@ -782,7 +829,7 @@ pub fn run_turn(
             .map_err(|error| (error.kind().to_owned(), error.to_string()))
     })?;
 
-    Ok((outcome.text, outcome.usage))
+    Ok(outcome)
 }
 
 /// What a conversation has cost, for the header chips and the status strip.
@@ -884,13 +931,15 @@ pub fn has_messages(transcript: &[Message]) -> bool {
 /// A model that answers with another tool call every time would otherwise loop
 /// for as long as the operator leaves the tab open. At the cap the turn stops and
 /// says so; it does not silently return nothing.
-pub const MAX_TOOL_ROUNDS: usize = 8;
+pub const MAX_TOOL_ROUNDS: usize = 12;
 
 /// What a turn produced once the tool loop settled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnOutcome {
     /// The reply. A capped turn carries the notice instead of an empty string.
     pub text: String,
+    /// The model's own reasoning, when the provider streamed any.
+    pub reasoning: String,
     /// Usage summed over every round trip, never just the last one.
     pub usage: core_domain::Usage,
     /// How many tool rounds ran.
@@ -930,32 +979,44 @@ pub fn drive_tool_loop(
     sandbox: &crate::tools::Sandbox,
     mut messages: Vec<ChatMessage>,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
-    mut stream: impl FnMut(&[ChatMessage]) -> Result<core_runtime::provider::Completion, TurnFailure>,
+    mut stream: impl FnMut(
+        &[ChatMessage],
+        bool,
+    ) -> Result<core_runtime::provider::Completion, TurnFailure>,
 ) -> Result<TurnOutcome, TurnFailure> {
     let mut usage: Option<core_domain::Usage> = None;
-    let mut text = String::new();
+    let mut reasoning = String::new();
     let mut rounds = 0usize;
-    let mut calls = 0usize;
 
-    loop {
-        if calls >= MAX_TOOL_ROUNDS {
-            if text.trim().is_empty() {
-                text =
-                    format!("Stopped after {MAX_TOOL_ROUNDS} tool rounds without a final answer.");
-            }
-            break;
-        }
-        calls += 1;
+    let mut text = loop {
+        // The last attempt is tool-free on purpose. A model that answered every
+        // round with another call used to end the turn with nothing; instead it
+        // now has to say what it found with what it already has, which is a
+        // usable answer rather than a shrug.
+        let tools_allowed = rounds < MAX_TOOL_ROUNDS;
+        let completion = stream(&messages, tools_allowed)?;
 
-        let completion = stream(&messages)?;
         usage = Some(match usage {
             None => completion.usage,
             Some(total) => total.accrue(completion.usage),
         });
-        text = completion.text;
+        // Reasoning accumulates across rounds: a turn that thought twice about
+        // two tool calls has one train of thought, not the last leg of it.
+        if !completion.reasoning.trim().is_empty() {
+            if !reasoning.is_empty() {
+                reasoning.push('\n');
+            }
+            reasoning.push_str(&completion.reasoning);
+        }
 
         if completion.tool_calls.is_empty() {
-            break;
+            break completion.text;
+        }
+
+        // A provider that returns calls when it was offered none has nothing
+        // left to run, so the loop ends with whatever it said.
+        if !tools_allowed {
+            break completion.text;
         }
 
         rounds += 1;
@@ -970,10 +1031,20 @@ pub fn drive_tool_loop(
             };
             messages.push(ChatMessage::tool_result(call.id.clone(), result.content));
         }
+    };
+
+    // Nothing said and nothing left: the turn still owes the operator a sentence
+    // rather than an empty bubble.
+    if text.trim().is_empty() {
+        text = format!(
+            "Stopped after {rounds} tool rounds without a final answer. The work above is what \
+             ran; ask again and it will finish from here."
+        );
     }
 
     Ok(TurnOutcome {
         text,
+        reasoning,
         usage: usage.unwrap_or_else(|| {
             core_domain::Usage::unavailable(core_domain::UnavailableReason::FieldsAbsent)
         }),
@@ -1014,6 +1085,7 @@ mod tests {
             &db,
             &id,
             "the answer",
+            Some("thinking about it"),
             Some(&serde_json::json!({"output": 3})),
             Accounting {
                 prompt_tokens: Some(1_200),
@@ -1026,6 +1098,11 @@ mod tests {
         let transcript = load(&db, CONVERSATION_ID).unwrap();
         assert_eq!(transcript[0].state, State::Complete);
         assert_eq!(transcript[0].body, "the answer");
+        assert_eq!(
+            transcript[0].reasoning.as_deref(),
+            Some("thinking about it"),
+            "reasoning is stored beside the answer, never inside it"
+        );
         assert_eq!(transcript[0].prompt_tokens, Some(1_200));
         assert_eq!(transcript[0].completion_tokens, Some(18));
         assert_eq!(transcript[0].cached_tokens, Some(1_150));
@@ -1189,6 +1266,7 @@ mod tests {
                 cached_tokens: None,
                 context_window: None,
                 duration_ms: None,
+                reasoning: None,
             },
             Message {
                 id: "a1".into(),
@@ -1203,6 +1281,7 @@ mod tests {
                 cached_tokens: Some(900),
                 context_window: Some(10_000),
                 duration_ms: Some(2_000),
+                reasoning: None,
             },
             Message {
                 id: "a2".into(),
@@ -1217,6 +1296,7 @@ mod tests {
                 cached_tokens: None,
                 context_window: Some(10_000),
                 duration_ms: None,
+                reasoning: None,
             },
             Message {
                 id: "u2".into(),
@@ -1231,6 +1311,7 @@ mod tests {
                 cached_tokens: None,
                 context_window: None,
                 duration_ms: None,
+                reasoning: None,
             },
         ];
 
@@ -1374,7 +1455,7 @@ mod tests {
             &sandbox,
             vec![ChatMessage::text(ChatRole::User, "read a.txt")],
             &mut |_call| GateDecision::Run,
-            |messages| {
+            |messages, _tools| {
                 seen.push(messages.to_vec());
                 round += 1;
                 if round == 1 {
@@ -1430,19 +1511,39 @@ mod tests {
         .expect("a call");
 
         let mut round = 0usize;
+        let mut tools_offered: Vec<bool> = Vec::new();
         let outcome = drive_tool_loop(
             &sandbox,
             vec![ChatMessage::text(ChatRole::User, "loop forever")],
             &mut |_call| GateDecision::Run,
-            |_messages| {
+            |_messages, tools| {
                 round += 1;
+                tools_offered.push(tools);
                 Ok(completion_with_calls(vec![call.clone()], ""))
             },
         )
         .expect("a turn");
 
-        assert_eq!(round, MAX_TOOL_ROUNDS, "the loop must stop at the cap");
-        assert_eq!(outcome.rounds, MAX_TOOL_ROUNDS);
+        assert_eq!(
+            outcome.rounds, MAX_TOOL_ROUNDS,
+            "exactly the cap in tool rounds"
+        );
+        assert_eq!(
+            round,
+            MAX_TOOL_ROUNDS + 1,
+            "then one final attempt with tools withheld"
+        );
+        assert_eq!(
+            tools_offered.last().copied(),
+            Some(false),
+            "the last attempt must not offer tools, so the turn has to answer"
+        );
+        assert!(
+            tools_offered[..MAX_TOOL_ROUNDS]
+                .iter()
+                .all(|offered| *offered),
+            "every round before the cap offers them"
+        );
         assert!(
             !outcome.text.trim().is_empty(),
             "a capped turn still tells the operator something"
@@ -1469,7 +1570,7 @@ mod tests {
             &sandbox,
             vec![ChatMessage::text(ChatRole::User, "hi")],
             &mut |_call| GateDecision::Run,
-            |_messages| Ok(completion_with_calls(Vec::new(), "ok")),
+            |_messages, _tools| Ok(completion_with_calls(Vec::new(), "ok")),
         )
         .expect("a turn");
 
@@ -1509,7 +1610,7 @@ mod tests {
             &mut |_call| GateDecision::Park {
                 approval_id: "ap_1".to_owned(),
             },
-            |messages| {
+            |messages, _tools| {
                 seen.push(messages.to_vec());
                 round += 1;
                 if round == 1 {

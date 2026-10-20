@@ -30,7 +30,8 @@ use crate::admin::{
     ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES,
     ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
     ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
-    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_WORKSPACE, VERSION,
+    session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -97,6 +98,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_WORKSPACE, post(save_workspace))
         .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
         .route(ROUTE_SETTINGS_PERSONA, post(save_persona))
+        .route(ROUTE_SETTINGS_REASONING, post(save_reasoning))
         .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
@@ -545,6 +547,12 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     view.persona_enabled = state.persona.effective_enabled(
         engine
             .setting(SETTING_PERSONA_ENABLED)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
+    view.show_reasoning = chat::show_reasoning(
+        engine
+            .setting(chat::SETTING_SHOW_REASONING)
             .map_err(|error| form_error(&error))?
             .as_deref(),
     );
@@ -2359,6 +2367,9 @@ async fn mode(
 /// the reader has to match to a form.
 const SAVED_PROVIDER: &str = "/dashboard/settings?saved=provider";
 const SAVED_WORKSPACE: &str = "/dashboard/settings?saved=workspace";
+
+/// Where the reasoning toggle returns to.
+const SAVED_REASONING: &str = "/dashboard/settings?saved=reasoning";
 const SAVED_PERMISSIONS: &str = "/dashboard/settings?saved=permissions";
 const SAVED_PERSONA: &str = "/dashboard/settings?saved=persona";
 
@@ -2519,6 +2530,43 @@ async fn save_workspace(
     }
 
     see_other(SAVED_WORKSPACE)
+}
+
+/// `POST /dashboard/settings/reasoning` - the thinking bubble on or off.
+///
+/// Purely presentational. It decides whether the model's reasoning is rendered
+/// and whether it is streamed to the browser at all; it never changes what a turn
+/// is allowed to do.
+async fn save_reasoning(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    // An unchecked box sends nothing at all, so absence is the off signal here.
+    let enabled = matches!(field(&fields, "show_reasoning").trim(), "on" | "true" | "1");
+    let stored = if enabled { "true" } else { "false" };
+    if let Err(error) = store::settings_put(state.engine.db(), chat::SETTING_SHOW_REASONING, stored)
+    {
+        return store_failure(&request_id.0, chat::SETTING_SHOW_REASONING, error);
+    }
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.reasoning", Some(stored))
+    {
+        return audit_failure(&request_id.0, "settings.reasoning", error);
+    }
+
+    see_other(SAVED_REASONING)
 }
 
 /// `POST /dashboard/settings/permissions` - the closed permission tuple.
@@ -2880,6 +2928,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                 cached_tokens: message.cached_tokens,
                 duration_ms: message.duration_ms,
                 context_window: message.context_window,
+                reasoning: message.reasoning.clone(),
             }
         })
         .collect();
@@ -2920,6 +2969,14 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         models,
         selected_model,
         assistant_name,
+        show_reasoning: chat::show_reasoning(
+            state
+                .engine
+                .setting(chat::SETTING_SHOW_REASONING)
+                .ok()
+                .flatten()
+                .as_deref(),
+        ),
         greeting: crate::web::templates::greeting_for(chat::local_hour(db).unwrap_or(9)).to_owned(),
         sandbox_mode: state
             .engine
@@ -3611,6 +3668,14 @@ fn spawn_turn(
         .permissions()
         .map(|permissions| permissions.approval_policy)
         .unwrap_or(crate::onboarding::permissions::ApprovalPolicy::Ask);
+    let show_reasoning = chat::show_reasoning(
+        state
+            .engine
+            .setting(chat::SETTING_SHOW_REASONING)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
     let stored_enabled = state
         .engine
         .setting(crate::persona::SETTING_PERSONA_ENABLED)
@@ -3656,9 +3721,22 @@ fn spawn_turn(
         };
 
         let mut streamed = String::new();
-        let mut sink = |fragment: &str| {
-            streamed.push_str(fragment);
-            send_terminal(&sender, "delta", serde_json::json!({ "text": fragment }));
+        let mut sink = |part: chat::StreamPart<'_>| match part {
+            chat::StreamPart::Text(fragment) => {
+                streamed.push_str(fragment);
+                send_terminal(&sender, "delta", serde_json::json!({ "text": fragment }));
+            }
+            chat::StreamPart::Reasoning(fragment) => {
+                // Switched off means not sent at all, so a disabled setting also
+                // stops the reasoning leaving the daemon.
+                if show_reasoning {
+                    send_terminal(
+                        &sender,
+                        "reasoning",
+                        serde_json::json!({ "text": fragment }),
+                    );
+                }
+            }
         };
         let started = std::time::Instant::now();
         let outcome = chat::run_turn(&config, system, history, &sandbox, &mut gate, &mut sink);
@@ -3666,7 +3744,8 @@ fn spawn_turn(
         drop(sink);
 
         match outcome {
-            Ok((text, usage)) => {
+            Ok(turn) => {
+                let usage = turn.usage;
                 let accounting = chat::Accounting {
                     prompt_tokens: usage.input_tokens(),
                     completion_tokens: usage.output_tokens(),
@@ -3674,13 +3753,21 @@ fn spawn_turn(
                     duration_ms: Some(duration_ms),
                 };
                 let raw = serde_json::to_value(usage).ok();
-                let _ = chat::settle(&db, &answer_id, &text, raw.as_ref(), accounting);
+                let _ = chat::settle(
+                    &db,
+                    &answer_id,
+                    &turn.text,
+                    Some(&turn.reasoning),
+                    raw.as_ref(),
+                    accounting,
+                );
                 send_terminal(
                     &sender,
                     "done",
                     serde_json::json!({
                         "id": answer_id,
-                        "text": text,
+                        "text": turn.text,
+                        "reasoning": turn.reasoning,
                         "model": config.model,
                         "prompt_tokens": accounting.prompt_tokens,
                         "completion_tokens": accounting.completion_tokens,

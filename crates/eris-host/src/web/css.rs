@@ -742,6 +742,45 @@ pre.code {
 .msg .bubble.failed { border-color: var(--bad); }
 .msg .bubble p { margin: 0 0 10px; white-space: pre-wrap; }
 .msg .bubble > *:last-child { margin-bottom: 0; }
+
+/* The thinking bubble. Deliberately opaque: dim, italic, no border colour of its
+   own, and collapsed by default, so it reads as machinery behind the answer
+   rather than as the answer. It never competes with the reply for attention. */
+.msg .think {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.msg .think > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0.8;
+}
+.msg .think > summary::-webkit-details-marker { display: none; }
+.msg .think > summary::before {
+  content: "▸ ";
+  opacity: 0.7;
+}
+.msg .think[open] > summary::before { content: "▾ "; }
+.msg .think .think-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  font-style: italic;
+  white-space: pre-wrap;
+  opacity: 0.72;
+  max-height: 320px;
+  overflow-y: auto;
+}
 .msg .meta {
   display: flex;
   align-items: center;

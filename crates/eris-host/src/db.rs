@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -110,6 +110,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 9,
         name: "0009_approvals",
         sql: MIGRATION_0009,
+    },
+    Migration {
+        version: 10,
+        name: "0010_chat_reasoning",
+        sql: MIGRATION_0010,
     },
 ];
 
@@ -423,6 +428,19 @@ CREATE TABLE IF NOT EXISTS approvals (
 
 CREATE INDEX IF NOT EXISTS idx_approvals_status
     ON approvals (status, created_at);
+";
+
+/// Migration 0010: the model's own reasoning, kept beside the answer.
+///
+/// Some providers stream a separate reasoning stream that is not the reply. It is
+/// stored so the UI can show it in a collapsed bubble and so a transcript stays
+/// honest about how an answer was reached - but it is never part of `body`, never
+/// counted as the answer, and never sent back into a later prompt.
+///
+/// Nullable on purpose: most providers send none, and a turn with none is normal
+/// rather than an empty string pretending to be reasoning.
+const MIGRATION_0010: &str = r"
+ALTER TABLE chat_messages ADD COLUMN reasoning TEXT;
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

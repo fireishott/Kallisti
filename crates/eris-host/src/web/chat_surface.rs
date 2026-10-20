@@ -137,6 +137,7 @@ fn the_page_shows_the_usage_the_transcript_carries() {
         &answer,
         "big enough",
         None,
+        None,
         chat::Accounting {
             prompt_tokens: Some(1_200),
             completion_tokens: Some(18),
