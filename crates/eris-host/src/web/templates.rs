@@ -1075,7 +1075,8 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
         section .card aria-labelledby="quick-actions" {
             h2 id="quick-actions" { "Quick actions" }
             div .actions {
-                a .button href=(Nav::Settings.path()) { "Settings" }
+                a .button href=(Nav::Chat.path()) { "Open chat" }
+                a .button.secondary href=(Nav::Settings.path()) { "Settings" }
                 a .button.secondary href=(Nav::Sessions.path()) { "Sessions" }
                 a .button.secondary href=(Nav::Devices.path()) { "Devices" }
                 a .button.secondary href=(Nav::Activity.path()) { "Activity" }

@@ -29,7 +29,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use tower::ServiceExt;
 
-use crate::admin::{AppState, ROUTE_DASHBOARD, ROUTE_LOGIN, router_with};
+use crate::admin::{AppState, ROUTE_CHAT, ROUTE_DASHBOARD, ROUTE_LOGIN, router_with};
 use crate::config::Paths;
 use crate::db::Db;
 use crate::onboarding::{Permissions, SetupEngine};
@@ -311,7 +311,7 @@ fn a_correct_passphrase_sets_a_cookie_and_opens_the_dashboard() {
         Call::post(ROUTE_LOGIN, &format!("passphrase={}", encode(&passphrase))),
     ));
     assert_eq!(reply.status, StatusCode::SEE_OTHER, "login: {}", reply.body);
-    assert_eq!(reply.location().as_deref(), Some(ROUTE_DASHBOARD));
+    assert_eq!(reply.location().as_deref(), Some(ROUTE_CHAT));
 
     let cookie = reply.set_cookie().expect("login sets the session cookie");
     assert!(cookie.contains("HttpOnly"), "{cookie}");
@@ -343,7 +343,7 @@ fn a_correct_passphrase_sets_a_cookie_and_opens_the_dashboard() {
         Call::get(ROUTE_LOGIN).html().cookie(Some(bare.as_str())),
     ));
     assert_eq!(again.status, StatusCode::SEE_OTHER);
-    assert_eq!(again.location().as_deref(), Some(ROUTE_DASHBOARD));
+    assert_eq!(again.location().as_deref(), Some(ROUTE_CHAT));
 }
 
 #[test]

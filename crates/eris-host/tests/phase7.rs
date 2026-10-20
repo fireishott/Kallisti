@@ -22,8 +22,8 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use eris_host::admin::{
-    ADMIN_ADDR, ALL_GET_ROUTES, AppState, POST_ROUTES, ROUTE_DASHBOARD, ROUTE_HEALTHZ, ROUTE_ROOT,
-    ROUTE_SETUP, ROUTE_SETUP_STATE, VERSION, router_with,
+    ADMIN_ADDR, ALL_GET_ROUTES, AppState, POST_ROUTES, ROUTE_CHAT, ROUTE_DASHBOARD, ROUTE_HEALTHZ,
+    ROUTE_ROOT, ROUTE_SETUP, ROUTE_SETUP_STATE, VERSION, router_with,
 };
 use eris_host::config::Paths;
 use eris_host::db::{Db, SetupState};
@@ -722,13 +722,13 @@ async fn every_get_route_answers_with_a_body() {
             reply.status
         );
         if reply.status == StatusCode::FOUND || reply.status == StatusCode::SEE_OTHER {
-            assert_eq!(
-                reply
-                    .headers
-                    .get(header::LOCATION)
-                    .and_then(|value| value.to_str().ok()),
-                Some(ROUTE_DASHBOARD),
-                "{route} must redirect to the dashboard once setup is finished"
+            let target = reply
+                .headers
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok());
+            assert!(
+                matches!(target, Some(ROUTE_DASHBOARD | ROUTE_CHAT)),
+                "{route} must redirect to a real page once setup is finished, not {target:?}"
             );
             continue;
         }

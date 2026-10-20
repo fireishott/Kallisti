@@ -338,15 +338,27 @@ mod tests {
             assert!(client.is_alive());
             client.child.id()
         };
-        // The scope ended, so the client dropped and killed it. Poll rather than
-        // sleep a fixed amount: under a loaded test run the reaping is not
-        // instant, and a fixed sleep makes this test flaky rather than honest.
-        let proc = std::path::PathBuf::from(format!("/proc/{pid}"));
+        // The scope ended, so the client dropped and killed it. Checking that the
+        // pid is absent is not enough: pids are reused, and a neighbour process
+        // inheriting the number makes this test flaky rather than honest. The
+        // identity is checked instead - the process must no longer be running
+        // *our fixture script*.
+        let proc = std::path::PathBuf::from(format!("/proc/{pid}/cmdline"));
         let mut gone = false;
         for _ in 0..40 {
-            if !proc.exists() {
-                gone = true;
-                break;
+            match std::fs::read(&proc) {
+                Err(_) => {
+                    gone = true;
+                    break;
+                }
+                Ok(bytes) => {
+                    let cmdline = String::from_utf8_lossy(&bytes);
+                    if !cmdline.contains("fake-mcp.sh") {
+                        // A different process now owns the number.
+                        gone = true;
+                        break;
+                    }
+                }
             }
             thread::sleep(Duration::from_millis(50));
         }

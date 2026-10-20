@@ -1603,7 +1603,9 @@ async fn login_form(
     headers: HeaderMap,
 ) -> Response {
     if session_valid(&state, &headers) {
-        return see_other(ROUTE_DASHBOARD);
+        // Already signed in: straight to the conversation, which is what this
+        // daemon is for. The dashboard is a place to check on it, not to start.
+        return see_other(ROUTE_CHAT);
     }
     match state.engine.state() {
         Ok(state_now) => page(login_page(state_now, None, &state.chrome())),
@@ -1699,7 +1701,10 @@ async fn login(
     }
     let cookie =
         session::set_cookie_header(&minted.cookie_value, state.access.cookie_secure(&context));
-    let mut response = see_other(ROUTE_DASHBOARD);
+    // Signing in lands on the conversation. A control panel as the landing page
+    // made chat reachable only through a menu, which is a dead end for the one
+    // thing an operator came to do.
+    let mut response = see_other(ROUTE_CHAT);
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
