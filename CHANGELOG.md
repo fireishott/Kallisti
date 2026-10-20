@@ -6,6 +6,16 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **A generated greeting line.** The empty chat page can carry one short line under
+  its salutation, written by a model. It is off by default and stays off until
+  Settings > Greeting switches it on, because every rewrite is a billed provider
+  call. The line is cached in the settings table with the second it was written, and
+  it is only regenerated when it is older than the chosen window (hour, day or
+  week), so a render serves the stored line instead of calling a model. The prompt
+  carries no name, path, hostname, memory or transcript, and the answer is scrubbed
+  to one line of at most 90 characters with no bang, no quote and no em dash. With
+  the switch off, or with no line stored yet, the page renders exactly what it
+  rendered before.
 - **Projects.** Sessions can be grouped under named projects from the rail: a compact
   "New project" control sits under "New chat", each session row carries a menu that
   files it, and the rail paints project headings with ungrouped conversations below.

@@ -29,6 +29,7 @@ use super::harness::{Call, PURPLE_DENYLIST, block_on, encode, ready_app, ready_e
 
 /// The three settings posts.
 const PROVIDER_POST: &str = "/dashboard/settings/provider";
+const GREETING_POST: &str = "/dashboard/settings/greeting";
 const WORKSPACE_POST: &str = "/dashboard/settings/workspace";
 const PERMISSIONS_POST: &str = "/dashboard/settings/permissions";
 
@@ -119,11 +120,11 @@ fn the_settings_page_renders_current_values() {
             "the {name} radio for {value} has no label: {page}"
         );
     }
-    // Four forms now that Assistant identity is the fourth group, so the page
-    // level region plus one per form is five.
+    // Five groups: provider, workspace, permissions, persona and greeting. The
+    // page level region plus one per group is six.
     assert_eq!(
         page.matches(r#"aria-live="polite""#).count(),
-        5,
+        6,
         "one page level region plus one per form: {page}"
     );
 
@@ -781,4 +782,154 @@ fn the_settings_page_needs_a_session() {
     ));
     assert_eq!(write.status, StatusCode::FORBIDDEN);
     assert!(!write.body.trim().is_empty());
+}
+
+#[test]
+fn saving_the_greeting_persists_and_audits() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+
+    // The default is off and every row is absent until it is asked for.
+    assert_eq!(
+        crate::web::store::settings_get(db, crate::greeting::SETTING_GREETING_ENABLED)
+            .expect("read"),
+        None
+    );
+    assert!(!crate::greeting::enabled(None));
+
+    let reply = block_on(send(
+        &app,
+        Call::post(
+            GREETING_POST,
+            "greeting_enabled=true&greeting_model=primary&greeting_refresh=week",
+        )
+        .html()
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(
+        reply.status,
+        StatusCode::SEE_OTHER,
+        "a successful save redirects: {}",
+        reply.body
+    );
+    let location = reply.location().unwrap_or_default();
+    assert!(
+        location.starts_with(ROUTE_SETTINGS),
+        "the redirect returns to the settings page: {location}"
+    );
+    assert!(
+        location.contains("saved=greeting"),
+        "the notice names the group that was saved: {location}"
+    );
+
+    let read = |key: &str| {
+        crate::web::store::settings_get(db, key)
+            .expect("read")
+            .unwrap_or_default()
+    };
+    assert_eq!(read(crate::greeting::SETTING_GREETING_ENABLED), "true");
+    assert_eq!(read(crate::greeting::SETTING_GREETING_MODEL), "primary");
+    assert_eq!(read(crate::greeting::SETTING_GREETING_REFRESH), "week");
+
+    let rows = super::harness::audit_rows(db);
+    let row = rows
+        .iter()
+        .find(|row| row.action == "settings.greeting")
+        .unwrap_or_else(|| panic!("no settings.greeting audit row: {rows:?}"));
+    let detail = row.detail.clone().unwrap_or_default();
+    assert!(detail.contains("enabled=true"), "{detail}");
+    assert!(detail.contains("model=primary"), "{detail}");
+    assert!(detail.contains("refresh=week"), "{detail}");
+    assert_eq!(row.actor, "loopback");
+
+    // The page shows the saved values back, with the group's own notice.
+    let page = block_on(send(
+        &app,
+        Call::get("/dashboard/settings?saved=greeting")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains("greeting saved"),
+        "the notice names the save: {}",
+        page.body
+    );
+    assert!(
+        page.body.contains(r#"id="greeting_enabled""#) && page.body.contains("checked"),
+        "the switch is shown on: {}",
+        page.body
+    );
+
+    // An unchecked box sends nothing at all, which is the off signal, and it
+    // writes the explicit false rather than deleting the row.
+    let off = block_on(send(
+        &app,
+        Call::post(GREETING_POST, "greeting_model=primary&greeting_refresh=day")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(off.status, StatusCode::SEE_OTHER, "{}", off.body);
+    assert_eq!(read(crate::greeting::SETTING_GREETING_ENABLED), "false");
+    assert_eq!(read(crate::greeting::SETTING_GREETING_REFRESH), "day");
+}
+
+#[test]
+fn an_unknown_greeting_model_is_refused_by_field() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+
+    let reply = block_on(send(
+        &app,
+        Call::post(
+            GREETING_POST,
+            "greeting_enabled=true&greeting_model=nope%2Fnot-a-model&greeting_refresh=hour",
+        )
+        .html()
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(
+        reply.status,
+        StatusCode::BAD_REQUEST,
+        "an unknown model is refused: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains("greeting_model_unknown"),
+        "the refusal is named: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains(r#"id="greeting_model""#),
+        "the page comes back with the picker: {}",
+        reply.body
+    );
+
+    // Nothing was written: a refused save is not a partial save.
+    for key in [
+        crate::greeting::SETTING_GREETING_ENABLED,
+        crate::greeting::SETTING_GREETING_MODEL,
+        crate::greeting::SETTING_GREETING_REFRESH,
+    ] {
+        assert_eq!(
+            crate::web::store::settings_get(db, key).expect("read"),
+            None,
+            "{key} must not be stored"
+        );
+    }
+
+    // The API client gets the documented body, not a page.
+    let api = block_on(send(
+        &app,
+        Call::post(
+            GREETING_POST,
+            "greeting_enabled=true&greeting_model=nope%2Fnot-a-model&greeting_refresh=hour",
+        )
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(api.status, StatusCode::BAD_REQUEST);
+    let body = api.json();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["field"], "greeting_model");
+    assert_eq!(body["code"], "greeting_model_unknown");
 }

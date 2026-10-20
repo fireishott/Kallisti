@@ -1478,15 +1478,18 @@ pub enum SettingsGroup {
     Permissions,
     /// The assistant's identity: the persona text and its switch.
     Persona,
+    /// The generated line on an empty conversation: its switch, model, window.
+    Greeting,
 }
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Provider,
         Self::Workspace,
         Self::Permissions,
         Self::Persona,
+        Self::Greeting,
     ];
 
     /// The anchor and error-region id for this group.
@@ -1497,6 +1500,7 @@ impl SettingsGroup {
             Self::Workspace => "workspace",
             Self::Permissions => "permissions",
             Self::Persona => "persona",
+            Self::Greeting => "greeting",
         }
     }
 
@@ -1519,6 +1523,10 @@ impl SettingsGroup {
                 "sandbox_mode" | "approval_policy" | "autopilot_ceiling" | "telemetry"
             ),
             Self::Persona => matches!(field, "persona_text" | "persona_enabled"),
+            Self::Greeting => matches!(
+                field,
+                "greeting_enabled" | "greeting_model" | "greeting_refresh"
+            ),
         }
     }
 
@@ -1530,6 +1538,7 @@ impl SettingsGroup {
             Self::Workspace => "workspace saved",
             Self::Permissions => "permissions saved",
             Self::Persona => "assistant identity saved",
+            Self::Greeting => "greeting saved",
         }
     }
 }
@@ -1618,6 +1627,12 @@ pub struct SettingsView {
     pub tools_enabled: bool,
     /// How many tool rounds one turn may take.
     pub tool_rounds: String,
+    /// Whether a generated line is written on an empty conversation at all.
+    pub greeting_enabled: bool,
+    /// The model that writes it, or `primary` to follow the chat model.
+    pub greeting_model: String,
+    /// `hour`, `day` or `week`: how old the stored line may get.
+    pub greeting_refresh: String,
     /// One row per auxiliary role: what it is, what it does, what it uses.
     pub aux_roles: Vec<AuxRow>,
     /// The models the last probe returned, for every picker on the page.
@@ -1671,6 +1686,9 @@ impl SettingsView {
             provider_ids: Vec::new(),
             tools_enabled: true,
             tool_rounds: crate::tools::DEFAULT_TOOL_ROUNDS.to_string(),
+            greeting_enabled: false,
+            greeting_model: crate::greeting::INHERIT.to_owned(),
+            greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
             aux_roles: Vec::new(),
             models: Vec::new(),
             mcp_servers: "[]".to_owned(),
@@ -2027,6 +2045,75 @@ fn reasoning_group(view: &SettingsView) -> Markup {
     }
 }
 
+/// The generated line on an empty conversation: the switch, the model, the window.
+///
+/// Off by default, and the card says so: a line that costs a provider call is not
+/// something anybody should get without asking for it.
+fn greeting_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    let mut models: Vec<String> = Vec::with_capacity(view.models.len() + 1);
+    models.push(crate::greeting::INHERIT.to_owned());
+    models.extend(view.models.iter().cloned());
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_GREETING) novalidate {
+            (group_region(view, SettingsGroup::Greeting))
+            div .field {
+                label for="greeting_enabled" {
+                    input type="checkbox" id="greeting_enabled" name="greeting_enabled"
+                        value="true" checked[view.greeting_enabled];
+                    " Write a line under the salutation"
+                }
+                span .hint {
+                    "It sits under the time of day on an empty conversation. The model is told "
+                    "nothing about you: no name, no path, no hostname, no memory, no transcript. "
+                    "Off by default, because every rewrite is a billed provider call."
+                }
+            }
+            div .field {
+                label for="greeting_model" { "Model" }
+                select id="greeting_model" name="greeting_model"
+                    autofocus[focuses("greeting_model")] {
+                    @for option in &models {
+                        @let label = if option == crate::greeting::INHERIT {
+                            "primary model"
+                        } else {
+                            option.as_str()
+                        };
+                        option value=(option) selected[view.greeting_model == *option] { (label) }
+                    }
+                }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("greeting_model")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "primary follows whatever the provider section uses. A model pinned here keeps "
+                    "that choice when the primary moves."
+                }
+            }
+            div .field {
+                label for="greeting_refresh" { "Rewrite it" }
+                select id="greeting_refresh" name="greeting_refresh"
+                    autofocus[focuses("greeting_refresh")] {
+                    @for refresh in crate::greeting::Refresh::ALL {
+                        option value=(refresh.as_str())
+                            selected[view.greeting_refresh == refresh.as_str()] {
+                            (refresh.label())
+                        }
+                    }
+                }
+                span .hint {
+                    "The stored line is served until it is older than this, so a render only asks a "
+                    "model when one is due. With no line stored yet the salutation stands alone."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save greeting" }
+            }
+        }
+    }
+}
+
 /// The clock the operator reads, as its own form.
 ///
 /// Free text rather than a fixed list: a dropdown of zones would either be a
@@ -2316,7 +2403,7 @@ pub fn settings_page(view: &SettingsView) -> Markup {
     let body = html! {
         h1 { "Settings" }
         p .lede {
-            "Four groups, each its own form and its own route. A save redirects and says so; "
+            "Each group is its own form and its own route. A save redirects and says so; "
             "a refusal re-renders this page with the reason next to the field that caused it."
         }
         (alert_region(page_error, None))
@@ -2431,6 +2518,16 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "it appears above the answer in a collapsed, faded bubble you can open."
             }
             (reasoning_group(view))
+        }
+
+        section .card aria-labelledby="greeting-heading" {
+            h2 id="greeting-heading" { "Greeting" }
+            p .small {
+                "The salutation on an empty conversation comes from the hour. This card adds a "
+                "second line under it, written by a model, cached in the database, and rewritten "
+                "only when it goes stale."
+            }
+            (greeting_group(view))
         }
 
         section .card aria-labelledby="device-bind-heading" {
@@ -3485,8 +3582,11 @@ pub struct ChatView {
     pub show_tool_log: bool,
     /// `full` or `summary`, choosing how it renders.
     pub tool_log_mode: String,
-    /// The greeting an empty conversation opens with.
+    /// The salutation an empty conversation opens with, from the hour.
     pub greeting: String,
+    /// The generated line under that salutation, when one is switched on and
+    /// stored. `None` renders nothing extra at all.
+    pub line: Option<String>,
     /// What the operator calls the assistant, for the composer and the labels.
     pub assistant_name: String,
     /// The sandbox mode the composer's picker starts on.
@@ -3798,6 +3898,9 @@ pub fn chat_page(view: &ChatView) -> Markup {
         @if view.messages.is_empty() {
             div .chat-greeting {
                 p .hello { (view.greeting) }
+                @if let Some(line) = &view.line {
+                    p .line { (line) }
+                }
                 p .hint { "Ask anything. The reply streams in." }
             }
         }
