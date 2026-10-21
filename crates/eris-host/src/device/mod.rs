@@ -263,6 +263,18 @@ pub const ROUTE_BACKUP_RESTORE: &str = "/v1/backups/{name}/restore";
 /// exactly once: in that response.
 pub const ROUTE_DEVICE_CODE: &str = "/v1/devices/{id}/code";
 
+/// `POST /v1/device/sensor/location` - record one location point.
+pub const ROUTE_SENSOR_LOCATION: &str = "/v1/device/sensor/location";
+
+/// `POST /v1/device/sensor/health` - record health samples.
+pub const ROUTE_SENSOR_HEALTH: &str = "/v1/device/sensor/health";
+
+/// `GET /v1/device/health/latest` - the latest reading per metric.
+pub const ROUTE_HEALTH_LATEST: &str = "/v1/device/health/latest";
+
+/// `GET /v1/device/location` - the most recent location point.
+pub const ROUTE_LOCATION: &str = "/v1/device/location";
+
 /// The bodies every device-surface error uses.
 ///
 /// `ok` is always false, `code` is the thing a client branches on, and `message`
@@ -440,6 +452,10 @@ pub struct DeviceService {
     /// so rather than guessing: a pooled daemon knows which servers started, and
     /// a bare service knows nothing, which is not the same as healthy.
     mcp: Option<Arc<crate::mcp::Pool>>,
+    /// The dedicated sensor store (`sensors.db`), when it opened. `None` means
+    /// the file could not be opened, and every sensor route answers 503 rather
+    /// than pretending a write landed.
+    sensors: Option<crate::sensors::SensorStore>,
 }
 
 impl DeviceService {
@@ -451,6 +467,7 @@ impl DeviceService {
     pub fn new(engine: SetupEngine, buffer: usize) -> Self {
         let persona = PersonaConfig::at_path(engine.paths().persona_file());
         let hub = Arc::new(TurnHub::new(engine.db().clone(), buffer).with_persona(persona));
+        let sensors = open_sensors(&engine);
         Self {
             engine,
             hub,
@@ -462,6 +479,7 @@ impl DeviceService {
                     .expect("the default is a literal ip:port"),
             ])),
             mcp: None,
+            sensors,
         }
     }
 
@@ -510,6 +528,7 @@ impl DeviceService {
         let hub = Arc::new(
             TurnHub::with_key_lookup(engine.db().clone(), buffer, lookup).with_persona(persona),
         );
+        let sensors = open_sensors(&engine);
         Self {
             engine,
             hub,
@@ -521,6 +540,7 @@ impl DeviceService {
                     .expect("the default is a literal ip:port"),
             ])),
             mcp: None,
+            sensors,
         }
     }
 
@@ -540,6 +560,12 @@ impl DeviceService {
     #[must_use]
     pub fn engine(&self) -> &SetupEngine {
         &self.engine
+    }
+
+    /// The sensor store, when it opened at start-up.
+    #[must_use]
+    pub fn sensors(&self) -> Option<&crate::sensors::SensorStore> {
+        self.sensors.as_ref()
     }
 
     /// Whether new turns are accepted. This is the in-process half of the
@@ -614,6 +640,21 @@ impl DeviceService {
     }
 }
 
+/// Open the dedicated sensor store for this engine, or log and return `None`.
+///
+/// The sensor database lives beside `eris.db` in the same state directory. A
+/// failure to open it is non-fatal: the daemon still serves turns, and every
+/// sensor route answers 503 instead of pretending a write landed.
+fn open_sensors(engine: &SetupEngine) -> Option<crate::sensors::SensorStore> {
+    match crate::sensors::SensorStore::open(engine.paths().state_dir.join("sensors.db")) {
+        Ok(store) => Some(store),
+        Err(error) => {
+            tracing::error!(%error, "sensor store unavailable; sensor routes will answer 503");
+            None
+        }
+    }
+}
+
 /// Build the device router. `/v1` only; everything else is a typed 404.
 pub fn router(service: DeviceService) -> Router {
     Router::new()
@@ -655,6 +696,10 @@ pub fn router(service: DeviceService) -> Router {
             ROUTE_PERSONA,
             get(handlers::persona).post(handlers::update_persona),
         )
+        .route(ROUTE_SENSOR_LOCATION, post(handlers::upload_location))
+        .route(ROUTE_SENSOR_HEALTH, post(handlers::upload_health))
+        .route(ROUTE_HEALTH_LATEST, get(handlers::health_latest))
+        .route(ROUTE_LOCATION, get(handlers::location))
         .fallback(not_here)
         .method_not_allowed_fallback(wrong_method)
         .layer(axum::middleware::from_fn(assign_request_id))
@@ -738,6 +783,10 @@ mod tests {
             ROUTE_BACKUPS,
             ROUTE_BACKUP_RESTORE,
             ROUTE_PERSONA,
+            ROUTE_SENSOR_LOCATION,
+            ROUTE_SENSOR_HEALTH,
+            ROUTE_HEALTH_LATEST,
+            ROUTE_LOCATION,
         ] {
             assert!(route.starts_with("/v1/"), "{route} must live under /v1");
         }

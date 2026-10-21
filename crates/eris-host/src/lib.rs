@@ -49,6 +49,7 @@ pub mod persona;
 pub mod probe;
 pub mod projects;
 pub mod providers;
+pub mod sensors;
 pub mod subagents;
 pub mod tools;
 pub mod web;
