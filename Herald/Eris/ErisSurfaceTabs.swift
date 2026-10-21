@@ -144,33 +144,33 @@ struct ErisPairedSurface: View {
 
     private var inboxTab: some View {
         NavigationStack {
-            PendingBackendView(
-                title: "Inbox",
-                icon: "tray",
-                message: "Inbox collects completed answers and notifications from the agent. Eris does not expose an inbox route yet, so this surface is present but waiting on the backend."
-            )
+            if let inbox = store.inbox {
+                ErisInboxScreen(model: inbox)
+            } else {
+                missingModel("inbox")
+            }
         }
         .tabItem { Label(Lane.inbox.title, systemImage: Lane.inbox.icon) }
     }
 
     private var talkTab: some View {
         NavigationStack {
-            PendingBackendView(
-                title: "Talk",
-                icon: "waveform",
-                message: "Talk is the voice lane - live conversation with the agent. Eris has no voice route yet, so this surface is present but waiting on the backend."
-            )
+            if let talk = store.talk {
+                ErisTalkScreen(model: talk)
+            } else {
+                missingModel("talk")
+            }
         }
         .tabItem { Label(Lane.talk.title, systemImage: Lane.talk.icon) }
     }
 
     private var notesTab: some View {
         NavigationStack {
-            PendingBackendView(
-                title: "Notes",
-                icon: "pencil.and.outline",
-                message: "Notes is the handwriting and enrichment workspace. Eris has no notes route yet, so this surface is present but waiting on the backend."
-            )
+            if let notes = store.notes {
+                ErisNotesScreen(model: notes)
+            } else {
+                missingModel("notes")
+            }
         }
         .tabItem { Label(Lane.notes.title, systemImage: Lane.notes.icon) }
     }

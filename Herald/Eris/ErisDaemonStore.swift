@@ -54,6 +54,12 @@ final class ErisDaemonStore {
     private(set) var senses: ErisSensesModel?
     /// The durable sensor upload pipeline for the paired daemon.
     private(set) var sensorUpload: SensorUploadService?
+    /// The inbox model for the paired daemon.
+    private(set) var inbox: ErisInboxModel?
+    /// The notes model for the paired daemon.
+    private(set) var notes: ErisNotesModel?
+    /// The talk readiness model for the paired daemon.
+    private(set) var talk: ErisTalkModel?
 
     /// Manual-entry daemon address, pre-filled from the last pairing.
     var addressText: String
@@ -271,6 +277,9 @@ final class ErisDaemonStore {
         settings = ErisSettingsModel(client: client)
         approvals = ErisApprovalsModel(client: client)
         senses = ErisSensesModel(client: client)
+        inbox = ErisInboxModel(client: client)
+        notes = ErisNotesModel(client: client)
+        talk = ErisTalkModel(client: client)
 
         // The sensor pipeline uploads through the same client (and the same
         // bearer/refresh) as turns, so it follows whatever daemon this device is
@@ -317,6 +326,9 @@ final class ErisDaemonStore {
         sensorUpload?.stop()
         sensorUpload = nil
         senses = nil
+        inbox = nil
+        notes = nil
+        talk = nil
         chat = nil
         conversations = nil
         settings = nil

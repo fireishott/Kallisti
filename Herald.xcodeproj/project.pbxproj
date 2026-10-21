@@ -461,6 +461,11 @@ DDC099A73FCBCAB2EB5EE04B /* ChatScreen.swift in Sources */ = {isa = PBXBuildFile
 		6E9D3B0996D550D86FEFE166 /* ErisDeviceAPITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29B5232149B3DA57AB5C478F /* ErisDeviceAPITests.swift */; };
 			A1B2C3D4E5F60718293A4B5C /* ErisSensorTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F60718293A4B5D /* ErisSensorTypes.swift */; };
 		C1B2C3D4E5F60718293A4B5E /* ErisSensesScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1B2C3D4E5F60718293A4B5F /* ErisSensesScreen.swift */; };
+			A2B3C4D5E6F708192A3B4C5D /* ErisInboxTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2B3C4D5E6F708192A3B4C5E /* ErisInboxTypes.swift */; };
+		A3B3C4D5E6F708192A3B4C5F /* ErisNotesTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3B3C4D5E6F708192A3B4C60 /* ErisNotesTypes.swift */; };
+		A4B3C4D5E6F708192A3B4C61 /* ErisInboxScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B3C4D5E6F708192A3B4C62 /* ErisInboxScreen.swift */; };
+		A5B3C4D5E6F708192A3B4C63 /* ErisNotesScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5B3C4D5E6F708192A3B4C64 /* ErisNotesScreen.swift */; };
+		A6B3C4D5E6F708192A3B4C65 /* ErisTalkScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6B3C4D5E6F708192A3B4C66 /* ErisTalkScreen.swift */; };
 	/* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1015,6 +1020,11 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 		29B5232149B3DA57AB5C478F /* ErisDeviceAPITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisDeviceAPITests.swift; sourceTree = "<group>"; };
 			B1B2C3D4E5F60718293A4B5D /* ErisSensorTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSensorTypes.swift; sourceTree = "<group>"; };
 		D1B2C3D4E5F60718293A4B5F /* ErisSensesScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSensesScreen.swift; sourceTree = "<group>"; };
+			B2B3C4D5E6F708192A3B4C5E /* ErisInboxTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisInboxTypes.swift; sourceTree = "<group>"; };
+		B3B3C4D5E6F708192A3B4C60 /* ErisNotesTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisNotesTypes.swift; sourceTree = "<group>"; };
+		B4B3C4D5E6F708192A3B4C62 /* ErisInboxScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisInboxScreen.swift; sourceTree = "<group>"; };
+		B5B3C4D5E6F708192A3B4C64 /* ErisNotesScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisNotesScreen.swift; sourceTree = "<group>"; };
+		B6B3C4D5E6F708192A3B4C66 /* ErisTalkScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisTalkScreen.swift; sourceTree = "<group>"; };
 	/* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1898,6 +1908,11 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				1E2F7FE189CB0E06A25E6BAE /* ErisApprovalsScreen.swift */,
 				E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */,
 				2B47649C62EF4369D438CA5D /* ErisFailureView.swift */,
+				B6B3C4D5E6F708192A3B4C66 /* ErisTalkScreen.swift */,
+				B5B3C4D5E6F708192A3B4C64 /* ErisNotesScreen.swift */,
+				B4B3C4D5E6F708192A3B4C62 /* ErisInboxScreen.swift */,
+				B3B3C4D5E6F708192A3B4C60 /* ErisNotesTypes.swift */,
+				B2B3C4D5E6F708192A3B4C5E /* ErisInboxTypes.swift */,
 				D1B2C3D4E5F60718293A4B5F /* ErisSensesScreen.swift */,
 				B1B2C3D4E5F60718293A4B5D /* ErisSensorTypes.swift */,
 			);
@@ -2256,6 +2271,11 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				4A9296FE2469F68ADF2E38E6 /* ErisApprovalsScreen.swift in Sources */,
 				0E2EC05B2F0807C7FF52C94A /* ErisSurfaceTabs.swift in Sources */,
 				92473B28B51EBDD97793D23F /* ErisFailureView.swift in Sources */,
+				A6B3C4D5E6F708192A3B4C65 /* ErisTalkScreen.swift in Sources */,
+				A5B3C4D5E6F708192A3B4C63 /* ErisNotesScreen.swift in Sources */,
+				A4B3C4D5E6F708192A3B4C61 /* ErisInboxScreen.swift in Sources */,
+				A3B3C4D5E6F708192A3B4C5F /* ErisNotesTypes.swift in Sources */,
+				A2B3C4D5E6F708192A3B4C5D /* ErisInboxTypes.swift in Sources */,
 				C1B2C3D4E5F60718293A4B5E /* ErisSensesScreen.swift in Sources */,
 				A1B2C3D4E5F60718293A4B5C /* ErisSensorTypes.swift in Sources */,
 				920A393FB5258B5A039B364F /* AdaptiveRootView.swift in Sources */,

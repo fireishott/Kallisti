@@ -52,6 +52,22 @@ enum ErisRoute: Equatable, Sendable {
     case healthLatest
     /// `GET /v1/device/location` - the most recent location the daemon holds.
     case location
+    /// `GET /v1/inbox` - list the device's inbox items.
+    case inbox
+    /// `POST /v1/inbox/{item_id}/action` - act on one inbox item.
+    case inboxAction(itemID: String)
+    /// `GET /v1/notes` - list the device's notes.
+    case notes
+    /// `POST /v1/notes` - create a note.
+    case createNote
+    /// `GET /v1/notes/{note_id}` - one note.
+    case noteDetail(noteID: String)
+    /// `PATCH /v1/notes/{note_id}` - update a note's metadata (If-Match gated).
+    case updateNote(noteID: String)
+    /// `DELETE /v1/notes/{note_id}` - delete a note.
+    case deleteNote(noteID: String)
+    /// `GET /v1/talk/readiness` - the voice lane's placeholder readiness probe.
+    case talkReadiness
 
     /// The request path, with ids percent-encoded so one id cannot escape its
     /// path segment.
@@ -91,6 +107,20 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/device/health/latest"
         case .location:
             return "/v1/device/location"
+        case .inbox:
+            return "/v1/inbox"
+        case .inboxAction(let itemID):
+            return "/v1/inbox/\(Self.segment(itemID))/action"
+        case .notes, .createNote:
+            return "/v1/notes"
+        case .noteDetail(let noteID):
+            return "/v1/notes/\(Self.segment(noteID))"
+        case .updateNote(let noteID):
+            return "/v1/notes/\(Self.segment(noteID))"
+        case .deleteNote(let noteID):
+            return "/v1/notes/\(Self.segment(noteID))"
+        case .talkReadiness:
+            return "/v1/talk/readiness"
         }
     }
 
@@ -98,11 +128,15 @@ enum ErisRoute: Equatable, Sendable {
     var method: String {
         switch self {
         case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
-             .healthLatest, .location:
+             .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness:
             return "GET"
         case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings,
-             .decideApproval, .sensorLocation, .sensorHealth:
+             .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote:
             return "POST"
+        case .updateNote:
+            return "PATCH"
+        case .deleteNote:
+            return "DELETE"
         }
     }
 
@@ -393,6 +427,61 @@ actor ErisClient {
         return try decode(ErisLocationSnapshot.self, from: data)
     }
 
+    // MARK: Inbox
+
+    /// `GET /v1/inbox` - the device's inbox items.
+    func inbox() async throws -> ErisInboxEnvelope {
+        let data = try await send(route: .inbox, form: nil)
+        return try decode(ErisInboxEnvelope.self, from: data)
+    }
+
+    /// `POST /v1/inbox/{item_id}/action` - act on one inbox item.
+    func inboxAction(itemID: String, action: String) async throws -> ErisInboxActionEnvelope {
+        try await sendJSON(route: .inboxAction(itemID: itemID), body: ErisInboxActionPayload(actionId: action))
+    }
+
+    // MARK: Notes
+
+    /// `GET /v1/notes` - the device's notes.
+    func notes() async throws -> ErisNotesListEnvelope {
+        let data = try await send(route: .notes, form: nil)
+        return try decode(ErisNotesListEnvelope.self, from: data)
+    }
+
+    /// `POST /v1/notes` - create a note.
+    func createNote(_ payload: ErisNoteCreatePayload) async throws -> ErisNoteEnvelope {
+        try await sendJSON(route: .createNote, body: payload)
+    }
+
+    /// `GET /v1/notes/{note_id}` - one note.
+    func note(id: String) async throws -> ErisNoteEnvelope {
+        let data = try await send(route: .noteDetail(noteID: id), form: nil)
+        return try decode(ErisNoteEnvelope.self, from: data)
+    }
+
+    /// `PATCH /v1/notes/{note_id}` - update a note's metadata, gated by the
+    /// quoted `If-Match` revision so a stale edit cannot clobber a newer one.
+    func updateNote(id: String, revision: Int64, payload: ErisNotePatchPayload) async throws -> ErisNoteEnvelope {
+        try await sendJSON(
+            route: .updateNote(noteID: id),
+            body: payload,
+            extraHeaders: ["If-Match": "\"\(revision)\""]
+        )
+    }
+
+    /// `DELETE /v1/notes/{note_id}` - delete a note.
+    func deleteNote(id: String) async throws {
+        _ = try await send(route: .deleteNote(noteID: id), form: nil)
+    }
+
+    // MARK: Talk
+
+    /// `GET /v1/talk/readiness` - the voice lane's placeholder readiness probe.
+    func talkReadiness() async throws -> ErisTalkReadiness {
+        let data = try await send(route: .talkReadiness, form: nil)
+        return try decode(ErisTalkReadiness.self, from: data)
+    }
+
     // MARK: Streaming
 
     /// Open the stream, refresh once on a 401, and feed bytes to the decoder.
@@ -520,11 +609,16 @@ actor ErisClient {
 
     /// A JSON-bodied request carrying the bearer, retried once after a refresh on
     /// a 401. Same contract as `send`, but the body is `application/json` rather
-    /// than form-encoded - the sensor routes take structured payloads.
-    private func sendJSON<Body: Encodable, T: Decodable>(route: ErisRoute, body: Body) async throws -> T {
+    /// than form-encoded - the sensor, inbox and notes routes take structured
+    /// payloads. `extraHeaders` (e.g. the notes `If-Match`) ride on every attempt.
+    private func sendJSON<Body: Encodable, T: Decodable>(
+        route: ErisRoute,
+        body: Body,
+        extraHeaders: [String: String] = [:]
+    ) async throws -> T {
         var refreshed = false
         while true {
-            let request = try await authorizedJSONRequest(route: route, body: body)
+            let request = try await authorizedJSONRequest(route: route, body: body, extraHeaders: extraHeaders)
             let (data, response) = try await perform(request)
             let status = Self.status(of: response)
             if status == 401 && !refreshed {
@@ -539,13 +633,20 @@ actor ErisClient {
         }
     }
 
-    private func authorizedJSONRequest<Body: Encodable>(route: ErisRoute, body: Body) async throws -> URLRequest {
+    private func authorizedJSONRequest<Body: Encodable>(
+        route: ErisRoute,
+        body: Body,
+        extraHeaders: [String: String] = [:]
+    ) async throws -> URLRequest {
         guard let stored = try await tokenStore.load(), !stored.accessToken.isEmpty else {
             throw ErisError.missingToken
         }
         var request = try makeJSONRequest(route: route, body: body)
         request.setValue("Bearer \(stored.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        for (field, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
         return request
     }
 
@@ -553,7 +654,7 @@ actor ErisClient {
         var request = URLRequest(url: try Self.url(baseURL: baseURL, route: route))
         request.httpMethod = route.method
         request.timeoutInterval = 30
-        if route.method == "POST" {
+        if route.method == "POST" || route.method == "PATCH" {
             let encoder = JSONEncoder()
             request.httpBody = try encoder.encode(body)
             request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
