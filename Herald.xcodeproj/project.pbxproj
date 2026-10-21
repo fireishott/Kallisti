@@ -119,7 +119,7 @@
 		559C6631343AA3594A6CE9AA /* ErisConversationDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05B6BE55E607B4A6CA6526F /* ErisConversationDetailScreen.swift */; };
 		3E022BD3AC79A20F3F709387 /* ErisSettingsTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */; };
 		12AF708C3D024837A1AEE382 /* ErisSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9990A9A65AE576398F69813B /* ErisSettingsScreen.swift */; };
-		CFCECCB2B85F9532BA9B58A1 /* ErisApprovalsTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41D3A8C48FF2C628386C2F81 /* ErisApprovalsTypes.swift */; };
+		CFCECCB2B85F9532BA9B58A1 /* ErisApprovalTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41D3A8C48FF2C628386C2F81 /* ErisApprovalTypes.swift */; };
 		4A9296FE2469F68ADF2E38E6 /* ErisApprovalsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E2F7FE189CB0E06A25E6BAE /* ErisApprovalsScreen.swift */; };
 		0E2EC05B2F0807C7FF52C94A /* ErisSurfaceTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */; };
 		92473B28B51EBDD97793D23F /* ErisFailureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B47649C62EF4369D438CA5D /* ErisFailureView.swift */; };
@@ -543,7 +543,7 @@
 		F05B6BE55E607B4A6CA6526F /* ErisConversationDetailScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisConversationDetailScreen.swift; sourceTree = "<group>"; };
 		1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSettingsTypes.swift; sourceTree = "<group>"; };
 		9990A9A65AE576398F69813B /* ErisSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSettingsScreen.swift; sourceTree = "<group>"; };
-		41D3A8C48FF2C628386C2F81 /* ErisApprovalsTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisApprovalsTypes.swift; sourceTree = "<group>"; };
+		41D3A8C48FF2C628386C2F81 /* ErisApprovalTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisApprovalTypes.swift; sourceTree = "<group>"; };
 		1E2F7FE189CB0E06A25E6BAE /* ErisApprovalsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisApprovalsScreen.swift; sourceTree = "<group>"; };
 		E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSurfaceTabs.swift; sourceTree = "<group>"; };
 		2B47649C62EF4369D438CA5D /* ErisFailureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisFailureView.swift; sourceTree = "<group>"; };
@@ -1045,7 +1045,7 @@
 				F05B6BE55E607B4A6CA6526F /* ErisConversationDetailScreen.swift */,
 				1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */,
 				9990A9A65AE576398F69813B /* ErisSettingsScreen.swift */,
-				41D3A8C48FF2C628386C2F81 /* ErisApprovalsTypes.swift */,
+				41D3A8C48FF2C628386C2F81 /* ErisApprovalTypes.swift */,
 				1E2F7FE189CB0E06A25E6BAE /* ErisApprovalsScreen.swift */,
 				E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */,
 				2B47649C62EF4369D438CA5D /* ErisFailureView.swift */,
@@ -2077,7 +2077,7 @@
 				559C6631343AA3594A6CE9AA /* ErisConversationDetailScreen.swift in Sources */,
 				3E022BD3AC79A20F3F709387 /* ErisSettingsTypes.swift in Sources */,
 				12AF708C3D024837A1AEE382 /* ErisSettingsScreen.swift in Sources */,
-				CFCECCB2B85F9532BA9B58A1 /* ErisApprovalsTypes.swift in Sources */,
+				CFCECCB2B85F9532BA9B58A1 /* ErisApprovalTypes.swift in Sources */,
 				4A9296FE2469F68ADF2E38E6 /* ErisApprovalsScreen.swift in Sources */,
 				0E2EC05B2F0807C7FF52C94A /* ErisSurfaceTabs.swift in Sources */,
 				92473B28B51EBDD97793D23F /* ErisFailureView.swift in Sources */,
