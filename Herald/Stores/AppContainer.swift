@@ -569,99 +569,16 @@ final class AppContainer {
         )
 
         let heraldClient: any HeraldClientProtocol
-        // Set by the DSH branch so the Infrastructure rows describe the backend
-        // actually serving requests instead of falling through to the relay.
+        // Eris is the only backend; the 0.4.0 stores talk to it through this
+        // single client interface. `dshClientForHostStatus` stays nil so the
+        // Infrastructure rows never name a backend that is not serving.
         var dshClientForHostStatus: DSHClient?
         if usesMockPairingService {
             heraldClient = MockHeraldClient()
-        } else if Self.dshEnabled {
-            // DSH is the default transport: the app talks to the DeepSeek
-            // Harness phone API directly, with no relay or connector in the
-            // path. Base URL is derived from the same relay setting the other
-            // paths read, so onboarding and Settings keep working unchanged —
-            // the DSH surface is the sibling `/dsh` mount on that same host.
-            let dshClient = DSHClient(
-                baseURLProvider: { @MainActor in
-                    Self.resolveDSHBaseURL(
-                        from: activePairingStore?.pairedRelayConfiguration?.baseURLString
-                        ?? settingsStore.settings.relayConfiguration.activeBaseURLString
-                    )
-                },
-                token: Self.dshToken ?? ""
-            )
-            Task { @MainActor in await dshClient.connect() }
-            dshClientForHostStatus = dshClient
-            heraldClient = dshClient
-        } else if UserDefaults.standard.bool(forKey: "useNativeGateway") {
-            // Not hardcoded: derived from the same relay-URL setting the
-            // legacy connector path already uses (settingsStore.settings
-            // .relayConfiguration -- user-editable in Settings, same field
-            // RelayStepView writes during onboarding), falling back to the
-            // build-configured default (APP_HOSTED_RELAY_URL in Info.plist)
-            // only when the user hasn't set anything -- never a literal
-            // string baked into this branch.
-            // Resolve the gateway host LIVE from settings on every call, never
-            // once at construction: a fresh install has no relay (localhost
-            // fallback) but the user types their real server during onboarding,
-            // and only lazy resolution honors that updated relay. Baking it at
-            // construction made every login/connect keep hitting the stale
-            // launch-time localhost regardless of the address the user entered.
-            let auth = NativeAuthCoordinator(
-                baseURLProvider: { @MainActor in
-                    Self.resolveNativeGatewayHost(
-                        from: activePairingStore?.pairedRelayConfiguration?.baseURLString
-                        ?? settingsStore.settings.relayConfiguration.activeBaseURLString
-                    ).baseURL
-                },
-                secureStore: secureStore
-            )
-            let nativeClient = NativeKallistiClient(
-                gatewayBaseURLProvider: { @MainActor in
-                    Self.resolveNativeGatewayHost(
-                        from: activePairingStore?.pairedRelayConfiguration?.baseURLString
-                        ?? settingsStore.settings.relayConfiguration.activeBaseURLString
-                    ).baseURL
-                },
-                authCoordinator: auth,
-                secureStore: secureStore
-            )
-            // Build 68: only auto-connect when a relay URL is actually
-            // configured. On a fresh install (UserDefaults wiped, Keychain
-            // may still hold an old authMode from a previous install),
-            // resolveNativeGatewayHost falls back to http://localhost:9119
-            // and connect() loops "Connection struggling" forever against
-            // the device itself - the loading surface never releases to
-            // onboarding because hasConnectedOnce stays false. Skip the
-            // silent connect; onboarding's startPairingLogin / startBasicLogin
-            // / startInteractiveLogin all call connect() themselves after the
-            // user enters a real relay URL.
-            if settingsStore.settings.relayConfiguration.activeBaseURLString != nil {
-                Task { @MainActor in
-                    await nativeClient.connect()
-                }
-            }
-            // Build 128.45: Config Editor fallback credential. In cookie-auth
-            // mode the keychain bearer is deleted and the session cookie rides
-            // URLSession.shared, but the cookie expires after 12h. The relay
-            // session token survives in the keychain and the connector accepts
-            // it as a paired credential, so wire it as the fallback.
-            nativeClient.configFallbackTokenProvider = { @MainActor in
-                await sessionStore.currentAccessToken()
-            }
-            heraldClient = nativeClient
-            nativeGatewayClient = nativeClient
         } else {
-            let liveClient = LiveHeraldClient(
-                apiClient: apiClient,
-                accessTokenProvider: { await sessionStore.currentAccessToken() },
-                accessTokenRefresher: {
-                    await sessionStore.refreshAccessTokenIfNeeded()
-                    return await sessionStore.currentAccessToken()
-                },
-                allowDemoFallback: false
-            )
-            liveClient.reasoningEffortProvider = { settingsStore.settings.reasoningEffort }
-            heraldClient = liveClient
+            let erisClient = ErisHeraldClient()
+            Task { @MainActor in await erisClient.connect() }
+            heraldClient = erisClient
         }
 
         // DSH mode: point Infrastructure at DSH so Settings cannot name a
