@@ -991,6 +991,29 @@ td .mono { font-variant-numeric: tabular-nums; }
   min-width: 92px;
 }
 
+/* The scan pair: the SVG and the one sentence saying where it points. The quiet
+   zone lives in the drawing, so the frame is only spacing and a white matte that
+   keeps a dark page from bleeding into the modules. */
+.pairing-scan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-top: 12px;
+}
+.pairing-qr {
+  flex: 0 0 auto;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--text);
+  line-height: 0;
+}
+.pairing-qr svg {
+  display: block;
+  width: 180px;
+  height: 180px;
+}
+
 .pairing-code {
   display: inline-block;
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
@@ -1680,6 +1703,19 @@ pre.code {
   cursor: pointer;
 }
 .attach-chip-drop:hover { background: var(--line-strong); color: var(--text); }
+/* A picture waiting to go is shown as the picture, not only as its name: the
+   one moment a mis-picked screenshot is cheap to notice is before it is sent.
+   The browser draws the local File through an object URL, so nothing is
+   uploaded, re-encoded, or written to disk for the preview. */
+.attach-chip-thumb {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  margin: -3px 0 -3px -5px;
+  border-radius: 999px;
+  object-fit: cover;
+  background: var(--line-strong);
+}
 
 /* A drop landing on the composer says so: the one gesture everybody tries first
    has to look like it was received. */

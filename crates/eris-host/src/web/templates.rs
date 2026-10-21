@@ -140,6 +140,11 @@ pub struct SetupView {
     pub pairing_code: Option<String>,
     /// When that code expires.
     pub pairing_expires: Option<String>,
+    /// The origin the QR carries, stated so a phone that cannot scan knows the
+    /// address by hand.
+    pub pairing_relay: Option<String>,
+    /// The pairing payload drawn as an SVG.
+    pub pairing_qr: Option<String>,
     /// The version line in the footer.
     pub version: String,
 }
@@ -164,6 +169,8 @@ impl SetupView {
             device_listener: false,
             pairing_code: None,
             pairing_expires: None,
+            pairing_relay: None,
+            pairing_qr: None,
             version: version.into(),
         }
     }
@@ -1180,6 +1187,20 @@ fn step_body(view: &SetupView) -> Markup {
                             @if let Some(expires) = &view.pairing_expires { (expires) } @else { "in five minutes" }
                             ". It is stored only as a hash, so this is the one time it is readable."
                         }
+                        @if let Some(qr) = &view.pairing_qr {
+                            div .pairing-scan {
+                                div .pairing-qr { (PreEscaped(qr)) }
+                                p .small {
+                                    "Or scan it. The code carries "
+                                    @if let Some(relay) = &view.pairing_relay {
+                                        span .mono { (relay) }
+                                    } @else {
+                                        "the device listener's address"
+                                    }
+                                    ", so the phone calls the daemon from wherever it is."
+                                }
+                            }
+                        }
                     }
                 }
                 div .stack {
@@ -1705,12 +1726,16 @@ pub struct SettingsView {
     pub persona_enabled: bool,
     /// Whether the model's reasoning is shown in a collapsed bubble.
     pub show_reasoning: bool,
+    /// Whether the dashboard streams answers to the browser.
+    pub streaming: bool,
     /// Whether the run log is shown at all.
     pub show_tool_log: bool,
     /// `full`, `summary` or `off`, for the select.
     pub tool_log_mode: String,
     /// The device listener's bind addresses, comma separated for the form.
     pub device_listen: String,
+    /// The origin a phone should call, as the pairing QR carries it.
+    pub device_relay: String,
     /// Which memory backend a turn recalls from.
     pub memory_backend: String,
     /// The vault directory, when the vault backend is chosen.
@@ -1782,9 +1807,11 @@ impl SettingsView {
             persona_text: String::new(),
             persona_enabled: true,
             show_reasoning: true,
+            streaming: true,
             show_tool_log: true,
             tool_log_mode: "full".to_owned(),
             device_listen: "127.0.0.1:7341".to_owned(),
+            device_relay: String::new(),
             memory_backend: crate::memory::DEFAULT_BACKEND.to_owned(),
             memory_vault: String::new(),
             timezone: crate::zone::HOST.to_owned(),
@@ -2152,6 +2179,29 @@ fn reasoning_group(view: &SettingsView) -> Markup {
             }
             div .actions {
                 button type="submit" { "Save thinking bubble" }
+            }
+        }
+    }
+}
+
+/// Whether the browser streams an answer or waits for the rendered page.
+fn streaming_group(view: &SettingsView) -> Markup {
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_STREAMING) novalidate {
+            div .field {
+                label for="stream_responses" {
+                    input type="checkbox" id="stream_responses" name="stream_responses" value="true"
+                        checked[view.streaming];
+                    " Stream answers as they are written"
+                }
+                span .hint {
+                    "On, the answer appears word by word and a second message steers the running "
+                    "turn. Off, the composer sends the turn as a plain form and the finished "
+                    "transcript comes back in one page; nothing else about the turn changes."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save responses" }
             }
         }
     }
@@ -2656,6 +2706,15 @@ pub fn settings_page(view: &SettingsView) -> Markup {
             (reasoning_group(view))
         }
 
+        section .card aria-labelledby="streaming-heading" {
+            h2 id="streaming-heading" { "Responses" }
+            p .small {
+                "How an answer reaches the page. Streaming is the live view; the plain path is the "
+                "one a browser with no script uses and is often the easier read on a slow link."
+            }
+            (streaming_group(view))
+        }
+
         section .card aria-labelledby="greeting-heading" {
             h2 id="greeting-heading" { "Greeting" }
             p .small {
@@ -2685,6 +2744,20 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                         "Comma separated. The device API is /v1 only and every call needs a paired "
                         "device token, so opening an address does not open the dashboard. Applied at "
                         "the next start: a bind is not moved under a live phone."
+                    }
+                }
+                div .field {
+                    label for="device_relay" { "Pairing relay URL" }
+                    input id="device_relay" type="text" name="device_relay" value=(view.device_relay)
+                        placeholder="https://host.tailnet.ts.net";
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("device_relay")) {
+                        span .error { (error.message) }
+                    }
+                    span .hint {
+                        "The origin the pairing QR carries, and the host a paired phone calls. The "
+                        "app appends /v1 itself, so this is a scheme and a host with no path. For a "
+                        "phone on the tailnet, the Tailscale Serve name is the one that works: it is "
+                        "https, on 443, and already routes /v1 to the device listener."
                     }
                 }
                 div .actions {
@@ -3770,6 +3843,8 @@ pub struct ChatView {
     pub selected_model: String,
     /// Whether to render the model's reasoning in a collapsed bubble.
     pub show_reasoning: bool,
+    /// Whether this page streams a turn or hands it to the plain form.
+    pub streaming: bool,
     /// Whether to render the run log at all.
     pub show_tool_log: bool,
     /// `full` or `summary`, choosing how it renders.
@@ -3809,6 +3884,170 @@ pub fn greeting_for(hour: u32) -> &'static str {
     }
 }
 
+/// Where a workspace file link points, without the wildcard axum spells in the
+/// router. The two parts are one decision, so the prefix lives next to the
+/// renderer that writes it.
+const ROUTE_CHAT_WORKSPACE_PREFIX: &str = "/dashboard/chat/workspace/";
+
+/// Percent-encode one path segment for a URL.
+///
+/// Only the unreserved characters survive. The workspace is a filesystem, and a
+/// filename is not HTML: a space, a quote or a `#` must reach the route as data.
+fn encoded_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(char::from(byte));
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// The dashboard URL for one workspace-relative path.
+fn inline_url(path: &str) -> String {
+    let encoded = path
+        .split('/')
+        .map(encoded_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("{}{encoded}", ROUTE_CHAT_WORKSPACE_PREFIX)
+}
+
+/// The badge a file link shows, and whether its bytes are a picture.
+///
+/// Only the extensions this build has a badge for become links. A bracketed
+/// phrase in an answer is ordinary prose, and turning every one into an anchor
+/// would make the transcript lie about what it is showing.
+fn inline_badge(path: &str) -> Option<(&'static str, bool)> {
+    let extension = path.rsplit_once('.')?.1.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" | "gif" => Some(("IMG", true)),
+        "pdf" => Some(("PDF", false)),
+        "ppt" => Some(("PPT", false)),
+        "pptx" => Some(("PPTX", false)),
+        "doc" => Some(("DOC", false)),
+        "docx" => Some(("DOCX", false)),
+        "xls" => Some(("XLS", false)),
+        "xlsx" => Some(("XLSX", false)),
+        "csv" => Some(("CSV", false)),
+        "txt" | "log" => Some(("TXT", false)),
+        "md" | "markdown" => Some(("MD", false)),
+        "json" | "jsonl" => Some(("JSON", false)),
+        "zip" => Some(("ZIP", false)),
+        "rs" | "py" | "sh" | "html" | "sql" => Some(("CODE", false)),
+        _ => None,
+    }
+}
+
+/// The workspace-relative path a bracketed target names, if it is one.
+///
+/// Absolute paths, schemes, traversal and the home shorthand are all refused
+/// here rather than at the route: a link the page draws must name something the
+/// route can serve, and the route refuses the rest anyway. A refusal here just
+/// leaves the text literal.
+fn safe_inline_path(raw: &str) -> Option<&str> {
+    let path = raw.trim();
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.starts_with('~')
+        || path.contains('\\')
+        || path.contains("://")
+        || path.contains('?')
+        || path.contains('#')
+    {
+        return None;
+    }
+    let mut any = false;
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return None;
+        }
+        any = true;
+    }
+    any.then_some(path)
+}
+
+/// A paragraph's worth of text with its file references turned into elements.
+///
+/// Deliberately tiny: `![alt](path)` is a picture and `[label](path)` is a file,
+/// both naming a path inside the workspace. It is not a markdown engine, and
+/// anything that does not parse stays exactly the bytes the model wrote.
+fn inline_pieces(text: &str) -> Vec<Markup> {
+    let mut pieces: Vec<Markup> = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some(offset) = text[cursor..].find('[') else {
+            break;
+        };
+        let start = cursor + offset;
+        let image = start > 0 && text[..start].ends_with('!');
+        let label_start = start + 1;
+        let Some(close_offset) = text[label_start..].find("](") else {
+            cursor = start + 1;
+            continue;
+        };
+        let close = label_start + close_offset;
+        let target_start = close + 2;
+        let Some(end_offset) = text[target_start..].find(')') else {
+            cursor = start + 1;
+            continue;
+        };
+        let end = target_start + end_offset;
+        let label = text[label_start..close].trim();
+        let raw = &text[target_start..end];
+        let Some((path, (badge, is_image))) =
+            safe_inline_path(raw).and_then(|path| inline_badge(path).map(|kind| (path, kind)))
+        else {
+            cursor = start + 1;
+            continue;
+        };
+        let before_end = if image {
+            start.saturating_sub(1)
+        } else {
+            start
+        };
+        if before_end > cursor {
+            let before = &text[cursor..before_end];
+            pieces.push(html! { (before) });
+        }
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let url = inline_url(path);
+        let shown = if label.is_empty() { name } else { label };
+        if is_image {
+            pieces.push(html! {
+                a .attached-image href=(url) target="_blank" rel="noreferrer" title=(shown) {
+                    img src=(url) alt=(shown) loading="lazy";
+                }
+            });
+        } else {
+            pieces.push(html! {
+                a .attached-chip href=(url) download=(name) title=(name) {
+                    span .attached-badge { (badge) }
+                    span .attached-name { (shown) }
+                }
+            });
+        }
+        cursor = end + 1;
+    }
+    if cursor < text.len() {
+        let rest = &text[cursor..];
+        pieces.push(html! { (rest) });
+    }
+    pieces
+}
+
+/// One paragraph: the text, with any workspace file references drawn.
+fn inline_paragraph(text: &str) -> Markup {
+    html! {
+        p {
+            @for piece in inline_pieces(text) { (piece) }
+        }
+    }
+}
+
 /// Render message text into blocks: paragraphs, and fenced code as code.
 ///
 /// This is deliberately not a markdown engine. A fence is the one structure an
@@ -3824,7 +4063,7 @@ pub fn blocks(text: &str) -> Markup {
     while let Some(start) = rest.find("```") {
         let (before, after) = rest.split_at(start);
         if !before.trim().is_empty() {
-            pieces.push(html! { p { (before.trim()) } });
+            pieces.push(inline_paragraph(before.trim()));
         }
         let after = &after[3..];
         let (language, body_start) = match after.find('\n') {
@@ -3851,7 +4090,7 @@ pub fn blocks(text: &str) -> Markup {
         rest = &body[end + 3..];
     }
     if !rest.trim().is_empty() {
-        pieces.push(html! { p { (rest.trim()) } });
+        pieces.push(inline_paragraph(rest.trim()));
     }
     html! { @for piece in pieces { (piece) } }
 }
@@ -4016,7 +4255,8 @@ pub fn chat_page(view: &ChatView) -> Markup {
     let body = html! {
         div .chat-shell .new-chat[view.messages.is_empty()]
             data-conversation=(view.conversation.clone())
-            data-assistant=(view.assistant_name.clone()) {
+            data-assistant=(view.assistant_name.clone())
+            data-stream=(if view.streaming { "on" } else { "off" }) {
         (alert_region(view.error.as_ref(), None))
         section .thread id="thread" aria-label="Conversation" {
             @let last_answer = view.messages.iter().rposition(|line| !line.user);
@@ -4062,7 +4302,10 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                     div .exec-body { (run_log_calls(&line.tools)) }
                                 }
                             } @else {
-                                details .exec open {
+                                // Closed by default: the log is one line until the
+                                // operator opens it, so a turn that ran a dozen
+                                // commands cannot push the answer off the screen.
+                                details .exec {
                                     summary {
                                         span .exec-label { "Run log" }
                                         span .exec-count {
@@ -4768,6 +5011,33 @@ const CHAT_JS: &str = r##"(function () {
   var queue = [];
   var LIMIT = 8;
   var queueBox = document.getElementById("attach-queue");
+  // One object URL per picture, reused across renders and revoked when the chip
+  // goes, so a preview costs a decoded thumbnail rather than a second copy of
+  // the file in memory.
+  var thumbs = new Map();
+
+  function looksLikeImage(file) {
+    if (file.type && file.type.indexOf("image/") === 0) { return true; }
+    return /\.(png|jpe?g|webp|gif)$/i.test(file.name);
+  }
+
+  function thumbFor(file) {
+    if (thumbs.has(file) === false) {
+      if (typeof URL === "undefined") { return ""; }
+      if (typeof URL.createObjectURL === "undefined") { return ""; }
+      thumbs.set(file, URL.createObjectURL(file));
+    }
+    return thumbs.get(file);
+  }
+
+  function forgetThumb(file) {
+    if (thumbs.has(file) === false) { return; }
+    var url = thumbs.get(file);
+    thumbs.delete(file);
+    if (typeof URL === "undefined") { return; }
+    if (typeof URL.revokeObjectURL === "undefined") { return; }
+    URL.revokeObjectURL(url);
+  }
 
   function humanSize(bytes) {
     if (bytes < 1024) { return bytes + " B"; }
@@ -4781,6 +5051,13 @@ const CHAT_JS: &str = r##"(function () {
     queue.forEach(function (file, index) {
       var chip = document.createElement("span");
       chip.className = "attach-chip";
+      if (looksLikeImage(file)) {
+        var thumb = document.createElement("img");
+        thumb.className = "attach-chip-thumb";
+        thumb.alt = "";
+        thumb.src = thumbFor(file);
+        chip.appendChild(thumb);
+      }
       var name = document.createElement("span");
       name.className = "attach-chip-name";
       name.textContent = file.name;
@@ -4794,6 +5071,7 @@ const CHAT_JS: &str = r##"(function () {
       drop.setAttribute("aria-label", "Remove " + file.name);
       drop.textContent = "\u00d7";
       drop.addEventListener("click", function () {
+        forgetThumb(file);
         queue.splice(index, 1);
         renderQueue();
       });
@@ -4979,6 +5257,20 @@ const CHAT_JS: &str = r##"(function () {
   async function send() {
     var text = box.value.trim();
     if (text === "") { return; }
+    // Streaming off: hand the whole turn to the form and let the daemon answer
+    // with the rendered page. Same request, same files, no reader in between.
+    var streamShell = document.querySelector(".chat-shell");
+    if (streamShell) {
+      if (streamShell.getAttribute("data-stream") === "off") {
+        if (attachmentInput && typeof DataTransfer === "object" && queue.length > 0) {
+          var carrier = new DataTransfer();
+          queue.forEach(function (file) { carrier.items.add(file); });
+          attachmentInput.files = carrier.files;
+        }
+        form.submit();
+        return;
+      }
+    }
     // A command is decided first, mid-turn or not: it is not text to steer with,
     // and the daemon answers it whether or not a turn is running.
     if (text.charAt(0) === "/" && text.length > 1) {
@@ -5462,6 +5754,47 @@ mod tests {
         let hostile = blocks("<script>alert(1)</script>").into_string();
         assert!(!hostile.contains("<script>"), "{hostile}");
         assert!(hostile.contains("&lt;script&gt;"), "{hostile}");
+    }
+
+    #[test]
+    fn a_workspace_reference_becomes_a_picture_or_a_file_chip() {
+        let rendered = blocks("Here ![shot](generated/two words.png) and [brief](docs/brief.pdf).")
+            .into_string();
+        assert!(
+            rendered.contains(r#"class="attached-image""#),
+            "the picture is drawn: {rendered}"
+        );
+        assert!(
+            rendered.contains(r#"src="/dashboard/chat/workspace/generated/two%20words.png""#),
+            "the path is served and encoded: {rendered}"
+        );
+        assert!(rendered.contains(r#"alt="shot""#), "{rendered}");
+        assert!(
+            rendered.contains(r#"class="attached-badge">PDF<"#),
+            "the document is a chip: {rendered}"
+        );
+        assert!(
+            rendered.contains(r#"href="/dashboard/chat/workspace/docs/brief.pdf""#),
+            "the document links to the bytes: {rendered}"
+        );
+        assert!(rendered.contains(r#"download="brief.pdf""#), "{rendered}");
+        assert!(!rendered.contains("!["), "the syntax is gone: {rendered}");
+    }
+
+    #[test]
+    fn a_reference_outside_the_workspace_stays_literal_text() {
+        for hostile in [
+            "[x](../../etc/passwd)",
+            "![y](/etc/secret.png)",
+            "[z](https://example.com/a.png)",
+            "[w](~/.ssh/id_ed25519)",
+        ] {
+            let rendered = blocks(hostile).into_string();
+            assert!(
+                !rendered.contains("attached-chip") && !rendered.contains("attached-image"),
+                "{hostile} must not become a link: {rendered}"
+            );
+        }
     }
 
     #[test]

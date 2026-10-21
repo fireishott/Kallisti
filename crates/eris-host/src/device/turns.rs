@@ -1056,6 +1056,9 @@ impl TurnHub {
             "the turn system prompt is compiled"
         );
         let system = (!compiled.is_empty()).then(|| compiled.as_str().to_owned());
+        // A phone reads the same transcript, so the same note about drawing a
+        // workspace file belongs in this prompt too.
+        let system = crate::persona::PersonaConfig::with_capabilities(system);
 
         // The writer: one blocking task owns every row this job writes.
         let (tx, mut rx) = mpsc::unbounded_channel::<Signal>();

@@ -26,7 +26,8 @@ use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
 use crate::admin::{
-    ROUTE_CHAT, ROUTE_CHAT_SEND, ROUTE_SECURITY, ROUTE_SETTINGS, ROUTE_SETTINGS_TOOLS,
+    ROUTE_CHAT, ROUTE_CHAT_SEND, ROUTE_SECURITY, ROUTE_SETTINGS, ROUTE_SETTINGS_STREAMING,
+    ROUTE_SETTINGS_TOOLS,
 };
 use crate::onboarding::SetupEngine;
 use crate::web::chat::{self, CONVERSATION_ID, Role, State};
@@ -393,8 +394,8 @@ fn the_run_log_is_one_details_and_its_controls_ride_the_one_script() {
     );
 }
 
-/// The rendered page is still the script-free reading: every call closed, the log
-/// itself open, and nothing gained in height.
+/// The rendered page is the script-free reading: every call closed and the log
+/// itself closed, so nothing costs height until the operator asks for it.
 #[test]
 fn the_rendered_run_log_starts_with_every_call_collapsed() {
     let (_dir, engine, app, cookie) = ready_app();
@@ -418,8 +419,12 @@ fn the_rendered_run_log_starts_with_every_call_collapsed() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     let body = &page.body;
     assert!(
-        body.contains(r#"<details class="exec" open>"#),
-        "the log is one open panel: {body}"
+        body.contains(r#"<details class="exec">"#),
+        "the log is one closed panel: {body}"
+    );
+    assert!(
+        !body.contains(r#"<details class="exec" open>"#),
+        "a run log never opens itself: {body}"
     );
     assert_eq!(
         body.matches(r#"<details class="exec-call"#).count(),
@@ -495,6 +500,69 @@ fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
     assert!(
         !page.body.contains("echo hi"),
         "and no command output either: off means not sent"
+    );
+}
+
+#[test]
+fn streaming_can_be_switched_off_and_the_page_says_so() {
+    let (_dir, engine, app, cookie) = ready_app();
+
+    // A checked box is the only thing that sends a value, so an empty body is
+    // the off signal, exactly as the checkboxes on the permissions form are.
+    let reply = block_on(send(
+        &app,
+        Call::post(ROUTE_SETTINGS_STREAMING, "")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+    assert_eq!(
+        engine.setting(chat::SETTING_STREAMING).unwrap().as_deref(),
+        Some("false"),
+        "off is stored as false rather than left out"
+    );
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(r#"data-stream="off""#),
+        "the page tells its script to hand the turn to the form: {}",
+        page.body
+    );
+
+    // And the server refuses a stream even when a caller asks for one: the
+    // stored choice wins over an Accept header.
+    let forced = block_on(send(
+        &app,
+        Call::post(ROUTE_CHAT_SEND, "message=hello")
+            .header("accept", "text/event-stream")
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(
+        forced.status,
+        StatusCode::SEE_OTHER,
+        "no SSE with streaming off: {}",
+        forced.body
+    );
+
+    let reply = block_on(send(
+        &app,
+        Call::post(ROUTE_SETTINGS_STREAMING, "stream_responses=true")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert!(
+        page.body.contains(r#"data-stream="on""#),
+        "streaming is back on: {}",
+        page.body
     );
 }
 

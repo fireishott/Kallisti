@@ -246,7 +246,30 @@ impl PersonaConfig {
         })
     }
 
-    /// Where the environment context lives: `context.md` beside the persona.
+    /// The capability note every turn carries, whether or not a persona exists.
+    ///
+    /// This is the prompt-side half of the transcript's file rendering: the page
+    /// can draw a workspace file, but only the model can decide that showing one
+    /// is the answer. It is deliberately short and path-only, and it forbids the
+    /// two things the renderer will not accept (base64 and an absolute path).
+    pub const CAPABILITIES: &'static str = "\
+Files and pictures you produce can be shown in the transcript.\n\
+- A picture: ![caption](relative/path.png) on its own line.\n\
+- Any other file (PDF, PPTX, DOCX, XLSX, CSV, text): [name](relative/path.pdf).\n\
+The path is relative to the workspace and must be one a tool result named; do not \
+invent a path and do not paste base64. Use at most a few per answer, each next to \
+the sentence that explains it.";
+
+    /// `text` with the capability note appended, or the note alone.
+    #[must_use]
+    pub fn with_capabilities(text: Option<String>) -> Option<String> {
+        Some(match text {
+            Some(text) if !text.trim().is_empty() => format!("{text}\n\n{}", Self::CAPABILITIES),
+            _ => Self::CAPABILITIES.to_owned(),
+        })
+    }
+
+    /// Where the environment context lives: `context.md` beside the persona.    /// Where the environment context lives: `context.md` beside the persona.
     #[must_use]
     pub fn context_path(&self) -> PathBuf {
         self.path.with_file_name(CONTEXT_FILE_NAME)

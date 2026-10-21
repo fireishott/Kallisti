@@ -70,6 +70,48 @@ pub const ROUTE_PAIR: &str = "/v1/pair";
 /// The `settings` row holding the addresses the device listener binds, as JSON.
 pub const SETTING_LISTEN: &str = "device.listen";
 
+/// The `settings` row holding the origin a phone should call, when the operator
+/// has one. This is what the pairing QR carries, so it is the one address a
+/// phone can actually route to rather than the one this host binds for itself.
+pub const SETTING_RELAY: &str = "device.relay_url";
+
+/// Trim and accept one device relay origin.
+///
+/// The phone app appends `/v1/...` to whatever the QR carries, so a path, a
+/// query or a fragment would build a request no route serves. Requiring an
+/// http(s) origin is the whole rule; it is checked here so a saved value and a
+/// freshly typed one cannot disagree.
+///
+/// # Errors
+///
+/// The sentence the settings form shows next to the field.
+pub fn validate_relay(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("the relay URL cannot be empty".to_owned());
+    }
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return Err(format!(
+            "`{trimmed}` needs http:// or https:// in front of the host"
+        ));
+    };
+    if !matches!(scheme, "http" | "https") {
+        return Err(format!(
+            "`{scheme}` is not a scheme a phone can call; use http or https"
+        ));
+    }
+    if rest.is_empty() || rest.contains('/') || rest.contains('?') || rest.contains('#') {
+        return Err(
+            "the relay is an origin only, like https://host.tailnet.ts.net - the app adds /v1"
+                .to_owned(),
+        );
+    }
+    if rest.contains('@') || rest.chars().any(char::is_whitespace) || rest.starts_with(':') {
+        return Err(format!("`{rest}` is not a host a phone can reach"));
+    }
+    Ok(trimmed.to_owned())
+}
+
 /// `POST /v1/token/refresh` - trade a refresh token for an access token.
 pub const ROUTE_REFRESH: &str = "/v1/token/refresh";
 

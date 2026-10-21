@@ -6,6 +6,33 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **The assistant can show what it made.** A workspace path written as
+  `![caption](generated/x.png)` is drawn as a thumbnail in the bubble, and
+  `[name](docs/brief.pdf)` is a chip with its type badge and a download. The new
+  `GET /dashboard/chat/workspace/{path}` route resolves through the tools'
+  three-layer confinement, decides the type from the bytes, and refuses anything
+  outside the workspace. `generate_image` now returns a ready display line, and
+  every turn carries a short note saying how to write one, so a picture the model
+  drew arrives as a picture rather than a path. `build 84`.
+- **A picked picture is the picture.** The composer's attachment queue shows a
+  thumbnail for an image before it is sent, through an object URL the browser
+  owns, so a mis-picked screenshot is one glance away instead of one send away.
+  `build 84`.
+- **The run log starts closed.** Full mode used to render one open panel with
+  every call inside it; it is now one line saying how many calls ran, and the
+  existing summary and off modes are unchanged. Nothing expands itself, so a
+  turn that ran a dozen commands cannot push the answer off the screen. `build 84`.
+- **Streaming is a setting.** Settings > Responses gains a switch. On is the live
+  transcript; off hands the turn to the plain form and returns the finished page
+  in one response. The stored choice wins over an `Accept: text/event-stream`
+  header, so a page that says do not stream cannot be talked into streaming.
+  `build 84`.
+- **A pairing code a phone can actually reach.** Settings > Device listener gains
+  a pairing relay URL. The pairing QR, the wizard's device step and the JSON mint
+  all carry that origin instead of a loopback bind, and the wizard now draws the
+  QR the devices page already drew. The app appends `/v1` itself, so the field
+  takes a scheme and host only; for a phone on the tailnet that is the Tailscale
+  Serve name, `https://host.tailnet.ts.net`. `build 84`.
 - **Keep me signed in.** The sign-in form gains a checkbox that mints a thirty-day
   admin session instead of the twelve-hour one, so a trusted device or a browser on
   the LAN/tailnet is asked for the passphrase once a month. The default stays short.

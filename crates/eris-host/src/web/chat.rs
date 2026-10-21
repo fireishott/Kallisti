@@ -1689,6 +1689,22 @@ pub fn show_reasoning(stored: Option<&str>) -> bool {
     !matches!(stored.map(str::trim), Some("false"))
 }
 
+/// The `settings` row that remembers whether the dashboard streams answers.
+///
+/// Default on: streaming is what makes a long answer readable while it is being
+/// written. Off means the composer hands the turn to the plain form and the page
+/// comes back rendered once, which is the one path a browser with no script uses.
+pub const SETTING_STREAMING: &str = "assistant.stream_responses";
+
+/// Whether the dashboard should stream answers.
+///
+/// Anything other than an explicit `false` leaves it on, so a corrupt row cannot
+/// silently turn every answer into a full-page reload.
+#[must_use]
+pub fn streaming_enabled(stored: Option<&str>) -> bool {
+    !matches!(stored.map(str::trim), Some("false"))
+}
+
 /// The `settings` row that remembers whether the run log is shown.
 ///
 /// Default on: a turn that ran something should say so. The log is a record, and
@@ -2352,6 +2368,9 @@ pub fn run_turn_with_key(
             return crate::tools::ToolResult::ok(serde_json::json!({
                 "path": name,
                 "bytes": bytes.len(),
+                // Ready to copy: the transcript draws this line as the picture,
+                // so the operator sees what was drawn rather than a path.
+                "display": format!("![generated image]({name})"),
             }));
         }
 
@@ -2451,7 +2470,9 @@ pub fn run_turn_with_key(
                         offered.push(core_runtime::provider::ToolSpec {
                             name: "generate_image".to_owned(),
                             description:
-                                "Draw an image from a description and save it in the workspace."
+                                "Draw an image from a description and save it in the workspace. \
+                                 The result carries a display line; put it on a line of its own \
+                                 in your answer so the operator sees the picture."
                                     .to_owned(),
                             parameters: serde_json::json!({
                                 "type": "object",

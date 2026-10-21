@@ -28,14 +28,14 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
     ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_FILE, ROUTE_CHAT_ID,
-    ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD,
-    ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS,
+    ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_WORKSPACE,
+    ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS,
     ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
     ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING,
     ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING,
-    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
-    VERSION, session_path,
+    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -107,6 +107,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
         .route(ROUTE_SETTINGS_PERSONA, post(save_persona))
         .route(ROUTE_SETTINGS_REASONING, post(save_reasoning))
+        .route(ROUTE_SETTINGS_STREAMING, post(save_streaming))
         .route(ROUTE_SETTINGS_MEMORY, post(save_memory))
         .route(ROUTE_SETTINGS_TIMEZONE, post(save_timezone))
         .route(ROUTE_SIDEBAR, post(toggle_sidebar))
@@ -131,6 +132,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_CHAT_NEW, post(chat_new))
         .route(ROUTE_CHAT_SESSIONS, get(chat_sessions))
         .route(ROUTE_CHAT_FILE, get(chat_file))
+        .route(ROUTE_CHAT_WORKSPACE, get(chat_workspace_file))
         .route(ROUTE_CHAT_ID, get(chat_conversation_handler))
         .route(ROUTE_CHAT_DELETE, post(chat_delete))
         .route(ROUTE_PROJECTS, post(save_project))
@@ -727,6 +729,12 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
         .map(|list| list.join(", "))
         .unwrap_or_else(|| crate::device::DEVICE_ADDR.to_owned());
+    view.device_relay = state
+        .engine
+        .setting(crate::device::SETTING_RELAY)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     view.memory_backend = crate::memory::backend(
         state
             .engine
@@ -762,6 +770,12 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     view.show_reasoning = chat::show_reasoning(
         engine
             .setting(chat::SETTING_SHOW_REASONING)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
+    view.streaming = chat::streaming_enabled(
+        engine
+            .setting(chat::SETTING_STREAMING)
             .map_err(|error| form_error(&error))?
             .as_deref(),
     );
@@ -1476,16 +1490,10 @@ async fn mint_pairing_code(
     if as_html {
         match build_devices_view(&state) {
             Ok(mut view) => {
-                // The address a phone can reach, preferring a non-loopback bind:
-                // a QR carrying 127.0.0.1 is a code that cannot work.
-                let bind = state.device.bind();
-                let address = bind
-                    .iter()
-                    .find(|address| !address.ip().is_loopback())
-                    .or_else(|| bind.first())
-                    .map(std::string::ToString::to_string)
-                    .unwrap_or_else(|| crate::device::DEVICE_ADDR.to_owned());
-                let relay = format!("http://{address}");
+                // The address the phone should call. A QR carrying 127.0.0.1 is
+                // a code that cannot work, so the stored relay or a non-loopback
+                // bind wins over the loopback default.
+                let relay = pairing_relay(&state);
                 let pairing = crate::web::qr::Pairing::new(issued.code(), &relay);
                 let qr = crate::web::qr::svg(&pairing.payload(), 6).unwrap_or_default();
                 view.issued = Some(IssuedCodeView {
@@ -1505,9 +1513,149 @@ async fn mint_pairing_code(
             "device_name": name,
             "admin": allow_admin,
             "code": issued.code(),
+            "relay": pairing_relay(&state),
             "expires_at": expires_at,
         }))
     }
+}
+
+/// `GET /dashboard/chat/workspace/{*path}` - one workspace file, read for a page.
+///
+/// A turn writes pictures into `generated/` and other files wherever it likes
+/// under the workspace, and the transcript has to be able to show them. The
+/// path is resolved with the same three-layer confinement the tools use, so a
+/// link in an answer cannot reach out of the workspace; the bytes decide the
+/// media type, so a `.png` full of HTML is downloaded rather than rendered.
+async fn chat_workspace_file(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let workspace = match state.engine.workspace_path() {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            return refusal(FormError::new(
+                None,
+                "workspace_unreadable",
+                error.to_string(),
+            ));
+        }
+    };
+    let Ok(root) = std::fs::canonicalize(&workspace) else {
+        return ApiError::not_found(&request_id.0, "no workspace directory exists").into_response();
+    };
+    let Ok(resolved) = crate::tools::resolve(&workspace, &path) else {
+        return ApiError::not_found(&request_id.0, "that path is not inside the workspace")
+            .into_response();
+    };
+    let Ok(real) = std::fs::canonicalize(&resolved) else {
+        return ApiError::not_found(&request_id.0, "no file exists at that path").into_response();
+    };
+    if !real.starts_with(&root) {
+        return ApiError::not_found(&request_id.0, "that file is not inside the workspace")
+            .into_response();
+    }
+    let Ok(metadata) = std::fs::metadata(&real) else {
+        return ApiError::not_found(&request_id.0, "that file cannot be read").into_response();
+    };
+    if !metadata.is_file() {
+        return ApiError::not_found(&request_id.0, "that path is not a file").into_response();
+    }
+    if metadata.len() > chat::MAX_ATTACHMENT_BYTES as u64 {
+        return ApiError::not_found(
+            &request_id.0,
+            format!(
+                "that file is larger than the {} bytes this route serves",
+                chat::MAX_ATTACHMENT_BYTES
+            ),
+        )
+        .into_response();
+    }
+    let Ok(bytes) = std::fs::read(&real) else {
+        return ApiError::not_found(&request_id.0, "that file cannot be read").into_response();
+    };
+    let media_type = chat::sniff_media_type(&bytes);
+    let disposition = if media_type.starts_with("image/") {
+        "inline"
+    } else {
+        "attachment"
+    };
+    let name: String = real
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_owned())
+        .chars()
+        .map(|character| {
+            if character == '"' || character.is_control() {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect();
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, media_type.to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("{disposition}; filename=\"{name}\""),
+            ),
+            (header::CACHE_CONTROL, "private, max-age=300".to_owned()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+/// The origin a phone should use for this daemon.
+///
+/// The operator's stored relay wins, because only they know which address a
+/// phone can route to. Without one, the first non-loopback bind is the honest
+/// answer; then `admin.public_url`, which is what a reverse proxy publishes; and
+/// only then loopback, which at least states the truth rather than inventing a
+/// hostname.
+fn pairing_relay(state: &AppState) -> String {
+    if let Some(raw) = state
+        .engine
+        .setting(crate::device::SETTING_RELAY)
+        .ok()
+        .flatten()
+        .and_then(|raw| crate::device::validate_relay(&raw).ok())
+    {
+        return raw;
+    }
+    let bind = state.device.bind();
+    if let Some(address) = bind.iter().find(|address| !address.ip().is_loopback()) {
+        return format!("http://{address}");
+    }
+    if let Some(origin) = state.access.public_url.as_deref().and_then(url_origin) {
+        return origin;
+    }
+    let address = bind.first().copied().unwrap_or_else(|| {
+        crate::device::DEVICE_ADDR
+            .parse()
+            .expect("a literal ip:port")
+    });
+    format!("http://{address}")
+}
+
+/// The scheme and authority of an absolute URL, with no path or query.
+fn url_origin(raw: &str) -> Option<String> {
+    let (scheme, rest) = raw.trim().split_once("://")?;
+    if !matches!(scheme, "http" | "https") {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{authority}"))
 }
 
 /// `POST /dashboard/jobs/{id}/cancel` - cancel a queued or running job.
@@ -2339,12 +2487,21 @@ async fn device(
         return fail(&state, as_html, form_error(&error));
     }
 
+    // The address the phone should call, drawn into the same QR the devices page
+    // draws. The wizard is where a phone is most often paired, so a code with no
+    // camera-readable form here is a code that sends the operator hunting.
+    let relay = pairing_relay(&state);
+    let pairing = crate::web::qr::Pairing::new(&code, &relay);
+    let qr = crate::web::qr::svg(&pairing.payload(), 6).unwrap_or_default();
+
     if as_html {
         // The code is shown once, on the page that just minted it.
         match build_setup_view(&state) {
             Ok(mut view) => {
                 view.pairing_code = Some(code);
                 view.pairing_expires = Some(expires_at);
+                view.pairing_relay = Some(relay);
+                view.pairing_qr = Some(qr);
                 page(setup_page(&view))
             }
             Err(build_error) => refusal(build_error),
@@ -2355,6 +2512,8 @@ async fn device(
             "device_id": device_id,
             "device_name": name,
             "pairing_code": code,
+            "relay": relay,
+            "qr_svg": qr,
             "expires_at": expires_at,
             "next_step": "finish",
         }))
@@ -2662,6 +2821,8 @@ const SAVED_WORKSPACE: &str = "/dashboard/settings?saved=workspace";
 
 /// Where the reasoning toggle returns to.
 const SAVED_REASONING: &str = "/dashboard/settings?saved=reasoning";
+/// Where the streaming toggle returns to.
+const SAVED_STREAMING: &str = "/dashboard/settings?saved=streaming";
 
 /// Where the provider registry returns to.
 const SAVED_PROVIDERS: &str = "/dashboard/settings?saved=providers";
@@ -2821,6 +2982,37 @@ async fn save_device_listen(
         Err(error) => return fail_settings(&state, as_html, error),
     };
 
+    // The relay is read first: a bad one is refused before anything is stored,
+    // so the form cannot half-save a bind and a URL that contradicts it. A body
+    // with no relay field at all is an older page that only knew about binds, so
+    // it leaves the stored origin alone; an empty field is a deliberate clear.
+    let relay = match fields.get("device_relay") {
+        None => state
+            .engine
+            .setting(crate::device::SETTING_RELAY)
+            .ok()
+            .flatten()
+            .and_then(|raw| crate::device::validate_relay(&raw).ok())
+            .unwrap_or_default(),
+        Some(raw) => {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                String::new()
+            } else {
+                match crate::device::validate_relay(raw) {
+                    Ok(relay) => relay,
+                    Err(message) => {
+                        return fail_settings(
+                            &state,
+                            as_html,
+                            FormError::new(Some("device_relay"), "device_relay_invalid", message),
+                        );
+                    }
+                }
+            }
+        }
+    };
+
     let raw = field(&fields, "device_listen");
     let list: Vec<String> = raw
         .split(',')
@@ -2854,10 +3046,18 @@ async fn save_device_listen(
     {
         return store_failure(&request_id.0, crate::device::SETTING_LISTEN, error);
     }
-    let _ = state
-        .engine
-        .auth()
-        .audit("loopback", "settings.device_listen", Some(&encoded));
+    if let Err(error) = store::settings_put(state.engine.db(), crate::device::SETTING_RELAY, &relay)
+    {
+        return store_failure(&request_id.0, crate::device::SETTING_RELAY, error);
+    }
+    // The relay is not a secret: it is the address printed in a QR. The bind is
+    // recorded too, because "which addresses does this daemon answer on" is the
+    // question the next session starts with.
+    let _ = state.engine.auth().audit(
+        "loopback",
+        "settings.device_listen",
+        Some(&format!("binds={encoded}; relay={relay}")),
+    );
     see_other(SAVED_DEVICE)
 }
 
@@ -3088,6 +3288,46 @@ async fn save_reasoning(
     }
 
     see_other(SAVED_REASONING)
+}
+
+/// `POST /dashboard/settings/streaming` - stream answers or render one page.
+///
+/// The switch the composer reads. Off means the browser hands the turn to the
+/// plain form and the finished transcript comes back in one response, which is
+/// the same path a browser with no script uses; it changes nothing about the
+/// turn itself.
+async fn save_streaming(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    // An unchecked box sends nothing at all, so absence is the off signal here.
+    let enabled = matches!(
+        field(&fields, "stream_responses").trim(),
+        "on" | "true" | "1"
+    );
+    let stored = if enabled { "true" } else { "false" };
+    if let Err(error) = store::settings_put(state.engine.db(), chat::SETTING_STREAMING, stored) {
+        return store_failure(&request_id.0, chat::SETTING_STREAMING, error);
+    }
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.streaming", Some(stored))
+    {
+        return audit_failure(&request_id.0, "settings.streaming", error);
+    }
+
+    see_other(SAVED_STREAMING)
 }
 
 /// `POST /dashboard/settings/timezone` - the clock every stamp is shown in.
@@ -4082,6 +4322,14 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         models,
         selected_model,
         assistant_name,
+        streaming: chat::streaming_enabled(
+            state
+                .engine
+                .setting(chat::SETTING_STREAMING)
+                .ok()
+                .flatten()
+                .as_deref(),
+        ),
         show_reasoning: chat::show_reasoning(
             state
                 .engine
@@ -5079,6 +5327,19 @@ async fn chat_send(
         }
     };
 
+    // One answer for both halves: the operator's stored switch wins over a
+    // request header, because a page that says "do not stream" must not stream
+    // just because a script asked nicely.
+    let streaming = chat::streaming_enabled(
+        state
+            .engine
+            .setting(chat::SETTING_STREAMING)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    let wants_stream = wants_stream(&headers) && streaming;
+
     // A message that begins with a slash is a command, not a prompt. It is
     // dispatched here, before a turn is built and before the provider is even
     // read: a command has no turn to spend a token on, so the guarantee is
@@ -5089,7 +5350,7 @@ async fn chat_send(
             field(&fields, "conversation"),
             &command,
             &request_id.0,
-            wants_stream(&headers),
+            wants_stream,
         );
     }
 
@@ -5237,7 +5498,7 @@ async fn chat_send(
         }
     }
 
-    if !wants_stream(&headers) {
+    if !wants_stream {
         let task = spawn_turn(
             &state,
             config,
@@ -5884,6 +6145,10 @@ fn spawn_turn(
             )),
             (system, None) => system,
         };
+
+        // What the page can draw, said to the model: a workspace path in
+        // `![caption](path)` or `[name](path)` becomes a thumbnail or a chip.
+        let system = crate::persona::PersonaConfig::with_capabilities(system);
 
         // The dispatch surface, when this turn may dispatch at all. Both gates
         // are checked here and again in the turn: the operator's switch, and the

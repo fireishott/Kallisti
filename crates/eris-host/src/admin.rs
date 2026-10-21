@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 83;
+pub const BUILD: u32 = 84;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -113,6 +113,9 @@ pub const ROUTE_CHAT_SESSIONS: &str = "/dashboard/chat/sessions.json";
 /// other dashboard route: an upload is the operator's, not the world's.
 pub const ROUTE_CHAT_FILE: &str = "/dashboard/chat/file/{id}";
 
+/// `GET /dashboard/chat/workspace/{*path}` - one file a turn talked about.
+pub const ROUTE_CHAT_WORKSPACE: &str = "/dashboard/chat/workspace/{*path}";
+
 /// `POST /dashboard/chat/new` - start a conversation.
 pub const ROUTE_CHAT_NEW: &str = "/dashboard/chat/new";
 
@@ -143,6 +146,8 @@ pub const ROUTE_SETTINGS_PERSONA: &str = "/dashboard/settings/persona";
 
 /// `POST /dashboard/settings/reasoning` - show or hide the thinking bubble.
 pub const ROUTE_SETTINGS_REASONING: &str = "/dashboard/settings/reasoning";
+/// `POST /dashboard/settings/streaming` - stream answers to the browser or not.
+pub const ROUTE_SETTINGS_STREAMING: &str = "/dashboard/settings/streaming";
 /// Where the sign-in credential is changed. A page of its own because the
 /// settings page is forbidden from containing a password input.
 pub const ROUTE_SECURITY: &str = "/dashboard/security";
@@ -272,6 +277,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_PERMISSIONS,
     ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_REASONING,
+    ROUTE_SETTINGS_STREAMING,
     ROUTE_SETTINGS_MEMORY,
     ROUTE_SECURITY,
     ROUTE_SETTINGS_DEVICE,

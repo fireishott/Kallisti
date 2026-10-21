@@ -425,6 +425,82 @@ fn the_mint_form_offers_administration_and_starts_unchecked() {
 }
 
 #[test]
+fn the_pairing_qr_carries_the_stored_relay_and_is_drawn() {
+    let (_dir, engine, app, cookie) = ready_app();
+    // What a phone can actually route to: the Tailscale Serve origin, not the
+    // loopback bind the daemon prints in its own logs.
+    engine
+        .db()
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [
+                    crate::device::SETTING_RELAY,
+                    "https://fih-ai-host.tail4d497d.ts.net",
+                ],
+            )
+        })
+        .expect("store the relay");
+
+    let html = block_on(send(
+        &app,
+        Call::post(ROUTE_DEVICES, "device_name=iPhone")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(html.status, StatusCode::OK, "{}", html.body);
+    assert!(
+        html.body.contains("https://fih-ai-host.tail4d497d.ts.net"),
+        "the page states the address the code carries: {}",
+        html.body
+    );
+    assert!(
+        html.body.contains(r#"class="pairing-qr""#),
+        "the code is drawn as a scan target: {}",
+        html.body
+    );
+    assert!(
+        html.body.contains(r#"aria-label="Pairing code""#),
+        "the SVG announces itself: {}",
+        html.body
+    );
+
+    // The JSON client gets the same address, so a native onboarding screen
+    // does not have to guess it from the listener binds.
+    let json = block_on(send(
+        &app,
+        Call::post(ROUTE_DEVICES, "device_name=Android").cookie(Some(&cookie)),
+    ));
+    assert_eq!(json.status, StatusCode::OK, "{}", json.body);
+    assert_eq!(
+        json.json()["relay"],
+        "https://fih-ai-host.tail4d497d.ts.net",
+        "the pairing response names the same relay"
+    );
+}
+
+#[test]
+fn a_relay_with_a_path_is_refused_by_field() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let reply = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_DEVICE,
+            "device_listen=127.0.0.1:7341&device_relay=https://host.ts.net/v1",
+        )
+        .html()
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(
+        reply.body.contains("the relay is an origin only"),
+        "the refusal says what is wrong with it: {}",
+        reply.body
+    );
+}
+
+#[test]
 fn minting_with_the_box_ticked_records_it_on_the_code() {
     let (_dir, engine, app, cookie) = ready_app();
     let db = engine.db();
