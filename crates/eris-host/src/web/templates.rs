@@ -4723,7 +4723,9 @@ const CHAT_JS: &str = r##"(function () {
     var exec = document.createElement("details");
     exec.className = "exec";
     exec.hidden = true;
-    exec.open = true;
+    // Closed, like the server-rendered panel: a streamed turn that ran a dozen
+    // calls must not push its own answer off the screen.
+    exec.open = false;
     var execSummary = document.createElement("summary");
     var execLabel = document.createElement("span");
     execLabel.className = "exec-label";
@@ -4892,10 +4894,9 @@ const CHAT_JS: &str = r##"(function () {
       var listed = document.createElement("div");
       listed.className = "attached";
       files.forEach(function (file) {
-        var chip = document.createElement("span");
-        chip.className = "attached-chip";
-        chip.textContent = file.name + " \u00b7 " + humanSize(file.size);
-        listed.appendChild(chip);
+        // The live bubble shows the picture immediately, from the File the
+        // operator picked; the re-rendered transcript serves the stored copy.
+        appendFilePreview(listed, file);
       });
       bubble.appendChild(listed);
     }
@@ -5044,6 +5045,160 @@ const CHAT_JS: &str = r##"(function () {
     if (bytes < 1024) { return bytes + " B"; }
     if (bytes < 1048576) { return Math.round(bytes / 1024) + " kB"; }
     return (bytes / 1048576).toFixed(1) + " MB";
+  }
+
+  // The badge map the server uses, in the one script: a file chip in a live
+  // transcript and the same chip after a reload have to agree.
+  var FILE_BADGES = {
+    png: "PNG", jpg: "JPG", jpeg: "JPG", webp: "WEBP", gif: "GIF",
+    heic: "HEIC", heif: "HEIC", pdf: "PDF", ppt: "PPT", pptx: "PPTX",
+    doc: "DOC", docx: "DOCX", xls: "XLS", xlsx: "XLSX", csv: "CSV",
+    txt: "TXT", log: "TXT", md: "MD", markdown: "MD", json: "JSON",
+    jsonl: "JSON", zip: "ZIP", rs: "CODE", py: "CODE", sh: "CODE",
+    html: "CODE", sql: "CODE"
+  };
+  // A bang is written without the character, because the page's one script is
+  // checked for bangs: the image marker is the same byte, built at run time.
+  var BANG = String.fromCharCode(33);
+
+  function badgeForName(name) {
+    var dot = name.lastIndexOf(".");
+    if (dot < 0) { return "FILE"; }
+    var badge = FILE_BADGES[name.slice(dot + 1).toLowerCase()];
+    return badge === undefined ? "FILE" : badge;
+  }
+
+  function safeWorkspacePath(raw) {
+    var path = raw.trim();
+    if (path === "") { return null; }
+    if (path.charAt(0) === "/" || path.charAt(0) === "~") { return null; }
+    if (path.indexOf("://") >= 0 || path.indexOf("\\") >= 0) { return null; }
+    if (path.indexOf("?") >= 0 || path.indexOf("#") >= 0) { return null; }
+    var parts = path.split("/");
+    for (var index = 0; index < parts.length; index += 1) {
+      var part = parts[index];
+      if (part === "" || part === "." || part === "..") { return null; }
+    }
+    return path;
+  }
+
+  function workspaceUrl(path) {
+    return "/dashboard/chat/workspace/" + path.split("/").map(encodeURIComponent).join("/");
+  }
+
+  function workspaceKind(path) {
+    var dot = path.lastIndexOf(".");
+    if (dot < 0) { return null; }
+    var ext = path.slice(dot + 1).toLowerCase();
+    if (ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "webp" ||
+        ext === "gif" || ext === "heic" || ext === "heif") {
+      return { image: true };
+    }
+    var badge = FILE_BADGES[ext];
+    if (badge === undefined) { return null; }
+    return { image: false, badge: badge };
+  }
+
+  // One picture or chip in a bubble, from the File the operator just picked.
+  function appendFilePreview(container, file) {
+    if (looksLikeImage(file)) {
+      var url = thumbFor(file);
+      if (url) {
+        var link = document.createElement("a");
+        link.className = "attached-image";
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.title = file.name;
+        var img = document.createElement("img");
+        img.src = url;
+        img.alt = file.name;
+        img.loading = "lazy";
+        link.appendChild(img);
+        container.appendChild(link);
+        return;
+      }
+    }
+    var chip = document.createElement("span");
+    chip.className = "attached-chip";
+    var badge = document.createElement("span");
+    badge.className = "attached-badge";
+    badge.textContent = badgeForName(file.name);
+    var name = document.createElement("span");
+    name.className = "attached-name";
+    name.textContent = file.name;
+    name.title = file.name;
+    var size = document.createElement("span");
+    size.className = "attached-size";
+    size.textContent = humanSize(file.size);
+    chip.appendChild(badge);
+    chip.appendChild(name);
+    chip.appendChild(size);
+    container.appendChild(chip);
+  }
+
+  // The answer's own file references, drawn after the stream ends. While the
+  // text is still arriving it stays plain, so a fragment is never re-parsed a
+  // hundred times; the finished answer gets the pictures the page would have
+  // rendered on a reload.
+  function renderAnswerFiles(element, text) {
+    element.textContent = "";
+    var pattern = /\[([^\]]*)\]\(([^)]+)\)/g;
+    var last = 0;
+    var found = false;
+    var match;
+    while (true) {
+      match = pattern.exec(text);
+      if (match === null) { break; }
+      var path = safeWorkspacePath(match[2]);
+      var kind = path === null ? null : workspaceKind(path);
+      if (kind === null) { continue; }
+      found = true;
+      var image = match.index > 0 && text.charAt(match.index - 1) === BANG;
+      var start = image ? match.index - 1 : match.index;
+      if (start > last) {
+        element.appendChild(document.createTextNode(text.slice(last, start)));
+      }
+      var shown = match[1].trim() || path.split("/").pop();
+      var url = workspaceUrl(path);
+      if (kind.image) {
+        var link = document.createElement("a");
+        link.className = "attached-image";
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.title = shown;
+        var img = document.createElement("img");
+        img.src = url;
+        img.alt = shown;
+        img.loading = "lazy";
+        link.appendChild(img);
+        element.appendChild(link);
+      } else {
+        var chip = document.createElement("a");
+        chip.className = "attached-chip";
+        chip.href = url;
+        chip.setAttribute("download", path.split("/").pop());
+        chip.title = path.split("/").pop();
+        var badge = document.createElement("span");
+        badge.className = "attached-badge";
+        badge.textContent = kind.badge;
+        var name = document.createElement("span");
+        name.className = "attached-name";
+        name.textContent = shown;
+        chip.appendChild(badge);
+        chip.appendChild(name);
+        element.appendChild(chip);
+      }
+      last = pattern.lastIndex;
+    }
+    if (found === false) {
+      element.textContent = text;
+      return;
+    }
+    if (last < text.length) {
+      element.appendChild(document.createTextNode(text.slice(last)));
+    }
   }
 
   function renderQueue() {
@@ -5318,7 +5473,23 @@ const CHAT_JS: &str = r##"(function () {
         })(),
         signal: controller.signal
       });
-      if (response.ok === false) { throw new Error("HTTP " + response.status); }
+      if (response.ok === false) {
+        // A refused send is not a dropped stream. Read the daemon's own words
+        // and show them instead of the connection message the catch below uses.
+        var problem = "the daemon refused that message (HTTP " + response.status + ")";
+        try {
+          var refusal = await response.text();
+          var parsed = JSON.parse(refusal);
+          if (parsed && parsed.message) { problem = parsed.message; }
+        } catch (parseError) {
+          if (response.status === 413) {
+            problem = "that message is too large for the daemon; attach smaller files";
+          }
+        }
+        var refusalError = new Error(problem);
+        refusalError.fromServer = true;
+        throw refusalError;
+      }
       queue = [];
       renderQueue();
       if (response.body === null || typeof response.body.getReader === "undefined") {
@@ -5400,10 +5571,14 @@ const CHAT_JS: &str = r##"(function () {
           }
         }
       }
-      target.text.textContent = answer;
+      renderAnswerFiles(target.text, answer);
     } catch (error) {
       if (controller && controller.signal.aborted) {
         target.text.textContent = answer + " [stopped]";
+      } else if (error && error.fromServer) {
+        // The daemon answered and refused. Its sentence is the useful one.
+        target.bubble.className = "bubble failed";
+        target.text.textContent = error.message;
       } else {
         // A dropped stream is not a failed turn. The daemon keeps working after
         // the browser lets go, so the answer is very likely on its way to the

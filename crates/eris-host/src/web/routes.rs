@@ -18,7 +18,7 @@ use std::io::Read as _;
 use axum::body::Body;
 use axum::extract::FromRequest;
 use axum::extract::multipart::Multipart;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::sse::{Event as SseEvent, KeepAlive as SseKeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
@@ -74,6 +74,10 @@ fn context_of(context: Option<Extension<ClientContext>>) -> ClientContext {
 /// The upload ceiling for one form post. Every field is a short string.
 const MAX_BODY_BYTES: usize = 16 * 1024;
 
+/// The ceiling on one chat send: every attachment the turn may carry, plus the
+/// multipart framing and the text fields around them.
+const CHAT_BODY_BYTES: usize = chat::MAX_ATTACHMENT_TOTAL_BYTES + 8 * 1024 * 1024;
+
 /// The wizard routes. Registered before the ready gate, because onboarding has to
 /// be reachable while the daemon is in `setup`.
 pub fn setup_routes() -> axum::Router<AppState> {
@@ -126,7 +130,13 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_BACKUPS_RESTORE, post(restore_backup))
         .route(ROUTE_JOB_CANCEL, post(cancel_job))
         .route(ROUTE_CHAT, get(chat_page_handler))
-        .route(ROUTE_CHAT_SEND, post(chat_send))
+        // Attachments are capped at 64 MiB across a message and 25 MiB each.
+        // Axum's 2 MiB default would refuse the operator's first photo before
+        // the route's own, better-worded checks ever ran.
+        .route(
+            ROUTE_CHAT_SEND,
+            post(chat_send).layer(DefaultBodyLimit::max(CHAT_BODY_BYTES)),
+        )
         .route(ROUTE_CHAT_CLEAR, post(chat_clear))
         .route(ROUTE_CHAT_MODE, post(chat_mode))
         .route(ROUTE_CHAT_NEW, post(chat_new))
@@ -5593,6 +5603,26 @@ fn resolve_chat_model(
 /// parts itself, and a script that appends several files under `file` is the same
 /// shape. `files` is accepted as a spelling too, because a form that collects a
 /// multiple picker naturally calls the field by its plural.
+/// One multipart failure as the form the page can show.
+///
+/// Axum's own "length limit exceeded" is the default body ceiling, not a bad
+/// form: saying so, with the number the daemon actually accepts, is the
+/// difference between "try again" and "attach a smaller file".
+fn multipart_failure(context: &str, error: impl std::fmt::Display) -> FormError {
+    let text = error.to_string();
+    if text.contains("length limit") {
+        return FormError::new(
+            Some("file"),
+            "upload_too_large",
+            format!(
+                "that message is larger than the {} bytes this daemon accepts in one send;                  attach fewer or smaller files",
+                CHAT_BODY_BYTES
+            ),
+        );
+    }
+    FormError::new(None, "upload_unreadable", format!("{context}: {text}"))
+}
+
 async fn read_multipart_chat(
     state: AppState,
     request: axum::extract::Request,
@@ -5605,29 +5635,22 @@ async fn read_multipart_chat(
 > {
     let mut multipart = axum::extract::Multipart::from_request(request, &state)
         .await
-        .map_err(|error| {
-            FormError::new(
-                None,
-                "upload_unreadable",
-                format!("the form did not parse as multipart: {error}"),
-            )
-        })?;
+        .map_err(|error| multipart_failure("the form did not parse as multipart", error))?;
 
     let mut fields = std::collections::BTreeMap::new();
     let mut files: Vec<chat::Attachment> = Vec::new();
     let mut total_bytes = 0usize;
-    while let Some(mut field) = multipart.next_field().await.map_err(|error| {
-        FormError::new(
-            None,
-            "upload_unreadable",
-            format!("the form did not parse as multipart: {error}"),
-        )
-    })? {
+    while let Some(mut field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| multipart_failure("the form did not parse as multipart", error))?
+    {
         let name = field.name().unwrap_or_default().to_owned();
         if name != "file" && name != "files" {
-            let value = field.text().await.map_err(|error| {
-                FormError::new(None, "upload_unreadable", format!("field {name}: {error}"))
-            })?;
+            let value = field
+                .text()
+                .await
+                .map_err(|error| multipart_failure(&format!("field {name}"), error))?;
             fields.insert(name, value);
             continue;
         }
@@ -5649,9 +5672,7 @@ async fn read_multipart_chat(
             while field
                 .chunk()
                 .await
-                .map_err(|error| {
-                    FormError::new(None, "upload_unreadable", format!("file part: {error}"))
-                })?
+                .map_err(|error| multipart_failure("file part", error))?
                 .is_some()
             {}
             continue;
@@ -5660,13 +5681,11 @@ async fn read_multipart_chat(
             continue;
         }
         let mut bytes: Vec<u8> = Vec::new();
-        while let Some(chunk) = field.chunk().await.map_err(|error| {
-            FormError::new(
-                Some("file"),
-                "upload_unreadable",
-                format!("file part: {error}"),
-            )
-        })? {
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|error| multipart_failure("file part", error))?
+        {
             if bytes.len() + chunk.len() > chat::MAX_ATTACHMENT_BYTES {
                 return Err(FormError::new(
                     Some("file"),

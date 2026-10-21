@@ -6,6 +6,16 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **A photo no longer looks like a dropped connection.** The chat POST inherited
+  Axum's 2 MiB body ceiling, so an iPhone screenshot over that size was refused
+  while the multipart parser was still reading it, and the page said "lost the
+  connection". The route now accepts the same 64 MiB the attachment rules
+  already state, and a refusal states the daemon's own sentence instead of the
+  connection message. `build 85`.
+- **The live turn draws pictures too.** A sent picture is a thumbnail in the
+  bubble the moment it is sent, not only after a reload, and a file reference in
+  the answer is rendered when the stream finishes. The live run log also starts
+  closed, matching the server-rendered one. `build 85`.
 - **The assistant can show what it made.** A workspace path written as
   `![caption](generated/x.png)` is drawn as a thumbnail in the bubble, and
   `[name](docs/brief.pdf)` is a chip with its type badge and a download. The new
