@@ -26,6 +26,7 @@ credential is in the body. The scope column is checked before the handler runs.
 
 | Route | Method | Scope | Answers |
 |---|---|---|---|
+| `/v1/version` | GET | none | version, build, and the frame vocabulary this daemon speaks - so a client can tell what it is talking to before it holds a token |
 | `/v1/pair` | POST | pairing code in the body | 201 with tokens, device id and the granted scopes |
 | `/v1/token/refresh` | POST | refresh token in the body | 200 with a new access token, scope set carried forward |
 | `/v1/turns` | POST | `chat` | 202 with `job_id`, `session_id`, `state`, and `conversation_id` when one was named |

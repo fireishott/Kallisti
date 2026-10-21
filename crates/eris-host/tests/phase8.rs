@@ -4403,3 +4403,36 @@ async fn the_persona_reads_and_writes_the_same_file_the_settings_page_uses() {
 
     harness.stop();
 }
+
+/// A client with no credential can still learn what it is talking to, which is the
+/// first question worth answering when pairing misbehaves.
+#[tokio::test]
+async fn the_daemon_says_what_it_is_without_a_credential() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+
+    let reply = harness.request("GET", "/v1/version", &[], None).await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let body = reply.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["api"], "v1");
+    assert_eq!(body["version"], eris_host::admin::VERSION);
+    assert_eq!(body["build"], eris_host::admin::BUILD);
+    let frames = body["frames"].as_array().expect("the frame vocabulary");
+    assert_eq!(frames.len(), 6, "every frame kind is named: {body}");
+    assert!(
+        frames.iter().any(|f| f == "reasoning") && frames.iter().any(|f| f == "tool"),
+        "a client can learn that reasoning and tools exist: {body}"
+    );
+    // Nothing here is a secret: no token, no key, no address of anything internal.
+    let text = reply.body.to_ascii_lowercase();
+    for forbidden in ["token", "key", "password", "secret"] {
+        assert!(
+            !text.contains(forbidden),
+            "the version answer carries no {forbidden}: {}",
+            reply.body
+        );
+    }
+
+    harness.stop();
+}

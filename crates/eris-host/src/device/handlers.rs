@@ -1942,6 +1942,22 @@ pub async fn decide_approval(
     axum::Json(body).into_response()
 }
 
+/// `GET /v1/version` - what this daemon is, with no credential.
+///
+/// Deliberately unauthenticated: a client holds nothing to send before it has
+/// paired, and "is anything even listening that speaks my protocol" is the first
+/// question worth answering. It carries nothing an unpaired stranger could act on.
+pub async fn version() -> axum::response::Response {
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "version": crate::admin::VERSION,
+        "build": crate::admin::BUILD,
+        "api": "v1",
+        "frames": FrameKind::ALL.map(FrameKind::as_str),
+    }))
+    .into_response()
+}
+
 /// The list `GET /v1/approvals` answers with.
 fn read_approvals(service: &DeviceService) -> Result<serde_json::Value, DeviceError> {
     let mut waiting = approvals::pending(service.engine().db()).map_err(|error| {

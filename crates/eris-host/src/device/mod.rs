@@ -85,6 +85,14 @@ pub const ROUTE_CANCEL: &str = "/v1/turns/{id}/cancel";
 /// `GET /v1/sessions/{id}` - the snapshot a buffer miss points at.
 pub const ROUTE_SESSION: &str = "/v1/sessions/{id}";
 
+/// `GET /v1/version` - which daemon a client is talking to, without a token.
+///
+/// A client that has just scanned a pairing code has no bearer yet, and the first
+/// thing a person wants to know when pairing misbehaves is whether the phone and
+/// the host are even on speaking terms. Nothing secret is in it: a version, a
+/// build and the frame names this daemon speaks.
+pub const ROUTE_VERSION: &str = "/v1/version";
+
 /// `GET /v1/projects` and `POST /v1/projects` - the list, and naming one.
 pub const ROUTE_PROJECTS: &str = "/v1/projects";
 
@@ -548,6 +556,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_EVENTS, get(handlers::events))
         .route(ROUTE_CANCEL, post(handlers::cancel))
         .route(ROUTE_SESSION, get(handlers::session))
+        .route(ROUTE_VERSION, get(handlers::version))
         .route(
             ROUTE_PROJECTS,
             get(handlers::projects).post(handlers::create_project),

@@ -79,7 +79,18 @@ pub enum FrameKind {
 }
 
 impl FrameKind {
-    /// The stored and wire spelling.
+    /// Every kind, so a client can learn the vocabulary from `/v1/version`
+    /// instead of pinning a build number.
+    pub const ALL: [Self; 6] = [
+        Self::Delta,
+        Self::Reasoning,
+        Self::Tool,
+        Self::Done,
+        Self::Error,
+        Self::Cancelled,
+    ];
+
+    /// The storage and wire spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
