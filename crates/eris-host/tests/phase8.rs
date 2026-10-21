@@ -2911,7 +2911,7 @@ async fn settings_post_changes_a_subset_and_refuses_an_invalid_value() {
 }
 
 #[tokio::test]
-async fn the_admin_scope_unlocks_settings_and_nothing_else() {
+async fn the_admin_scope_unlocks_admin_routes_and_nothing_else() {
     let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
     let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
     let (_, admin_token) = harness.device_with_admin_token("iPad");
@@ -2944,6 +2944,19 @@ async fn the_admin_scope_unlocks_settings_and_nothing_else() {
         )
         .await;
     assert_eq!(settings.status, 200, "{}", settings.body);
+    // Admin also reaches the administration surface added beside the settings:
+    // reading the devices, the trail and the identity are the same authority.
+    for path in ["/v1/devices", "/v1/audit", "/v1/persona"] {
+        let read = harness
+            .request(
+                "GET",
+                path,
+                &[("authorization", format!("Bearer {admin_only}"))],
+                None,
+            )
+            .await;
+        assert_eq!(read.status, 200, "GET {path}: {}", read.body);
+    }
     for (method, path) in [
         ("GET", "/v1/projects"),
         ("GET", "/v1/conversations"),
@@ -3575,6 +3588,817 @@ async fn the_dashboard_reads_the_one_queue_a_device_answers() {
     assert!(
         !page.contains("parked"),
         "a decision on the device empties the dashboard's counter: {page}"
+    );
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// The administration half: devices, revocation, the trail and the identity
+// ---------------------------------------------------------------------------
+
+/// One page through the browser router, the way the daemon serves it.
+async fn browser_page(app: &axum::Router, cookie: &str, path: &str) -> (u16, String) {
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("accept", "text/html")
+        .header("cookie", cookie)
+        .body(axum::body::Body::empty())
+        .expect("a page request");
+    let response = app
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the page answers");
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+        .await
+        .expect("the page body");
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// One form post through the browser router, so the revoke button is exercised
+/// the way a browser sends it and not only through the device route.
+async fn browser_post(app: &axum::Router, cookie: &str, path: &str, body: &str) -> (u16, String) {
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("accept", "text/html")
+        .header("cookie", cookie)
+        .header("content-type", FORM)
+        .body(axum::body::Body::from(body.to_owned()))
+        .expect("a form request");
+    let response = app
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the form answers");
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+        .await
+        .expect("the form body");
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// The admin cookie for the in-process browser router.
+fn browser_cookie(harness: &Harness) -> String {
+    format!(
+        "kallisti_admin={}",
+        harness
+            .engine
+            .sessions()
+            .mint()
+            .expect("an admin session")
+            .cookie_value
+    )
+}
+
+use eris_host::web::store as web_store;
+
+#[tokio::test]
+async fn the_device_and_audit_routes_require_a_bearer_and_the_admin_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, device_token) = harness.device_with_token("iPhone");
+    let (other, _) = harness.device_with_token("iPad");
+
+    // Every route this wave added, by method and path, so a route that forgot the
+    // guard fails by name instead of by a survey of the whole listener.
+    let cases: [(&str, String, Option<&str>); 5] = [
+        ("GET", "/v1/devices".to_owned(), None),
+        ("POST", format!("/v1/devices/{other}/revoke"), None),
+        ("GET", "/v1/audit".to_owned(), None),
+        ("GET", "/v1/persona".to_owned(), None),
+        (
+            "POST",
+            "/v1/persona".to_owned(),
+            Some(r#"{"persona":"you are Kallisti"}"#),
+        ),
+    ];
+
+    for (method, path, body) in &cases {
+        let anonymous = harness.request(method, path, &[], *body).await;
+        assert_eq!(
+            anonymous.status, 401,
+            "{method} {path} without a bearer: {}",
+            anonymous.body
+        );
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+
+        let denied = harness
+            .request(
+                method,
+                path,
+                &[("authorization", format!("Bearer {device_token}"))],
+                *body,
+            )
+            .await;
+        assert_eq!(
+            denied.status, 403,
+            "{method} {path} without admin: {}",
+            denied.body
+        );
+        let refusal = denied.json();
+        assert_eq!(refusal["code"], "scope_denied");
+        let message = refusal["message"].as_str().expect("a message");
+        assert!(
+            message.contains("paired without administration"),
+            "the refusal says what actually happened: {message}"
+        );
+        assert!(
+            !message.to_ascii_lowercase().contains("forbidden"),
+            "the refusal is not the bare word: {message}"
+        );
+    }
+
+    // A refused revoke revokes nothing, and a refused persona post writes nothing.
+    let row = AuthStore::new(harness.engine.db().clone())
+        .device(&other)
+        .expect("the device read")
+        .expect("a device row");
+    assert!(
+        row.revoked_at.is_none(),
+        "a 403 must not settle the row it named"
+    );
+    let persona_file =
+        eris_host::config::Paths::for_root(harness._dir.path().join("root")).persona_file();
+    assert!(
+        !persona_file.exists(),
+        "a 403 must not write the persona file: {}",
+        persona_file.display()
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_device_list_reports_pairing_and_administration_per_device() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+
+    // Two devices through the real pairing route: one whose code the operator
+    // ticked the box for, one ordinary code. The list has to keep them apart.
+    let (admin_id, admin_code) = harness.device_with_admin_code("iPad");
+    let paired_admin = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(
+                r#"{{"code":"{admin_code}","device_name":"iPad"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(paired_admin.status, 201, "{}", paired_admin.body);
+    let admin_token = paired_admin.json()["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+
+    let (chatty_id, chatty_code) = harness.device_with_code("iPhone");
+    let paired_chatty = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(
+                r#"{{"code":"{chatty_code}","device_name":"iPhone"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(paired_chatty.status, 201, "{}", paired_chatty.body);
+
+    let listed = harness
+        .request(
+            "GET",
+            "/v1/devices",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["truncated"], false);
+    assert_eq!(body["count"], 2);
+    let mut top: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    top.sort_unstable();
+    assert_eq!(
+        top,
+        vec!["count", "devices", "ok", "truncated"],
+        "the body is the documented shape and nothing else: {body}"
+    );
+    let rows = body["devices"].as_array().expect("a device list");
+    assert_eq!(rows.len(), 2);
+
+    // The row shape is the documented one and nothing else.
+    for row in rows {
+        let mut keys: Vec<&str> = row
+            .as_object()
+            .expect("a device object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "can_admin",
+                "created_at",
+                "id",
+                "last_seen",
+                "name",
+                "paired"
+            ],
+            "the row is the documented shape and nothing else: {row}"
+        );
+        assert!(
+            row["created_at"]
+                .as_str()
+                .is_some_and(|at| at.contains('T')),
+            "created_at is the row's own stamp: {row}"
+        );
+    }
+
+    let find = |id: &str| {
+        rows.iter()
+            .find(|row| row["id"] == id)
+            .unwrap_or_else(|| panic!("{id} is missing from the list: {body}"))
+            .clone()
+    };
+    let admin_row = find(&admin_id);
+    assert_eq!(admin_row["name"], "iPad");
+    assert_eq!(admin_row["paired"], true);
+    assert_eq!(
+        admin_row["can_admin"], true,
+        "the ticked box is a fact the list reports: {admin_row}"
+    );
+    let chatty_row = find(&chatty_id);
+    assert_eq!(chatty_row["paired"], true);
+    assert_eq!(
+        chatty_row["can_admin"], false,
+        "an ordinary code grants no administration: {chatty_row}"
+    );
+
+    // No activity has been recorded for either device, so the honest answer is
+    // null rather than a stamp invented for the field.
+    assert_eq!(
+        admin_row["last_seen"],
+        serde_json::Value::Null,
+        "nothing recorded means null: {admin_row}"
+    );
+
+    // Once the daemon records an audited change made as that device, the derived
+    // stamp appears, and it is the recorded one rather than a fresh clock read.
+    harness
+        .engine
+        .auth()
+        .audit(
+            &chatty_id,
+            "settings.persona",
+            Some("enabled=false; characters=0"),
+        )
+        .expect("an audit row");
+    let recorded: String = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT occurred_at FROM audit_log WHERE actor = ?1 ORDER BY id DESC LIMIT 1",
+                [chatty_id.as_str()],
+                |row| row.get(0),
+            )
+        })
+        .expect("the recorded stamp");
+    let again = harness
+        .request(
+            "GET",
+            "/v1/devices",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    let again_body = again.json();
+    let chatty_again = again_body["devices"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|row| row["id"] == chatty_id)
+        .expect("the chatty device")
+        .clone();
+    assert_eq!(
+        chatty_again["last_seen"],
+        serde_json::Value::String(recorded),
+        "last_seen is the stamp the daemon wrote: {chatty_again}"
+    );
+
+    // Newest first: the stamps the list reports never increase down the page.
+    let stamps: Vec<&str> = again_body["devices"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|row| row["created_at"].as_str())
+        .collect();
+    assert!(
+        stamps.windows(2).all(|pair| pair[0] >= pair[1]),
+        "the list is newest first: {stamps:?}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_device_list_is_capped_at_two_hundred_and_says_so() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let store = AuthStore::new(harness.engine.db().clone());
+
+    // The oldest row first, so the cap has a row it has to drop.
+    let oldest = store
+        .register_device("oldest", "ios")
+        .expect("the oldest row");
+    let mut newest = oldest.clone();
+    for index in 0..204 {
+        newest = store
+            .register_device(&format!("phone-{index}"), "ios")
+            .expect("a device row");
+    }
+
+    let listed = harness
+        .request(
+            "GET",
+            "/v1/devices",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["count"], 200);
+    assert_eq!(body["truncated"], true);
+    let ids: Vec<&str> = body["devices"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect();
+    assert_eq!(ids.len(), 200);
+    assert!(
+        !ids.contains(&oldest.as_str()),
+        "the oldest device is what falls off the capped page"
+    );
+    assert!(
+        ids.contains(&newest.as_str()),
+        "the device just registered is on the page"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn revoking_a_device_settles_the_row_audits_the_actor_and_kills_its_token() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (actor_id, admin_token) = harness.device_with_admin_token("iPad");
+    let (victim_id, victim_token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    let revoked = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{victim_id}/revoke"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, 200, "{}", revoked.body);
+    let body = revoked.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["id", "ok", "revoked"],
+        "the body is the documented shape and nothing else: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["id"], victim_id.as_str());
+    assert_eq!(
+        body["revoked"], 1,
+        "the one live token of that device moved: {body}"
+    );
+
+    // The row is settled, and every token of it is retired.
+    let row = AuthStore::new(harness.engine.db().clone())
+        .device(&victim_id)
+        .expect("the device read")
+        .expect("a device row");
+    assert!(row.revoked_at.is_some(), "the device row carries a stamp");
+    let dead = harness
+        .request(
+            "GET",
+            "/v1/devices",
+            &[("authorization", format!("Bearer {victim_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(
+        dead.status, 401,
+        "a revoked device's own token stops verifying: {}",
+        dead.body
+    );
+
+    // The trail: the acting device is the actor, the action is the browser's own
+    // name, and the detail is the device that moved. One history, one place.
+    let entries = web_store::audit_recent(harness.engine.db(), 5).expect("the recent audit rows");
+    let newest = entries.first().expect("a row");
+    assert_eq!(newest.action, "dashboard.device_revoked");
+    assert_eq!(newest.actor, actor_id);
+    assert_eq!(newest.detail.as_deref(), Some(victim_id.as_str()));
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.action == "auth.revoke_device"),
+        "the store's own row is written too, so the browser history is complete: {entries:?}"
+    );
+
+    // A device may revoke the device whose token carried the call. Refusing it
+    // would be a device able to keep itself unrevocable.
+    let itself = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{actor_id}/revoke"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(
+        itself.status, 200,
+        "a device may revoke itself: {}",
+        itself.body
+    );
+    assert_eq!(itself.json()["revoked"], 1, "its own access token moved");
+    let afterwards = harness.request("GET", "/v1/audit", &auth, None).await;
+    assert_eq!(
+        afterwards.status, 401,
+        "the token that made the call stops verifying on the next request: {}",
+        afterwards.body
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn an_unknown_device_id_is_a_404_by_code() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    let missing = harness
+        .request("POST", "/v1/devices/no-such-device/revoke", &auth, None)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.json()["code"], "device_not_found");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_audit_read_is_newest_first_bounded_and_reports_the_real_total() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // More rows than any page this route will serve.
+    for index in 0..205 {
+        harness
+            .engine
+            .auth()
+            .audit("loopback", "p8.audit", Some(&format!("n={index}")))
+            .expect("an audit row");
+    }
+    let total = web_store::audit_count(harness.engine.db()).expect("the row count");
+    assert!(
+        total > 200,
+        "the fixture has more rows than the cap: {total}"
+    );
+
+    // The default page: fifty rows, newest first, and the real total beside it.
+    let page = harness.request("GET", "/v1/audit", &auth, None).await;
+    assert_eq!(page.status, 200, "{}", page.body);
+    let body = page.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["count"], 50);
+    assert_eq!(body["total"], total);
+    let mut top: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    top.sort_unstable();
+    assert_eq!(
+        top,
+        vec!["count", "entries", "ok", "total"],
+        "the body is the documented shape and nothing else: {body}"
+    );
+    let entries = body["entries"].as_array().expect("an entry list");
+    assert_eq!(entries.len(), 50);
+    for entry in entries {
+        let mut keys: Vec<&str> = entry
+            .as_object()
+            .expect("an entry object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["action", "actor", "at", "detail"],
+            "the entry is the documented shape and nothing else: {entry}"
+        );
+        assert!(
+            entry["at"].as_str().is_some_and(|at| at.contains('T')),
+            "at is the row's own stamp: {entry}"
+        );
+    }
+    assert_eq!(entries[0]["detail"], "n=204", "the newest row is first");
+    assert_eq!(entries[1]["detail"], "n=203");
+
+    // A named page is honoured.
+    let five = harness
+        .request("GET", "/v1/audit?limit=5", &auth, None)
+        .await;
+    assert_eq!(five.status, 200, "{}", five.body);
+    let five_body = five.json();
+    assert_eq!(five_body["count"], 5);
+    assert_eq!(five_body["total"], total);
+    let five_entries = five_body["entries"].as_array().expect("entries");
+    assert_eq!(five_entries[0]["detail"], "n=204");
+    assert_eq!(five_entries[4]["detail"], "n=200");
+
+    // A page larger than the cap is capped, not refused.
+    let capped = harness
+        .request("GET", "/v1/audit?limit=500", &auth, None)
+        .await;
+    assert_eq!(capped.status, 200, "{}", capped.body);
+    let capped_body = capped.json();
+    assert_eq!(capped_body["count"], 200);
+    assert_eq!(capped_body["total"], total);
+
+    // A limit that is not a positive number is named, not silently defaulted.
+    for bad in ["abc", "0", "-1"] {
+        let refused = harness
+            .request("GET", &format!("/v1/audit?limit={bad}"), &auth, None)
+            .await;
+        assert_eq!(refused.status, 400, "limit={bad}: {}", refused.body);
+        assert_eq!(refused.json()["code"], "limit_invalid");
+    }
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_browser_devices_page_still_lists_and_revokes() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, _) = harness.device_with_admin_token("iPad");
+    let app = eris_host::admin::router_with(eris_host::admin::AppState::new(
+        harness.engine.clone(),
+        false,
+    ));
+    let cookie = browser_cookie(&harness);
+
+    let (status, page) = browser_page(&app, &cookie, "/dashboard/devices").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(page.contains("iPad"), "the device is listed: {page}");
+    assert!(
+        page.contains("can administer"),
+        "the access column still states the token's scope: {page}"
+    );
+    assert!(
+        page.contains(r#"action="/dashboard/device/revoke""#),
+        "the revoke form is still on the page: {page}"
+    );
+    assert!(
+        !page.replace("<!DOCTYPE html>", "").contains('!'),
+        "house style holds on this page"
+    );
+
+    // The button still revokes, and the page reads the result back.
+    let (status, after) = browser_post(
+        &app,
+        &cookie,
+        "/dashboard/device/revoke",
+        &format!("device_id={device_id}"),
+    )
+    .await;
+    assert_eq!(status, 200, "{after}");
+    assert!(
+        after.contains("revoked 1 token(s)"),
+        "the browser path reports what it revoked: {after}"
+    );
+    let row = AuthStore::new(harness.engine.db().clone())
+        .device(&device_id)
+        .expect("the device read")
+        .expect("a device row");
+    assert!(row.revoked_at.is_some());
+
+    let (status, page) = browser_page(&app, &cookie, "/dashboard/devices").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        !page.contains(r#"action="/dashboard/device/revoke""#),
+        "a revoked device offers no second revoke: {page}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_browser_activity_page_still_reads_the_trail_a_device_writes() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (actor_id, admin_token) = harness.device_with_admin_token("iPad");
+    let (victim_id, _) = harness.device_with_admin_token("iPhone");
+
+    // The device surface revokes, and the browser page reads the same row.
+    let revoked = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{victim_id}/revoke"),
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, 200, "{}", revoked.body);
+
+    let app = eris_host::admin::router_with(eris_host::admin::AppState::new(
+        harness.engine.clone(),
+        false,
+    ));
+    let cookie = browser_cookie(&harness);
+    let (status, page) = browser_page(&app, &cookie, "/dashboard/activity").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        page.contains("dashboard.device_revoked"),
+        "the action a device wrote is on the page: {page}"
+    );
+    assert!(
+        page.contains(&actor_id),
+        "the acting device is the actor on the page: {page}"
+    );
+    assert!(
+        page.contains(&victim_id),
+        "the revoked device is the detail on the page: {page}"
+    );
+    assert!(
+        !page.replace("<!DOCTYPE html>", "").contains('!'),
+        "house style holds on this page"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_persona_reads_and_writes_the_same_file_the_settings_page_uses() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    let path = eris_host::config::Paths::for_root(harness._dir.path().join("root")).persona_file();
+
+    // Nothing written yet: an empty body, the switch, and the cap.
+    let empty = harness.request("GET", "/v1/persona", &auth, None).await;
+    assert_eq!(empty.status, 200, "{}", empty.body);
+    let body = empty.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["enabled", "limit", "ok", "persona"],
+        "the read body is the documented shape and nothing else: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["persona"], "");
+    assert_eq!(body["enabled"], true, "the documented default is on");
+    assert_eq!(
+        body["limit"].as_u64(),
+        Some(eris_host::persona::MAX_PERSONA_BYTES as u64),
+        "the cap is the one the settings page enforces: {body}"
+    );
+    assert!(!path.exists(), "reading does not create the file");
+
+    let written = harness
+        .request(
+            "POST",
+            "/v1/persona",
+            &auth,
+            Some(r#"{"persona":"You are Kallisti, the operator's chief of staff."}"#),
+        )
+        .await;
+    assert_eq!(written.status, 200, "{}", written.body);
+    let body = written.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["characters", "enabled", "ok"],
+        "the write body is the documented shape and nothing else: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body["characters"].as_u64(),
+        Some(
+            "You are Kallisti, the operator's chief of staff."
+                .chars()
+                .count() as u64
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the persona file"),
+        "You are Kallisti, the operator's chief of staff.",
+        "the text lands in the file the next turn reads"
+    );
+
+    // The trail carries the count and the switch, never the text.
+    let entries = web_store::audit_recent(harness.engine.db(), 1).expect("the newest row");
+    let newest = entries.first().expect("a row");
+    assert_eq!(newest.action, "settings.persona");
+    let detail = newest.detail.as_deref().expect("a detail");
+    assert!(detail.contains("characters="), "{detail}");
+    assert!(
+        !detail.contains("chief of staff"),
+        "the operator's words are not in the trail: {detail}"
+    );
+
+    // Over the cap is refused with the count and the cap, and nothing is written.
+    let oversized = "x".repeat(eris_host::persona::MAX_PERSONA_BYTES + 1);
+    let refused = harness
+        .request(
+            "POST",
+            "/v1/persona",
+            &auth,
+            Some(&serde_json::json!({ "persona": oversized }).to_string()),
+        )
+        .await;
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "persona_too_large");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the persona file"),
+        "You are Kallisti, the operator's chief of staff.",
+        "a refused save leaves the file alone"
+    );
+
+    // An enabled persona with no text is the same refusal the settings page makes.
+    let blank = harness
+        .request("POST", "/v1/persona", &auth, Some(r#"{"persona":"   "}"#))
+        .await;
+    assert_eq!(blank.status, 422, "{}", blank.body);
+    assert_eq!(blank.json()["code"], "persona_empty");
+
+    // Clearing it while the persona is off is allowed, because that is the state
+    // that actually does nothing rather than claiming to do something.
+    web_store::settings_put(
+        harness.engine.db(),
+        eris_host::persona::SETTING_PERSONA_ENABLED,
+        "false",
+    )
+    .expect("the switch");
+    let cleared = harness
+        .request("POST", "/v1/persona", &auth, Some(r#"{"persona":""}"#))
+        .await;
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    assert_eq!(cleared.json()["enabled"], false);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the persona file"),
+        "",
+        "an explicit empty field clears the text"
     );
 
     harness.stop();

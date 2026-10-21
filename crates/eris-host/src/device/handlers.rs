@@ -28,8 +28,8 @@ use crate::auth::{
 };
 use crate::device::turns::{ConversationTurn, FrameKind, TurnFrame, TurnPolicy};
 use crate::device::{
-    APPROVAL_LIST_LIMIT, CONVERSATION_LIST_LIMIT, CONVERSATION_MESSAGE_LIMIT, DeviceError,
-    DeviceService,
+    APPROVAL_LIST_LIMIT, AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT, CONVERSATION_LIST_LIMIT,
+    CONVERSATION_MESSAGE_LIMIT, DEVICE_LIST_LIMIT, DeviceError, DeviceService,
 };
 use crate::onboarding::{PermissionError, Permissions, SetupEngine};
 use crate::web::chat;
@@ -2075,6 +2075,394 @@ fn read_mcp(service: &DeviceService) -> Result<serde_json::Value, DeviceError> {
         "health_known": health_known,
         "servers": rows,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// The administration half, behind the admin scope
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/devices` - every device this daemon knows, newest first.
+///
+/// Behind the bearer and the `admin` scope: a phone that may change the settings
+/// may also see which devices exist, what each of them may do, and which one
+/// should not be there any more. The rows are the dashboard's own device rows, so
+/// the two surfaces cannot disagree about who is paired.
+///
+/// `can_admin` is read from the stored token scope rather than guessed from a
+/// name. `paired` is the dashboard's own definition - a live token exists, or a
+/// code for that device was redeemed - so the two surfaces state one fact; today
+/// the two cannot come apart, because a redeemed code mints the tokens and
+/// nothing in the pairing flow rotates one away. `last_seen` is the newest
+/// activity stamp this daemon actually recorded for that device - the session it
+/// opened or an audit row it authored - and it is null when neither exists,
+/// because a timestamp invented for a field is worse than an empty field.
+pub async fn devices(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    match read_devices(&service) {
+        Ok(body) => axum::Json(body).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+/// The list `GET /v1/devices` answers with.
+fn read_devices(service: &DeviceService) -> Result<serde_json::Value, DeviceError> {
+    let db = service.engine().db();
+    let mut rows = crate::web::store::devices_list(db).map_err(|error| {
+        DeviceError::db_unavailable(format!("cannot read the device rows: {error}"))
+    })?;
+    let last_seen = crate::web::store::device_last_seen(db).map_err(|error| {
+        DeviceError::db_unavailable(format!("cannot read the device activity stamps: {error}"))
+    })?;
+    // The store sorts newest first, so the rows that fall off a capped page are
+    // the oldest devices rather than the ones just paired.
+    let truncated = rows.len() > DEVICE_LIST_LIMIT;
+    rows.truncate(DEVICE_LIST_LIMIT);
+    let devices: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.id,
+                "name": row.name,
+                "created_at": row.created_at,
+                "paired": row.paired,
+                "can_admin": row.admin,
+                // `None` serialises as null: the field is always present, so a
+                // client does not have to tell "absent" from "never seen".
+                "last_seen": last_seen.get(&row.id),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "ok": true,
+        "count": devices.len(),
+        "truncated": truncated,
+        "devices": devices,
+    }))
+}
+
+/// `POST /v1/devices/{id}/revoke` - retire one device and every live token of it.
+///
+/// The body is empty. The work is [`crate::auth::AuthStore::revoke_device`], the
+/// same call the dashboard's revoke form makes, so the device surface cannot
+/// revoke half of what the browser revokes: the token rows and the device row
+/// move together in one place.
+///
+/// Revoking the device whose token carried the call is allowed on purpose. It is
+/// the operation an operator reaches for when the phone in their hand is the one
+/// that should stop working, and refusing it would make a device able to keep
+/// itself unrevocable. Its token stops verifying on the very next request,
+/// because verification rereads `auth_tokens.revoked_at`; this response is
+/// already being written when that happens.
+///
+/// The audit row names the acting device and uses the action the browser's revoke
+/// writes, so the Activity page reads one history whichever surface revoked.
+pub async fn revoke_device(
+    State(service): State<DeviceService>,
+    Path(device_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let auth = service.engine().auth();
+    match auth.revoke_device(&device_id) {
+        Ok(revoked) => {
+            if let Err(error) = auth.audit(
+                token.device_id(),
+                "dashboard.device_revoked",
+                Some(&device_id),
+            ) {
+                return DeviceError::db_unavailable(format!(
+                    "{device_id} was revoked but the audit row could not be appended: {error}"
+                ))
+                .into_response();
+            }
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "id": device_id,
+                "revoked": revoked,
+            }))
+            .into_response()
+        }
+        Err(crate::auth::AuthError::UnknownDevice) => {
+            DeviceError::device_not_found().into_response()
+        }
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot revoke the device with that id: {error}"))
+                .into_response()
+        }
+    }
+}
+
+/// `GET /v1/audit?limit=N` - the operator's own trail, newest first.
+///
+/// Behind the bearer and the `admin` scope. The rows are the ones the Activity
+/// page renders, read through the same two store calls, so there is one trail and
+/// one bound: `limit` defaults to fifty and a larger value is capped rather than
+/// refused, and `total` says how many rows exist so a client can tell what it is
+/// not seeing.
+///
+/// A row names a device, a setting, a file or a job. There is no column that
+/// could hold a token, a code or a passphrase, which is why the same rows can be
+/// served to a phone.
+pub async fn audit(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let limit = match audit_limit(uri.query()) {
+        Ok(limit) => limit,
+        Err(error) => return error.into_response(),
+    };
+    match read_audit(&service, limit) {
+        Ok(body) => axum::Json(body).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+/// The page size a request names, defaulted and capped.
+fn audit_limit(query: Option<&str>) -> Result<usize, DeviceError> {
+    let fields = query_fields(query.unwrap_or_default())?;
+    let Some(raw) = fields.get("limit").map(|value| value.trim()) else {
+        return Ok(AUDIT_DEFAULT_LIMIT);
+    };
+    if raw.is_empty() {
+        return Ok(AUDIT_DEFAULT_LIMIT);
+    }
+    match raw.parse::<usize>() {
+        Ok(0) | Err(_) => Err(DeviceError::bad_request(
+            "limit_invalid",
+            format!(
+                "limit must be a positive integer: the default is {AUDIT_DEFAULT_LIMIT} and the \
+                 cap is {AUDIT_MAX_LIMIT}"
+            ),
+        )),
+        Ok(limit) => Ok(limit.min(AUDIT_MAX_LIMIT)),
+    }
+}
+
+/// The trail `GET /v1/audit` answers with.
+fn read_audit(service: &DeviceService, limit: usize) -> Result<serde_json::Value, DeviceError> {
+    let db = service.engine().db();
+    let limit = i64::try_from(limit).map_err(|_| {
+        DeviceError::bad_request("limit_invalid", "limit is larger than a row count can be")
+    })?;
+    let rows = crate::web::store::audit_recent(db, limit).map_err(|error| {
+        DeviceError::db_unavailable(format!("cannot read the audit trail: {error}"))
+    })?;
+    let total = crate::web::store::audit_count(db).map_err(|error| {
+        DeviceError::db_unavailable(format!("cannot count the audit rows: {error}"))
+    })?;
+    let entries: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "at": row.occurred_at,
+                "actor": row.actor,
+                "action": row.action,
+                // The detail is a filename, a device id, a digest or a setting
+                // value. Never a secret: the writers are the reason this holds.
+                "detail": row.detail,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "ok": true,
+        "count": entries.len(),
+        "total": total,
+        "entries": entries,
+    }))
+}
+
+/// `GET /v1/persona` - the identity text the next turn would be given.
+///
+/// Behind the bearer and the `admin` scope, because writing it changes what every
+/// turn is told. `enabled` is the stored switch, so a client can tell text that is
+/// in effect from text that is parked, and `limit` is the same byte cap the
+/// settings page enforces.
+pub async fn persona(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let config = persona_config(&service);
+    let text = match config.read_text() {
+        Ok(text) => text,
+        Err(error) => {
+            return DeviceError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "persona_unreadable",
+                error.to_string(),
+            )
+            .into_response();
+        }
+    };
+    let enabled = match persona_enabled(&service) {
+        Ok(enabled) => enabled,
+        Err(error) => return error.into_response(),
+    };
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "persona": text,
+        "enabled": enabled,
+        "limit": crate::persona::MAX_PERSONA_BYTES,
+    }))
+    .into_response()
+}
+
+/// `POST /v1/persona` - write the identity text.
+///
+/// The field is `persona`, and it is written to the same file the settings page
+/// writes at the same cap: a person-sized refusal is better than a truncated
+/// persona nobody wrote. The enabled switch is deliberately not writable here,
+/// because the switch is not the text and a body that carried both would let one
+/// mistake turn the identity off.
+///
+/// The audit row carries the character count and the switch, never the text: the
+/// operator's own words belong in the file and nowhere else.
+///
+/// The body ceiling is the device surface's usual [`MAX_BODY_BYTES`], which is
+/// above the persona cap for a JSON body. A form-encoded body spends three bytes
+/// per non-ASCII character, so a persona close to the cap in a language that is
+/// not ASCII fits as JSON and may not fit as a form.
+pub async fn update_persona(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let Some(text) = fields.get("persona").cloned() else {
+        return DeviceError::bad_request(
+            "persona_required",
+            "a persona field is required: send an empty string to clear the text",
+        )
+        .into_response();
+    };
+    if text.len() > crate::persona::MAX_PERSONA_BYTES {
+        return DeviceError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "persona_too_large",
+            format!(
+                "the persona is {} bytes and the limit is {} bytes. Shorten it",
+                text.len(),
+                crate::persona::MAX_PERSONA_BYTES
+            ),
+        )
+        .into_response();
+    }
+    let enabled = match persona_enabled(&service) {
+        Ok(enabled) => enabled,
+        Err(error) => return error.into_response(),
+    };
+    if enabled && text.trim().is_empty() {
+        return DeviceError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "persona_empty",
+            "the persona is enabled but the text is empty. Write something, or switch the \
+             persona off on the settings page first",
+        )
+        .into_response();
+    }
+    if let Err(error) = persona_config(&service).write(&text) {
+        return DeviceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "persona_write_failed",
+            error.to_string(),
+        )
+        .into_response();
+    }
+    let characters = crate::persona::character_count(&text);
+    let stored = if enabled { "true" } else { "false" };
+    let detail = format!("enabled={stored}; characters={characters}");
+    if let Err(error) =
+        service
+            .engine()
+            .auth()
+            .audit(token.device_id(), "settings.persona", Some(&detail))
+    {
+        return DeviceError::db_unavailable(format!(
+            "the persona was written but the audit row could not be appended: {error}"
+        ))
+        .into_response();
+    }
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "characters": characters,
+        "enabled": enabled,
+    }))
+    .into_response()
+}
+
+/// The persona file this daemon reads and writes.
+fn persona_config(service: &DeviceService) -> crate::persona::PersonaConfig {
+    crate::persona::PersonaConfig::at_path(service.engine().paths().persona_file())
+}
+
+/// Whether the persona is on, with the dashboard's stored row winning.
+fn persona_enabled(service: &DeviceService) -> Result<bool, DeviceError> {
+    let stored = service
+        .engine()
+        .setting(crate::persona::SETTING_PERSONA_ENABLED)
+        .map_err(|error| {
+            DeviceError::db_unavailable(format!("cannot read the persona switch: {error}"))
+        })?;
+    Ok(persona_config(service).effective_enabled(stored.as_deref()))
+}
+
+/// A query string as the same flat map a form body becomes.
+///
+/// The device surface has no query-string route yet, so this is the one place a
+/// query is read, and it reuses the body decoder so both spellings of `a=b` mean
+/// the same thing.
+fn query_fields(query: &str) -> Result<BTreeMap<String, String>, DeviceError> {
+    let mut fields = BTreeMap::new();
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (name, value) = match pair.split_once('=') {
+            Some((name, value)) => (name, value),
+            None => (pair, ""),
+        };
+        let name = percent_decode(name).map_err(|_| {
+            DeviceError::bad_request("query_malformed", "a query name is malformed")
+        })?;
+        let value = percent_decode(value).map_err(|_| {
+            DeviceError::bad_request("query_malformed", "a query value is malformed")
+        })?;
+        fields.insert(name, value);
+    }
+    Ok(fields)
 }
 
 #[cfg(test)]

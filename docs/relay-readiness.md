@@ -21,7 +21,7 @@ routes and a device could not administer anything. It is the authoritative list;
 the grading in section 2 is kept because the reasoning about each gap is still the
 right reasoning, but its totals are stale.
 
-Twenty-two routes. Every one requires a bearer token unless it is the two whose
+Twenty-three routes. Every one requires a bearer token unless it is the two whose
 credential is in the body. The scope column is checked before the handler runs.
 
 | Route | Method | Scope | Answers |
@@ -44,6 +44,11 @@ credential is in the body. The scope column is checked before the handler runs.
 | `/v1/approvals` | GET | `admin` | parked calls newest first, cap 50, `truncated` |
 | `/v1/approvals/{id}/decide` | POST | `admin` | settles the row AND runs the call; refusal leaves it pending with 422 |
 | `/v1/mcp` | GET | `sessions` | servers with `healthy` true, false or null, plus `health_known` |
+| `/v1/devices` | GET | `admin` | every device newest first, cap 200 with `truncated`; `paired`, `can_admin`, `last_seen` (null when the daemon recorded nothing) |
+| `/v1/devices/{id}/revoke` | POST | `admin` | revokes the device and every live token of it, the same store call the dashboard's button makes; 404 `device_not_found` for an unknown id |
+| `/v1/audit` | GET | `admin` | the audit trail newest first, `limit` default 50 and cap 200, `total` beside `count` |
+| `/v1/persona` | GET | `admin` | the identity text the next turn would be given, its size cap, and whether it is switched on |
+| `/v1/persona` | POST | `admin` | writes that text to the same file at the same cap; 422 over the cap or enabled-and-empty |
 
 Scope changes since the grading below was written:
 
@@ -54,9 +59,9 @@ Scope changes since the grading below was written:
 - A device token without `admin` is refused with a sentence that says the device
   was paired without administration and how to change that, not a bare 403.
 
-Still missing, and the honest list: the device does not create or revoke other
-devices, cannot read the audit log, cannot start a backup, cannot change MCP
-servers or the persona, and cannot dispatch a subagent (a subagent has no page to
+Still missing, and the honest list: the device does not create a device or mint a
+pairing code, cannot start a backup, cannot change the MCP server list or the
+persona's on/off switch, and cannot dispatch a subagent (a subagent has no page to
 report to and no parent answer row to count against). Those are in section 3.
 
 ## 1. The surface that existed when this was graded

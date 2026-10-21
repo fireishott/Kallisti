@@ -17,6 +17,14 @@
 //! and they do not make a device turn park one: a turn on this surface refuses a
 //! gated call instead of waiting, because it has no resume path over here.
 //!
+//! The administration half an operator holding a phone needs is here as well, all
+//! of it behind `admin` and none of it a second implementation: `GET /v1/devices`
+//! reads the same rows the devices page reads, `POST /v1/devices/{id}/revoke`
+//! calls the same store function the revoke button calls, `GET /v1/audit` reads
+//! the trail the Activity page renders, and `/v1/persona` reads and writes the
+//! identity file the settings page writes. A phone that may change the settings
+//! may also see what it changed and retire the device that should not be there.
+//!
 //! Three things have to be true before a turn is accepted, in this order:
 //!
 //! 1. a bearer access token that verifies against a stored Argon2id verifier and
@@ -113,6 +121,52 @@ pub const ROUTE_APPROVAL_DECIDE: &str = "/v1/approvals/{id}/decide";
 /// Not `admin`: reading what is configured and whether it answered is the same
 /// class of read as the transcript, and the server list carries no credential.
 pub const ROUTE_MCP: &str = "/v1/mcp";
+
+/// `GET /v1/devices` - every device this daemon knows, behind the `admin` scope.
+///
+/// The dashboard's devices page and this route read the same rows: a phone that
+/// can change the settings can also see which devices exist and which of them
+/// may administer.
+pub const ROUTE_DEVICES: &str = "/v1/devices";
+
+/// `POST /v1/devices/{id}/revoke` - retire one device and its tokens, behind the
+/// `admin` scope.
+///
+/// The same store call the dashboard's revoke button makes, so there is one
+/// revocation and not two: the browser form and this route cannot disagree about
+/// what "revoked" means.
+pub const ROUTE_DEVICE_REVOKE: &str = "/v1/devices/{id}/revoke";
+
+/// `GET /v1/audit` - the operator's own trail, behind the `admin` scope.
+///
+/// The Activity page renders the same rows through the same store reads. It is
+/// the trail of actions, not of content: a row names a device, a file or a
+/// setting and never a secret.
+pub const ROUTE_AUDIT: &str = "/v1/audit";
+
+/// `GET /v1/persona` and `POST /v1/persona` - the assistant's identity text,
+/// behind the `admin` scope.
+///
+/// The same file and the same cap the settings page uses. Reading it is reading
+/// what the next turn would be told; writing it is writing the file, not a copy
+/// in the database.
+pub const ROUTE_PERSONA: &str = "/v1/persona";
+
+/// How many devices one page of `GET /v1/devices` reports.
+///
+/// A device list on this host is tens of rows; the cap exists so the body cannot
+/// grow without bound on a daemon that was paired many times, and the client is
+/// told when it is looking at part of a longer list.
+pub const DEVICE_LIST_LIMIT: usize = 200;
+
+/// The page size `GET /v1/audit` uses when the request names none.
+pub const AUDIT_DEFAULT_LIMIT: usize = 50;
+
+/// The largest page `GET /v1/audit` will serve.
+///
+/// A trail is unbounded in principle: the newest two hundred rows are what a
+/// person holding a phone reads, and `total` says how much more exists.
+pub const AUDIT_MAX_LIMIT: usize = 200;
 
 /// How many approvals one page of `GET /v1/approvals` reports.
 ///
@@ -253,6 +307,20 @@ impl DeviceError {
             StatusCode::NOT_FOUND,
             "approval_not_found",
             "no approval with that id is waiting: it was never queued, or a decision already settled it",
+        )
+    }
+
+    /// 404 for a device id this daemon does not hold.
+    ///
+    /// The browser's revoke form answers the same situation with the auth
+    /// store's own `unknown_device`; this code is the device surface's name for
+    /// it, so a phone branches on one word rather than on a prose message.
+    #[must_use]
+    pub fn device_not_found() -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            "device_not_found",
+            "no device with that id exists on this daemon",
         )
     }
 
@@ -498,6 +566,13 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_APPROVALS, get(handlers::approvals))
         .route(ROUTE_APPROVAL_DECIDE, post(handlers::decide_approval))
         .route(ROUTE_MCP, get(handlers::mcp_servers))
+        .route(ROUTE_DEVICES, get(handlers::devices))
+        .route(ROUTE_DEVICE_REVOKE, post(handlers::revoke_device))
+        .route(ROUTE_AUDIT, get(handlers::audit))
+        .route(
+            ROUTE_PERSONA,
+            get(handlers::persona).post(handlers::update_persona),
+        )
         .fallback(not_here)
         .method_not_allowed_fallback(wrong_method)
         .layer(axum::middleware::from_fn(assign_request_id))
@@ -574,6 +649,10 @@ mod tests {
             ROUTE_APPROVALS,
             ROUTE_APPROVAL_DECIDE,
             ROUTE_MCP,
+            ROUTE_DEVICES,
+            ROUTE_DEVICE_REVOKE,
+            ROUTE_AUDIT,
+            ROUTE_PERSONA,
         ] {
             assert!(route.starts_with("/v1/"), "{route} must live under /v1");
         }

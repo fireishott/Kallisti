@@ -389,6 +389,11 @@ pub struct DeviceOverview {
     pub name: String,
     /// Platform the device reported.
     pub platform: String,
+    /// When the row was created, which is when this daemon first knew the device.
+    ///
+    /// Separate from [`Self::paired_at`]: a row exists before its code is
+    /// redeemed, and the ordering below is on this column.
+    pub created_at: String,
     /// When the row was registered.
     pub paired_at: Option<String>,
     /// When the device last spoke.
@@ -438,7 +443,7 @@ impl DeviceOverview {
 /// on the stored spelling, not a prefix match that `administrator` would satisfy.
 pub fn devices_list(db: &Db) -> Result<Vec<DeviceOverview>, DbError> {
     const SQL: &str = "\
-SELECT d.id, d.name, d.platform, d.paired_at, d.last_seen_at, d.revoked_at, \
+SELECT d.id, d.name, d.platform, d.created_at, d.paired_at, d.last_seen_at, d.revoked_at, \
 ( \
   EXISTS (SELECT 1 FROM auth_tokens t \
           WHERE t.device_id = d.id AND t.revoked_at IS NULL AND t.rotated_at IS NULL) \
@@ -458,12 +463,51 @@ FROM devices d ORDER BY d.created_at DESC, d.id DESC";
                 id: row.get(0)?,
                 name: row.get(1)?,
                 platform: row.get(2)?,
-                paired_at: row.get(3)?,
-                last_seen_at: row.get(4)?,
-                revoked_at: row.get(5)?,
-                paired: row.get(6)?,
-                admin: row.get(7)?,
+                created_at: row.get(3)?,
+                paired_at: row.get(4)?,
+                last_seen_at: row.get(5)?,
+                revoked_at: row.get(6)?,
+                paired: row.get(7)?,
+                admin: row.get(8)?,
             });
+        }
+        Ok(out)
+    })
+}
+
+/// The newest activity stamp the daemon has actually recorded, per device id.
+///
+/// Two rows carry a device-attributable timestamp today, and both are read here
+/// rather than guessed:
+///
+/// - `sessions.last_seen_at`, the stamp written when the daemon opened the
+///   session a turn belongs to. It is written once, at open, and never updated,
+///   because nothing in this daemon sweeps a live session - so it says "this
+///   device opened a session then", not "this device spoke a second ago".
+/// - `audit_log.occurred_at` where `actor` is the device id, which is what a
+///   change made from the phone writes.
+///
+/// `devices.last_seen_at` is deliberately not used: no code path in this daemon
+/// writes that column, so reading it would report a fixture value and the
+/// dashboard already tells the operator it is empty. A device with neither row
+/// is absent from the map, and the caller reports null rather than inventing a
+/// timestamp.
+pub fn device_last_seen(db: &Db) -> Result<BTreeMap<String, String>, DbError> {
+    const SQL: &str = "\
+SELECT a.device_id, MAX(a.stamp) FROM ( \
+    SELECT device_id AS device_id, last_seen_at AS stamp FROM sessions \
+     WHERE device_id IS NOT NULL AND last_seen_at IS NOT NULL \
+    UNION ALL \
+    SELECT actor AS device_id, occurred_at AS stamp FROM audit_log \
+) AS a \
+JOIN devices d ON d.id = a.device_id \
+GROUP BY a.device_id";
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(SQL)?;
+        let mut rows = statement.query([])?;
+        let mut out = BTreeMap::new();
+        while let Some(row) = rows.next()? {
+            out.insert(row.get::<_, String>(0)?, row.get::<_, String>(1)?);
         }
         Ok(out)
     })
@@ -567,5 +611,54 @@ mod tests {
         assert_eq!(audit_count(&db).expect("count"), 5);
         assert_eq!(session_count(&db).expect("count"), 0);
         assert_eq!(device_count(&db).expect("count"), 0);
+    }
+
+    #[test]
+    fn the_derived_last_seen_is_the_newest_stamp_that_was_recorded() {
+        let db = db();
+        db.with_conn(|conn| {
+            for id in ["d1", "d2"] {
+                conn.execute(
+                    "INSERT INTO devices (id, name, platform) VALUES (?1, ?1, 'ios')",
+                    params![id],
+                )?;
+            }
+            // A session stamp and an audit stamp of the same device, plus a
+            // loopback row that is nobody's device.
+            conn.execute(
+                "INSERT INTO sessions (id, device_id, expires_at, last_seen_at) \
+                 VALUES ('s1', 'd1', '2030-01-01T00:00:00Z', '2026-01-01T00:00:10Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO audit_log (actor, action, occurred_at) \
+                 VALUES ('d1', 'settings.persona', '2026-01-01T00:00:05Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO audit_log (actor, action, occurred_at) \
+                 VALUES ('loopback', 'auth.tokens_minted', '2026-01-01T00:00:30Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("fixtures");
+
+        let stamps = device_last_seen(&db).expect("stamps");
+        assert_eq!(
+            stamps.get("d1").map(String::as_str),
+            Some("2026-01-01T00:00:10Z"),
+            "the newer of the session and the audit stamp wins"
+        );
+        assert_eq!(
+            stamps.get("d2"),
+            None,
+            "a device with no recorded activity is absent rather than filled in"
+        );
+        assert_eq!(
+            stamps.len(),
+            1,
+            "a loopback actor is not a device id: {stamps:?}"
+        );
     }
 }
