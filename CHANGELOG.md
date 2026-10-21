@@ -6,6 +6,19 @@ observe; commit history carries the detail.
 
 ## 1.4.1
 
+- **A rate or usage limit is no longer a silent failure.** 9router reports a
+  locked account as a 503 whose body carries the upstream `[429]`; Eris now reads
+  that as a rate limit, takes the wait from `retry-after` or the body (`reset after
+  30m`, `resets at ...`), and writes "Rate or usage limit on X - resets in 5m" into
+  the answer row, so a reload shows it instead of an empty failed bubble. An
+  attached image that no vision model read is now said out loud and told to the
+  model rather than vanishing. `build 87`.
+- **The answer footer reports rounds and cache share,** beside tokens and latency,
+  the same way live and after a reload. A new **Settings -> Quota** toggle (off by
+  default) adds the gateway's limit state under each answer - ok, locked or
+  limited, time to reset, requests today - read from 9router's own database,
+  read-only. `build 87`.
+
 Two halves, back together: **Kallisti 0.4.0 is the iOS frontend, Eris is the
 backend.** Versions align at 1.4.1 (daemon build 86, iOS app build 89).
 
