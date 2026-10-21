@@ -11,11 +11,6 @@ struct AppRootView: View {
     /// stays in onboarding no matter what the user types afterward.
     @State private var relayConfiguredAtLaunch: Bool?
 
-    /// Build 69 (r1): the loading surface is a LAUNCH surface. Once
-    /// hasConnectedOnce flips true it must never come back; reconnect churn
-    /// is owned by the chat connection banner. This never gets reset.
-    @State private var hasShownConnectedApp = false
-
     /// Cold-launch bookkeeping for the launch surface. The base gate
     /// (shouldShowLoadingSurface) returns false the instant the socket
     /// connects, but on a fast LAN that can be <1s after launch - the coin
@@ -24,19 +19,6 @@ struct AppRootView: View {
     /// loaded) with a minimum display time, capped so a hung model fetch
     /// can never trap the user behind the splash.
     @State private var launchSurfaceFirstAppearedAt: Date?
-    private static let launchSurfaceMinDisplay: TimeInterval = 1.5
-    private static let launchSurfaceMaxHold: TimeInterval = 12
-
-    /// Build 108 (hang fix): heartbeat that forces the loading surface to
-    /// re-evaluate while it is mounted. `showLoadingSurface` is a computed
-    /// property - it only re-runs when an observed @State/@Observable value
-    /// changes. After the socket connects, the surface could sit on
-    /// "Connected" forever because nothing changes again (models loaded
-    /// before the 1.5s min-display, or models never load) - the 12s
-    /// max-hold was dead code with no timer behind it. This tick re-renders
-    /// the view every 0.5s while the surface shows, so the elapsed cap
-    /// actually fires.
-    @State private var surfaceHeartbeat = Date()
 
     /// Whether the single opaque loading surface should be shown.
     /// Covers: initial launch, reconnect, auth, verification, restoration,
@@ -97,48 +79,11 @@ struct AppRootView: View {
             }
             return true
         }
-        // Base gate says hide. During a warm reconnect, wait for the connected
-        // callback's conversation reload to finish before exposing chat. This
-        // prevents a returning user from landing on stale cached history.
-        if hasShownConnectedApp {
-            return container.chatStore.isLoading
-                && (container.chatStore.conversation?.messages.isEmpty ?? true)
-        }
-
-        // On a cold launch, hold until the app is actually ready (green dot on
-        // the model picker = connected + models loaded) and the minimum display
-        // time has elapsed, so the launch screen registers instead of flashing.
-        // Never hold a fresh install with nothing to connect to behind the
-        // splash - those devices must land in onboarding immediately.
-        // (Stale keychain auth with no relay is exactly this case: it must
-        // NOT trap the user behind a reconnect splash, per StartupUXTests.)
-        let hasSomethingToConnect = (relayConfiguredAtLaunch ?? false)
-            || (nativeClient?.hasStoredLogin ?? false)
-        guard hasSomethingToConnect else { return false }
-        let appearedAt = launchSurfaceFirstAppearedAt ?? .now
-        // Build 108: use the heartbeat tick as "now" so this elapsed check
-        // is re-evaluated even when no other state changes. Without it, a
-        // surface that reached .connected with models already loaded (or
-        // never loading) froze at the last state change.
-        let elapsed = surfaceHeartbeat.timeIntervalSince(appearedAt)
-        let minDisplayElapsed = elapsed >= Self.launchSurfaceMinDisplay
-        let ready = isAppReady
-        if (ready && minDisplayElapsed) || elapsed > Self.launchSurfaceMaxHold {
-            // Retire the launch surface for this process. Mid-session
-            // reconnects are owned by the chat connection banner.
-            hasShownConnectedApp = true
-            return false
-        }
-        return true
-    }
-
-    /// Green-dot readiness: socket connected AND model catalog loaded.
-    /// The model picker's green dot only shows once both are true, so the
-    /// launch surface holds until that exact state.
-    private var isAppReady: Bool {
-        let connected = container.nativeGatewayClient?.connectionStatus == .connected
-        let modelsReady = !modelStore.isLoading && modelStore.activeModel != nil
-        return connected && modelsReady
+        // The legacy gateway is retired, so there is nothing a cold launch can
+        // connect to and no "connected" state to wait for. The launch surface
+        // is only ever the brief init-resolution splash above; after that the
+        // onboarding flow (or the paired surface) shows immediately.
+        return false
     }
 
     nonisolated static func shouldShowLoadingSurface(
@@ -167,19 +112,11 @@ struct AppRootView: View {
                 return !hasStoredLogin
             }
             if !isLaunchReady {
-                // Before the first verified connect, show the launch surface
-                // ONLY when this device has something to actually connect to:
-                // a stored login (set by a verified connect) or a relay
-                // configured at launch. A fresh install (neither) goes
-                // straight to onboarding - hasConnectedOnce can never become
-                // true for a device with nothing to connect to, so without
-                // this the surface would block onboarding forever. The relay
-                // value here is the r2 launch-time SNAPSHOT, so typing a URL
-                // during onboarding cannot resurrect the surface.
-                if !hasConfiguredRelay {
-                    return false
-                }
-                return true  // launch surface: configured cold start, connection pending
+                // The legacy native gateway is retired, so a device that has
+                // never verified a connection goes to onboarding instead of
+                // sitting on a "connecting" surface. Stale relay settings and a
+                // stale keychain login no longer trap a fresh install here.
+                return false
             }
             // Build 114: after the first verified connect, cover a sustained
             // disconnect/reconnect for returning users. NativeKallistiClient's
@@ -207,28 +144,7 @@ struct AppRootView: View {
             && nativeClient.connectionStatus != .connected
     }
 
-    /// 1.4.0 build 82: Eris is the backend. The legacy Herald gateway behind the
-    /// splash below is retired, so a phone carrying old relay settings and a
-    /// stale login sat on "Connection struggling" forever and never reached
-    /// onboarding. Launch goes to the Eris surface instead: its pairing form is
-    /// onboarding, and a stored pair lands straight in chat. The legacy path is
-    /// kept only behind an explicit opt-in default for debugging.
-    static var usesLegacyGateway: Bool {
-        UserDefaults.standard.bool(forKey: "kallisti.legacyGatewayLaunch")
-    }
-
     var body: some View {
-        if Self.usesLegacyGateway {
-            legacyBody
-        } else {
-            NavigationStack {
-                ErisSurfaceScreen()
-            }
-            .background(Design.Colors.background.ignoresSafeArea())
-        }
-    }
-
-    private var legacyBody: some View {
         ZStack {
             Design.Colors.background
                 .ignoresSafeArea()
@@ -239,14 +155,11 @@ struct AppRootView: View {
                     // user - cold start must land in the chat UI, never onboarding.
                     // The chat UI owns its own connection banner for the brief
                     // not-yet-connected window.
-                    // Build 78.6: a stored login means a returning user -
-                    // mount chat immediately even before the relay snapshot
-                    // freezes or the socket connects. The connection banner
-                    // owns the not-yet-connected window. This kills the
-                    // cold-launch onboarding flash for configured devices.
-                    if nativeClient.connectionStatus == .connected
-                        || (relayConfiguredAtLaunch ?? false)
-                        || nativeClient.hasStoredLogin {
+                    // A stale relay URL and a stale keychain login are not a
+                    // returning user: with the legacy gateway retired, only a
+                    // verified connection routes to chat. Everything else goes
+                    // to the onboarding flow.
+                    if nativeClient.connectionStatus == .connected {
                         AdaptiveRootView()
                     } else {
                         OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
@@ -295,20 +208,6 @@ struct AppRootView: View {
         // rather than snapping off. Only the resolution itself drives this;
         // mid-session reconnect churn never sets the gate.
         .animation(Design.Motion.gentle, value: container.nativeGatewayClient?.hasResolvedStoredLogin ?? false)
-        // Build 108 (hang fix): while the loading surface is mounted, tick
-        // the heartbeat every 0.5s so showLoadingSurface's elapsed cap
-        // re-evaluates. Without this the surface froze on "Connected"
-        // forever once no further state changes occurred. The task id is
-        // showLoadingSurface itself: when it flips false the old task is
-        // cancelled and this one exits immediately.
-        .task(id: showLoadingSurface) {
-            guard showLoadingSurface else { return }
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(0.5))
-                guard !Task.isCancelled else { break }
-                surfaceHeartbeat = Date()
-            }
-        }
     }
 
     private var authFailureView: some View {
