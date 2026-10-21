@@ -256,6 +256,37 @@ struct ErisRouteTests {
         #expect(turns.absoluteString == "http://192.168.1.20:7341/v1/turns")
     }
 
+    // Regression: a base URL that already ends in `/v1` (what
+    // `RelayConfiguration.normalizeBaseURL` hands the client) used to be joined
+    // with a route path that also starts with `/v1`, producing `/v1/v1/pair`
+    // and a 404 on every route.
+    @Test("a base URL that already ends in /v1 joins exactly one /v1")
+    func normalizedBaseDoesNotDoubleUp() throws {
+        let base = URL(string: "https://fih-ai-host.example.ts.net/v1")!
+        let pair = try ErisClient.url(baseURL: base, route: .pair)
+        let refresh = try ErisClient.url(baseURL: base, route: .tokenRefresh)
+        let turns = try ErisClient.url(baseURL: base, route: .turns)
+        let events = try ErisClient.url(baseURL: base, route: .events(turnID: "job-1"))
+        #expect(pair.absoluteString == "https://fih-ai-host.example.ts.net/v1/pair")
+        #expect(refresh.absoluteString == "https://fih-ai-host.example.ts.net/v1/token/refresh")
+        #expect(turns.absoluteString == "https://fih-ai-host.example.ts.net/v1/turns")
+        #expect(events.absoluteString == "https://fih-ai-host.example.ts.net/v1/turns/job-1/events")
+    }
+
+    @Test("a base URL ending in /v1/ also joins exactly one /v1")
+    func normalizedBaseWithTrailingSlashDoesNotDoubleUp() throws {
+        let base = URL(string: "https://fih-ai-host.example.ts.net/v1/")!
+        let pair = try ErisClient.url(baseURL: base, route: .pair)
+        #expect(pair.absoluteString == "https://fih-ai-host.example.ts.net/v1/pair")
+    }
+
+    @Test("a base URL with no /v1 still gets the route's own /v1")
+    func bareBaseStillGetsV1() throws {
+        let base = URL(string: "https://fih-ai-host.example.ts.net")!
+        let pair = try ErisClient.url(baseURL: base, route: .pair)
+        #expect(pair.absoluteString == "https://fih-ai-host.example.ts.net/v1/pair")
+    }
+
     @Test("an id cannot escape its path segment")
     func idsAreEscaped() {
         #expect(ErisRoute.events(turnID: "a/b?c").path == "/v1/turns/a%2Fb%3Fc/events")

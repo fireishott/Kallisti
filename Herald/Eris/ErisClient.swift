@@ -183,7 +183,14 @@ actor ErisClient {
     /// would double-escape `%`.
     static func url(baseURL: URL, route: ErisRoute) throws -> URL {
         let base = baseURL.absoluteString
-        let trimmed = base.hasSuffix("/") ? String(base.dropLast()) : base
+        var trimmed = base.hasSuffix("/") ? String(base.dropLast()) : base
+        // Every route path already carries the listener's `/v1` prefix, and
+        // `RelayConfiguration.normalizeBaseURL` normalizes a typed host to end
+        // in `/v1`. Joining both produced `.../v1/v1/pair`, which the listener
+        // answers with a typed 404. Exactly one `/v1` at the join, never two.
+        if route.path.hasPrefix("/v1/"), trimmed.hasSuffix("/v1") {
+            trimmed.removeLast(3)
+        }
         guard let url = URL(string: trimmed + route.path) else {
             throw ErisError.invalidBaseURL(base)
         }
