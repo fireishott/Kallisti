@@ -474,7 +474,13 @@ pub fn shell(
                     div class=(if art { "app-wall art" } else { "app-wall" })
                         style=(format!("background-image:url('{url}')")) {}
                 }
-                div class=(if chrome.rail_hidden { "app rail-hidden" } else { "app" }) {
+                @let bare = nav.is_none();
+                div class=(match (bare, chrome.rail_hidden) {
+                    (true, true) => "app bare rail-hidden",
+                    (true, false) => "app bare",
+                    (false, true) => "app rail-hidden",
+                    (false, false) => "app",
+                }) {
                     header .side {
                         div .brand {
                             span .mark aria-hidden="true" { "K" }
@@ -572,17 +578,21 @@ pub fn shell(
                             }
                             span class=(state_class) { (state.as_str()) }
                             span .ver { "Eris " (VERSION) " build " (BUILD) }
-                            /* The version strip that used to sit under every page, here
-                               instead: the content column is for content, and this is
-                               the app talking about itself. */
-                            span .listener title=(format!(
-                                "admin listener {} | configured in config.toml",
-                                chrome.footer_line(),
-                            )) {
-                                (chrome.footer_line())
-                            }
-                            @if let Some(url) = &chrome.public_url {
-                                span .listener title=(url) { (url) }
+                            @if nav.is_some() {
+                                /* The bound address and listener count is operator
+                                   telemetry, not onboarding copy: it only names the
+                                   host's own loopback/LAN/tailnet listeners, so it
+                                   belongs on the signed-in pages, never on the setup
+                                   or sign-in surface a fresh browser meets first. */
+                                span .listener title=(format!(
+                                    "admin listener {} | configured in config.toml",
+                                    chrome.footer_line(),
+                                )) {
+                                    (chrome.footer_line())
+                                }
+                                @if let Some(url) = &chrome.public_url {
+                                    span .listener title=(url) { (url) }
+                                }
                             }
                             span .sign { "to the most beautiful" }
                         }

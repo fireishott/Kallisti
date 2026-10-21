@@ -689,7 +689,7 @@ footer {
   white-space: nowrap;
   max-width: 100%;
 }
-.side-foot .sign { letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.5; }
+.side-foot .sign { letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.68; }
 footer .sign {
   text-transform: uppercase;
   letter-spacing: 0.2em;
@@ -1045,6 +1045,9 @@ td .mono { font-variant-numeric: tabular-nums; }
   border-radius: 11px;
   color: var(--platinum);
   font-variant-numeric: tabular-nums;
+  /* A wide, letter-spaced code must not widen the card past the viewport. */
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 code, .code {
@@ -1943,8 +1946,9 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
   }
   /* A scrim behind the open drawer dims the transcript, so the rail reads as a
      layer above the page rather than a block sitting on top of it. It is
-     non-interactive: the "«" control closes the drawer and no script is needed. */
-  .app:not(.rail-hidden)::after {
+     non-interactive: the "«" control closes the drawer and no script is needed.
+     The setup and sign-in surfaces have no drawer, so they get no scrim. */
+  .app:not(.rail-hidden):not(.bare)::after {
     content: "";
     position: fixed;
     inset: 0;
@@ -1959,7 +1963,26 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
     width: min(84vw, 300px);
     transform: translateX(-105%);
   }
-  .wrap { padding: 22px 18px 56px; }
+  /* The setup and sign-in surfaces carry no section nav, so a drawer would be an
+     empty brand column with no way to close it. They get a compact top bar with
+     the wordmark instead, and the foot (version and any telemetry) stays off the
+     page: onboarding copy does not need the host's own listener list. */
+  .app.bare > .side {
+    position: static;
+    height: auto;
+    width: 100%;
+    z-index: 2;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    transform: none;
+    overflow: visible;
+  }
+  .app.bare > .side .side-foot { display: none; }
+  .wrap { padding: 22px 18px calc(56px + env(safe-area-inset-bottom)); }
   h1 { font-size: 26px; }
   .card { padding: 18px 18px; border-radius: 12px; }
   .kv { grid-template-columns: 1fr; gap: 0; }
@@ -1985,6 +2008,9 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
      the centre of the frame is empty sky, so the frame is anchored where she is. */
   .app-wall { background-position: 88% center; }
   .msg { max-width: 100%; }
+  /* A pairing code at desktop scale would need a desktop-width screen. It drops
+     to a size that fits a phone and wraps instead of pushing the card wide. */
+  .pairing-code { font-size: 17px; letter-spacing: 0.12em; padding: 12px 14px; }
 }
 
 /*
