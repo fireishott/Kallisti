@@ -456,7 +456,7 @@ pub fn shell(
         html lang="en" {
             head {
                 meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
+                meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover";
                 meta name="referrer" content="no-referrer";
                 title { (title) " - Kallisti 1.0" }
                 style { (PreEscaped(APP_CSS)) }
@@ -465,8 +465,12 @@ pub fn shell(
                 @if let Some(url) = &chrome.wallpaper_url {
                     // The backdrop is a field: the artwork's own edges fade to the
                     // page colour, so `cover` has nothing to seam against.
-                    @let art = url.ends_with(".jpg") || url.ends_with(".jpeg")
-                        || url.ends_with(".png") || url.ends_with("custom");
+                    // The URL carries a `?v=` cache-buster, so the extension check
+                    // runs against the path only - otherwise the default `.jpg`
+                    // never matches and the art is never dimmed.
+                    @let path = url.split('?').next().unwrap_or(url);
+                    @let art = path.ends_with(".jpg") || path.ends_with(".jpeg")
+                        || path.ends_with(".png") || path.ends_with("custom");
                     div class=(if art { "app-wall art" } else { "app-wall" })
                         style=(format!("background-image:url('{url}')")) {}
                 }

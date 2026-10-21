@@ -71,6 +71,7 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   display: flex;
   align-items: stretch;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 /* The rail is a flex item with a basis, not a grid column, because a grid column
@@ -170,6 +171,16 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   will-change: transform;
 }
 
+/* A veil over the artwork so the conversation reads over any image, not only the
+   dimmed default. It is a separate layer, so the wallpaper's own scale, position
+   and `lvh` sizing are untouched; the scrim only darkens what is already there. */
+.app-wall::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 7, 10, 0.25);
+}
+
 .side {
   position: sticky;
   top: 0;
@@ -178,6 +189,7 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   flex-direction: column;
   gap: 26px;
   height: 100vh;
+  height: 100dvh;
   padding: 22px 16px;
   border-right: 1px solid var(--line);
   background: var(--bg);
@@ -409,20 +421,27 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
    action and naming a group for one is the occasional one. */
 .rail-new-project { margin: -18px 0 0; }
 .rail-new-project summary {
-  display: inline-flex;
+  /* Same solid-outline pill as "New chat", so the two controls read as one
+     action group instead of a button and an off-centre dashed tag. The
+     disclosure still opens the project form; only the chrome matches. */
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px dashed var(--line-strong);
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
-  color: var(--muted);
-  font-size: 11.5px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 560;
+  font-size: 13.5px;
   line-height: 1.3;
   cursor: pointer;
   list-style: none;
 }
 .rail-new-project summary::-webkit-details-marker { display: none; }
-.rail-new-project summary:hover { color: var(--text); border-color: var(--muted); }
+.rail-new-project summary:hover { background: var(--raise); border-color: var(--muted); }
 .rail-new-project summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
 .rail-new-project[open] summary { color: var(--text); border-color: var(--line-strong); }
 .rail-add-glyph { font-size: 12.5px; line-height: 1; }
@@ -1449,6 +1468,11 @@ pre.code {
   gap: 8px;
   margin-top: 10px;
   padding: 12px 12px 10px;
+  /* Safari's bottom chrome (home indicator, collapsing toolbar) overlaps the
+     viewport's bottom edge. The composer gives it room so Send and the model
+     picker are never cut in half. `env()` is zero where there is no notch, so
+     the desktop spacing stays exactly as it was. */
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
   border: 1px solid var(--line-strong);
   border-radius: 14px;
   background: var(--panel);
@@ -1899,36 +1923,42 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
 /* Small screens ---------------------------------------------------------- */
 
 @media (max-width: 900px) {
+  /* The rail becomes an off-canvas drawer below this width. A static or in-flow
+     rail reads as an opaque block over the conversation, and a flattened top
+     strip pushes the "New chat" and project controls into a horizontal scroll
+     and clips the foot text mid-word. The drawer keeps the desktop rail's
+     vertical order and only borrows the screen while it is open. */
   .app { display: block; }
   .side {
-    /* Static on a phone: a rail that sticks while the transcript scrolls puts the
-       navigation in the middle of the conversation. */
-    position: static;
-    z-index: 2;
-    height: auto;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px 16px;
-    padding: 12px 16px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    height: 100dvh;
+    width: min(84vw, 300px);
+    z-index: 40;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    transform: translateX(0);
   }
-  .brand .ver { display: none; }
-  .side-action { margin-left: auto; }
-  .side-action button { width: auto; }
-  .sessions { flex-direction: row; overflow-x: auto; gap: 4px; width: 100%; margin: 0; }
-  .sessions a { border-left-width: 1px; border-radius: 8px; white-space: nowrap; }
-  .sessions .session-stamp { display: none; }
-  /* The rail is a strip here, so the groups flatten into it: `display: contents`
-     drops the wrapper and leaves the headings and rows in the one scrolling row,
-     which keeps every conversation reachable in a single swipe. */
-  .rail-new-project { margin: 0; }
-  .rail-new-project form { min-width: 210px; }
-  .rail-group, .rail-group-head { display: contents; }
-  .rail-group-name { white-space: nowrap; }
-  .side-foot { flex-direction: row; align-items: center; margin-top: 0; padding-top: 0; border-top: 0; margin-left: auto; gap: 10px; }
-  .side-foot .ver { display: none; }
+  /* A scrim behind the open drawer dims the transcript, so the rail reads as a
+     layer above the page rather than a block sitting on top of it. It is
+     non-interactive: the "«" control closes the drawer and no script is needed. */
+  .app:not(.rail-hidden)::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    background: rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+  }
+  /* Closed is fully off-canvas, not a 24px nudge, so the drawer slides the whole
+     way out of view. `visibility` is inherited from the base collapse, so the
+     slide-in is smooth and the close is immediate. */
+  .app.rail-hidden > .side {
+    width: min(84vw, 300px);
+    transform: translateX(-105%);
+  }
   .wrap { padding: 22px 18px 56px; }
   h1 { font-size: 26px; }
   .card { padding: 18px 18px; border-radius: 12px; }
@@ -1937,8 +1967,8 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
   .kv dd { padding-top: 2px; }
   .stats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
   .auth { margin-top: 4vh; }
-  /* The composer still belongs at the bottom on a phone: the rail becomes a
-     top bar, so the shell measures what is left of the viewport. */
+  /* The composer still belongs at the bottom on a phone: the drawer is fixed, so
+     the shell measures what is left of the viewport. */
   .chat-shell { height: calc(100dvh - 132px); }
   .thread { max-height: none; }
   /* Two selects, an attach control and a button do not fit on one row of a
@@ -1955,7 +1985,6 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
      the centre of the frame is empty sky, so the frame is anchored where she is. */
   .app-wall { background-position: 88% center; }
   .msg { max-width: 100%; }
-  .composer { bottom: 8px; }
 }
 
 /*
