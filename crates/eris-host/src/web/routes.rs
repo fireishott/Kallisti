@@ -5607,6 +5607,11 @@ fn spawn_turn(
     let image = chat::aux_pinned_config(&state.engine, "image")
         .ok()
         .flatten();
+    // A fallback is opt-in: unpinned means the role inherits the primary, and
+    // `aux_pinned_config` returns None for that, so a turn fails as it always did.
+    let fallback = chat::aux_pinned_config(&state.engine, "fallback")
+        .ok()
+        .flatten();
     // Read before the blocking task: the closure owns strings, not a borrow of
     // the app state.
     let memory_backend = crate::memory::backend(
@@ -5877,8 +5882,9 @@ fn spawn_turn(
         // than a second copy of the loop, so the steer lands inside this turn.
         let mut poll = || lease.signal();
         let started = std::time::Instant::now();
-        let outcome = chat::run_turn(
+        let (outcome, note) = chat::run_turn_resilient(
             &config,
+            fallback.as_ref(),
             system,
             history,
             &sandbox,
@@ -5895,6 +5901,44 @@ fn spawn_turn(
             &mut poll,
             &mut sink,
         );
+        // Say what the fallback did, in the audit and on the stream. A retry is
+        // an operator-visible fact: the answer that follows did not come from the
+        // model the composer asked for.
+        let answered_model = match &note {
+            chat::ResilientNote::Retried {
+                primary_model,
+                primary_code,
+                model,
+            } => {
+                let _ = title_audit.audit(
+                    "loopback",
+                    "chat.fallback",
+                    Some(&format!(
+                        "primary={primary_model}; primary_code={primary_code}; fallback={model}"
+                    )),
+                );
+                send_terminal(
+                    &sender,
+                    "notice",
+                    serde_json::json!({
+                        "code": "fallback",
+                        "message": format!(
+                            "the primary model failed ({primary_code}); retrying with {model}"
+                        ),
+                    }),
+                );
+                Some(model.clone())
+            }
+            chat::ResilientNote::FallbackUnusable(reason) => {
+                let _ = title_audit.audit(
+                    "loopback",
+                    "chat.fallback",
+                    Some(&format!("unusable; {reason}")),
+                );
+                None
+            }
+            chat::ResilientNote::Primary => None,
+        };
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         drop(sink);
         // Anything still waiting had no round left to join, and is said out loud
@@ -5940,6 +5984,10 @@ fn spawn_turn(
                     raw.as_ref(),
                     accounting,
                 );
+                // A fallback answer is badged with the model that produced it,
+                // not the primary that failed. The transcript is the record.
+                let model = answered_model.as_deref().unwrap_or(&config.model);
+                let _ = chat::set_model(&db, &answer_id, model);
                 send_terminal(
                     &sender,
                     "done",
@@ -5947,7 +5995,7 @@ fn spawn_turn(
                         "id": answer_id,
                         "text": turn.text,
                         "reasoning": turn.reasoning,
-                        "model": config.model,
+                        "model": model,
                         "prompt_tokens": accounting.prompt_tokens,
                         "completion_tokens": accounting.completion_tokens,
                         "cached_tokens": accounting.cached_tokens,

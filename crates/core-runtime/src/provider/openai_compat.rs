@@ -32,6 +32,13 @@ use super::{ChatRequest, ChatRole, Completion, ProviderEvent, SecretKey};
 /// model is normal, an endpoint that will not accept a TCP connection is not.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long one read may go without a byte before the stream is declared dead.
+///
+/// A gap, not a ceiling: as long as bytes keep arriving the turn can run for as
+/// long as it needs, but a provider that stops mid-answer can no longer hold a
+/// conversation row on `streaming` forever.
+const STREAM_STALL: Duration = Duration::from_secs(60);
+
 /// An OpenAI-compatible chat-completions provider.
 #[derive(Debug)]
 pub struct OpenAiCompatProvider {
@@ -259,7 +266,27 @@ impl OpenAiCompatProvider {
         let mut stream = response.bytes_stream().eventsource();
         let mut parser = ChatStreamParser::new(self.capabilities);
 
-        while let Some(event) = stream.next().await {
+        loop {
+            // A provider that accepts the request and then sends nothing is not
+            // "thinking", it is dead. A whole-request timeout would kill a long
+            // reasoning turn, so the bound is per read: any gap this wide with no
+            // bytes on the wire is a stall, and the turn is failed so a fallback
+            // (or the operator) can act rather than the conversation freezing on
+            // "streaming" forever.
+            let next = tokio::time::timeout(STREAM_STALL, stream.next())
+                .await
+                .map_err(|_| {
+                    classify::classify_transport(
+                        classify::TransportFailure::Timeout,
+                        &format!(
+                            "the provider sent no bytes for {} seconds, so the stream was declared dead",
+                            STREAM_STALL.as_secs()
+                        ),
+                    )
+                })?;
+            let Some(event) = next else {
+                break;
+            };
             let event = event.map_err(|error| {
                 // A stream that dies mid-body is a transport failure, not a
                 // protocol one: the bytes may have been perfect up to the cut.

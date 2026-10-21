@@ -17,6 +17,7 @@ zstd = { workspace = true }
 fs4 = { workspace = true }
 eventsource-stream = { workspace = true }
 reqwest = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 tokio-stream = { workspace = true }
 
 [dev-dependencies]

@@ -2091,6 +2091,172 @@ pub fn run_turn(
     )
 }
 
+/// What happened around a failed primary turn, for the caller's audit and stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResilientNote {
+    /// The primary answered, or there was no fallback pinned to consult.
+    Primary,
+    /// A fallback was pinned but its key could not be read, so the primary
+    /// failure stands.
+    FallbackUnusable(String),
+    /// The primary failed with this code and the turn was retried on the fallback
+    /// model.
+    Retried {
+        primary_model: String,
+        primary_code: String,
+        model: String,
+    },
+}
+
+/// [`run_turn`] with an optional fallback.
+///
+/// A turn runs on the primary model. When that fails and a fallback model is
+/// pinned, the same turn runs once more on the fallback. The operator's Stop is
+/// never retried: a turn they cancelled stays cancelled. The note reports which
+/// path was taken so the caller can audit it and, on a retry, mark the answer
+/// with the model that actually produced it.
+#[allow(clippy::too_many_arguments)]
+pub fn run_turn_resilient(
+    config: &TurnConfig,
+    fallback: Option<&TurnConfig>,
+    system: Option<String>,
+    messages: Vec<ChatMessage>,
+    sandbox: &crate::tools::Sandbox,
+    gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
+    mcp: Option<&crate::mcp::Pool>,
+    web_extract: Option<&TurnConfig>,
+    image: Option<&TurnConfig>,
+    agents: Option<&crate::subagents::Desk>,
+    settings: TurnSettings,
+    poll: &mut TurnPoll<'_>,
+    sink: &mut dyn FnMut(StreamPart<'_>),
+) -> (Result<TurnOutcome, TurnFailure>, ResilientNote) {
+    let key = match core_runtime::provider::resolve_api_key(&config.key_ref) {
+        Ok(key) => key,
+        Err(error) => {
+            return (
+                Err((error.kind().to_owned(), error.to_string())),
+                ResilientNote::Primary,
+            );
+        }
+    };
+    // The fallback key is resolved up front too: a missing one must be reported
+    // as "fallback unusable", not as a silent skip, and the retry decision itself
+    // stays in `run_turn_resilient_with_keys` where it is tested.
+    let fallback_key =
+        fallback.and_then(|config| core_runtime::provider::resolve_api_key(&config.key_ref).ok());
+    run_turn_resilient_with_keys(
+        config,
+        &key,
+        fallback,
+        fallback_key.as_ref(),
+        system,
+        messages,
+        sandbox,
+        gate,
+        mcp,
+        web_extract,
+        image,
+        agents,
+        settings,
+        poll,
+        sink,
+    )
+}
+
+/// [`run_turn_resilient`] with both keys already resolved; the fallback key is
+/// `None` when the role is unpinned or its key could not be read.
+#[allow(clippy::too_many_arguments)]
+pub fn run_turn_resilient_with_keys(
+    config: &TurnConfig,
+    key: &core_runtime::provider::SecretKey,
+    fallback: Option<&TurnConfig>,
+    fallback_key: Option<&core_runtime::provider::SecretKey>,
+    system: Option<String>,
+    messages: Vec<ChatMessage>,
+    sandbox: &crate::tools::Sandbox,
+    gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
+    mcp: Option<&crate::mcp::Pool>,
+    web_extract: Option<&TurnConfig>,
+    image: Option<&TurnConfig>,
+    agents: Option<&crate::subagents::Desk>,
+    settings: TurnSettings,
+    poll: &mut TurnPoll<'_>,
+    sink: &mut dyn FnMut(StreamPart<'_>),
+) -> (Result<TurnOutcome, TurnFailure>, ResilientNote) {
+    // The retry needs a fresh copy of what the first attempt consumes.
+    let retry_system = system.clone();
+    let retry_messages = messages.clone();
+
+    match run_turn_with_key(
+        config,
+        key,
+        system,
+        messages,
+        sandbox,
+        gate,
+        mcp,
+        web_extract,
+        image,
+        agents,
+        settings,
+        poll,
+        sink,
+    ) {
+        Ok(turn) => (Ok(turn), ResilientNote::Primary),
+        Err(failure) => {
+            // The operator's Stop is final; never resurrect an answer they cut off.
+            if failure.0 == stopped().0 {
+                return (Err(failure), ResilientNote::Primary);
+            }
+            let Some(fallback_config) = fallback else {
+                return (Err(failure), ResilientNote::Primary);
+            };
+            let Some(fallback_key) = fallback_key else {
+                return (
+                    Err(failure),
+                    ResilientNote::FallbackUnusable(
+                        "the fallback key could not be resolved".to_owned(),
+                    ),
+                );
+            };
+            let note = ResilientNote::Retried {
+                primary_model: config.model.clone(),
+                primary_code: failure.0.clone(),
+                model: fallback_config.model.clone(),
+            };
+            let retried = run_turn_with_key(
+                fallback_config,
+                fallback_key,
+                retry_system,
+                retry_messages,
+                sandbox,
+                gate,
+                mcp,
+                web_extract,
+                image,
+                agents,
+                settings,
+                poll,
+                sink,
+            );
+            (retried, note)
+        }
+    }
+}
+
+/// Rewrite which model answered a row, so a fallback answer is not badged as the
+/// primary that failed to produce it.
+pub fn set_model(db: &Db, id: &str, model: &str) -> Result<(), DbError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_messages SET model = ?2 WHERE id = ?1",
+            params![id, model],
+        )?;
+        Ok(())
+    })
+}
+
 /// The same turn, with the provider key already resolved.
 ///
 /// Split from [`run_turn`] so the device surface drives this exact loop rather

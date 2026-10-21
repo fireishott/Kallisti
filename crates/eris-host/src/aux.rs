@@ -77,6 +77,13 @@ pub const ROLES: &[Role] = &[
         purpose: "Reads a parked tool call and says what it would do.",
         consumed_by: ("a call parked for approval, once this role is pinned"),
     },
+    Role {
+        key: "fallback",
+        label: "Fallback",
+        probe_validated: true,
+        purpose: "Retries a failed turn on another model.",
+        consumed_by: ("a turn whose primary model failed, once this role is pinned to a model"),
+    },
 ];
 
 /// The `settings` row that holds one role's model id.
@@ -245,7 +252,8 @@ mod tests {
                 "web_extract",
                 "compression",
                 "title_generation",
-                "approval"
+                "approval",
+                "fallback"
             ]
         );
         for role in ROLES {
