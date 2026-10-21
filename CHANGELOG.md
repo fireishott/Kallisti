@@ -9,7 +9,8 @@ observe; commit history carries the detail.
 - **Keep me signed in.** The sign-in form gains a checkbox that mints a thirty-day
   admin session instead of the twelve-hour one, so a trusted device or a browser on
   the LAN/tailnet is asked for the passphrase once a month. The default stays short.
-  `build 83`.
+  A sign-out control in the sidebar revokes the session server-side and returns to
+  the form, which is also the only way back to the checkbox. `build 83`.
 - **A phone can back itself up.** A paired device lists, takes and restores a backup
   over the device API (`/v1/backups`, `/v1/backups/{name}/restore`), all admin-scoped,
   so a backup is no longer a host-side chore. `build 81`.

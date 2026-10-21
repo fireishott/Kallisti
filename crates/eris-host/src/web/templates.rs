@@ -550,6 +550,14 @@ pub fn shell(
                                     span .cog-glyph aria-hidden="true" { "\u{2699}" }
                                     span .cog-label { "Settings" }
                                 }
+                                /* Signing out is the only way back to the sign-in
+                                   form, and therefore to the "keep me signed in"
+                                   checkbox. It sits beside the cog so the pair
+                                   reads as one "this browser" control. */
+                                form method="post" action=(crate::admin::ROUTE_LOGOUT) {
+                                    button type="submit" class="signout"
+                                        title="Clear this browser's session" { "Sign out" }
+                                }
                             }
                             span class=(state_class) { (state.as_str()) }
                             span .ver { "Eris " (VERSION) " build " (BUILD) }

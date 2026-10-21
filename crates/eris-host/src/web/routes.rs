@@ -29,10 +29,10 @@ use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
     ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_FILE, ROUTE_CHAT_ID,
     ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD,
-    ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN,
-    ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
-    ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP,
-    ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS,
+    ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
+    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING,
+    ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING,
     ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
     VERSION, session_path,
@@ -97,6 +97,7 @@ pub fn setup_routes() -> axum::Router<AppState> {
 pub fn dashboard_routes() -> axum::Router<AppState> {
     axum::Router::new()
         .route(ROUTE_LOGIN, get(login_form).post(login))
+        .route(ROUTE_LOGOUT, post(logout))
         .route(ROUTE_DASHBOARD, get(dashboard))
         .route(ROUTE_SETTINGS, get(settings))
         .route(ROUTE_SECURITY, get(security).post(save_credential))
@@ -1835,6 +1836,36 @@ async fn login(
     // thing an operator came to do.
     let mut response = see_other(ROUTE_CHAT);
     if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+/// `POST /logout` - clear the session cookie and return to the sign-in form.
+///
+/// The only route that revokes the operator's own session. It needs no session
+/// to run: clearing an already-expired cookie is harmless, and the point is to
+/// land back on the form where the passphrase and the "keep me signed in" box
+/// live.
+async fn logout(
+    State(state): State<AppState>,
+    context: Option<Extension<ClientContext>>,
+    headers: HeaderMap,
+) -> Response {
+    let context = context_of(context);
+    // Revoke the server row, not just the cookie: a signed-out browser must stop
+    // working server-side even if the cookie value leaked somewhere.
+    if let Some(cookie) = session::cookie_from_headers(&headers) {
+        let _ = state.sessions.revoke(&cookie);
+    }
+    let _ = store::audit_write(
+        state.db(),
+        &context.actor(),
+        "admin.signed_out",
+        Some("logout"),
+    );
+    let mut response = see_other(ROUTE_LOGIN);
+    if let Ok(value) = HeaderValue::from_str(&session::clear_cookie_header()) {
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
     response

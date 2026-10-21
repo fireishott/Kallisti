@@ -764,11 +764,19 @@ async fn every_get_route_answers_with_a_body() {
                     | StatusCode::BAD_REQUEST
                     | StatusCode::CONFLICT
                     | StatusCode::METHOD_NOT_ALLOWED
+                    // Signing out is idempotent: with nothing to clear it still
+                    // redirects to the form rather than refusing, so an
+                    // unauthenticated logout is a 303, not a 403.
+                    | StatusCode::SEE_OTHER
             ),
             "{route} answered {}",
             reply.status
         );
-        assert!(!reply.body.trim().is_empty(), "{route} body is empty");
+        // A 303 (logout) is a redirect with no body by design; every other
+        // refusal carries a machine-readable body.
+        if reply.status != StatusCode::SEE_OTHER {
+            assert!(!reply.body.trim().is_empty(), "{route} body is empty");
+        }
     }
 }
 

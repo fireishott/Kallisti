@@ -29,7 +29,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use tower::ServiceExt;
 
-use crate::admin::{AppState, ROUTE_CHAT, ROUTE_DASHBOARD, ROUTE_LOGIN, router_with};
+use crate::admin::{AppState, ROUTE_CHAT, ROUTE_DASHBOARD, ROUTE_LOGIN, ROUTE_LOGOUT, router_with};
 use crate::config::Paths;
 use crate::db::Db;
 use crate::onboarding::{Permissions, SetupEngine};
@@ -359,9 +359,14 @@ fn remember_mints_a_thirty_day_cookie_and_the_default_stays_short() {
         ),
     ));
     assert_eq!(remembered.status, StatusCode::SEE_OTHER);
-    let cookie = remembered.set_cookie().expect("login sets the session cookie");
+    let cookie = remembered
+        .set_cookie()
+        .expect("login sets the session cookie");
     assert!(
-        cookie.contains(&format!("Max-Age={}", crate::onboarding::session::PERSISTENT_TTL.as_secs())),
+        cookie.contains(&format!(
+            "Max-Age={}",
+            crate::onboarding::session::PERSISTENT_TTL.as_secs()
+        )),
         "a remembered session lives thirty days: {cookie}"
     );
 
@@ -371,11 +376,46 @@ fn remember_mints_a_thirty_day_cookie_and_the_default_stays_short() {
         &app,
         Call::post(ROUTE_LOGIN, &format!("passphrase={}", encode(&passphrase))),
     ));
-    let short = ordinary.set_cookie().expect("login sets the session cookie");
+    let short = ordinary
+        .set_cookie()
+        .expect("login sets the session cookie");
     assert!(
-        short.contains(&format!("Max-Age={}", crate::onboarding::session::SESSION_TTL.as_secs())),
+        short.contains(&format!(
+            "Max-Age={}",
+            crate::onboarding::session::SESSION_TTL.as_secs()
+        )),
         "the default session stays short: {short}"
     );
+}
+
+#[test]
+fn logout_clears_the_cookie_and_returns_to_the_form() {
+    let (_dir, engine, passphrase) = ready_engine();
+    let app = router_with(AppState::new(engine, false));
+
+    let login = block_on(send(
+        &app,
+        Call::post(ROUTE_LOGIN, &format!("passphrase={}", encode(&passphrase))),
+    ));
+    let bare = login.cookie().expect("the cookie pair");
+
+    let out = block_on(send(
+        &app,
+        Call::post(ROUTE_LOGOUT, "").cookie(Some(bare.as_str())),
+    ));
+    assert_eq!(out.status, StatusCode::SEE_OTHER, "logout: {}", out.body);
+    assert_eq!(out.location().as_deref(), Some(ROUTE_LOGIN));
+    let cleared = out.set_cookie().expect("logout clears the session cookie");
+    assert!(cleared.contains("Max-Age=0"), "{cleared}");
+
+    // The cleared cookie no longer opens the dashboard.
+    let again = block_on(send(
+        &app,
+        Call::get(ROUTE_DASHBOARD)
+            .html()
+            .cookie(Some(bare.as_str())),
+    ));
+    assert_eq!(again.status, StatusCode::SEE_OTHER);
 }
 
 #[test]

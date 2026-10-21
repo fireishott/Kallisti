@@ -194,6 +194,23 @@ impl AdminSessions {
         Ok(())
     }
 
+    /// Revoke one session by its cookie value, so a signed-out browser's cookie
+    /// stops working even if it leaked rather than only living in the browser.
+    pub fn revoke(&self, cookie_value: &str) -> Result<usize, SessionError> {
+        let id = cookie_value
+            .split_once('.')
+            .map(|(id, _)| id)
+            .filter(|id| !id.is_empty())
+            .ok_or(SessionError::Malformed)?;
+        let changed = self.db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE admin_sessions SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
+                params![auth::format_timestamp(auth::now()), id],
+            )
+        })?;
+        Ok(changed)
+    }
+
     /// Retire every live session. `eris setup --reset` calls this so a reset
     /// does not leave a signed-in browser behind it.
     pub fn revoke_all(&self) -> Result<usize, SessionError> {

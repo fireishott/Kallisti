@@ -602,6 +602,18 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
 .cog:hover { color: var(--text); background: var(--raise); text-decoration: none; }
 .cog[aria-current=page] { color: var(--text); background: var(--raise); }
 .cog-glyph { font-size: 14px; line-height: 1; }
+.signout {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12.5px;
+  padding: 7px 10px;
+  text-align: left;
+}
+.signout:hover { color: var(--text); background: var(--raise); }
 .soon { opacity: 0.55; cursor: not-allowed; }
 
 .badge {

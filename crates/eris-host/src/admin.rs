@@ -225,6 +225,11 @@ pub fn job_cancel_path(id: &str) -> String {
 /// before `ready` the wizard is the surface that owns the credential.
 pub const ROUTE_LOGIN: &str = "/login";
 
+/// Sign out: clears the session cookie and returns to the sign-in form. The only
+/// way a signed-in browser can reach the form again, which is also how the
+/// operator gets back to the "keep me signed in" checkbox.
+pub const ROUTE_LOGOUT: &str = "/logout";
+
 /// Every GET route the listener serves, including the ones that need a session
 /// or a finished setup. The phase 7 test walks this list.
 pub const ALL_GET_ROUTES: &[&str] = &[
@@ -261,6 +266,7 @@ pub const POST_ROUTES: &[&str] = &[
     "/setup/device",
     "/setup/finish",
     ROUTE_LOGIN,
+    ROUTE_LOGOUT,
     ROUTE_SETTINGS_PROVIDER,
     ROUTE_SETTINGS_WORKSPACE,
     ROUTE_SETTINGS_PERMISSIONS,
