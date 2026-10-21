@@ -5,6 +5,37 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-10-21
+
+The release that makes Kallisti the literal **0.4.0 UI running on Kallisti-Eris**.
+The relay/connector/DSH transports are gone; Eris is the only backend, and the 0.4.0
+screens are the app.
+
+### Changed
+
+- **The literal 0.4.0 UI is the app again.** `AppEntry` -> `AppRootView` -> the full
+  `AdaptiveRootView` sidebar (Chat, Inbox, Talk, Notes, Settings). No reduced shell and
+  no new screens: `HeraldClientProtocol` is implemented by `ErisHeraldClient`, so the
+  0.4.0 screens run over Eris unchanged.
+- **Eris is the only transport.** `AppContainer` builds `ErisHeraldClient`; the legacy
+  `NativeKallistiClient` / `RelayAPIClient` / DSH paths are removed.
+
+### Added
+
+- **A fresh install pairs to Eris.** `ErisPairingService` implements the 0.4.0 pairing
+  seam: the onboarding's address + code posts to `/v1/pair`, the pair lands in the
+  keychain, and `ErisHeraldClient` restores it into chat.
+- **Inbox over Eris.** `ErisInboxService` implements `InboxServiceProtocol` over
+  `GET /v1/inbox` and `POST /v1/inbox/{id}/action`.
+
+### Known gaps
+
+- Typed-stubbed pending Eris device routes: session delete/archive/pin/rename, title
+  generation, job status, cancel/interrupt, voice transcript, note sync.
+- Attachments are text-only on `/v1/turns`.
+- Notes is local-first on device; server sync is the next pass.
+- Talk (voice mode) is in development.
+
 ## [Unreleased]
 
 Builds 135.77 - 135.94 (2026-09-27 to 2026-10-03). DeepSeek Harness reliability:
