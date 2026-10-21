@@ -49,6 +49,7 @@ final class ErisDaemonStore {
     private(set) var conversations: ErisConversationsModel?
     /// The settings model for the paired daemon, once there is one.
     private(set) var settings: ErisSettingsModel?
+    private(set) var approvals: ErisApprovalsModel?
 
     /// Manual-entry daemon address, pre-filled from the last pairing.
     var addressText: String
@@ -226,6 +227,8 @@ final class ErisDaemonStore {
             chat = nil
             conversations = nil
             settings = nil
+        approvals = nil
+            approvals = nil
             record(error)
         }
     }
@@ -262,6 +265,7 @@ final class ErisDaemonStore {
         })
         conversations = ErisConversationsModel(client: client)
         settings = ErisSettingsModel(client: client)
+        approvals = ErisApprovalsModel(client: client)
         phase = .paired(baseURL)
     }
 
@@ -288,6 +292,7 @@ final class ErisDaemonStore {
         chat = nil
         conversations = nil
         settings = nil
+        approvals = nil
         phase = .unpaired
     }
 

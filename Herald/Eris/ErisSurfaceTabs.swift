@@ -7,12 +7,13 @@ import SwiftUI
 //
 //   Chat           turns, streamed
 //   Conversations  stored transcripts, readable and continuable
+//   Approvals      the calls parked for a person, answerable (admin scope only)
 //   Settings       model, sandbox, memory, approval (admin scope only)
 //
-// There is no Approvals lane because the device listener has no approvals route.
-// `crates/eris-host/src/device/mod.rs` binds exactly twelve paths and none of them
-// is `/v1/approvals`; approvals live on the admin web surface only. A lane here
-// would have to invent a contract, so it is left out rather than faked.
+// Approvals used to be absent from this surface because the device listener had no
+// route for them. It has two now, both behind the admin scope, and asking to
+// administer a device is a box the operator ticks when minting its pairing code.
+// A lane that answers a queue is only honest when the queue is real, and it is.
 
 /// The paired surface: three lanes over one daemon.
 struct ErisPairedSurface: View {
@@ -28,6 +29,7 @@ struct ErisPairedSurface: View {
     enum Lane: String, CaseIterable, Identifiable {
         case chat
         case conversations
+        case approvals
         case settings
 
         var id: String { rawValue }
@@ -37,6 +39,7 @@ struct ErisPairedSurface: View {
             switch self {
             case .chat: return "Chat"
             case .conversations: return "Conversations"
+            case .approvals: return "Approvals"
             case .settings: return "Settings"
             }
         }
@@ -79,6 +82,12 @@ struct ErisPairedSurface: View {
             }
         case .conversations:
             conversations
+        case .approvals:
+            if let approvals = store.approvals {
+                ErisApprovalsScreen(store: store, model: approvals)
+            } else {
+                missingModel("approvals")
+            }
         case .settings:
             if let settings = store.settings {
                 ErisSettingsScreen(store: store, model: settings)

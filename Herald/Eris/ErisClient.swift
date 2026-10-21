@@ -40,6 +40,10 @@ enum ErisRoute: Equatable, Sendable {
     case updateSettings
     /// `GET /v1/projects` - the names a conversation's `project_id` points at.
     case projects
+    /// `GET /v1/approvals` - the calls parked for a person, newest first.
+    case approvals
+    /// `POST /v1/approvals/{id}/decide` - settle one, and run it when approved.
+    case decideApproval(approvalID: String)
 
     /// The request path, with ids percent-encoded so one id cannot escape its
     /// path segment.
@@ -67,15 +71,20 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/settings"
         case .projects:
             return "/v1/projects"
+        case .approvals:
+            return "/v1/approvals"
+        case .decideApproval(let approvalID):
+            return "/v1/approvals/\(Self.segment(approvalID))/decide"
         }
     }
 
     /// The HTTP method the daemon's router binds this path to.
     var method: String {
         switch self {
-        case .events, .session, .conversations, .conversation, .settings, .projects:
+        case .events, .session, .conversations, .conversation, .settings, .projects, .approvals:
             return "GET"
-        case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings:
+        case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings,
+             .decideApproval:
             return "POST"
         }
     }
@@ -316,6 +325,28 @@ actor ErisClient {
         }
         let data = try await send(route: .updateSettings, form: patch.fields)
         return try decode(ErisSettingsUpdate.self, from: data).changed
+    }
+
+    /// `GET /v1/approvals` - the queue an admin device can answer.
+    ///
+    /// Needs the `admin` scope: a device paired from a code minted without the
+    /// administration box is refused with the daemon's own sentence.
+    func approvals() async throws -> ErisApprovalPage {
+        let data = try await send(route: .approvals, form: nil)
+        return try ErisApprovalPage.decode(data)
+    }
+
+    /// `POST /v1/approvals/{id}/decide` - answer one.
+    ///
+    /// An approval runs the call, so the answer carries what the tool said. The
+    /// client returns that rather than discarding it: a person tapping Allow
+    /// wants to see the consequence.
+    func decideApproval(id: String, decision: ErisApprovalDecision) async throws -> ErisApprovalOutcome {
+        let data = try await send(
+            route: .decideApproval(approvalID: id),
+            form: ["decision": decision.rawValue]
+        )
+        return try ErisApprovalOutcome.decode(data)
     }
 
     // MARK: Streaming
