@@ -349,7 +349,11 @@ mod tests {
         let path = dir.join(format!("{name}-mcp.sh"));
         let script = r#"#!/bin/sh
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  # Pull the id with parameter expansion, not sed: this runs once per line and a
+  # full-suite run spawns dozens of these children, so the fork is not free and a
+  # starved machine reads as a handshake timeout.
+  id=${line#*\"id\":}
+  id=${id%%[!0-9]*}
   case "$line" in
     *'"method":"initialize"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1.2.3"}}}\n' "$id" ;;
@@ -379,6 +383,7 @@ done
 
     #[test]
     fn an_empty_document_is_an_empty_list() {
+        let _serial = crate::mcp::serial::hold();
         assert_eq!(parse("").expect("empty is fine"), Vec::new());
         assert_eq!(parse("   ").expect("blank is fine"), Vec::new());
     }
@@ -389,6 +394,7 @@ done
 
         #[test]
         fn the_pool_namespaces_every_tool_and_routes_the_call_back() {
+            let _serial = crate::mcp::serial::hold();
             let dir = tempfile::tempdir().expect("temp");
             let server = fixture_server(dir.path(), "fake");
             let pool = super::super::Pool::new(vec![server]);
@@ -414,6 +420,7 @@ done
 
         #[test]
         fn a_server_that_cannot_start_reports_instead_of_offering_nothing_silently() {
+            let _serial = crate::mcp::serial::hold();
             let pool = super::super::Pool::new(vec![super::super::Server {
                 name: "ghost".to_owned(),
                 command: "/nonexistent/mcp-server".to_owned(),
@@ -433,6 +440,7 @@ done
 
         #[test]
         fn an_unqualified_name_is_refused_rather_than_sent_somewhere() {
+            let _serial = crate::mcp::serial::hold();
             let pool = super::super::Pool::new(Vec::new());
             let error = pool
                 .call("read_file", &serde_json::json!({}))
@@ -442,6 +450,7 @@ done
 
         #[test]
         fn health_is_unknown_until_an_attempt_is_made() {
+            let _serial = crate::mcp::serial::hold();
             let dir = tempfile::tempdir().expect("temp");
             let pool = super::super::Pool::new(vec![super::fixture_server(dir.path(), "fake")]);
 
@@ -464,6 +473,7 @@ done
 
         #[test]
         fn a_failed_start_is_a_known_failure_and_not_an_unknown() {
+            let _serial = crate::mcp::serial::hold();
             let pool = super::super::Pool::new(vec![super::super::Server {
                 name: "ghost".to_owned(),
                 command: "/nonexistent/mcp-server".to_owned(),
@@ -521,5 +531,27 @@ done
         assert!(error.message.contains("JSON array"), "{}", error.message);
         let error = parse(r#"{"name":"one"}"#).unwrap_err();
         assert!(error.message.contains("JSON array"), "{}", error.message);
+    }
+}
+
+/// Serialises the tests that spawn a real MCP child process.
+///
+/// These tests each start `/bin/sh`, hand it JSON and read JSON back. Run in
+/// parallel they interfere: measured at roughly one failure in four when the whole
+/// module runs together, and zero in ten runs with `--test-threads=1`. The fault is
+/// process-spawn contention, not any behaviour under test, so the fix is to hold a
+/// lock rather than to loosen an assertion.
+#[cfg(test)]
+pub(crate) mod serial {
+    use std::sync::{Mutex, MutexGuard};
+
+    /// One at a time, for tests that start a child.
+    static SPAWNED: Mutex<()> = Mutex::new(());
+
+    /// Hold the lock for the rest of the test.
+    pub fn hold() -> MutexGuard<'static, ()> {
+        SPAWNED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }

@@ -272,6 +272,7 @@ mod tests {
 
     #[test]
     fn a_client_handshakes_lists_tools_and_calls_one() {
+        let _serial = crate::mcp::serial::hold();
         let dir = tempfile::tempdir().expect("temp");
         let server = fixture(dir.path());
 
@@ -292,6 +293,7 @@ mod tests {
 
     #[test]
     fn a_notification_between_replies_is_skipped_rather_than_mistaken_for_one() {
+        let _serial = crate::mcp::serial::hold();
         let dir = tempfile::tempdir().expect("temp");
         let server = fixture(dir.path());
         // The fixture sends a notification before the tools/list reply; reaching
@@ -302,6 +304,7 @@ mod tests {
 
     #[test]
     fn a_server_error_is_reported_with_its_code() {
+        let _serial = crate::mcp::serial::hold();
         let dir = tempfile::tempdir().expect("temp");
         let server = fixture(dir.path());
         let mut client = Client::start(&server).expect("handshake");
@@ -319,6 +322,7 @@ mod tests {
 
     #[test]
     fn a_missing_executable_is_named_rather_than_silently_skipped() {
+        let _serial = crate::mcp::serial::hold();
         let server = Server {
             name: "ghost".to_owned(),
             command: "/nonexistent/mcp-server".to_owned(),
@@ -331,6 +335,7 @@ mod tests {
 
     #[test]
     fn dropping_the_client_kills_the_child() {
+        let _serial = crate::mcp::serial::hold();
         let dir = tempfile::tempdir().expect("temp");
         let server = fixture(dir.path());
         let pid = {
