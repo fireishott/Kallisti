@@ -4297,6 +4297,10 @@ fn run_log_controls() -> Markup {
                 aria-label="Expand every tool call in this run log" { "Expand all" }
             button type="button" .run-btn data-run="shut"
                 aria-label="Collapse every tool call in this run log" { "Collapse all" }
+            button type="button" .run-btn data-run="all" aria-pressed="false"
+                aria-label="Show every tool call in this run log, not only the running one" {
+                "Show all"
+            }
         }
     }
 }
@@ -4325,7 +4329,8 @@ pub fn chat_page(view: &ChatView) -> Markup {
         div .chat-shell .new-chat[view.messages.is_empty()]
             data-conversation=(view.conversation.clone())
             data-assistant=(view.assistant_name.clone())
-            data-stream=(if view.streaming { "on" } else { "off" }) {
+            data-stream=(if view.streaming { "on" } else { "off" })
+            data-tool-log=(if view.show_tool_log { view.tool_log_mode.clone() } else { "off".to_owned() }) {
         (alert_region(view.error.as_ref(), None))
         section .thread id="thread" aria-label="Conversation" {
             @let last_answer = view.messages.iter().rposition(|line| !line.user);
@@ -4557,6 +4562,21 @@ const CHAT_JS: &str = r##"(function () {
   var stop = document.getElementById("stop");
   var status = document.getElementById("composer-status");
   var attachmentInput = document.getElementById("attachment");
+  var shellForMode = document.querySelector(".chat-shell");
+
+  // ---- How much run log the operator asked for ---------------------------
+  // `off`, `summary` or `full`, as Settings stores it and the server rendered
+  // it. The live builder reads it here rather than guessing, because a page
+  // opened on `summary` must not stream a full wall of windows and then turn
+  // into one line after a reload. This was the whole bug: the setting only ever
+  // reached the server renderer.
+  var TOOL_LOG_FALLBACK = "full";
+  function toolLogMode() {
+    if (shellForMode === null) { return TOOL_LOG_FALLBACK; }
+    var mode = shellForMode.getAttribute("data-tool-log");
+    if (mode === "off" || mode === "summary" || mode === "full") { return mode; }
+    return TOOL_LOG_FALLBACK;
+  }
 
   // ---- The run log: two controls, and the choice they remember ------------
   // Two buttons open or close every call of one log, and the choice carries into
@@ -4566,6 +4586,13 @@ const CHAT_JS: &str = r##"(function () {
   // blocked origin), and a browser that refuses to remember is not an error worth
   // showing, so every read and write is guarded.
   var RUNLOG_KEY = "kallisti.runlog";
+
+  // Show all: off means the log keeps only the call that is running on screen.
+  // A turn that runs a dozen commands is a wall of windows, and the one the
+  // operator wants while it runs is the last. On is the old behaviour, kept
+  // behind one press because reading a whole run at once is a real thing to
+  // want.
+  var SHOWALL_KEY = "kallisti.runlog.all";
 
   function rememberedRunLog() {
     try {
@@ -4581,6 +4608,22 @@ const CHAT_JS: &str = r##"(function () {
   function rememberRunLog(expanded) {
     try {
       window.localStorage.setItem(RUNLOG_KEY, expanded ? "expanded" : "collapsed");
+    } catch (error) {
+      return;
+    }
+  }
+
+  function rememberedShowAll() {
+    try {
+      return window.localStorage.getItem(SHOWALL_KEY) === "on";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function rememberShowAll(on) {
+    try {
+      window.localStorage.setItem(SHOWALL_KEY, on ? "on" : "off");
     } catch (error) {
       return;
     }
@@ -4605,6 +4648,50 @@ const CHAT_JS: &str = r##"(function () {
     }
   }
 
+  // Only the running call open. Called when a new call starts and when one
+  // settles, so the log never shows more than the work in front of it unless
+  // Show all is on.
+  function onlyRunning(log) {
+    if (rememberedShowAll()) { return; }
+    var calls = log.querySelectorAll(".exec-call");
+    for (var index = 0; index < calls.length; index += 1) {
+      calls[index].open = index === calls.length - 1;
+    }
+  }
+
+  // Which calls are on screen at all. Off, everything but the call the live
+  // builder last touched is hidden: the log is a report of the work in front of
+  // the operator, not a transcript of every command the turn has run. The count
+  // in the summary still says how many there were, and Show all brings them
+  // back.
+  function applyShowAll(log) {
+    var on = rememberedShowAll();
+    var calls = log.querySelectorAll(".exec-call");
+    // A log that came off the server marked nothing current: it is a finished
+    // run, and the last call is the one worth keeping. The live builder marks
+    // its own as it goes.
+    var anyCurrent = false;
+    for (var scan = 0; scan < calls.length; scan += 1) {
+      if (calls[scan].getAttribute("data-current") === "1") { anyCurrent = true; }
+    }
+    for (var index = 0; index < calls.length; index += 1) {
+      var current = anyCurrent
+        ? calls[index].getAttribute("data-current") === "1"
+        : index === calls.length - 1;
+      calls[index].hidden = on === false && current === false;
+    }
+  }
+
+  // Put the Show all buttons in the state the remembered choice says.
+  function paintShowAll(log) {
+    var on = rememberedShowAll();
+    var buttons = log.querySelectorAll('.run-btn[data-run="all"]');
+    for (var index = 0; index < buttons.length; index += 1) {
+      buttons[index].setAttribute("aria-pressed", on ? "true" : "false");
+      buttons[index].textContent = on ? "Show running" : "Show all";
+    }
+  }
+
   // The server renders the two controls hidden, because without this script a
   // button cannot open anything. Revealing them, and honouring a remembered
   // Expand all, happens before the composer guard below: a transcript outlives
@@ -4614,12 +4701,19 @@ const CHAT_JS: &str = r##"(function () {
   for (var logIndex = 0; logIndex < runLogs.length; logIndex += 1) {
     var bar = runLogs[logIndex].querySelector(".runctl");
     if (bar) { bar.hidden = false; }
+    paintShowAll(runLogs[logIndex]);
     // A remembered Expand all carries onto the page as it was rendered: the
     // operator left the calls open, so that is how they come back. A summary
     // strip is one deliberate line and is not touched; the default there is
     // still the server's.
     if (remembersAll === true && runLogs[logIndex].classList.contains("compact") === false) {
       setRunLogCalls(runLogs[logIndex], true);
+    }
+    // The same rule a live turn follows: unless Show all is on, a log keeps one
+    // call. The panel is closed on arrival either way, so this only decides what
+    // the operator sees the moment they open it.
+    if (runLogs[logIndex].classList.contains("compact") === false) {
+      applyShowAll(runLogs[logIndex]);
     }
   }
 
@@ -4635,7 +4729,21 @@ const CHAT_JS: &str = r##"(function () {
       event.stopPropagation();
       var log = button.closest(".exec");
       if (log === null) { return; }
-      var expanded = button.getAttribute("data-run") === "open";
+      var kind = button.getAttribute("data-run");
+      if (kind === "all") {
+        var on = rememberedShowAll() === false;
+        rememberShowAll(on);
+        paintShowAll(log);
+        if (on) {
+          setRunLogCalls(log, true);
+        }
+        applyShowAll(log);
+        if (on === false) {
+          onlyRunning(log);
+        }
+        return;
+      }
+      var expanded = kind === "open";
       setRunLogCalls(log, expanded);
       rememberRunLog(expanded);
     });
@@ -4656,9 +4764,33 @@ const CHAT_JS: &str = r##"(function () {
   function atBottom() {
     return thread.scrollHeight - thread.scrollTop - thread.clientHeight <= NEAR;
   }
+
+  // Follow the bottom, but never while the operator is typing.
+  //
+  // Two things were wrong with the old one-liner. It ran on every token, which
+  // meant a full layout of the transcript per fragment; and writing
+  // `scrollTop` while the composer has focus is what drops the keyboard on iOS,
+  // which is why the box felt like it could not be typed in mid-turn. Now the
+  // page is followed at most once per frame, and not at all while the composer
+  // is focused: the answer is one screen away and the operator's cursor is not
+  // worth moving.
+  var followQueued = false;
   function toBottom() {
-    if (pinned) { thread.scrollTop = thread.scrollHeight; }
+    if (followQueued) { return; }
+    followQueued = true;
+    var run = function () {
+      followQueued = false;
+      if (pinned === false) { return; }
+      if (document.activeElement === box) { return; }
+      thread.scrollTop = thread.scrollHeight;
+    };
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(run);
+      return;
+    }
+    run();
   }
+
 
   var jump = document.createElement("button");
   jump.type = "button";
@@ -4791,11 +4923,24 @@ const CHAT_JS: &str = r##"(function () {
 
     // The run log starts hidden and appears at the first executed call, so a
     // turn that called nothing does not leave an empty panel behind.
+    //
+    // Its shape comes from the operator's own setting, read off the shell. The
+    // builder used to ignore that setting and always produce the full wall of
+    // windows, so a page opened on `summary` streamed one thing and reloaded as
+    // another. `off` builds nothing worth opening; `summary` is one line naming
+    // the last call, opening onto the same calls; `full` is one window per call.
+    var mode = toolLogMode();
+    // The page is written without a bang, so the three readings are named once
+    // and compared by identity afterwards.
+    var summaryMode = mode === "summary";
+    var offMode = mode === "off";
+    var fullMode = mode === "full";
     var exec = document.createElement("details");
-    exec.className = "exec";
+    exec.className = summaryMode ? "exec compact" : "exec";
     exec.hidden = true;
     // Closed, like the server-rendered panel: a streamed turn that ran a dozen
-    // calls must not push its own answer off the screen.
+    // calls must not push its own answer off the screen. Summary is a strip and
+    // is never opened by the script.
     exec.open = false;
     var execSummary = document.createElement("summary");
     var execLabel = document.createElement("span");
@@ -4805,8 +4950,13 @@ const CHAT_JS: &str = r##"(function () {
     execCount.className = "exec-count";
     execSummary.appendChild(execLabel);
     execSummary.appendChild(execCount);
+    // The one-line reading summary mode shows: the call that last ran.
+    var execLast = document.createElement("span");
+    execLast.className = "exec-last";
+    execLast.hidden = summaryMode === false;
+    execSummary.appendChild(execLast);
     exec.appendChild(execSummary);
-    // The same two controls the server renders, in the same place: under the
+    // The same controls the server renders, in the same place: under the
     // summary, never in it. This builder is only reachable with the script, so
     // here they are live immediately.
     var execCtl = document.createElement("div");
@@ -4817,6 +4967,12 @@ const CHAT_JS: &str = r##"(function () {
       "Expand every tool call in this run log"));
     execCtl.appendChild(runLogButton("shut", "Collapse all",
       "Collapse every tool call in this run log"));
+    // Show all: the way back to every call of this run. Off is the default and
+    // what the operator asked for: the log follows the command in front of them.
+    var showAllButton = runLogButton("all", "Show all",
+      "Show every tool call in this run log, not only the running one");
+    showAllButton.setAttribute("aria-pressed", "false");
+    execCtl.appendChild(showAllButton);
     exec.appendChild(execCtl);
     var body = document.createElement("div");
     body.className = "exec-body";
@@ -4824,8 +4980,43 @@ const CHAT_JS: &str = r##"(function () {
 
     var calls = 0;
     var open = [];
+    // The operator's own decision about the panel, once they have made one. A
+    // log that reopened itself after being closed would be the same forcing that
+    // made it unreadable, only slower.
+    var execClosedByOperator = false;
+    exec.addEventListener("toggle", function () {
+      if (exec.open === false) { execClosedByOperator = true; return; }
+      execClosedByOperator = false;
+    });
     function refreshCount() {
       execCount.textContent = calls + (calls === 1 ? " call" : " calls");
+    }
+
+    // One call becomes the current one, and the log is repainted around it: the
+    // previous window closes and (unless Show all is on) goes away, so what is
+    // on screen is the work happening now rather than a backlog.
+    function markCurrent(call) {
+      var all = body.querySelectorAll(".exec-call");
+      for (var index = 0; index < all.length; index += 1) {
+        all[index].setAttribute("data-current", all[index] === call ? "1" : "0");
+      }
+      if (fullMode && Boolean(call) && calls === 1 && execClosedByOperator === false) {
+        // The first call of a turn opens the panel once, because a running
+        // command is the reason it is worth reading. After that it is left as
+        // the operator put it: a log that reopens after every fragment is the
+        // wall this replaced.
+        exec.open = true;
+      }
+      applyShowAll(exec);
+      if (summaryMode === false) { onlyRunning(exec); }
+    }
+
+    // Summary mode's one line, kept in step with the call that just ran.
+    function refreshLast(tool) {
+      if (summaryMode === false) { return; }
+      var name = tool === undefined ? "" : tool.name;
+      var args = tool === undefined ? "" : tool.arguments;
+      execLast.textContent = name + (args === "" ? "" : " " + args);
     }
 
     function attachHead(head, name) {
@@ -4857,7 +5048,10 @@ const CHAT_JS: &str = r##"(function () {
       var parts = windowFor(call);
       parts.live.hidden = false;
       body.appendChild(call);
-      exec.hidden = false;
+      markCurrent(call);
+      // Only a log the operator asked to see is revealed. `off` is off, however
+      // many commands the turn runs.
+      exec.hidden = offMode;
       var entry = {
         name: name,
         call: call,
@@ -4880,8 +5074,10 @@ const CHAT_JS: &str = r##"(function () {
       entry.parts.out.textContent = entry.buffer;
       entry.parts.size.textContent = countLines(entry.buffer) + " lines";
       entry.parts.out.scrollTop = entry.parts.out.scrollHeight;
-      exec.open = true;
-      toBottom();
+      // The panel is not forced open on every fragment. That line was what made
+      // the log a wall: a summary strip or a closed log opened itself and stayed
+      // open for the rest of the turn.
+      if (offMode === false) { toBottom(); }
     }
 
     // The settled reading for one call. A provisional window with the same name
@@ -4920,7 +5116,9 @@ const CHAT_JS: &str = r##"(function () {
       entry.args.textContent = tool.arguments;
       entry.parts.live.hidden = true;
       paint(entry.parts, tool);
-      exec.hidden = false;
+      markCurrent(entry.call);
+      refreshLast(tool);
+      exec.hidden = offMode;
     }
 
     var bubble = document.createElement("div");
@@ -5035,6 +5233,7 @@ const CHAT_JS: &str = r##"(function () {
     if (send) {
       send.textContent = next ? "Steer" : "Send";
       send.disabled = false;
+      paintSend();
     }
     if (stop) { stop.hidden = next === false; }
     if (status) {
@@ -5123,6 +5322,26 @@ const CHAT_JS: &str = r##"(function () {
     if (bytes < 1024) { return bytes + " B"; }
     if (bytes < 1048576) { return Math.round(bytes / 1024) + " kB"; }
     return (bytes / 1048576).toFixed(1) + " MB";
+  }
+
+  // The line a message with no words still needs, in the daemon's own wording so
+  // a live bubble and the reloaded transcript say the same thing.
+  function attachedLine(files) {
+    if (files.length === 1) { return "Attached " + files[0].name; }
+    var names = [];
+    for (var index = 0; index < files.length; index += 1) {
+      names.push(files[index].name);
+    }
+    return "Attached " + files.length + " files: " + names.join(", ");
+  }
+
+  // The send control follows the composer: text or a file is what it takes. It
+  // is never disabled for a running turn, because a second message steers one.
+  function paintSend() {
+    var send = document.getElementById("send");
+    if (send === null) { return; }
+    var ready = box.value.trim().length > 0 || queue.length > 0;
+    send.classList.toggle("idle", ready === false);
   }
 
   // The badge map the server uses, in the one script: a file chip in a live
@@ -5315,6 +5534,7 @@ const CHAT_JS: &str = r##"(function () {
       queueBox.appendChild(chip);
     });
     queueBox.hidden = queue.length === 0;
+    paintSend();
   }
 
   function addFiles(list) {
@@ -5335,6 +5555,11 @@ const CHAT_JS: &str = r##"(function () {
         : "";
     }
   }
+
+  // The composer tells the send control when there is something to send, which
+  // is either words or a file.
+  box.addEventListener("input", paintSend);
+  paintSend();
 
   if (attachmentInput) {
     attachmentInput.addEventListener("change", function () {
@@ -5387,8 +5612,9 @@ const CHAT_JS: &str = r##"(function () {
     var body = new URLSearchParams();
     body.append("message", text);
     body.append("conversation", conversation);
+    var words = text === "" ? attachedLine(queue) : text;
     box.value = "";
-    appendUser(text, []);
+    appendUser(words, []);
     toBottom();
     // The count a reloaded page rendered is about to be wrong, so it goes: the
     // status line below carries the live answer instead.
@@ -5490,7 +5716,13 @@ const CHAT_JS: &str = r##"(function () {
 
   async function send() {
     var text = box.value.trim();
-    if (text === "") { return; }
+    // A file is a message. Empty box plus a queued attachment used to return
+    // here, before the queue was ever consulted, so the attach button and the
+    // send button together did nothing at all.
+    if (text === "" && queue.length === 0) { return; }
+    // The daemon writes a line naming the files when there are no words, and so
+    // does this: the bubble hangs the attachments under it either way.
+    var shown = text === "" ? attachedLine(queue) : text;
     // Streaming off: hand the whole turn to the form and let the daemon answer
     // with the rendered page. Same request, same files, no reader in between.
     var streamShell = document.querySelector(".chat-shell");
@@ -5521,7 +5753,7 @@ const CHAT_JS: &str = r##"(function () {
     var shell = document.querySelector(".chat-shell");
     var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
     var sending = queue.slice();
-    var userLine = appendUser(text, sending);
+    var userLine = appendUser(shown, sending);
     box.value = "";
     setBusy(true);
     toBottom();

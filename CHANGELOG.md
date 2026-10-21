@@ -6,6 +6,32 @@ observe; commit history carries the detail.
 
 ## 1.4.1
 
+- **A file is a message.** An empty composer with an attachment used to be a
+  refusal by name, so sending a screenshot meant typing filler first. The box is
+  now accepted when something is attached, and the row the transcript gets is
+  named after the files - "Attached IMG_0082.png", or "Attached 2 files: a.log,
+  b.json" - which is also the line the conversation is named after. Send reads as
+  waiting until there is something to send, and a queued file is enough. `build 88`.
+- **The run log follows the work in front of you.** The tool-log setting
+  (`off`, `summary`, `full`) only ever reached the server render, so a page opened
+  on `summary` streamed one thing and reloaded as another; the live builder now
+  reads the choice off the shell and builds that shape. Only the running call is
+  on screen by default - the count in the summary still says how many ran - and a
+  new **Show all** toggle brings the rest back and is remembered per browser.
+  The panel no longer forces itself open on every fragment, which was what made a
+  dozen commands a wall of windows. `build 88`.
+- **Typing mid-turn does not fight the scroll.** The transcript is followed at
+  most once per frame instead of once per token, and not at all while the
+  composer has focus: following the bottom is what dropped the iOS keyboard out
+  from under a half-typed message. `build 88`.
+- **The conversation gets the window.** The transcript used to sit in an 880px
+  column inside the 1180px prose wrap, so on a wide screen a band of empty width
+  ran down each side of it that nothing could be typed into. The chat page now
+  lets its wrap fill the window, the shell keeps a 1180px cap so a very wide
+  display does not stretch a paragraph to 200 characters a line, and a bubble is
+  as wide as what is in it up to that cap instead of stopping at a fixed 48rem.
+  `build 88`.
+
 - **A rate or usage limit is no longer a silent failure.** 9router reports a
   locked account as a 503 whose body carries the upstream `[429]`; Eris now reads
   that as a rate limit, takes the wait from `retry-after` or the body (`reset after

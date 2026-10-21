@@ -5382,12 +5382,20 @@ async fn chat_send(
             Err(error) => return fail_dashboard(&state, wants_html(&headers), error),
         }
     };
-    let text = match chat::accept_text(field(&fields, "message")) {
+    // A file is a message in its own right, so an empty box is only a refusal
+    // when nothing came with it. The row still needs words, and the words are
+    // the files' names: that line is also what the conversation is named after.
+    let text = match chat::accept_message(field(&fields, "message"), !files.is_empty()) {
         Ok(text) => text,
         Err(message) => {
             let error = FormError::new(Some("message"), "message_invalid", message);
             return fail_dashboard(&state, wants_html(&headers), error);
         }
+    };
+    let body_text = if text.is_empty() {
+        chat::attachments_line(&files)
+    } else {
+        text.clone()
     };
 
     // One answer for both halves: the operator's stored switch wins over a
@@ -5477,7 +5485,7 @@ async fn chat_send(
                 &db,
                 &conversation,
                 chat::Role::User,
-                &text,
+                &body_text,
                 chat::State::Complete,
             ) {
                 Ok(id) => id,
@@ -5505,7 +5513,7 @@ async fn chat_send(
         &db,
         &conversation,
         chat::Role::User,
-        &text,
+        &body_text,
         chat::State::Complete,
     ) {
         Ok(id) => id,
@@ -5532,7 +5540,7 @@ async fn chat_send(
     config.model = model.clone();
 
     // The first question names the conversation, and the rail bumps it to the top.
-    let _ = chat::name_from_first_message(&db, &conversation, &text);
+    let _ = chat::name_from_first_message(&db, &conversation, &body_text);
     let _ = chat::touch_conversation(&db, &conversation);
     let transcript = match chat::load(&db, &conversation) {
         Ok(transcript) => transcript,

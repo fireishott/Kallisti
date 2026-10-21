@@ -1639,8 +1639,21 @@ pub fn generate_image(config: &TurnConfig, prompt: &str) -> Option<Vec<u8>> {
 /// An empty message is a refusal by name rather than a silently dropped turn, and
 /// the ceiling is a byte count because that is what the provider bills.
 pub fn accept_text(raw: &str) -> Result<String, String> {
+    accept_message(raw, false)
+}
+
+/// Trim and validate a message that may carry files.
+///
+/// An empty box is a refusal only when nothing is attached: a picture or a log is
+/// a message in its own right, and refusing it for having no caption made the
+/// operator type filler to send a screenshot. The body may still be empty after
+/// this, which is why the caller writes a placeholder line for the transcript.
+pub fn accept_message(raw: &str, has_files: bool) -> Result<String, String> {
     let text = raw.trim();
     if text.is_empty() {
+        if has_files {
+            return Ok(String::new());
+        }
         return Err("a message is required".to_owned());
     }
     if text.len() > MAX_MESSAGE_BYTES {
@@ -1650,6 +1663,23 @@ pub fn accept_text(raw: &str) -> Result<String, String> {
         ));
     }
     Ok(text.to_owned())
+}
+
+/// What the transcript says for a message that was nothing but files.
+///
+/// The bubble renders the attachments themselves, so this line is the title and
+/// the one thing a row needs in order not to read as an empty message. It names
+/// the files because the same line becomes the conversation's name.
+#[must_use]
+pub fn attachments_line(files: &[Attachment]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();
+    if names.len() == 1 {
+        return format!("Attached {}", names[0]);
+    }
+    format!("Attached {} files: {}", names.len(), names.join(", "))
 }
 
 /// Where a chat turn sends to, and with what.
@@ -3970,6 +4000,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("scratch");
         root
+    }
+
+    /// The daemon's half of attachment-only sends: an empty box with a file is a
+    /// message, and the row it writes still says something.
+    #[test]
+    fn an_empty_message_is_only_a_refusal_when_nothing_is_attached() {
+        assert_eq!(accept_message("   ", false).unwrap_err(), "a message is required");
+        assert_eq!(accept_message("", true).expect("a file is a message"), "");
+        assert_eq!(accept_message("  hi  ", true).expect("trimmed"), "hi");
+        let too_long = "x".repeat(MAX_MESSAGE_BYTES + 1);
+        assert!(
+            accept_message(&too_long, true).is_err(),
+            "a caption is still bounded, attached or not"
+        );
+    }
+
+    /// The line a file-only message leaves in the transcript, and therefore the
+    /// line the conversation is named after.
+    #[test]
+    fn a_file_only_message_is_named_after_its_files() {
+        let one = [file("shot.png")];
+        assert_eq!(attachments_line(&one), "Attached shot.png");
+        let two = [file("a.log"), file("b.json")];
+        assert_eq!(attachments_line(&two), "Attached 2 files: a.log, b.json");
+        assert_eq!(attachments_line(&[]), "");
+    }
+
+    fn file(name: &str) -> Attachment {
+        Attachment {
+            id: name.to_owned(),
+            name: name.to_owned(),
+            path: format!("/tmp/{name}"),
+            size: 1,
+            media_type: None,
+        }
     }
 
     #[test]

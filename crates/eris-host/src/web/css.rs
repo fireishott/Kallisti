@@ -1070,6 +1070,21 @@ pre.code {
 
 /* The chat surface ------------------------------------------------------- */
 
+/* The conversation is the page, not a document set on one. The prose wrap caps
+   at 1180px with a 30px gutter because a settings form wants a measure, not a
+   room - the transcript wants the room. Without this the shell sat centred
+   inside that capped column, so on a wide screen a band of empty width ran down
+   each side of the conversation with nothing in it and nowhere to type. The
+   shell below keeps a cap of its own; the wrap just stops holding it back. */
+.app > .wrap:has(> .chat-shell) {
+  max-width: none;
+  /* Only the horizontal gutter moves. The vertical padding belongs to the base
+     rule and to the phone breakpoint below, which still owes the composer its
+     safe-area inset. */
+  padding-left: 18px;
+  padding-right: 18px;
+}
+
 .chat-shell {
   display: flex;
   flex-direction: column;
@@ -1078,7 +1093,9 @@ pre.code {
      happens to end. dvh follows the mobile viewport without the jump vh brings. */
   height: calc(100vh - 150px);
   height: calc(100dvh - 150px);
-  max-width: 880px;
+  /* Wide enough to use the window, capped so a very wide display does not turn
+     every paragraph into one 200-character line. */
+  max-width: min(100%, 1180px);
   margin: 0 auto;
 }
 
@@ -1137,7 +1154,10 @@ pre.code {
 }
 .thread:empty { display: none; }
 
-.msg { display: flex; flex-direction: column; max-width: 48rem; }
+/* A bubble is as wide as what is in it, up to the column: a one-line answer
+   still reads as one line, and a table or a long paragraph uses the width the
+   window actually has instead of wrapping at a fixed 48rem inside it. */
+.msg { display: flex; flex-direction: column; max-width: 100%; }
 .msg.user { margin-left: auto; align-items: flex-end; }
 .msg.assistant { margin-right: auto; align-items: flex-start; }
 .msg .who {
@@ -1280,6 +1300,10 @@ pre.code {
   padding: 9px 12px;
   border-top: 1px dashed var(--line);
 }
+/* Only the running call is on screen by default: the log follows the work in
+   front of the operator instead of stacking every command the turn has run.
+   Show all is the switch that brings the rest back, and it is remembered. */
+.msg .exec-call[hidden] { display: none; }
 /* One call is one window: closed it is a single line naming the call, open it is
    a short scroll box so a 40-line stdout cannot take over the conversation. */
 .msg .exec-call > summary {
@@ -1651,6 +1675,19 @@ pre.code {
 #send:focus-visible {
   outline: 2px solid var(--platinum);
   outline-offset: 2px;
+}
+/* Nothing to send yet. The control stays pressable, because a disabled button
+   cannot explain itself and a press here is harmless; it just reads as waiting.
+   A file in the queue is enough to make it live, which is the whole point. */
+#send.idle {
+  border-color: var(--line);
+  color: var(--muted);
+  background: transparent;
+}
+#send.idle:hover {
+  border-color: var(--line);
+  color: var(--muted);
+  background: transparent;
 }
 
 /* The attach control: a labelled + that opens the picker, and the queued name
@@ -2133,6 +2170,32 @@ mod tests {
         assert!(
             rule("#send:focus-visible").contains("outline: 2px solid var(--platinum)"),
             "the send control keeps a visible focus ring"
+        );
+    }
+
+    /// The conversation is the page: the transcript is not held inside the prose
+    /// measure, and a bubble may use the width the window actually has. The 880px
+    /// shell centred in a capped 1180px column is what left an empty band down
+    /// each side of the chat that nothing could be typed into.
+    #[test]
+    fn the_transcript_uses_the_width_the_window_has() {
+        let wrap = rule(".app > .wrap:has(> .chat-shell)");
+        assert!(
+            wrap.contains("max-width: none"),
+            "the chat page's wrap is not capped at the prose measure: {wrap}"
+        );
+        assert!(
+            !wrap.contains("padding: "),
+            "only the horizontal gutter moves, so the phone breakpoint keeps its \
+             safe-area inset: {wrap}"
+        );
+        assert!(
+            rule(".chat-shell").contains("max-width: min(100%, 1180px)"),
+            "the shell keeps a readable cap of its own"
+        );
+        assert!(
+            rule(".msg").contains("max-width: 100%"),
+            "a bubble is not capped below the column it sits in"
         );
     }
 

@@ -317,6 +317,15 @@ fn the_run_log_offers_expand_and_collapse_only_when_it_has_calls() {
         "Collapse all is a plain button, not a submit: {body}"
     );
     assert!(
+        body.contains(r#"<button class="run-btn" type="button" data-run="all""#)
+            && body.contains(r#"data-run="all" aria-pressed="false""#),
+        "Show all is a plain toggle, pressed off at rest: {body}"
+    );
+    assert!(
+        body.contains(r#"aria-label="Show every tool call in this run log, not only the running one""#),
+        "the toggle says what it does: {body}"
+    );
+    assert!(
         body.contains(r#"aria-label="Expand every tool call in this run log""#)
             && body.contains(r#"aria-label="Collapse every tool call in this run log""#),
         "both controls carry an accessible name: {body}"
@@ -390,7 +399,11 @@ fn the_run_log_is_one_details_and_its_controls_ride_the_one_script() {
     );
     assert!(
         script.contains(r#".run-btn"#),
-        "the same script wires the two controls"
+        "the same script wires the three controls"
+    );
+    assert!(
+        script.contains(r#"kallisti.runlog.all"#),
+        "the Show all choice is remembered next to the other one"
     );
 }
 
@@ -563,6 +576,58 @@ fn streaming_can_be_switched_off_and_the_page_says_so() {
         page.body.contains(r#"data-stream="on""#),
         "streaming is back on: {}",
         page.body
+    );
+}
+
+/// The live builder used to have no idea which run-log mode the operator chose,
+/// so a page opened on `summary` streamed a full wall of windows and then turned
+/// into one line after a reload. The shell now carries the choice.
+#[test]
+fn the_shell_tells_the_script_which_run_log_mode_is_stored() {
+    let (_dir, _engine, app, cookie) = ready_app();
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(r#"data-tool-log="full""#),
+        "a fresh install says full, and the script reads it: {}",
+        page.body
+    );
+
+    let reply = block_on(send(
+        &app,
+        Call::post(ROUTE_SETTINGS_TOOLS, "tools_enabled=true&tool_log=summary&tool_rounds=12")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert!(
+        page.body.contains(r#"data-tool-log="summary""#),
+        "summary reaches the script as summary: {}",
+        page.body
+    );
+
+    let script = page
+        .body
+        .split("<script>")
+        .nth(1)
+        .and_then(|rest| rest.split("</script>").next())
+        .expect("the chat page carries its inline script");
+    assert!(
+        script.contains(r#"data-tool-log"#),
+        "and the script is what reads it"
+    );
+    assert!(
+        script.contains(r#"TOOL_LOG_FALLBACK"#),
+        "a shell that says nothing falls back rather than guessing wrong"
     );
 }
 
