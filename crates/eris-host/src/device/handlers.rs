@@ -14,7 +14,7 @@ use std::convert::Infallible;
 use std::pin::Pin;
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -31,7 +31,13 @@ use crate::device::{
     APPROVAL_LIST_LIMIT, AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT, CONVERSATION_LIST_LIMIT,
     CONVERSATION_MESSAGE_LIMIT, DEVICE_LIST_LIMIT, DeviceError, DeviceService,
 };
+use crate::inbox::{InboxActionRequest, InboxStore, InternalInboxCreateRequest};
+use crate::notes::{
+    BlobDownloadOutcome, BlobUploadOutcome, NotesStore, PatchOutcome, RecognitionOutcome,
+    RunCreateOutcome,
+};
 use crate::onboarding::{PermissionError, Permissions, SetupEngine};
+use crate::push::{PushRegisterRequest, PushStore};
 use crate::sensors::{Delivered, HealthLatest, HealthUpload, LocationUpload};
 use crate::web::chat;
 
@@ -2871,7 +2877,7 @@ fn truthy(value: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Read one bounded JSON body and decode it into a typed shape.
-async fn parse_sensor_json<T: serde::de::DeserializeOwned>(body: Body) -> Result<T, DeviceError> {
+async fn parse_json<T: serde::de::DeserializeOwned>(body: Body) -> Result<T, DeviceError> {
     let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
         .await
         .map_err(|_| {
@@ -2969,7 +2975,7 @@ pub async fn upload_location(
     if let Err(error) = require_scope(&token, Scope::Chat) {
         return error.into_response();
     }
-    let upload = match parse_sensor_json::<LocationUpload>(body).await {
+    let upload = match parse_json::<LocationUpload>(body).await {
         Ok(upload) => upload,
         Err(error) => return error.into_response(),
     };
@@ -3004,7 +3010,7 @@ pub async fn upload_health(
     if let Err(error) = require_scope(&token, Scope::Chat) {
         return error.into_response();
     }
-    let upload = match parse_sensor_json::<HealthUpload>(body).await {
+    let upload = match parse_json::<HealthUpload>(body).await {
         Ok(upload) => upload,
         Err(error) => return error.into_response(),
     };
@@ -3074,9 +3080,1158 @@ pub async fn location(State(service): State<DeviceService>, headers: HeaderMap) 
     }
 }
 
+// ---------------------------------------------------------------------------
+// Inbox
+// ---------------------------------------------------------------------------
+
+/// The legacy `success(data)` envelope: `{data, meta:{requestId, timestamp}}`.
+/// Used by the inbox, push and talk routes exactly as the relay wrapped them.
+fn success(data: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "data": data,
+        "meta": {
+            "requestId": uuid::Uuid::now_v7().to_string(),
+            "timestamp": format_timestamp(crate::auth::now()),
+        }
+    })
+}
+
+/// The inbox store this service opened, or a 503.
+fn inbox_store(service: &DeviceService) -> Result<&InboxStore, DeviceError> {
+    service
+        .inbox()
+        .ok_or_else(|| DeviceError::db_unavailable("the inbox store is unavailable"))
+}
+
+/// The notes store this service opened, or a 503.
+fn notes_store(service: &DeviceService) -> Result<&NotesStore, DeviceError> {
+    service
+        .notes()
+        .ok_or_else(|| DeviceError::db_unavailable("the notes store is unavailable"))
+}
+
+/// The push store this service opened, or a 503.
+fn push_store(service: &DeviceService) -> Result<&PushStore, DeviceError> {
+    service
+        .push()
+        .ok_or_else(|| DeviceError::db_unavailable("the push store is unavailable"))
+}
+
+/// Read one bounded JSON body as an object. An empty body reads as `{}` (the
+/// legacy `_parse_body` behaviour); malformed JSON is a 400 rather than a silent
+/// `{}`, so a broken body never turns into a phantom write.
+async fn parse_json_object(body: Body) -> Result<serde_json::Value, DeviceError> {
+    let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+        .await
+        .map_err(|_| {
+            DeviceError::bad_request(
+                "body_too_large",
+                format!("the body must be under {MAX_BODY_BYTES} bytes"),
+            )
+        })?;
+    let text = String::from_utf8(bytes.to_vec())
+        .map_err(|_| DeviceError::bad_request("body_not_utf8", "the body is not valid UTF-8"))?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::Value::Object(serde_json::Map::new()));
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|error| {
+        DeviceError::bad_request(
+            "body_not_json",
+            format!("the JSON body did not parse: {error}"),
+        )
+    })?;
+    if !value.is_object() {
+        return Err(DeviceError::bad_request(
+            "body_not_object",
+            "the JSON body must be an object",
+        ));
+    }
+    Ok(value)
+}
+
+/// A string field, when present and a JSON string.
+fn obj_str(body: &serde_json::Value, key: &str) -> Option<String> {
+    body.get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// A boolean field, when present and a JSON bool.
+fn obj_bool(body: &serde_json::Value, key: &str) -> Option<bool> {
+    body.get(key).and_then(serde_json::Value::as_bool)
+}
+
+/// An integer field, when present and a JSON integer.
+fn obj_i64(body: &serde_json::Value, key: &str) -> Option<i64> {
+    body.get(key).and_then(serde_json::Value::as_i64)
+}
+
+/// `GET /v1/inbox` - the device's live inbox items, newest first.
+pub async fn inbox(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match inbox_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.list(token.device_id()) {
+        Ok(items) => axum::Json(success(serde_json::json!({ "items": items }))).into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot read the inbox: {error}")).into_response()
+        }
+    }
+}
+
+/// `POST /v1/inbox/{item_id}/action` - act on one item.
+pub async fn inbox_action(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let request = match parse_json::<InboxActionRequest>(body).await {
+        Ok(request) => request,
+        Err(error) => return error.into_response(),
+    };
+    if request.action_id.trim().is_empty() {
+        return DeviceError::bad_request("action_id_required", "actionId must not be empty")
+            .into_response();
+    }
+    let store = match inbox_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.record_action(token.device_id(), &item_id, &request.action_id, "user") {
+        Ok(result) => axum::Json(success(serde_json::json!(result))).into_response(),
+        Err(crate::inbox::InboxError::NotFound) => DeviceError::new(
+            StatusCode::NOT_FOUND,
+            "inbox_item_not_found",
+            "no inbox item with that id belongs to this device",
+        )
+        .into_response(),
+        Err(error) => DeviceError::db_unavailable(format!("cannot act on the inbox item: {error}"))
+            .into_response(),
+    }
+}
+
+/// `POST /internal/inbox/create` - create an inbox item behind the `admin` scope.
+///
+/// The legacy relay guarded this with an `X-Relay-Internal-Key` header; Eris has
+/// no internal key, so a bearer token with the `admin` scope is the gate instead.
+pub async fn internal_inbox_create(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let request = match parse_json::<InternalInboxCreateRequest>(body).await {
+        Ok(request) => request,
+        Err(error) => return error.into_response(),
+    };
+    if request.kind.trim().is_empty()
+        || request.title.trim().is_empty()
+        || request.body.trim().is_empty()
+    {
+        return DeviceError::bad_request("invalid_request", "kind, title and body are required")
+            .into_response();
+    }
+    // The target device: an explicit `deviceId` (or legacy `userId` alias), else
+    // the authenticated admin's own device.
+    let target = request
+        .device_id
+        .as_deref()
+        .or(request.user_id.as_deref())
+        .unwrap_or_else(|| token.device_id());
+    let store = match inbox_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    let priority = if request.priority.trim().is_empty() {
+        "normal"
+    } else {
+        &request.priority
+    };
+    match store.create(
+        target,
+        &request.kind,
+        &request.title,
+        &request.body,
+        priority,
+        request.payload.as_ref(),
+        request.expires_at.as_deref(),
+    ) {
+        Ok(item) => axum::Json(success(serde_json::json!({ "item": item }))).into_response(),
+        Err(error) => DeviceError::db_unavailable(format!("cannot create the inbox item: {error}"))
+            .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Notes
+// ---------------------------------------------------------------------------
+
+/// The JSON body a note create/patch reads, without a model: field presence is
+/// the contract (the legacy `_parse_body` + `in` checks).
+fn note_store_or_503(service: &DeviceService) -> Result<&NotesStore, DeviceError> {
+    notes_store(service)
+}
+
+/// `GET /v1/notes` - list live notes, newest first.
+pub async fn list_notes(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.list(token.device_id()) {
+        Ok(notes) => {
+            let count = notes.len();
+            axum::Json(serde_json::json!({
+                "data": notes,
+                "meta": { "count": count }
+            }))
+            .into_response()
+        }
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot list notes: {error}")).into_response()
+        }
+    }
+}
+
+/// `POST /v1/notes` - create a note.
+pub async fn create_note(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let body = match parse_json_object(body).await {
+        Ok(body) => body,
+        Err(error) => return error.into_response(),
+    };
+    let title = obj_str(&body, "title").unwrap_or_default();
+    let folder_id = obj_str(&body, "folderId");
+    let pinned = obj_bool(&body, "pinned").unwrap_or(false);
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.create(token.device_id(), &title, folder_id.as_deref(), pinned) {
+        Ok(note) => (
+            StatusCode::CREATED,
+            axum::Json(serde_json::json!({ "data": note })),
+        )
+            .into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot create the note: {error}")).into_response()
+        }
+    }
+}
+
+/// `GET /v1/notes/{id}` - one note.
+pub async fn get_note(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(note_id): Path<String>,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.get(token.device_id(), &note_id) {
+        Ok(Some(note)) => axum::Json(serde_json::json!({ "data": note })).into_response(),
+        Ok(None) => note_not_found().into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot read the note: {error}")).into_response()
+        }
+    }
+}
+
+/// `PATCH /v1/notes/{id}` - update note metadata, optimistic concurrency via
+/// the `If-Match` header (`"<revision>"`).
+pub async fn patch_note(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(note_id): Path<String>,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let if_match = match headers
+        .get(header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+    {
+        Some(value) => value,
+        None => {
+            return DeviceError::new(
+                StatusCode::CONFLICT,
+                "if_match_required",
+                "If-Match header is required for note updates.",
+            )
+            .into_response();
+        }
+    };
+    let body = match parse_json_object(body).await {
+        Ok(body) => body,
+        Err(error) => return error.into_response(),
+    };
+    let title = obj_str(&body, "title");
+    let folder_id = body
+        .get("folderId")
+        .map(|value| value.as_str().map(str::to_owned));
+    let pinned = obj_bool(&body, "pinned");
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.patch(
+        token.device_id(),
+        &note_id,
+        if_match,
+        title.as_deref(),
+        folder_id,
+        pinned,
+    ) {
+        Ok(PatchOutcome::Updated(note)) => {
+            axum::Json(serde_json::json!({ "data": note })).into_response()
+        }
+        Ok(PatchOutcome::NoteNotFound) => note_not_found().into_response(),
+        Ok(PatchOutcome::RevisionMismatch) => DeviceError::new(
+            StatusCode::CONFLICT,
+            "revision_mismatch",
+            "Note revision mismatch.",
+        )
+        .into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot update the note: {error}")).into_response()
+        }
+    }
+}
+
+/// `DELETE /v1/notes/{id}` - soft-delete a note.
+pub async fn delete_note(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(note_id): Path<String>,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.delete(token.device_id(), &note_id) {
+        Ok(true) => axum::Json(serde_json::json!({
+            "data": { "id": note_id, "deleted": true }
+        }))
+        .into_response(),
+        Ok(false) => note_not_found().into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot delete the note: {error}")).into_response()
+        }
+    }
+}
+
+/// `PUT /v1/notes/{id}/blobs/{revision}` - record a drawing blob's metadata.
+pub async fn upload_note_blob(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path((note_id, revision)): Path<(String, i64)>,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let content_length = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.parse::<i64>().ok())
+        .unwrap_or(0);
+    if content_length > 25 * 1024 * 1024 {
+        return DeviceError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "blob_too_large",
+            "Blob exceeds 25 MB limit.",
+        )
+        .into_response();
+    }
+    let content_hash = headers
+        .get("x-content-sha256")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .unwrap_or_else(|| "pending".to_owned());
+    let storage_path = format!("notes/{note_id}/rev-{revision}.pkdrawing");
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.upload_blob(
+        token.device_id(),
+        &note_id,
+        revision,
+        &content_hash,
+        content_length,
+        &storage_path,
+    ) {
+        Ok(BlobUploadOutcome::Ok(view)) => {
+            axum::Json(serde_json::json!({ "data": view })).into_response()
+        }
+        Ok(BlobUploadOutcome::NoteNotFound) => note_not_found().into_response(),
+        Ok(BlobUploadOutcome::RevisionExists) => DeviceError::new(
+            StatusCode::CONFLICT,
+            "revision_exists",
+            format!("Revision {revision} already exists."),
+        )
+        .into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot store the blob: {error}")).into_response()
+        }
+    }
+}
+
+/// `GET /v1/notes/{id}/blobs/{revision}` - one drawing blob's metadata.
+pub async fn download_note_blob(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path((note_id, revision)): Path<(String, i64)>,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.download_blob(token.device_id(), &note_id, revision) {
+        Ok(BlobDownloadOutcome::Ok(view)) => {
+            axum::Json(serde_json::json!({ "data": view })).into_response()
+        }
+        Ok(BlobDownloadOutcome::NoteNotFound) => note_not_found().into_response(),
+        Ok(BlobDownloadOutcome::BlobNotFound) => {
+            DeviceError::new(StatusCode::NOT_FOUND, "blob_not_found", "Blob not found.")
+                .into_response()
+        }
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot read the blob: {error}")).into_response()
+        }
+    }
+}
+
+/// `POST /v1/notes/{id}/recognitions` - store an OCR/handwriting result.
+pub async fn create_recognition(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(note_id): Path<String>,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let body = match parse_json_object(body).await {
+        Ok(body) => body,
+        Err(error) => return error.into_response(),
+    };
+    let drawing_revision = obj_i64(&body, "drawingRevision").filter(|value| *value != 0);
+    let engine = obj_str(&body, "engine").filter(|value| !value.trim().is_empty());
+    let raw_text = obj_str(&body, "rawText").filter(|value| !value.trim().is_empty());
+    let (Some(drawing_revision), Some(engine), Some(raw_text)) =
+        (drawing_revision, engine, raw_text)
+    else {
+        return DeviceError::bad_request(
+            "invalid_request",
+            "drawingRevision, engine, and rawText are required.",
+        )
+        .into_response();
+    };
+    let engine_version = obj_str(&body, "engineVersion");
+    let languages = body.get("languages").cloned();
+    let user_corrected_text = obj_str(&body, "userCorrectedText");
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.create_recognition(
+        token.device_id(),
+        &note_id,
+        drawing_revision,
+        &engine,
+        engine_version.as_deref(),
+        languages.as_ref(),
+        &raw_text,
+        user_corrected_text.as_deref(),
+    ) {
+        Ok(RecognitionOutcome::Ok(view)) => (
+            StatusCode::CREATED,
+            axum::Json(serde_json::json!({ "data": view })),
+        )
+            .into_response(),
+        Ok(RecognitionOutcome::NoteNotFound) => note_not_found().into_response(),
+        Err(error) => DeviceError::db_unavailable(format!("cannot store the recognition: {error}"))
+            .into_response(),
+    }
+}
+
+/// `POST /v1/notes/{id}/runs` - start an enrichment run (stub execution).
+pub async fn create_note_run(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(note_id): Path<String>,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let body = match parse_json_object(body).await {
+        Ok(body) => body,
+        Err(error) => return error.into_response(),
+    };
+    let client_run_id = obj_str(&body, "clientRunId").filter(|value| !value.trim().is_empty());
+    let Some(client_run_id) = client_run_id else {
+        return DeviceError::bad_request("invalid_request", "clientRunId is required.")
+            .into_response();
+    };
+    let source_drawing_revision = obj_i64(&body, "sourceDrawingRevision");
+    let source_text_revision = obj_i64(&body, "sourceTextRevision");
+    let requested_directives = body
+        .get("directives")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.create_run(
+        token.device_id(),
+        &note_id,
+        &client_run_id,
+        source_drawing_revision,
+        source_text_revision,
+        requested_directives,
+    ) {
+        Ok(RunCreateOutcome::Created(view)) => (
+            StatusCode::CREATED,
+            axum::Json(serde_json::json!({ "data": view })),
+        )
+            .into_response(),
+        Ok(RunCreateOutcome::Existing(view)) => {
+            axum::Json(serde_json::json!({ "data": view })).into_response()
+        }
+        Ok(RunCreateOutcome::NoteNotFound) => note_not_found().into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot start the run: {error}")).into_response()
+        }
+    }
+}
+
+/// `GET /v1/note-runs/{run_id}` - one run.
+pub async fn get_note_run(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.get_run(token.device_id(), &run_id) {
+        Ok(Some(run)) => axum::Json(serde_json::json!({ "data": run })).into_response(),
+        Ok(None) => run_not_found().into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot read the run: {error}")).into_response()
+        }
+    }
+}
+
+/// The query `GET /v1/note-runs/{run_id}/events` accepts: `after` (cursor) and
+/// `limit` (bounded to 500). Both are strings so a malformed value is ignored,
+/// the way the legacy route swallowed a bad `int(...)`.
+#[derive(serde::Deserialize)]
+pub struct NoteRunEventsQuery {
+    after: Option<String>,
+    limit: Option<String>,
+}
+
+/// `GET /v1/note-runs/{run_id}/events` - cursor-paginated event log.
+pub async fn note_run_events(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+    Query(query): Query<NoteRunEventsQuery>,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    // Last-Event-ID header takes precedence, then ?after=.
+    let cursor = headers
+        .get(LAST_EVENT_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.parse::<i64>().ok())
+        .or_else(|| {
+            query
+                .after
+                .as_deref()
+                .and_then(|text| text.parse::<i64>().ok())
+        });
+    let limit = query
+        .limit
+        .as_deref()
+        .and_then(|text| text.parse::<i64>().ok())
+        .unwrap_or(100)
+        .clamp(1, 500);
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.run_events(token.device_id(), &run_id, cursor, limit) {
+        Ok(Some(events)) => {
+            let count = events.len();
+            axum::Json(serde_json::json!({
+                "data": events,
+                "meta": { "count": count, "runId": run_id }
+            }))
+            .into_response()
+        }
+        Ok(None) => run_not_found().into_response(),
+        Err(error) => DeviceError::db_unavailable(format!("cannot read the run events: {error}"))
+            .into_response(),
+    }
+}
+
+/// `POST /v1/note-runs/{run_id}/cancel` - cancel a run (idempotent).
+pub async fn cancel_note_run(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match note_store_or_503(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.cancel_run(token.device_id(), &run_id) {
+        Ok(Some(run)) => axum::Json(serde_json::json!({ "data": run })).into_response(),
+        Ok(None) => run_not_found().into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot cancel the run: {error}")).into_response()
+        }
+    }
+}
+
+/// A 404 for a note the device does not own (or that does not exist).
+fn note_not_found() -> DeviceError {
+    DeviceError::new(
+        StatusCode::NOT_FOUND,
+        "note_not_found",
+        "no note with that id belongs to this device",
+    )
+}
+
+/// A 404 for a run the device does not own (or that does not exist).
+fn run_not_found() -> DeviceError {
+    DeviceError::new(
+        StatusCode::NOT_FOUND,
+        "run_not_found",
+        "no run with that id belongs to this device",
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Push
+// ---------------------------------------------------------------------------
+
+/// `POST /v1/push/register` - upsert a device's push token.
+pub async fn register_push(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let request = match parse_json::<PushRegisterRequest>(body).await {
+        Ok(request) => request,
+        Err(error) => return error.into_response(),
+    };
+    // The token is authoritative; a body that names another device is refused.
+    if let Some(device_id) = request.device_id.as_deref()
+        && device_id != token.device_id()
+    {
+        return DeviceError::new(
+            StatusCode::FORBIDDEN,
+            "scope_denied",
+            "Cannot register push token for another device.",
+        )
+        .into_response();
+    }
+    if request.push_environment.trim().is_empty() || request.bundle_id.trim().is_empty() {
+        return DeviceError::bad_request(
+            "invalid_request",
+            "pushEnvironment and bundleId are required.",
+        )
+        .into_response();
+    }
+    if request.transport == "direct" && request.apns_token.is_none() {
+        return DeviceError::bad_request(
+            "invalid_request",
+            "Direct push registration requires apnsToken.",
+        )
+        .into_response();
+    }
+    if request.transport == "relay"
+        && [
+            request.relay_handle.as_ref(),
+            request.send_grant.as_ref(),
+            request.relay_id.as_ref(),
+            request.relay_public_key.as_ref(),
+        ]
+        .iter()
+        .any(Option::is_none)
+    {
+        return DeviceError::bad_request(
+            "invalid_request",
+            "Relay push registration requires relayHandle, sendGrant, relayId, and relayPublicKey.",
+        )
+        .into_response();
+    }
+    let store = match push_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.upsert(
+        token.device_id(),
+        &request.transport,
+        request.apns_token.as_deref(),
+        &request.push_environment,
+        &request.bundle_id,
+        request.relay_handle.as_deref(),
+        request.send_grant.as_deref(),
+        request.relay_id.as_deref(),
+        request.relay_public_key.as_deref(),
+        request.token_debug_suffix.as_deref(),
+    ) {
+        Ok(updated_at) => axum::Json(success(serde_json::json!({
+            "registered": true,
+            "updatedAt": updated_at,
+        })))
+        .into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot register push: {error}")).into_response()
+        }
+    }
+}
+
+/// `POST /v1/push/deactivate` - deactivate a device's push registrations.
+pub async fn deactivate_push(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match push_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.deactivate(token.device_id()) {
+        Ok(count) => axum::Json(success(serde_json::json!({
+            "deactivated": true,
+            "count": count,
+        })))
+        .into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot deactivate push: {error}")).into_response()
+        }
+    }
+}
+
+/// `POST /v1/push/send` - stub. There is no APNs key on this host, so this is
+/// the legacy route's own 503 (`apns_client is None`), behind the `admin` scope.
+pub async fn send_push(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    tracing::info!(
+        device_id = token.device_id(),
+        "push send requested but APNs is not configured"
+    );
+    DeviceError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "apns_not_configured",
+        "APNs not configured. Set APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID.",
+    )
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Talk (placeholder - in development)
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/talk/readiness` - always "not ready, in development".
+pub async fn talk_readiness(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    axum::Json(success(serde_json::json!({
+        "ready": false,
+        "reason": "in_development",
+    })))
+    .into_response()
+}
+
+/// The typed "not implemented" reply for the talk session routes.
+fn talk_not_implemented() -> DeviceError {
+    DeviceError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "talk mode is in development and is not implemented yet",
+    )
+}
+
+/// `POST /v1/talk/session` - placeholder.
+pub async fn create_talk_session(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    talk_not_implemented().into_response()
+}
+
+/// `POST /v1/talk/session/{id}/end` - placeholder.
+pub async fn end_talk_session(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(_session_id): Path<String>,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    talk_not_implemented().into_response()
+}
+
+/// `POST /v1/talk/session/{id}/turns` - placeholder.
+pub async fn create_talk_turn(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(_session_id): Path<String>,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    talk_not_implemented().into_response()
+}
+
+/// `POST /v1/talk/session/{id}/inject` - placeholder.
+pub async fn inject_talk_transcript(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    Path(_session_id): Path<String>,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    talk_not_implemented().into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt;
+
+    /// A ready device service plus a chat token and an admin token, on a scratch
+    /// root so nothing touches the operator's state directory.
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        service: DeviceService,
+        chat: String,
+        admin: String,
+    }
+
+    fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = crate::config::Paths::for_root(dir.path());
+        let db = crate::db::Db::open(&paths.db_file).expect("db");
+        let engine = crate::onboarding::SetupEngine::new(db.clone(), paths);
+        let service = DeviceService::new(engine, 32);
+        let tokens = TokenService::new(db);
+        let device_id = tokens.register_device("test", "ios").expect("device");
+        let chat = tokens
+            .mint_access(&device_id, ScopeSet::device_default(), TokenOrigin::Device)
+            .expect("chat token");
+        let admin = tokens
+            .mint_access(
+                &device_id,
+                ScopeSet::device_default().with(Scope::Admin),
+                TokenOrigin::Loopback,
+            )
+            .expect("admin token");
+        Fixture {
+            _dir: dir,
+            service,
+            chat: chat.token().to_owned(),
+            admin: admin.token().to_owned(),
+        }
+    }
+
+    /// Send one request to the device router and return status + parsed JSON.
+    async fn send(
+        service: &DeviceService,
+        method: &str,
+        path: &str,
+        token: &str,
+        body: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = axum::http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json");
+        if !token.is_empty() {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        let request = builder.body(Body::from(body.to_owned())).expect("request");
+        let response = service.router().oneshot(request).await.expect("router");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        let value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, value)
+    }
+
+    #[tokio::test]
+    async fn inbox_routes_work_end_to_end() {
+        let fx = fixture();
+
+        let (status, body) = send(&fx.service, "GET", "/v1/inbox", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["items"], serde_json::json!([]));
+
+        // The internal create is admin-only.
+        let (status, _) = send(
+            &fx.service,
+            "POST",
+            "/internal/inbox/create",
+            &fx.chat,
+            r#"{"kind":"alert","title":"Hi","body":"There"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/internal/inbox/create",
+            &fx.admin,
+            r#"{"kind":"alert","title":"Hi","body":"There"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let item_id = body["data"]["item"]["id"].as_str().expect("id").to_owned();
+
+        let (status, body) = send(&fx.service, "GET", "/v1/inbox", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["items"][0]["id"], serde_json::json!(item_id));
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            &format!("/v1/inbox/{item_id}/action"),
+            &fx.chat,
+            r#"{"actionId":"dismiss"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["status"], serde_json::json!("dismissed"));
+    }
+
+    #[tokio::test]
+    async fn notes_routes_work_end_to_end() {
+        let fx = fixture();
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/notes",
+            &fx.chat,
+            r#"{"title":"M","pinned":true}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["data"]["title"], serde_json::json!("M"));
+        assert_eq!(body["data"]["pinned"], serde_json::json!(true));
+        let id = body["data"]["id"].as_str().expect("id").to_owned();
+
+        let (status, body) = send(&fx.service, "GET", "/v1/notes", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["meta"]["count"], serde_json::json!(1));
+
+        let (status, body) =
+            send(&fx.service, "GET", &format!("/v1/notes/{id}"), &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["id"], serde_json::json!(id));
+
+        // Patch without the If-Match header refuses with a 409.
+        let (status, _) = send(
+            &fx.service,
+            "PATCH",
+            &format!("/v1/notes/{id}"),
+            &fx.chat,
+            r#"{"title":"X"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn push_routes_work_end_to_end() {
+        let fx = fixture();
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/push/register",
+            &fx.chat,
+            r#"{"transport":"direct","apnsToken":"tok","pushEnvironment":"production","bundleId":"com.example"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["registered"], serde_json::json!(true));
+
+        let (status, body) = send(&fx.service, "POST", "/v1/push/deactivate", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["deactivated"], serde_json::json!(true));
+        assert_eq!(body["data"]["count"], serde_json::json!(1));
+
+        // Send is admin-only, and with admin it is the 503 APNs stub.
+        let (status, _) = send(&fx.service, "POST", "/v1/push/send", &fx.chat, "{}").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = send(&fx.service, "POST", "/v1/push/send", &fx.admin, "{}").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn talk_routes_are_placeholders() {
+        let fx = fixture();
+
+        let (status, body) = send(&fx.service, "GET", "/v1/talk/readiness", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["ready"], serde_json::json!(false));
+        assert_eq!(body["data"]["reason"], serde_json::json!("in_development"));
+
+        let (status, body) = send(&fx.service, "POST", "/v1/talk/session", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(body["code"], serde_json::json!("not_implemented"));
+    }
 
     #[test]
     fn a_bearer_is_read_only_from_the_authorization_header() {

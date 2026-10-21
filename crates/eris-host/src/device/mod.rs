@@ -51,7 +51,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use axum::Router;
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use serde::Serialize;
 use tokio::net::TcpListener;
 
@@ -275,6 +275,67 @@ pub const ROUTE_HEALTH_LATEST: &str = "/v1/device/health/latest";
 /// `GET /v1/device/location` - the most recent location point.
 pub const ROUTE_LOCATION: &str = "/v1/device/location";
 
+/// `GET /v1/inbox` - list the device's inbox items.
+pub const ROUTE_INBOX: &str = "/v1/inbox";
+
+/// `POST /v1/inbox/{item_id}/action` - act on one inbox item.
+pub const ROUTE_INBOX_ACTION: &str = "/v1/inbox/{item_id}/action";
+
+/// `POST /internal/inbox/create` - internal create, behind the `admin` scope.
+///
+/// This is the one device-listener path outside `/v1`. The legacy relay guarded
+/// it with an `X-Relay-Internal-Key` header; Eris has no internal key, so it is
+/// gated behind a bearer token that carries the `admin` scope instead.
+pub const ROUTE_INTERNAL_INBOX_CREATE: &str = "/internal/inbox/create";
+
+/// `GET /v1/notes` and `POST /v1/notes` - the list, and creating one.
+pub const ROUTE_NOTES: &str = "/v1/notes";
+
+/// `GET /v1/notes/{id}`, `PATCH /v1/notes/{id}` and `DELETE /v1/notes/{id}`.
+pub const ROUTE_NOTE: &str = "/v1/notes/{note_id}";
+
+/// `PUT /v1/notes/{id}/blobs/{revision}` and `GET` - the drawing blob.
+pub const ROUTE_NOTE_BLOB: &str = "/v1/notes/{note_id}/blobs/{revision}";
+
+/// `POST /v1/notes/{id}/recognitions` - store an OCR/handwriting result.
+pub const ROUTE_NOTE_RECOGNITIONS: &str = "/v1/notes/{note_id}/recognitions";
+
+/// `POST /v1/notes/{id}/runs` - start an enrichment run.
+pub const ROUTE_NOTE_RUNS: &str = "/v1/notes/{note_id}/runs";
+
+/// `GET /v1/note-runs/{run_id}` - one run.
+pub const ROUTE_NOTE_RUN: &str = "/v1/note-runs/{run_id}";
+
+/// `GET /v1/note-runs/{run_id}/events` - the run's event log.
+pub const ROUTE_NOTE_RUN_EVENTS: &str = "/v1/note-runs/{run_id}/events";
+
+/// `POST /v1/note-runs/{run_id}/cancel` - stop a run.
+pub const ROUTE_NOTE_RUN_CANCEL: &str = "/v1/note-runs/{run_id}/cancel";
+
+/// `POST /v1/push/register` - upsert a device's push token.
+pub const ROUTE_PUSH_REGISTER: &str = "/v1/push/register";
+
+/// `POST /v1/push/deactivate` - deactivate a device's push tokens.
+pub const ROUTE_PUSH_DEACTIVATE: &str = "/v1/push/deactivate";
+
+/// `POST /v1/push/send` - send a push (stubbed: 503 without an APNs key).
+pub const ROUTE_PUSH_SEND: &str = "/v1/push/send";
+
+/// `GET /v1/talk/readiness` - placeholder readiness probe.
+pub const ROUTE_TALK_READINESS: &str = "/v1/talk/readiness";
+
+/// `POST /v1/talk/session` - placeholder talk session create.
+pub const ROUTE_TALK_SESSION: &str = "/v1/talk/session";
+
+/// `POST /v1/talk/session/{id}/end` - placeholder talk session end.
+pub const ROUTE_TALK_SESSION_END: &str = "/v1/talk/session/{id}/end";
+
+/// `POST /v1/talk/session/{id}/turns` - placeholder talk turn create.
+pub const ROUTE_TALK_TURNS: &str = "/v1/talk/session/{id}/turns";
+
+/// `POST /v1/talk/session/{id}/inject` - placeholder transcript inject.
+pub const ROUTE_TALK_INJECT: &str = "/v1/talk/session/{id}/inject";
+
 /// The bodies every device-surface error uses.
 ///
 /// `ok` is always false, `code` is the thing a client branches on, and `message`
@@ -456,6 +517,12 @@ pub struct DeviceService {
     /// the file could not be opened, and every sensor route answers 503 rather
     /// than pretending a write landed.
     sensors: Option<crate::sensors::SensorStore>,
+    /// The inbox store (`inbox.db`), when it opened.
+    inbox: Option<crate::inbox::InboxStore>,
+    /// The notes store (`notes.db`), when it opened.
+    notes: Option<crate::notes::NotesStore>,
+    /// The push store (`push.db`), when it opened.
+    push: Option<crate::push::PushStore>,
 }
 
 impl DeviceService {
@@ -468,6 +535,9 @@ impl DeviceService {
         let persona = PersonaConfig::at_path(engine.paths().persona_file());
         let hub = Arc::new(TurnHub::new(engine.db().clone(), buffer).with_persona(persona));
         let sensors = open_sensors(&engine);
+        let inbox = open_inbox(&engine);
+        let notes = open_notes(&engine);
+        let push = open_push(&engine);
         Self {
             engine,
             hub,
@@ -480,6 +550,9 @@ impl DeviceService {
             ])),
             mcp: None,
             sensors,
+            inbox,
+            notes,
+            push,
         }
     }
 
@@ -529,6 +602,9 @@ impl DeviceService {
             TurnHub::with_key_lookup(engine.db().clone(), buffer, lookup).with_persona(persona),
         );
         let sensors = open_sensors(&engine);
+        let inbox = open_inbox(&engine);
+        let notes = open_notes(&engine);
+        let push = open_push(&engine);
         Self {
             engine,
             hub,
@@ -541,6 +617,9 @@ impl DeviceService {
             ])),
             mcp: None,
             sensors,
+            inbox,
+            notes,
+            push,
         }
     }
 
@@ -566,6 +645,24 @@ impl DeviceService {
     #[must_use]
     pub fn sensors(&self) -> Option<&crate::sensors::SensorStore> {
         self.sensors.as_ref()
+    }
+
+    /// The inbox store, when it opened at start-up.
+    #[must_use]
+    pub fn inbox(&self) -> Option<&crate::inbox::InboxStore> {
+        self.inbox.as_ref()
+    }
+
+    /// The notes store, when it opened at start-up.
+    #[must_use]
+    pub fn notes(&self) -> Option<&crate::notes::NotesStore> {
+        self.notes.as_ref()
+    }
+
+    /// The push store, when it opened at start-up.
+    #[must_use]
+    pub fn push(&self) -> Option<&crate::push::PushStore> {
+        self.push.as_ref()
     }
 
     /// Whether new turns are accepted. This is the in-process half of the
@@ -655,6 +752,39 @@ fn open_sensors(engine: &SetupEngine) -> Option<crate::sensors::SensorStore> {
     }
 }
 
+/// Open the dedicated inbox store for this engine, or log and return `None`.
+fn open_inbox(engine: &SetupEngine) -> Option<crate::inbox::InboxStore> {
+    match crate::inbox::InboxStore::open(engine.paths().state_dir.join("inbox.db")) {
+        Ok(store) => Some(store),
+        Err(error) => {
+            tracing::error!(%error, "inbox store unavailable; inbox routes will answer 503");
+            None
+        }
+    }
+}
+
+/// Open the dedicated notes store for this engine, or log and return `None`.
+fn open_notes(engine: &SetupEngine) -> Option<crate::notes::NotesStore> {
+    match crate::notes::NotesStore::open(engine.paths().state_dir.join("notes.db")) {
+        Ok(store) => Some(store),
+        Err(error) => {
+            tracing::error!(%error, "notes store unavailable; notes routes will answer 503");
+            None
+        }
+    }
+}
+
+/// Open the dedicated push store for this engine, or log and return `None`.
+fn open_push(engine: &SetupEngine) -> Option<crate::push::PushStore> {
+    match crate::push::PushStore::open(engine.paths().state_dir.join("push.db")) {
+        Ok(store) => Some(store),
+        Err(error) => {
+            tracing::error!(%error, "push store unavailable; push routes will answer 503");
+            None
+        }
+    }
+}
+
 /// Build the device router. `/v1` only; everything else is a typed 404.
 pub fn router(service: DeviceService) -> Router {
     Router::new()
@@ -700,6 +830,39 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_SENSOR_HEALTH, post(handlers::upload_health))
         .route(ROUTE_HEALTH_LATEST, get(handlers::health_latest))
         .route(ROUTE_LOCATION, get(handlers::location))
+        .route(ROUTE_INBOX, get(handlers::inbox))
+        .route(ROUTE_INBOX_ACTION, post(handlers::inbox_action))
+        .route(
+            ROUTE_INTERNAL_INBOX_CREATE,
+            post(handlers::internal_inbox_create),
+        )
+        .route(
+            ROUTE_NOTES,
+            get(handlers::list_notes).post(handlers::create_note),
+        )
+        .route(
+            ROUTE_NOTE,
+            get(handlers::get_note)
+                .patch(handlers::patch_note)
+                .delete(handlers::delete_note),
+        )
+        .route(
+            ROUTE_NOTE_BLOB,
+            put(handlers::upload_note_blob).get(handlers::download_note_blob),
+        )
+        .route(ROUTE_NOTE_RECOGNITIONS, post(handlers::create_recognition))
+        .route(ROUTE_NOTE_RUNS, post(handlers::create_note_run))
+        .route(ROUTE_NOTE_RUN, get(handlers::get_note_run))
+        .route(ROUTE_NOTE_RUN_EVENTS, get(handlers::note_run_events))
+        .route(ROUTE_NOTE_RUN_CANCEL, post(handlers::cancel_note_run))
+        .route(ROUTE_PUSH_REGISTER, post(handlers::register_push))
+        .route(ROUTE_PUSH_DEACTIVATE, post(handlers::deactivate_push))
+        .route(ROUTE_PUSH_SEND, post(handlers::send_push))
+        .route(ROUTE_TALK_READINESS, get(handlers::talk_readiness))
+        .route(ROUTE_TALK_SESSION, post(handlers::create_talk_session))
+        .route(ROUTE_TALK_SESSION_END, post(handlers::end_talk_session))
+        .route(ROUTE_TALK_TURNS, post(handlers::create_talk_turn))
+        .route(ROUTE_TALK_INJECT, post(handlers::inject_talk_transcript))
         .fallback(not_here)
         .method_not_allowed_fallback(wrong_method)
         .layer(axum::middleware::from_fn(assign_request_id))
@@ -787,6 +950,24 @@ mod tests {
             ROUTE_SENSOR_HEALTH,
             ROUTE_HEALTH_LATEST,
             ROUTE_LOCATION,
+            ROUTE_INBOX,
+            ROUTE_INBOX_ACTION,
+            ROUTE_NOTES,
+            ROUTE_NOTE,
+            ROUTE_NOTE_BLOB,
+            ROUTE_NOTE_RECOGNITIONS,
+            ROUTE_NOTE_RUNS,
+            ROUTE_NOTE_RUN,
+            ROUTE_NOTE_RUN_EVENTS,
+            ROUTE_NOTE_RUN_CANCEL,
+            ROUTE_PUSH_REGISTER,
+            ROUTE_PUSH_DEACTIVATE,
+            ROUTE_PUSH_SEND,
+            ROUTE_TALK_READINESS,
+            ROUTE_TALK_SESSION,
+            ROUTE_TALK_SESSION_END,
+            ROUTE_TALK_TURNS,
+            ROUTE_TALK_INJECT,
         ] {
             assert!(route.starts_with("/v1/"), "{route} must live under /v1");
         }

@@ -118,6 +118,12 @@ impl Delivered {
     }
 }
 
+impl Default for Delivered {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// `GET /v1/device/health/latest`.
 #[derive(Debug, Serialize)]
 pub struct HealthLatest {
