@@ -32,6 +32,7 @@ use crate::device::{
     CONVERSATION_MESSAGE_LIMIT, DEVICE_LIST_LIMIT, DeviceError, DeviceService,
 };
 use crate::onboarding::{PermissionError, Permissions, SetupEngine};
+use crate::sensors::{Delivered, HealthLatest, HealthUpload, LocationUpload};
 use crate::web::chat;
 
 /// The upload ceiling for one device body. A prompt is text, and text is not
@@ -2863,6 +2864,214 @@ fn truthy(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "true" | "on" | "1"
     )
+}
+
+// ---------------------------------------------------------------------------
+// Sensor uploads and reads
+// ---------------------------------------------------------------------------
+
+/// Read one bounded JSON body and decode it into a typed shape.
+async fn parse_sensor_json<T: serde::de::DeserializeOwned>(body: Body) -> Result<T, DeviceError> {
+    let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+        .await
+        .map_err(|_| {
+            DeviceError::bad_request(
+                "body_too_large",
+                format!("the body must be under {MAX_BODY_BYTES} bytes"),
+            )
+        })?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        DeviceError::bad_request(
+            "body_not_json",
+            format!("the JSON body did not parse: {error}"),
+        )
+    })
+}
+
+/// The sensor store this service opened at start-up, or a 503.
+fn sensor_store(service: &DeviceService) -> Result<&crate::sensors::SensorStore, DeviceError> {
+    service
+        .sensors()
+        .ok_or_else(|| DeviceError::db_unavailable("the sensor store is unavailable"))
+}
+
+/// Refuse a location whose numbers cannot live in SQLite.
+fn validate_location(upload: &LocationUpload) -> Result<(), DeviceError> {
+    if !upload.latitude.is_finite() || !upload.longitude.is_finite() || !upload.accuracy.is_finite()
+    {
+        return Err(DeviceError::bad_request(
+            "value_invalid",
+            "latitude, longitude and accuracy must be finite numbers",
+        ));
+    }
+    if let Some(altitude) = upload.altitude
+        && !altitude.is_finite()
+    {
+        return Err(DeviceError::bad_request(
+            "value_invalid",
+            "altitude must be a finite number",
+        ));
+    }
+    if upload.recorded_at.trim().is_empty() {
+        return Err(DeviceError::bad_request(
+            "recorded_at_required",
+            "recordedAt must not be empty",
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse a health upload with no samples or a sample that cannot be stored.
+fn validate_health(upload: &HealthUpload) -> Result<(), DeviceError> {
+    if upload.samples.is_empty() {
+        return Err(DeviceError::bad_request(
+            "samples_required",
+            "the samples array must not be empty",
+        ));
+    }
+    for sample in &upload.samples {
+        if sample.metric.trim().is_empty() || sample.unit.trim().is_empty() {
+            return Err(DeviceError::bad_request(
+                "sample_invalid",
+                "each sample needs a metric and a unit",
+            ));
+        }
+        if !sample.value.is_finite() {
+            return Err(DeviceError::bad_request(
+                "sample_invalid",
+                "each sample value must be a finite number",
+            ));
+        }
+        if sample.start_at.trim().is_empty() {
+            return Err(DeviceError::bad_request(
+                "sample_invalid",
+                "each sample needs a startAt",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `POST /v1/device/sensor/location` - record one location point.
+///
+/// Behind the bearer and the `chat` scope, the same scope `/v1/turns` uses. The
+/// ack is the exact `deliveryState == "delivered"` the iOS `DeliveryResult`
+/// decoder requires.
+pub async fn upload_location(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let upload = match parse_sensor_json::<LocationUpload>(body).await {
+        Ok(upload) => upload,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = validate_location(&upload) {
+        return error.into_response();
+    }
+    let store = match sensor_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = store.record_location(&upload) {
+        return DeviceError::db_unavailable(format!("cannot store the location: {error}"))
+            .into_response();
+    }
+    axum::Json(Delivered::new()).into_response()
+}
+
+/// `POST /v1/device/sensor/health` - record health samples.
+///
+/// Same bearer and scope as the location upload. One row per sample lands in
+/// `health_samples`, `health_latest` is upserted per metric, and duplicates are
+/// dropped before either write.
+pub async fn upload_health(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let upload = match parse_sensor_json::<HealthUpload>(body).await {
+        Ok(upload) => upload,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = validate_health(&upload) {
+        return error.into_response();
+    }
+    let store = match sensor_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = store.record_health(&upload.samples) {
+        return DeviceError::db_unavailable(format!("cannot store the health samples: {error}"))
+            .into_response();
+    }
+    axum::Json(Delivered::new()).into_response()
+}
+
+/// `GET /v1/device/health/latest` - the latest reading per metric, ordered by
+/// metric, behind the bearer and the `chat` scope.
+pub async fn health_latest(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match sensor_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.latest_health() {
+        Ok(metrics) => axum::Json(HealthLatest { metrics }).into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot read the latest health: {error}"))
+                .into_response()
+        }
+    }
+}
+
+/// `GET /v1/device/location` - the current location, behind the bearer and the
+/// `chat` scope. A daemon with no recorded point answers 404 `location_not_found`.
+pub async fn location(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match sensor_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    match store.current_location() {
+        Ok(Some(snapshot)) => axum::Json(snapshot).into_response(),
+        Ok(None) => DeviceError::new(
+            StatusCode::NOT_FOUND,
+            "location_not_found",
+            "no location has been recorded yet",
+        )
+        .into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot read the current location: {error}"))
+                .into_response()
+        }
+    }
 }
 
 #[cfg(test)]
