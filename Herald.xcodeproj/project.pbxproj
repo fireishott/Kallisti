@@ -438,7 +438,28 @@ DDC099A73FCBCAB2EB5EE04B /* ChatScreen.swift in Sources */ = {isa = PBXBuildFile
 		DCD41E42BFA840909EECB60D /* InFlightCheckpointStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79892DD1C06E425598466C2D /* InFlightCheckpointStoreTests.swift */; };
 		C3CA152EA9FC4BDEAA0F42AD /* DraftPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34BEB676C9B547798EDAF79C /* DraftPersistenceTests.swift */; };
 		3E1205F261F047D3908167B9 /* ConnectionOverlayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61F27F8AD89D4729A5B71CC8 /* ConnectionOverlayTests.swift */; };
-/* End PBXBuildFile section */
+		B6F2A9C4E7B28F51C264A486 /* ErisClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5E4F8B3D6A17E40B1529375 /* ErisClient.swift */; };
+		B4D0F7A2C5E06D3FB0408264 /* ErisPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3C2E6F1B4D95C2EAF307153 /* ErisPairing.swift */; };
+		B8A3C1E6F904A173E486C6A8 /* ErisTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7F6B0D5E8C39062D375B597 /* ErisTokenStore.swift */; };
+		B2F1D5E0A3C84B1D9E2F6042 /* ErisTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E0C4D9F2B74A0C8D1E5F31 /* ErisTypes.swift */; };
+		76AA74771CF329113E5E9DF1 /* ErisDaemonStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A36F980B409E8A22C87E25CA /* ErisDaemonStore.swift */; };
+		8D69958BF9B9E561A53A0BEA /* ErisQRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A853B1C0BAF89A834FF276C /* ErisQRScannerView.swift */; };
+		D46DA90612BBEB8379D366E0 /* ErisPairingScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B9717C83A0C58296AF3A59A /* ErisPairingScreen.swift */; };
+		C918528FD00A8BD306C8B4C3 /* ErisChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68C81A1AE42DF9E687B620B4 /* ErisChatScreen.swift */; };
+		08157DDD25EAF57DA6E98362 /* ErisChatModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3898746A565E0F35B910B232 /* ErisChatModel.swift */; };
+		5CC1968D4A7573FC91F1903E /* ErisConversationTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5766F6EB0C39C6326BBF9E07 /* ErisConversationTypes.swift */; };
+		4EAB19C6E5CA2C509D107AA9 /* ErisConversationsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = E88B96D706351BEC7A2ADCFB /* ErisConversationsScreen.swift */; };
+		559C6631343AA3594A6CE9AA /* ErisConversationDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05B6BE55E607B4A6CA6526F /* ErisConversationDetailScreen.swift */; };
+		3E022BD3AC79A20F3F709387 /* ErisSettingsTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */; };
+		12AF708C3D024837A1AEE382 /* ErisSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9990A9A65AE576398F69813B /* ErisSettingsScreen.swift */; };
+		CFCECCB2B85F9532BA9B58A1 /* ErisApprovalTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41D3A8C48FF2C628386C2F81 /* ErisApprovalTypes.swift */; };
+		4A9296FE2469F68ADF2E38E6 /* ErisApprovalsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E2F7FE189CB0E06A25E6BAE /* ErisApprovalsScreen.swift */; };
+		0E2EC05B2F0807C7FF52C94A /* ErisSurfaceTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */; };
+		92473B28B51EBDD97793D23F /* ErisFailureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B47649C62EF4369D438CA5D /* ErisFailureView.swift */; };
+		DB7F4B9C2236D4A617B9F9DB /* ErisTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA6E3A8B1125C39506A8E8CA /* ErisTransportTests.swift */; };
+		0124D1E66933CD0866E874F9 /* ErisAppSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03DF41FDAE85E6B5E5AB3350 /* ErisAppSurfaceTests.swift */; };
+		6E9D3B0996D550D86FEFE166 /* ErisDeviceAPITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29B5232149B3DA57AB5C478F /* ErisDeviceAPITests.swift */; };
+	/* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		0461849E21930C42E40C9B0C /* PBXContainerItemProxy */ = {
@@ -969,7 +990,28 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 		79892DD1C06E425598466C2D /* InFlightCheckpointStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InFlightCheckpointStoreTests.swift; sourceTree = "<group>"; };
 		34BEB676C9B547798EDAF79C /* DraftPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DraftPersistenceTests.swift; sourceTree = "<group>"; };
 		61F27F8AD89D4729A5B71CC8 /* ConnectionOverlayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionOverlayTests.swift; sourceTree = "<group>"; };
-/* End PBXFileReference section */
+		A5E4F8B3D6A17E40B1529375 /* ErisClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisClient.swift; sourceTree = "<group>"; };
+		A3C2E6F1B4D95C2EAF307153 /* ErisPairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisPairing.swift; sourceTree = "<group>"; };
+		A7F6B0D5E8C39062D375B597 /* ErisTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisTokenStore.swift; sourceTree = "<group>"; };
+		A1E0C4D9F2B74A0C8D1E5F31 /* ErisTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisTypes.swift; sourceTree = "<group>"; };
+		A36F980B409E8A22C87E25CA /* ErisDaemonStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisDaemonStore.swift; sourceTree = "<group>"; };
+		0A853B1C0BAF89A834FF276C /* ErisQRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisQRScannerView.swift; sourceTree = "<group>"; };
+		1B9717C83A0C58296AF3A59A /* ErisPairingScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisPairingScreen.swift; sourceTree = "<group>"; };
+		68C81A1AE42DF9E687B620B4 /* ErisChatScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisChatScreen.swift; sourceTree = "<group>"; };
+		3898746A565E0F35B910B232 /* ErisChatModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisChatModel.swift; sourceTree = "<group>"; };
+		5766F6EB0C39C6326BBF9E07 /* ErisConversationTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisConversationTypes.swift; sourceTree = "<group>"; };
+		E88B96D706351BEC7A2ADCFB /* ErisConversationsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisConversationsScreen.swift; sourceTree = "<group>"; };
+		F05B6BE55E607B4A6CA6526F /* ErisConversationDetailScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisConversationDetailScreen.swift; sourceTree = "<group>"; };
+		1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSettingsTypes.swift; sourceTree = "<group>"; };
+		9990A9A65AE576398F69813B /* ErisSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSettingsScreen.swift; sourceTree = "<group>"; };
+		41D3A8C48FF2C628386C2F81 /* ErisApprovalTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisApprovalTypes.swift; sourceTree = "<group>"; };
+		1E2F7FE189CB0E06A25E6BAE /* ErisApprovalsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisApprovalsScreen.swift; sourceTree = "<group>"; };
+		E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSurfaceTabs.swift; sourceTree = "<group>"; };
+		2B47649C62EF4369D438CA5D /* ErisFailureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisFailureView.swift; sourceTree = "<group>"; };
+		CA6E3A8B1125C39506A8E8CA /* ErisTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisTransportTests.swift; sourceTree = "<group>"; };
+		03DF41FDAE85E6B5E5AB3350 /* ErisAppSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisAppSurfaceTests.swift; sourceTree = "<group>"; };
+		29B5232149B3DA57AB5C478F /* ErisDeviceAPITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisDeviceAPITests.swift; sourceTree = "<group>"; };
+	/* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		35C23E051570D388F3DBA494 /* Frameworks */ = {
@@ -1145,6 +1187,7 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				778669E355C1B440A17F4CD4 /* Services */,
 				4E2A875463DCE71B732E91AB /* Stores */,
 				2E784AB16C39E6C64F9EAF6D /* AppEntry.swift */,
+				C9B5D2F7A014B284F597D7B9 /* Eris */,
 				AB57C0DEDA1B7AA969EEB33B /* VendorSwiftTerm */,
 				EBD3AA591BF3A81689A9C404 /* ContentView.swift */,
 				048D25B53849E07F75301B36 /* Kallisti.entitlements */,
@@ -1830,7 +1873,32 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			path = Store;
 			sourceTree = "<group>";
 		};
-/* End PBXGroup section */
+		C9B5D2F7A014B284F597D7B9 /* Eris */ = {
+			isa = PBXGroup;
+			children = (
+				A5E4F8B3D6A17E40B1529375 /* ErisClient.swift */,
+				A3C2E6F1B4D95C2EAF307153 /* ErisPairing.swift */,
+				A7F6B0D5E8C39062D375B597 /* ErisTokenStore.swift */,
+				A1E0C4D9F2B74A0C8D1E5F31 /* ErisTypes.swift */,
+				A36F980B409E8A22C87E25CA /* ErisDaemonStore.swift */,
+				0A853B1C0BAF89A834FF276C /* ErisQRScannerView.swift */,
+				1B9717C83A0C58296AF3A59A /* ErisPairingScreen.swift */,
+				68C81A1AE42DF9E687B620B4 /* ErisChatScreen.swift */,
+				3898746A565E0F35B910B232 /* ErisChatModel.swift */,
+				5766F6EB0C39C6326BBF9E07 /* ErisConversationTypes.swift */,
+				E88B96D706351BEC7A2ADCFB /* ErisConversationsScreen.swift */,
+				F05B6BE55E607B4A6CA6526F /* ErisConversationDetailScreen.swift */,
+				1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */,
+				9990A9A65AE576398F69813B /* ErisSettingsScreen.swift */,
+				41D3A8C48FF2C628386C2F81 /* ErisApprovalTypes.swift */,
+				1E2F7FE189CB0E06A25E6BAE /* ErisApprovalsScreen.swift */,
+				E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */,
+				2B47649C62EF4369D438CA5D /* ErisFailureView.swift */,
+			);
+			path = Eris;
+			sourceTree = "<group>";
+		};
+	/* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
 		04D07E970B525F5FAC61A68F /* KallistiWidgets */ = {
@@ -2164,6 +2232,24 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B6F2A9C4E7B28F51C264A486 /* ErisClient.swift in Sources */,
+				B4D0F7A2C5E06D3FB0408264 /* ErisPairing.swift in Sources */,
+				B8A3C1E6F904A173E486C6A8 /* ErisTokenStore.swift in Sources */,
+				B2F1D5E0A3C84B1D9E2F6042 /* ErisTypes.swift in Sources */,
+				76AA74771CF329113E5E9DF1 /* ErisDaemonStore.swift in Sources */,
+				8D69958BF9B9E561A53A0BEA /* ErisQRScannerView.swift in Sources */,
+				D46DA90612BBEB8379D366E0 /* ErisPairingScreen.swift in Sources */,
+				C918528FD00A8BD306C8B4C3 /* ErisChatScreen.swift in Sources */,
+				08157DDD25EAF57DA6E98362 /* ErisChatModel.swift in Sources */,
+				5CC1968D4A7573FC91F1903E /* ErisConversationTypes.swift in Sources */,
+				4EAB19C6E5CA2C509D107AA9 /* ErisConversationsScreen.swift in Sources */,
+				559C6631343AA3594A6CE9AA /* ErisConversationDetailScreen.swift in Sources */,
+				3E022BD3AC79A20F3F709387 /* ErisSettingsTypes.swift in Sources */,
+				12AF708C3D024837A1AEE382 /* ErisSettingsScreen.swift in Sources */,
+				CFCECCB2B85F9532BA9B58A1 /* ErisApprovalTypes.swift in Sources */,
+				4A9296FE2469F68ADF2E38E6 /* ErisApprovalsScreen.swift in Sources */,
+				0E2EC05B2F0807C7FF52C94A /* ErisSurfaceTabs.swift in Sources */,
+				92473B28B51EBDD97793D23F /* ErisFailureView.swift in Sources */,
 				920A393FB5258B5A039B364F /* AdaptiveRootView.swift in Sources */,
 				110AD42B226BAD901C4CF22B /* AppAttestService.swift in Sources */,
 				8F0AD79D0496C7829FFE40BD /* AppContainer.swift in Sources */,
@@ -2512,6 +2598,9 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DB7F4B9C2236D4A617B9F9DB /* ErisTransportTests.swift in Sources */,
+				0124D1E66933CD0866E874F9 /* ErisAppSurfaceTests.swift in Sources */,
+				6E9D3B0996D550D86FEFE166 /* ErisDeviceAPITests.swift in Sources */,
 				8F3E8A35B6DB301570CCD05E /* AuxModelServiceTests.swift in Sources */,
 				83699FC1B2CDC2CD9AEC20A6 /* DSHClientTests.swift in Sources */,
 				FDD993A37047EFE7C23FBAFE /* AttachmentServiceAuthTests.swift in Sources */,
