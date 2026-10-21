@@ -3746,6 +3746,7 @@ pub fn type_badge(media_type: Option<&str>) -> &'static str {
         Some("image/jpeg") => "JPG",
         Some("image/webp") => "WEBP",
         Some("image/gif") => "GIF",
+        Some("image/heic") => "HEIC",
         Some("application/pdf") => "PDF",
         Some("text/plain") => "TXT",
         Some("text/markdown") => "MD",
@@ -3924,7 +3925,7 @@ fn inline_url(path: &str) -> String {
 fn inline_badge(path: &str) -> Option<(&'static str, bool)> {
     let extension = path.rsplit_once('.')?.1.to_ascii_lowercase();
     match extension.as_str() {
-        "png" | "jpg" | "jpeg" | "webp" | "gif" => Some(("IMG", true)),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "heic" | "heif" => Some(("IMG", true)),
         "pdf" => Some(("PDF", false)),
         "ppt" => Some(("PPT", false)),
         "pptx" => Some(("PPTX", false)),
@@ -5018,7 +5019,7 @@ const CHAT_JS: &str = r##"(function () {
 
   function looksLikeImage(file) {
     if (file.type && file.type.indexOf("image/") === 0) { return true; }
-    return /\.(png|jpe?g|webp|gif)$/i.test(file.name);
+    return /\.(png|jpe?g|webp|gif|hei[cf])$/i.test(file.name);
   }
 
   function thumbFor(file) {

@@ -123,6 +123,18 @@ pub fn sniff_media_type(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         return "image/gif";
     }
+    // An iPhone hands the browser a HEIC unless the site asks otherwise, and the
+    // screenshot that arrives as `IMG_0060.HEIC` is still a picture. ISO-BMFF
+    // puts the brand four bytes after `ftyp`; the HEIF family shares the box.
+    if bytes.len() > 12
+        && &bytes[4..8] == b"ftyp"
+        && matches!(
+            &bytes[8..12],
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis" | b"mif1" | b"msf1"
+        )
+    {
+        return "image/heic";
+    }
     if bytes.starts_with(b"%PDF-") {
         return "application/pdf";
     }
@@ -1294,12 +1306,18 @@ pub fn is_image(file: &Attachment) -> bool {
     let name = file.name.to_ascii_lowercase();
     matches!(
         file.media_type.as_deref(),
-        Some("image/png") | Some("image/jpeg") | Some("image/webp") | Some("image/gif")
+        Some("image/png")
+            | Some("image/jpeg")
+            | Some("image/webp")
+            | Some("image/gif")
+            | Some("image/heic")
     ) || name.ends_with(".png")
         || name.ends_with(".jpg")
         || name.ends_with(".jpeg")
         || name.ends_with(".webp")
         || name.ends_with(".gif")
+        || name.ends_with(".heic")
+        || name.ends_with(".heif")
 }
 
 /// The largest image handed to a vision model in one turn, in bytes.
@@ -2911,6 +2929,12 @@ mod tests {
         };
         assert!(is_image(&png));
         assert!(is_image(&named_jpg), "a missing media type still counts");
+        let heic = Attachment {
+            name: "IMG_0060.HEIC".to_owned(),
+            media_type: Some("image/heic".to_owned()),
+            ..png.clone()
+        };
+        assert!(is_image(&heic), "an iPhone photo is a picture");
         assert!(!is_image(&notes));
     }
 
@@ -2961,6 +2985,11 @@ mod tests {
         for gif in [b"GIF87a".as_slice(), b"GIF89a".as_slice()] {
             assert_eq!(sniff_media_type(gif), "image/gif");
         }
+        assert_eq!(
+            sniff_media_type(b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00"),
+            "image/heic",
+            "an ISO-BMFF HEIC is a picture, not a download"
+        );
         assert_eq!(sniff_media_type(b"%PDF-1.7\n"), "application/pdf");
         assert_eq!(sniff_media_type(b"line one\nline two\n"), "text/plain");
         assert_eq!(
