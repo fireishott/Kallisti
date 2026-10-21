@@ -431,7 +431,7 @@ private struct WelcomeStepView: View {
                     .foregroundStyle(Design.Colors.foreground.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("A native iOS client for the Hermes Agent framework.")
+                Text("Your agent, in every sense.")
                     .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.secondaryForeground)
                     .fixedSize(horizontal: false, vertical: true)
@@ -489,7 +489,7 @@ private struct RelayStepView: View {
                     .textCase(.uppercase)
                     .foregroundStyle(Design.Colors.foreground)
 
-                Text("where your Hermes is reachable.")
+                Text("where your agent is reachable.")
                     .font(Design.Typography.editorialItalicSmall)
                     .foregroundStyle(Design.Colors.foreground.opacity(0.85))
             }
