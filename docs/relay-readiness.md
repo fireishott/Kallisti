@@ -14,7 +14,52 @@ the admin router in `crates/eris-host/src/web/routes.rs`,
 `crates/eris-host/src/approvals.rs`, `crates/eris-host/src/projects.rs`, and the
 CLI in `crates/eris-host/src/main.rs`.
 
-## 1. The surface that exists
+## 0. The surface as shipped (build 78)
+
+This section supersedes the counts below, which were written when `/v1` was six
+routes and a device could not administer anything. It is the authoritative list;
+the grading in section 2 is kept because the reasoning about each gap is still the
+right reasoning, but its totals are stale.
+
+Twenty-two routes. Every one requires a bearer token unless it is the two whose
+credential is in the body. The scope column is checked before the handler runs.
+
+| Route | Method | Scope | Answers |
+|---|---|---|---|
+| `/v1/pair` | POST | pairing code in the body | 201 with tokens, device id and the granted scopes |
+| `/v1/token/refresh` | POST | refresh token in the body | 200 with a new access token, scope set carried forward |
+| `/v1/turns` | POST | `chat` | 202 with `job_id`, `session_id`, `state`, and `conversation_id` when one was named |
+| `/v1/turns/{id}/events` | GET | `sessions` | `text/event-stream`: `delta`, `reasoning`, `tool`, `done`, `error`, `cancelled`, `subagent` |
+| `/v1/turns/{id}/cancel` | POST | `chat` | 200 cancelled; a settled turn is 409 |
+| `/v1/sessions/{id}` | GET | `sessions` | the session state and its turns |
+| `/v1/conversations` | GET | `sessions` | newest first, `count`, `truncated`, per-row message count and project |
+| `/v1/conversations` | POST | `sessions` | 201 with the new id and title |
+| `/v1/conversations/{id}` | GET | `sessions` | the transcript with reasoning and the same tool records the browser stores |
+| `/v1/conversations/{id}/clear` | POST | `sessions` | 200 with the number cleared |
+| `/v1/projects` | GET | `sessions` | the project list |
+| `/v1/projects` | POST | `sessions` | 201, or a duplicate-name refusal by code |
+| `/v1/projects/assign` | POST | `sessions` | 200; an empty project unassigns |
+| `/v1/settings` | GET | `admin` | model, sandbox, memory, approval, tools, rounds, timezone - no credential, key, path or base URL |
+| `/v1/settings` | POST | `admin` | any subset of model, sandbox, memory, approval; all-or-nothing, audit per change |
+| `/v1/approvals` | GET | `admin` | parked calls newest first, cap 50, `truncated` |
+| `/v1/approvals/{id}/decide` | POST | `admin` | settles the row AND runs the call; refusal leaves it pending with 422 |
+| `/v1/mcp` | GET | `sessions` | servers with `healthy` true, false or null, plus `health_known` |
+
+Scope changes since the grading below was written:
+
+- `admin` is no longer loopback-only. It is granted to a device only when the
+  operator ticks the administration box while minting that device's pairing code.
+  The decision travels on the code, so it is made once, by a person, and the
+  devices page states which kind each device is.
+- A device token without `admin` is refused with a sentence that says the device
+  was paired without administration and how to change that, not a bare 403.
+
+Still missing, and the honest list: the device does not create or revoke other
+devices, cannot read the audit log, cannot start a backup, cannot change MCP
+servers or the persona, and cannot dispatch a subagent (a subagent has no page to
+report to and no parent answer row to count against). Those are in section 3.
+
+## 1. The surface that existed when this was graded
 
 Six routes. `/v1` only: anything else on the listener answers a typed 404, and a
 known path with the wrong method answers a typed 405.
@@ -82,7 +127,8 @@ about the browser and the CLI.
 | List, create and restore backups | yes, `/dashboard/backups`, `POST /dashboard/backups/create`, `POST /dashboard/backups/restore`, plus `eris backup` and `eris restore` | missing |
 | Read the audit log | yes, `GET /dashboard/activity` | missing |
 
-Totals: 5 of 36 capabilities exposed, 1 partial, 30 missing.
+Totals at the time of grading: 5 of 36 capabilities exposed, 1 partial, 30 missing.
+See section 0 for what is exposed now.
 
 Two of the missing rows have a `partial` daemon column, because the daemon holds
 the fact and only shows a piece of it: the approvals queue is a count, and MCP
