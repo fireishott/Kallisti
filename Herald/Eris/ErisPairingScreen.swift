@@ -27,7 +27,7 @@ struct ErisSurfaceScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Design.Colors.background.ignoresSafeArea())
-        .navigationTitle("Eris")
+        .navigationTitle("Kallisti")
         .navigationBarTitleDisplayMode(.inline)
         .task { await store.start() }
         .sheet(isPresented: $isScannerPresented) {
@@ -62,13 +62,29 @@ struct ErisPairingForm: View {
     // MARK: Sections
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Design.Spacing.xs) {
-            Text("Pair this device")
-                .font(Design.Typography.screenTitle2)
+        VStack(alignment: .leading, spacing: Design.Spacing.md) {
+            // Brand block: the same welcome the legacy onboarding opened with, so a
+            // fresh install still meets Kallisti first, then the daemon handshake.
+            KallistiSealMark(size: 72)
+            Text("Kallisti")
+                .font(Design.Typography.display)
                 .foregroundStyle(Design.Colors.foreground)
-            Text("Scan the code the Eris daemon shows, or type its address and code.")
-                .font(Design.Typography.footnote)
-                .foregroundStyle(Design.Colors.secondaryForeground)
+                .minimumScaleFactor(0.6)
+                .lineLimit(1)
+            Text("The most beautiful way\nto meet your agent.")
+                .font(Design.Typography.editorialItalic)
+                .foregroundStyle(Design.Colors.foreground.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                Text("Pair this device")
+                    .font(Design.Typography.screenTitle2)
+                    .foregroundStyle(Design.Colors.foreground)
+                Text("Scan the code the Eris daemon shows, or type its address and code.")
+                    .font(Design.Typography.footnote)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+            .padding(.top, Design.Spacing.md)
         }
         .padding(.top, Design.Spacing.sm)
     }
