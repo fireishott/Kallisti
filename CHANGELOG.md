@@ -5,6 +5,24 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-10-21
+
+The app now launches into the Eris surface: pairing when unpaired, chat when a
+pair exists. The legacy gateway splash is opt-in behind a debug flag. Version
+tracks the Eris daemon (`1.4.0`); the build number moves independently of the
+daemon because it is an app-only change (`83` at this tag).
+
+### Added
+
+- Eris daemon lane: pairing form and QR scan, chat, conversations, approvals and
+  settings, backed by the device API on `:7341`.
+- Launch opens on the Eris surface instead of the retired native-gateway splash.
+
+### Fixed
+
+- A fresh install no longer sits on "Connection struggling" against a backend that
+  no longer exists; it lands on pairing.
+
 ## [0.2.3] - 2026-08-11
 
 ### Added
