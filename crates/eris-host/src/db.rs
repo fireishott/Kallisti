@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -144,6 +144,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 15,
         name: "0015_pairing_admin",
         sql: MIGRATION_0015,
+    },
+    Migration {
+        version: 16,
+        name: "0016_turn_footer",
+        sql: MIGRATION_0016,
     },
 ];
 
@@ -578,6 +583,17 @@ CREATE INDEX IF NOT EXISTS idx_subagents_created_at ON subagents (created_at);
 const MIGRATION_0015: &str = r"
 ALTER TABLE pairing_codes ADD COLUMN admin INTEGER NOT NULL DEFAULT 0
     CHECK (admin IN (0, 1));
+";
+
+/// Migration 0016: the rest of what a turn's footer reports.
+///
+/// `rounds` is how many tool rounds the turn ran; `quota_json` is the gateway's
+/// limit state for the model that answered, read once at settle so a reloaded
+/// transcript shows what the operator saw. Both nullable: an older row and a
+/// turn with the quota line switched off carry neither.
+const MIGRATION_0016: &str = r"
+ALTER TABLE chat_messages ADD COLUMN rounds INTEGER;
+ALTER TABLE chat_messages ADD COLUMN quota_json TEXT;
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

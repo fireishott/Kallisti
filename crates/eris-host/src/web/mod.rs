@@ -12,6 +12,7 @@ pub mod css;
 pub mod dsml;
 pub mod proxy;
 pub mod qr;
+pub mod quota;
 pub mod routes;
 pub mod store;
 pub mod templates;

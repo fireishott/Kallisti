@@ -1009,16 +1009,16 @@ mod tests {
     #[test]
     fn migration_fourteen_creates_the_subagent_row() {
         let db = db();
-        // The pin follows the newest migration, which is 0015. This test owns the
+        // The pin follows the newest migration, which is 0016. This test owns the
         // "the binary and the file agree on the version" claim for the whole
         // database, so it is the one place that number is written down twice.
         assert_eq!(
             crate::db::SCHEMA_VERSION,
-            15,
+            16,
             "the binary declares the version it migrated to"
         );
-        assert_eq!(db.schema_version().expect("version"), 15);
-        assert_eq!(db.applied_migration_count().expect("count"), 15);
+        assert_eq!(db.schema_version().expect("version"), 16);
+        assert_eq!(db.applied_migration_count().expect("count"), 16);
         assert!(
             crate::db::TABLES.contains(&"subagents"),
             "the table is in the documented list"

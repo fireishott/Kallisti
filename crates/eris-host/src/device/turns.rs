@@ -1392,6 +1392,7 @@ fn accounting_from(usage: &serde_json::Value) -> crate::web::chat::Accounting {
             completion_tokens: usage.output_tokens(),
             cached_tokens: usage.cache_read_tokens(),
             duration_ms: None,
+            rounds: None,
         })
         .unwrap_or_default()
 }

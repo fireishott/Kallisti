@@ -840,6 +840,10 @@ pub struct Message {
     pub reasoning: Option<String>,
     /// The tool calls this turn ran, in order. Empty when it ran none.
     pub tools: Vec<ToolRecord>,
+    /// How many tool rounds the turn ran, when it recorded that.
+    pub rounds: Option<u64>,
+    /// The gateway's limit state for the answering model, read at settle.
+    pub quota: Option<crate::web::quota::Quota>,
 }
 
 /// A count from SQLite, which stores signed integers and holds no negative ones.
@@ -884,7 +888,7 @@ fn collect(
 ) -> Result<Vec<Message>, rusqlite::Error> {
     const SELECT: &str = "SELECT id, role, body, state, error_code, created_at, model,
                 prompt_tokens, completion_tokens, cached_tokens, context_window,
-                duration_ms, reasoning, tools
+                duration_ms, reasoning, tools, rounds, quota_json
            FROM chat_messages
           WHERE conversation_id = ?1
           ORDER BY created_at ASC, rowid ASC";
@@ -927,6 +931,10 @@ fn row_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
             .get::<_, Option<String>>(13)?
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default(),
+        rounds: tokens(row.get(14)?),
+        quota: row
+            .get::<_, Option<String>>(15)?
+            .and_then(|raw| serde_json::from_str(&raw).ok()),
     })
 }
 
@@ -991,6 +999,8 @@ pub struct Accounting {
     pub cached_tokens: Option<u64>,
     /// Wall time from request to last byte.
     pub duration_ms: Option<u64>,
+    /// Tool rounds the turn ran.
+    pub rounds: Option<u64>,
 }
 
 /// Settle a streaming row with its final text and the provider's own usage.
@@ -1015,6 +1025,7 @@ pub fn settle(
         completion_tokens,
         cached_tokens,
         duration_ms,
+        rounds,
     } = accounting;
     let reasoning = reasoning.filter(|text| !text.trim().is_empty());
     // Null rather than "[]" for a turn that called nothing: absent and empty are
@@ -1027,7 +1038,7 @@ pub fn settle(
             "UPDATE chat_messages
                 SET body = ?2, state = 'complete', usage_json = ?3, error_code = NULL,
                     prompt_tokens = ?4, completion_tokens = ?5, cached_tokens = ?6,
-                    duration_ms = ?7, reasoning = ?8, tools = ?9
+                    duration_ms = ?7, reasoning = ?8, tools = ?9, rounds = ?10
               WHERE id = ?1",
             params![
                 id,
@@ -1039,7 +1050,24 @@ pub fn settle(
                 duration_ms.map(|count| count as i64),
                 reasoning,
                 tools_json,
+                rounds.map(|count| count as i64),
             ],
+        )?;
+        Ok(())
+    })
+}
+
+/// Record the gateway's limit state beside an answer.
+///
+/// Separate from [`settle`] because it is optional and read from a file this
+/// daemon does not own: a quota that could not be read leaves the column null
+/// and the answer exactly as it settled.
+pub fn set_quota(db: &Db, id: &str, quota: &crate::web::quota::Quota) -> Result<(), DbError> {
+    let raw = serde_json::to_string(quota).unwrap_or_default();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_messages SET quota_json = ?2 WHERE id = ?1",
+            params![id, raw],
         )?;
         Ok(())
     })
@@ -3591,6 +3619,7 @@ mod tests {
                 completion_tokens: Some(18),
                 cached_tokens: Some(1_150),
                 duration_ms: Some(900),
+                rounds: None,
             },
         )
         .unwrap();
@@ -3767,6 +3796,8 @@ mod tests {
                 duration_ms: None,
                 reasoning: None,
                 tools: Vec::new(),
+                rounds: None,
+                quota: None,
             },
             Message {
                 id: "a1".into(),
@@ -3783,6 +3814,8 @@ mod tests {
                 duration_ms: Some(2_000),
                 reasoning: None,
                 tools: Vec::new(),
+                rounds: None,
+                quota: None,
             },
             Message {
                 id: "a2".into(),
@@ -3799,6 +3832,8 @@ mod tests {
                 duration_ms: None,
                 reasoning: None,
                 tools: Vec::new(),
+                rounds: None,
+                quota: None,
             },
             Message {
                 id: "u2".into(),
@@ -3815,6 +3850,8 @@ mod tests {
                 duration_ms: None,
                 reasoning: None,
                 tools: Vec::new(),
+                rounds: None,
+                quota: None,
             },
         ];
 

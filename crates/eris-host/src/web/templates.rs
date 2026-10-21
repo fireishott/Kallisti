@@ -1742,6 +1742,8 @@ pub struct SettingsView {
     pub show_reasoning: bool,
     /// Whether the dashboard streams answers to the browser.
     pub streaming: bool,
+    /// Whether each answer's footer carries the gateway's quota and reset time.
+    pub show_quota: bool,
     /// Whether the run log is shown at all.
     pub show_tool_log: bool,
     /// `full`, `summary` or `off`, for the select.
@@ -1822,6 +1824,7 @@ impl SettingsView {
             persona_enabled: true,
             show_reasoning: true,
             streaming: true,
+            show_quota: false,
             show_tool_log: true,
             tool_log_mode: "full".to_owned(),
             device_listen: "127.0.0.1:7341".to_owned(),
@@ -2216,6 +2219,30 @@ fn streaming_group(view: &SettingsView) -> Markup {
             }
             div .actions {
                 button type="submit" { "Save responses" }
+            }
+        }
+    }
+}
+
+/// Whether each answer's footer names the gateway's quota and time to reset.
+fn quota_group(view: &SettingsView) -> Markup {
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_QUOTA) novalidate {
+            div .field {
+                label for="show_quota" {
+                    input type="checkbox" id="show_quota" name="show_quota" value="true"
+                        checked[view.show_quota];
+                    " Show quota and time to reset under each answer"
+                }
+                span .hint {
+                    "Reads the gateway's own record, read-only, after each turn: whether the "
+                    "answering provider is ok, locked or limited, when the lock clears, and how "
+                    "many requests it has served today. A rate or usage limit is always reported "
+                    "on a failed turn, whether this is on or not."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save quota line" }
             }
         }
     }
@@ -2727,6 +2754,15 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "one a browser with no script uses and is often the easier read on a slow link."
             }
             (streaming_group(view))
+        }
+
+        section .card aria-labelledby="quota-heading" {
+            h2 id="quota-heading" { "Quota" }
+            p .small {
+                "Turns, cache, tokens and latency are always under an answer. This adds the "
+                "provider's limit state and when it resets."
+            }
+            (quota_group(view))
         }
 
         section .card aria-labelledby="greeting-heading" {
@@ -3714,6 +3750,10 @@ pub struct ChatLine {
     pub duration_ms: Option<u64>,
     /// The context window declared for the model that answered.
     pub context_window: Option<u64>,
+    /// Tool rounds the turn ran, when it recorded that.
+    pub rounds: Option<u64>,
+    /// The gateway's quota line, when the setting is on and one was read.
+    pub quota: Option<String>,
     /// The model's own reasoning for this reply, when it streamed any.
     ///
     /// Rendered above the answer, and only when the thinking bubble is switched
@@ -3796,11 +3836,25 @@ impl ChatLine {
     #[must_use]
     pub fn usage_line(&self) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
+        if let Some(rounds) = self.rounds.filter(|rounds| *rounds > 0) {
+            parts.push(if rounds == 1 {
+                "1 round".to_owned()
+            } else {
+                format!("{rounds} rounds")
+            });
+        }
         if let Some(prompt) = self.prompt_tokens {
             parts.push(format!("{} in", human_tokens(prompt)));
         }
         if let Some(out) = self.completion_tokens {
             parts.push(format!("{} out", human_tokens(out)));
+        }
+        // The share of this reply's prompt the provider served from cache. Only
+        // when both numbers were reported; a guessed percentage would be a lie.
+        if let (Some(prompt), Some(cached)) = (self.prompt_tokens, self.cached_tokens)
+            && prompt > 0
+        {
+            parts.push(format!("{}% cache", (cached.min(prompt) * 100) / prompt));
         }
         if let Some(ms) = self.duration_ms {
             if ms >= 1000 {
@@ -4383,6 +4437,9 @@ pub fn chat_page(view: &ChatView) -> Markup {
                         @if let Some(usage) = line.usage_line() {
                             span .meta-usage { (usage) }
                         }
+                        @if let Some(quota) = &line.quota {
+                            span .meta-quota { (quota) }
+                        }
                         @if let Some(code) = &line.error_code {
                             span .tag { (code) }
                         }
@@ -4942,21 +4999,28 @@ const CHAT_JS: &str = r##"(function () {
   function metaFor(payload) {
     var parts = [];
     if (payload.model) { parts.push(payload.model); }
+    if (typeof payload.rounds === "number" && payload.rounds > 0) {
+      parts.push(payload.rounds === 1 ? "1 round" : payload.rounds + " rounds");
+    }
     if (typeof payload.prompt_tokens === "number") {
       parts.push(human(payload.prompt_tokens) + " in");
     }
     if (typeof payload.completion_tokens === "number") {
       parts.push(human(payload.completion_tokens) + " out");
     }
+    // Same reading as the server: cached is a share of the prompt, not added to it.
     var prompt = payload.prompt_tokens || 0;
     var cached = payload.cached_tokens || 0;
-    if (prompt + cached > 0) {
-      parts.push(Math.round((cached * 100) / (prompt + cached)) + "% cache");
+    if (prompt > 0 && typeof payload.cached_tokens === "number") {
+      parts.push(Math.floor((Math.min(cached, prompt) * 100) / prompt) + "% cache");
     }
     if (payload.duration_ms) {
       parts.push(payload.duration_ms >= 1000
         ? (payload.duration_ms / 1000).toFixed(1) + "s"
         : payload.duration_ms + "ms");
+    }
+    if (typeof payload.quota === "string" && payload.quota.length > 0) {
+      parts.push(payload.quota);
     }
     return parts.join(" \u00b7 ");
   }
@@ -5569,7 +5633,10 @@ const CHAT_JS: &str = r##"(function () {
             var failure = JSON.parse(parsed.data);
             target.bubble.className = "bubble failed";
             target.text.textContent = failure.message;
-            target.meta.textContent = failure.code;
+            var tail = [failure.code];
+            if (failure.resets_in) { tail.push("resets in " + failure.resets_in); }
+            if (failure.quota) { tail.push(failure.quota); }
+            target.meta.textContent = tail.join(" \u00b7 ");
           }
           // Not a failure of the answer: a message that arrived after the turn had
           // finished, said out loud rather than left to disappear.

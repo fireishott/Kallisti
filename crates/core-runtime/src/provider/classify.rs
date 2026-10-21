@@ -41,6 +41,110 @@ pub fn is_context_length_body(body: &str) -> bool {
         .any(|marker| lower.contains(marker))
 }
 
+/// Substrings that mark a rate or usage limit carried in a body whose status
+/// says something else, matched case-insensitively.
+///
+/// `[429]` is 9router's own wrapping of an upstream status; the prose markers are
+/// what Command Code, Codex, Anthropic and DeepSeek put in the message.
+const RATE_LIMIT_MARKERS: &[&str] = &[
+    "[429]",
+    "rate_limit",
+    "rate limit",
+    "usage limit",
+    "quota exceeded",
+    "insufficient_quota",
+    "too many requests",
+];
+
+/// Whether a body describes a rate or usage limit.
+#[must_use]
+pub fn is_rate_limit_body(body: &str) -> bool {
+    let lower = body.to_lowercase();
+    RATE_LIMIT_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+/// The wait a body states in prose, when it states one.
+///
+/// 9router appends `(reset after 30m)` or `(reset after 4m 16s)`; Command Code
+/// says `Your limit resets at 2026-10-21T17:37:56.809Z`. Either becomes seconds
+/// from now. A body that says neither yields `None` rather than a guess.
+#[must_use]
+pub fn reset_after_secs(body: &str) -> Option<u64> {
+    let lower = body.to_lowercase();
+    if let Some(start) = lower.find("reset after ") {
+        let rest = &lower[start + "reset after ".len()..];
+        let mut total: u64 = 0;
+        let mut seen = false;
+        let mut number = String::new();
+        for character in rest.chars() {
+            if character.is_ascii_digit() {
+                number.push(character);
+                continue;
+            }
+            let scale = match character {
+                'd' => 86_400,
+                'h' => 3_600,
+                'm' => 60,
+                's' => 1,
+                ' ' if number.is_empty() => continue,
+                _ => break,
+            };
+            if number.is_empty() {
+                break;
+            }
+            total += number.parse::<u64>().ok()? * scale;
+            number.clear();
+            seen = true;
+        }
+        if seen {
+            return Some(total);
+        }
+    }
+    if let Some(start) = lower.find("resets at ") {
+        let stamp: String = lower[start + "resets at ".len()..]
+            .chars()
+            .take_while(|character| !character.is_whitespace() && *character != '"')
+            .collect();
+        let at = rfc3339_unix(stamp.trim_end_matches(['.', ',']))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
+        return Some(at.saturating_sub(now));
+    }
+    None
+}
+
+/// Seconds since the epoch for a UTC `YYYY-MM-DDTHH:MM:SS[.fff]Z` stamp.
+///
+/// Only the `Z` form: that is what every provider body seen so far writes, and an
+/// offset this function did not understand must yield `None` rather than a wait
+/// that is wrong by hours.
+fn rfc3339_unix(stamp: &str) -> Option<u64> {
+    let stamp = stamp.strip_suffix('z')?;
+    let (date, clock) = stamp.split_once('t')?;
+    let mut date = date.split('-').map(str::parse::<i64>);
+    let (year, month, day) = (date.next()?.ok()?, date.next()?.ok()?, date.next()?.ok()?);
+    let clock = clock.split('.').next()?;
+    let mut clock = clock.split(':').map(str::parse::<i64>);
+    let (hour, minute, second) = (
+        clock.next()?.ok()?,
+        clock.next()?.ok()?,
+        clock.next()?.ok()?,
+    );
+    // Days from civil, Howard Hinnant's algorithm.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
+}
+
 /// Trim a body down to one readable line for an error detail.
 fn summarise(body: &str) -> String {
     let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -107,10 +211,20 @@ pub fn classify_http(status: u16, body: &str, retry_after_secs: Option<u64>) -> 
             detail: format!("status {status}: {detail}"),
         };
     }
+    // A gateway that has locked every account for a model answers with its own
+    // status - 9router says 503 with `retry-after` - and carries the upstream 429
+    // only in the body. Read as `upstream` that is a silent usage limit, so the
+    // body decides here the same way it decides a context overflow.
+    if status != 429 && is_rate_limit_body(body) {
+        return LlmError::RateLimit {
+            retry_after_secs: retry_after_secs.or_else(|| reset_after_secs(body)),
+            detail,
+        };
+    }
     match status {
         401 | 403 => LlmError::Auth { detail },
         429 => LlmError::RateLimit {
-            retry_after_secs,
+            retry_after_secs: retry_after_secs.or_else(|| reset_after_secs(body)),
             detail,
         },
         _ => LlmError::Upstream {
@@ -144,9 +258,9 @@ pub fn classify_error_frame(value: &serde_json::Value) -> LlmError {
     if kind.contains("auth") || kind.contains("permission") || kind.contains("invalid_api_key") {
         return LlmError::Auth { detail };
     }
-    if kind.contains("rate_limit") || kind.contains("overloaded") {
+    if kind.contains("rate_limit") || kind.contains("overloaded") || is_rate_limit_body(&rendered) {
         return LlmError::RateLimit {
-            retry_after_secs: None,
+            retry_after_secs: reset_after_secs(&rendered),
             detail,
         };
     }
@@ -224,6 +338,54 @@ pub fn protocol(detail: impl Into<String>) -> LlmError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gateway_503_carrying_an_upstream_429_is_a_rate_limit() {
+        // The exact shape 9router answered on 2026-10-21 for a locked Codex account.
+        let error = classify_http(
+            503,
+            r#"{"error":{"message":"[codex/gpt-6-luna] [429]: The usage limit has been reached (reset after 30m)"}}"#,
+            Some(1800),
+        );
+        match error {
+            LlmError::RateLimit {
+                retry_after_secs, ..
+            } => assert_eq!(retry_after_secs, Some(1800)),
+            other => panic!("expected RateLimit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_wait_is_read_from_the_body_when_no_header_says_it() {
+        assert_eq!(reset_after_secs("x (reset after 30m)"), Some(1800));
+        assert_eq!(reset_after_secs("(reset after 4m 16s)"), Some(256));
+        assert_eq!(reset_after_secs("(reset after 1h 2m)"), Some(3720));
+        assert_eq!(reset_after_secs("nothing here"), None);
+        assert_eq!(
+            reset_after_secs("Your limit resets at 2000-01-01T00:00:00Z. Please wait"),
+            Some(0),
+            "a reset in the past is now, not a negative wait"
+        );
+        assert_eq!(
+            rfc3339_unix("2026-10-21t17:37:56.809z"),
+            Some(1_792_604_276)
+        );
+    }
+
+    #[test]
+    fn a_plain_503_is_still_upstream() {
+        let error = classify_http(503, r#"{"error":{"message":"bad gateway"}}"#, None);
+        assert!(matches!(error, LlmError::Upstream { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn an_error_frame_that_says_usage_limit_is_a_rate_limit() {
+        let frame = serde_json::json!({"error": {"message": "You've reached your 5-hour usage limit for your plan."}});
+        assert!(matches!(
+            classify_error_frame(&frame),
+            LlmError::RateLimit { .. }
+        ));
+    }
 
     #[test]
     fn unauthorized_is_auth() {

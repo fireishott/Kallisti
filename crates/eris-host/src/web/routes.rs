@@ -33,9 +33,9 @@ use crate::admin::{
     ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
     ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING,
     ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
-    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING,
-    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_QUOTA,
+    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE,
+    ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -112,6 +112,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_PERSONA, post(save_persona))
         .route(ROUTE_SETTINGS_REASONING, post(save_reasoning))
         .route(ROUTE_SETTINGS_STREAMING, post(save_streaming))
+        .route(ROUTE_SETTINGS_QUOTA, post(save_quota))
         .route(ROUTE_SETTINGS_MEMORY, post(save_memory))
         .route(ROUTE_SETTINGS_TIMEZONE, post(save_timezone))
         .route(ROUTE_SIDEBAR, post(toggle_sidebar))
@@ -786,6 +787,12 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     view.streaming = chat::streaming_enabled(
         engine
             .setting(chat::SETTING_STREAMING)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
+    view.show_quota = crate::web::quota::show_quota(
+        engine
+            .setting(crate::web::quota::SETTING_SHOW_QUOTA)
             .map_err(|error| form_error(&error))?
             .as_deref(),
     );
@@ -2833,6 +2840,8 @@ const SAVED_WORKSPACE: &str = "/dashboard/settings?saved=workspace";
 const SAVED_REASONING: &str = "/dashboard/settings?saved=reasoning";
 /// Where the streaming toggle returns to.
 const SAVED_STREAMING: &str = "/dashboard/settings?saved=streaming";
+/// Where the quota toggle returns to.
+const SAVED_QUOTA: &str = "/dashboard/settings?saved=quota";
 
 /// Where the provider registry returns to.
 const SAVED_PROVIDERS: &str = "/dashboard/settings?saved=providers";
@@ -3338,6 +3347,38 @@ async fn save_streaming(
     }
 
     see_other(SAVED_STREAMING)
+}
+
+/// `POST /dashboard/settings/quota` - name the provider's quota under answers.
+async fn save_quota(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    // An unchecked box sends nothing at all, so absence is the off signal here.
+    let enabled = matches!(field(&fields, "show_quota").trim(), "on" | "true" | "1");
+    let stored = if enabled { "true" } else { "false" };
+    let key = crate::web::quota::SETTING_SHOW_QUOTA;
+    if let Err(error) = store::settings_put(state.engine.db(), key, stored) {
+        return store_failure(&request_id.0, key, error);
+    }
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.quota", Some(stored))
+    {
+        return audit_failure(&request_id.0, "settings.quota", error);
+    }
+    see_other(SAVED_QUOTA)
 }
 
 /// `POST /dashboard/settings/timezone` - the clock every stamp is shown in.
@@ -4249,6 +4290,14 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
     // One query for every file the conversation carries, then each line takes
     // its own: a page with forty turns costs two queries, not forty-one.
     let carried = chat::attachments_by_message(db, &conversation).unwrap_or_default();
+    let show_quota = crate::web::quota::show_quota(
+        state
+            .engine
+            .setting(crate::web::quota::SETTING_SHOW_QUOTA)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
     let messages = transcript
         .iter()
         .map(|message| {
@@ -4288,6 +4337,10 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                 context_window: message.context_window,
                 reasoning: message.reasoning.clone(),
                 tools: message.tools.clone(),
+                rounds: message.rounds,
+                quota: show_quota
+                    .then(|| message.quota.as_ref().map(crate::web::quota::Quota::line))
+                    .flatten(),
             }
         })
         .collect();
@@ -5963,6 +6016,27 @@ fn spawn_turn(
         .ok()
         .flatten();
     let title_audit = state.engine.auth().clone();
+    // The quota line is read after the turn from the gateway's own database, so
+    // the path is resolved now, while the app state is still borrowable.
+    let quota_db = crate::web::quota::show_quota(
+        state
+            .engine
+            .setting(crate::web::quota::SETTING_SHOW_QUOTA)
+            .ok()
+            .flatten()
+            .as_deref(),
+    )
+    .then(|| {
+        crate::web::quota::gateway_db(
+            state
+                .engine
+                .setting(crate::web::quota::SETTING_GATEWAY_DB)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+    })
+    .flatten();
     let web_extract = chat::aux_pinned_config(&state.engine, "web_extract")
         .ok()
         .flatten();
@@ -6101,6 +6175,7 @@ fn spawn_turn(
         let vision_note = vision
             .as_ref()
             .and_then(|config| chat::describe_images(config, &files));
+        let images = files.iter().filter(|file| chat::is_image(file)).count();
         if vision.is_some() {
             let detail = match &vision_note {
                 Some(text) => format!("images={}; description_chars={}", files.len(), text.len()),
@@ -6108,7 +6183,33 @@ fn spawn_turn(
             };
             let _ = title_audit.audit("loopback", "chat.vision", Some(&detail));
         }
+        // A picture that never reached a model used to vanish: the turn ran blind
+        // and nobody was told. Now the operator hears it on the stream and the
+        // model is told in the prompt, so neither pretends the image was seen.
+        let vision_lost = images > 0 && vision_note.is_none();
+        if vision_lost {
+            let reason = match &vision {
+                Some(config) => format!(
+                    "the vision model ({}) did not describe the attached image - it may be rate limited",
+                    config.model
+                ),
+                None => "no vision role is pinned, so the attached image was not read".to_owned(),
+            };
+            send_terminal(
+                &sender,
+                "notice",
+                serde_json::json!({ "code": "vision_unavailable", "message": reason }),
+            );
+        }
         let mut history = history;
+        if vision_lost {
+            history.push(core_runtime::provider::ChatMessage::text(
+                core_runtime::provider::ChatRole::User,
+                "The attached image could not be read by a vision model this turn. Say so \
+                 rather than guessing at its contents."
+                    .to_owned(),
+            ));
+        }
         if let Some(text) = &vision_note {
             history.push(core_runtime::provider::ChatMessage::text(
                 core_runtime::provider::ChatRole::User,
@@ -6342,6 +6443,7 @@ fn spawn_turn(
                     completion_tokens: usage.output_tokens(),
                     cached_tokens: usage.cache_read_tokens(),
                     duration_ms: Some(duration_ms),
+                    rounds: Some(turn.rounds as u64),
                 };
                 let raw = serde_json::to_value(usage).ok();
                 let _ = chat::settle(
@@ -6357,6 +6459,12 @@ fn spawn_turn(
                 // not the primary that failed. The transcript is the record.
                 let model = answered_model.as_deref().unwrap_or(&config.model);
                 let _ = chat::set_model(&db, &answer_id, model);
+                let quota = quota_db
+                    .as_deref()
+                    .and_then(|path| crate::web::quota::read(path, model));
+                if let Some(quota) = &quota {
+                    let _ = chat::set_quota(&db, &answer_id, quota);
+                }
                 send_terminal(
                     &sender,
                     "done",
@@ -6369,6 +6477,8 @@ fn spawn_turn(
                         "completion_tokens": accounting.completion_tokens,
                         "cached_tokens": accounting.cached_tokens,
                         "duration_ms": accounting.duration_ms,
+                        "rounds": accounting.rounds,
+                        "quota": quota.as_ref().map(crate::web::quota::Quota::line),
                     }),
                 );
                 // Rename only after the operator already has the answer: a title
@@ -6391,13 +6501,53 @@ fn spawn_turn(
                 send_stranded(&sender, &stranded);
             }
             Err((code, message)) => {
-                let _ = chat::fail(&db, &answer_id, &code, &streamed);
+                // A limit is the one failure the operator can act on by waiting,
+                // so it says how long. The row keeps the reason in its body when
+                // nothing streamed, so a reload shows the same sentence instead of
+                // an empty failed bubble.
+                let wait = (code == "rate_limit")
+                    .then(|| core_runtime::provider::classify::reset_after_secs(&message))
+                    .flatten();
+                let quota = quota_db
+                    .as_deref()
+                    .and_then(|path| crate::web::quota::read(path, &config.model));
+                let resets = wait
+                    .or_else(|| quota.as_ref().and_then(|quota| quota.resets_in_secs))
+                    .map(crate::web::quota::human_wait);
+                let shown = match (&code[..], &resets) {
+                    ("rate_limit", Some(wait)) => {
+                        format!(
+                            "Rate or usage limit on {} - resets in {wait}. {message}",
+                            config.model
+                        )
+                    }
+                    ("rate_limit", None) => {
+                        format!("Rate or usage limit on {}. {message}", config.model)
+                    }
+                    _ => message.clone(),
+                };
+                let body = if streamed.trim().is_empty() {
+                    shown.clone()
+                } else {
+                    format!("{streamed}\n\n[{shown}]")
+                };
+                let _ = chat::fail(&db, &answer_id, &code, &body);
+                if let Some(quota) = &quota {
+                    let _ = chat::set_quota(&db, &answer_id, quota);
+                }
+                let _ = title_audit.audit(
+                    "loopback",
+                    "chat.failed",
+                    Some(&format!("code={code}; model={}", config.model)),
+                );
                 send_terminal(
                     &sender,
                     "error",
                     serde_json::json!({
                         "code": code,
-                        "message": message,
+                        "message": shown,
+                        "resets_in": resets,
+                        "quota": quota.as_ref().map(crate::web::quota::Quota::line),
                     }),
                 );
                 send_stranded(&sender, &stranded);

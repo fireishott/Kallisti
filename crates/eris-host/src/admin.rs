@@ -148,6 +148,8 @@ pub const ROUTE_SETTINGS_PERSONA: &str = "/dashboard/settings/persona";
 pub const ROUTE_SETTINGS_REASONING: &str = "/dashboard/settings/reasoning";
 /// `POST /dashboard/settings/streaming` - stream answers to the browser or not.
 pub const ROUTE_SETTINGS_STREAMING: &str = "/dashboard/settings/streaming";
+/// `POST /dashboard/settings/quota` - show the gateway's quota under each answer.
+pub const ROUTE_SETTINGS_QUOTA: &str = "/dashboard/settings/quota";
 /// Where the sign-in credential is changed. A page of its own because the
 /// settings page is forbidden from containing a password input.
 pub const ROUTE_SECURITY: &str = "/dashboard/security";
@@ -278,6 +280,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_REASONING,
     ROUTE_SETTINGS_STREAMING,
+    ROUTE_SETTINGS_QUOTA,
     ROUTE_SETTINGS_MEMORY,
     ROUTE_SECURITY,
     ROUTE_SETTINGS_DEVICE,
@@ -919,7 +922,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.4.0");
+        assert_eq!(VERSION, "1.4.1");
     }
 
     #[test]

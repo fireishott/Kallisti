@@ -903,6 +903,7 @@ fn the_page_shows_the_usage_the_transcript_carries() {
             completion_tokens: Some(18),
             cached_tokens: Some(1_150),
             duration_ms: Some(900),
+            rounds: None,
         },
     )
     .unwrap();

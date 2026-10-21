@@ -1566,7 +1566,8 @@ pre.code {
   color: var(--platinum);
   opacity: 0.75;
 }
-.msg .meta-usage {
+.msg .meta-usage,
+.msg .meta-quota {
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 10.5px;
   color: var(--muted);
