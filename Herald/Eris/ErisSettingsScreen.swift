@@ -158,6 +158,8 @@ struct ErisSettingsScreen: View {
     let store: ErisDaemonStore
     let model: ErisSettingsModel
 
+    @State private var isPermissionsPresented = false
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Design.Spacing.lg) {
@@ -169,6 +171,15 @@ struct ErisSettingsScreen: View {
         .background(Design.Colors.background)
         .task { await model.loadIfNeeded() }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    isPermissionsPresented = true
+                } label: {
+                    Label("Permissions", systemImage: "hand.raised")
+                        .font(Design.Typography.footnote)
+                }
+                .accessibilityIdentifier("eris.permissions")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     Task { await model.load() }
@@ -178,6 +189,11 @@ struct ErisSettingsScreen: View {
                 }
                 .disabled(model.isLoading || model.isSaving)
                 .accessibilityIdentifier("eris.reloadSettings")
+            }
+        }
+        .sheet(isPresented: $isPermissionsPresented) {
+            NavigationStack {
+                PermissionsScreen()
             }
         }
     }

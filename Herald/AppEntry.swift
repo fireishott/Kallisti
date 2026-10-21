@@ -101,10 +101,23 @@ struct ThemeAwareRootView: View {
 struct HeraldApp: App {
     @UIApplicationDelegateAdaptor(HeraldAppDelegate.self) private var appDelegate
 
+    /// Device permissions (health, motion, location, notifications, microphone,
+    /// speech). Independent of the Eris daemon: these are the local TCC grants the
+    /// Kallisti identity surfaces, kept here so the Permissions screen has a store
+    /// to read and request against without any legacy connector involvement.
+    @State private var permissionsStore = PermissionsStore(
+        locationService: LiveLocationService(),
+        healthService: LiveHealthService(),
+        notificationService: LiveNotificationService(),
+        mediaService: LiveMediaService(),
+        motionService: LiveMotionService()
+    )
+
     var body: some Scene {
         WindowGroup {
             ThemeAwareRootView()
                 .environment(ThemeManager.shared)
+                .environment(permissionsStore)
         }
     }
 }
