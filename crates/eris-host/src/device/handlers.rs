@@ -2481,6 +2481,390 @@ fn query_fields(query: &str) -> Result<BTreeMap<String, String>, DeviceError> {
     Ok(fields)
 }
 
+// ---------------------------------------------------------------------------
+// Backups and pairing codes: the two things an operator on a phone needs
+// ---------------------------------------------------------------------------
+
+/// The fields `POST /v1/backups` reads. Anything else is refused by name rather
+/// than ignored, because a body that names a capability this route does not have
+/// should say so out loud.
+const BACKUP_CREATE_FIELDS: [&str; 2] = ["out", "allow_tmp"];
+
+/// The field names a body could use to ask for the one file an archive never
+/// carries.
+const PASSPHRASE_FIELDS: [&str; 2] = ["passphrase", "include_passphrase"];
+
+/// `GET /v1/backups` - every archive in the archive directory, newest first.
+///
+/// Behind the bearer and the `admin` scope. The rows are the ones the backups
+/// page renders, read through the same [`crate::web::backups::list`], so the two
+/// surfaces cannot disagree about what exists.
+///
+/// `bytes` is the size on disk, which the directory entry always carries. The
+/// field that can be missing is `members`: it comes from the archive's manifest,
+/// so a file in that directory which does not open as an archive reports null
+/// rather than a zero nobody computed. Nothing here verifies the archives again -
+/// that is what the page's `verifies` column is for, and a phone listing a
+/// directory should not hash every member of every file to answer.
+pub async fn backups(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    match read_backups(&service) {
+        Ok(body) => axum::Json(body).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+/// The list `GET /v1/backups` answers with.
+fn read_backups(service: &DeviceService) -> Result<serde_json::Value, DeviceError> {
+    let rows = crate::web::backups::list(service.engine().paths()).map_err(|error| {
+        DeviceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "backup_unreadable",
+            format!("cannot read the archive directory: {error}"),
+        )
+    })?;
+    let archives: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "name": row.name,
+                // The page calls this "written": it is the file's own stamp.
+                "created_at": row.modified,
+                "bytes": row.bytes,
+                // null when the file does not open as an archive: the manifest
+                // is where a member count comes from, and there is not one.
+                "members": row.members,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "ok": true,
+        "count": archives.len(),
+        "archives": archives,
+    }))
+}
+
+/// `POST /v1/backups` - write one verified archive, and audit it.
+///
+/// The body is optional. With nothing in it the archive goes where the browser's
+/// create puts it: a generated `kallisti-<stamp>.bk` in the archive directory.
+/// Two fields let a phone ask for what the CLI's `eris backup --out` asks for,
+/// and both are refused in the words the crate already uses:
+///
+/// - `out`, the absolute path to write. A path under the system temporary
+///   directory is refused unless `allow_tmp` is true, with the crate's own
+///   sentence; an existing file is refused rather than clobbered; a relative path
+///   is refused. The write itself is [`crate::web::backups::create_archive_at`],
+///   which is the same `create` the browser's button reaches.
+/// - `allow_tmp`, the explicit allowance. Absent means the rule applies.
+///
+/// Any other field is a 400 that names it, and a field asking for the setup
+/// passphrase is a 400 carrying the reason the backup format excludes it: that
+/// file is the admin credential once onboarding is ready, and it is excluded
+/// unconditionally, so there is nothing a body could set to get it in.
+pub async fn create_backup(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    if let Some(name) = PASSPHRASE_FIELDS
+        .iter()
+        .find(|name| !field(&fields, name).is_empty())
+    {
+        return DeviceError::bad_request(
+            "passphrase_not_archivable",
+            format!(
+                "an archive never carries the setup passphrase, so {name} is refused rather than \
+                 honoured: {} {}",
+                crate::backup::FIRST_RUN_PATH,
+                crate::backup::PASSPHRASE_EXCLUSION
+            ),
+        )
+        .into_response();
+    }
+    if let Some(unknown) = fields
+        .keys()
+        .find(|name| !BACKUP_CREATE_FIELDS.contains(&name.as_str()))
+    {
+        return DeviceError::bad_request(
+            "field_unknown",
+            format!(
+                "the body named {unknown}, which this route does not read: it accepts {}",
+                BACKUP_CREATE_FIELDS.join(", ")
+            ),
+        )
+        .into_response();
+    }
+
+    let allow_tmp = truthy(field(&fields, "allow_tmp"));
+    let out = field(&fields, "out");
+    let paths = service.engine().paths().clone();
+    let report = if out.is_empty() {
+        crate::web::backups::create_archive(&paths)
+    } else {
+        crate::web::backups::create_archive_at(&paths, std::path::PathBuf::from(out), allow_tmp)
+    };
+    let report = match report {
+        Ok(report) => report,
+        Err(error) => return backup_error(&error).into_response(),
+    };
+
+    let name = report
+        .archive
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // A digest is not a secret, and it is the one field that lets an operator
+    // match the audit row to the file on disk.
+    let detail = format!(
+        "filename={name} sha256={} bytes={}",
+        report.archive_sha256, report.archive_bytes
+    );
+    if let Err(error) =
+        service
+            .engine()
+            .auth()
+            .audit(token.device_id(), "backup.created", Some(&detail))
+    {
+        return DeviceError::db_unavailable(format!(
+            "the archive {name} was written and verified, but the audit row could not be appended: \
+             {error}"
+        ))
+        .into_response();
+    }
+    (
+        StatusCode::CREATED,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "name": name,
+            "members": report.members.len(),
+            "bytes": report.archive_bytes,
+        })),
+    )
+        .into_response()
+}
+
+/// `POST /v1/backups/{name}/restore` - replace the live state from one archive.
+///
+/// Behind the bearer and the `admin` scope, and gated in the browser's order, so
+/// the two surfaces refuse the same things for the same stated reason:
+///
+/// 1. The name in the path must be a bare archive filename. A `/`, a `..`, a
+///    leading dot, a backslash or an absolute path is a `400 bad_archive` by
+///    rule, before any filesystem call, and the refusal never echoes the value.
+/// 2. It must name a regular file in the archive directory. `symlink_metadata`
+///    does not follow a link, so a link planted there is not an archive, and one
+///    that is not there is a `404 archive_not_found`.
+/// 3. Then the verified restore runs: verify every member into a sink, refuse a
+///    newer schema, take a safety copy, place `eris.db` last. A verification
+///    failure is a 422 and an I/O or database failure a 500, which is the CLI's
+///    exit class kept visible over HTTP.
+///
+/// The browser's typed `confirm` field has no twin here on purpose: the name is
+/// in the path rather than in a form a stray keypress submits, so naming it once
+/// is the whole decision. Nothing here restarts the service.
+///
+/// The audit row goes into the database that was just placed, the way the
+/// browser's does, because this process still holds the replaced file open: a row
+/// written through that handle would land in the safety copy. The actor is the
+/// device that asked.
+pub async fn restore_backup(
+    State(service): State<DeviceService>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    if let Err(reason) = crate::web::backups::validate_archive_name(&name) {
+        return DeviceError::bad_request(
+            "bad_archive",
+            format!("that is not an archive in the backups directory: {reason}"),
+        )
+        .into_response();
+    }
+    let paths = service.engine().paths().clone();
+    let path = crate::web::backups::directory(&paths).join(&name);
+    let is_file = std::fs::symlink_metadata(&path)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false);
+    if !is_file {
+        return DeviceError::new(
+            StatusCode::NOT_FOUND,
+            "archive_not_found",
+            "no archive with that name is in the backups directory",
+        )
+        .into_response();
+    }
+
+    let report = match crate::web::backups::restore_archive(&paths, &name) {
+        Ok(report) => report,
+        Err(error) => return backup_error(&error).into_response(),
+    };
+    let safety = report
+        .safety_copy
+        .as_ref()
+        .map_or_else(|| "none".to_owned(), |path| path.display().to_string());
+    let detail = format!(
+        "archive={name} safety_copy={safety} sha256={} members={}",
+        report.archive_sha256, report.members
+    );
+    if let Err(error) =
+        crate::web::backups::audit_placed(&paths, token.device_id(), "backup.restored", &detail)
+    {
+        return DeviceError::db_unavailable(format!(
+            "the archive {name} was restored, but recording it in the restored database failed: \
+             {error}"
+        ))
+        .into_response();
+    }
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "name": name,
+        // Literal true: the archive verified and its members are in place. The
+        // daemon still holds the replaced database file open, so the restored
+        // state takes effect on the next service start.
+        "restored": true,
+    }))
+    .into_response()
+}
+
+/// The status a backup refusal deserves, which is the CLI's exit class.
+///
+/// The same mapping the browser's create and restore use, so one failure is one
+/// status whichever surface asked.
+fn backup_error(error: &crate::backup::BackupError) -> DeviceError {
+    let status = match error.exit_code() {
+        crate::backup::EXIT_VERIFICATION => StatusCode::UNPROCESSABLE_ENTITY,
+        crate::backup::EXIT_USAGE => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    DeviceError::new(status, error.code(), error.to_string())
+}
+
+/// `POST /v1/devices/{id}/code` - mint one pairing code for that device.
+///
+/// This exists so a second device is onboarded from a phone that is already
+/// paired, without reaching for a browser on the host. It is the same mint the
+/// devices page performs: [`PairingService::issue_for_device_asking`] with the
+/// administration flag read from the body, which is the one place `admin` can
+/// enter a pairing.
+///
+/// `allow_admin` is true for `true`, `on` or `1`, and absent means the ordinary
+/// code. The code exists in this response and nowhere else: the pairing service
+/// stores only an Argon2id verifier, this handler never writes the value, and the
+/// audit row carries the device name and the flag rather than the code. There is
+/// no route that reads a code back, because there is nothing to read back.
+pub async fn mint_device_code(
+    State(service): State<DeviceService>,
+    Path(device_id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let allow_admin = truthy(field(&fields, "allow_admin"));
+
+    // The name is for the audit row, and the row is also how a caller learns the
+    // id it named is not a device this daemon holds.
+    let store = service.engine().auth();
+    let record = match store.device(&device_id) {
+        Ok(Some(record)) => record,
+        Ok(None) => return DeviceError::device_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read that device: {error}"))
+                .into_response();
+        }
+    };
+    if record.revoked_at.is_some() {
+        return DeviceError::new(
+            StatusCode::CONFLICT,
+            "device_revoked",
+            "that device is revoked, so a code minted for it could not redeem: pair a new device \
+             instead of reviving a retired one",
+        )
+        .into_response();
+    }
+
+    let pairing = PairingService::new(service.engine().db().clone());
+    let issued = match pairing.issue_for_device_asking(&device_id, allow_admin) {
+        Ok(issued) => issued,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot mint a pairing code: {error}"))
+                .into_response();
+        }
+    };
+
+    // The audit row names the device and never the code. An ordinary mint keeps
+    // the bare name it always had; a mint that asked for administration says so,
+    // which is the detail the devices page writes for the same act.
+    let audited = if allow_admin {
+        format!("{}; admin=true", record.name)
+    } else {
+        record.name.clone()
+    };
+    if let Err(error) = store.audit(
+        token.device_id(),
+        "device.pairing_code_issued",
+        Some(&audited),
+    ) {
+        return DeviceError::db_unavailable(format!(
+            "the code was minted but the audit row could not be appended: {error}"
+        ))
+        .into_response();
+    }
+    (
+        StatusCode::CREATED,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "device_id": device_id,
+            "code": issued.code(),
+            "expires_at": format_timestamp(issued.expires_at()),
+            "admin": allow_admin,
+        })),
+    )
+        .into_response()
+}
+
+/// A body value read as a switch: `true`, `on` or `1`, the three spellings a form
+/// and a JSON client use for a ticked box.
+fn truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "on" | "1"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

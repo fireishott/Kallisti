@@ -43,6 +43,7 @@ mod restore;
 mod verify;
 
 pub use create::{CreateReport, CreateRequest, create};
+pub(crate) use create::{PASSPHRASE_EXCLUSION, is_under_temp, temporary_destination_reason};
 pub use format::{
     DB_PATH, ENV_PATH, Excluded, FIRST_RUN_PATH, FORMAT_VERSION, KIND_DB, KIND_ENV,
     KIND_SESSION_SEGMENT, KIND_SESSION_WAL, KIND_TOML, KIND_WORKSPACE, MAGIC, MAX_MANIFEST_BYTES,

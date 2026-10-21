@@ -196,6 +196,31 @@ pub const CONVERSATION_LIST_LIMIT: usize = 100;
 /// says when it did.
 pub const CONVERSATION_MESSAGE_LIMIT: usize = 200;
 
+/// `GET /v1/backups` and `POST /v1/backups` - the archive list, and writing one,
+/// behind the `admin` scope.
+///
+/// The list is the backups page's own listing and the create is the page's own
+/// write, so a phone that may change the settings may also take a backup before
+/// it, and see the one already on disk. There is no delete here because the page
+/// has none: removing a backup from a phone is not a capability to invent.
+pub const ROUTE_BACKUPS: &str = "/v1/backups";
+
+/// `POST /v1/backups/{name}/restore` - replace the live state from one archive,
+/// behind the `admin` scope.
+///
+/// The name is a bare filename in the path, validated by the same rule the
+/// browser's restore form applies before anything touches the filesystem.
+pub const ROUTE_BACKUP_RESTORE: &str = "/v1/backups/{name}/restore";
+
+/// `POST /v1/devices/{id}/code` - mint one pairing code for that device, behind
+/// the `admin` scope.
+///
+/// The same mint the devices page performs, so a second device is onboarded from
+/// a phone that is already paired rather than from a browser on the host. The
+/// code is single use, is stored only as an Argon2id verifier, and is readable
+/// exactly once: in that response.
+pub const ROUTE_DEVICE_CODE: &str = "/v1/devices/{id}/code";
+
 /// The bodies every device-surface error uses.
 ///
 /// `ok` is always false, `code` is the thing a client branches on, and `message`
@@ -577,7 +602,13 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_MCP, get(handlers::mcp_servers))
         .route(ROUTE_DEVICES, get(handlers::devices))
         .route(ROUTE_DEVICE_REVOKE, post(handlers::revoke_device))
+        .route(ROUTE_DEVICE_CODE, post(handlers::mint_device_code))
         .route(ROUTE_AUDIT, get(handlers::audit))
+        .route(
+            ROUTE_BACKUPS,
+            get(handlers::backups).post(handlers::create_backup),
+        )
+        .route(ROUTE_BACKUP_RESTORE, post(handlers::restore_backup))
         .route(
             ROUTE_PERSONA,
             get(handlers::persona).post(handlers::update_persona),
@@ -660,7 +691,10 @@ mod tests {
             ROUTE_MCP,
             ROUTE_DEVICES,
             ROUTE_DEVICE_REVOKE,
+            ROUTE_DEVICE_CODE,
             ROUTE_AUDIT,
+            ROUTE_BACKUPS,
+            ROUTE_BACKUP_RESTORE,
             ROUTE_PERSONA,
         ] {
             assert!(route.starts_with("/v1/"), "{route} must live under /v1");

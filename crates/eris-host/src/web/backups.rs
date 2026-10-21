@@ -110,6 +110,13 @@ pub struct ArchiveRow {
     pub bytes: u64,
     /// Last modification, RFC 3339 UTC.
     pub modified: String,
+    /// Members the manifest states, when the manifest could be read at all.
+    ///
+    /// `None` means the file does not open as an archive - a truncated or
+    /// foreign file in the directory - so there is no member count to report.
+    /// The page shows it as a verification failure; the device route reports
+    /// null rather than inventing a zero.
+    pub members: Option<usize>,
     /// The verification outcome: `Ok` when every member hashes to what the
     /// manifest says, `Err` with the stable code and its sentence when it does
     /// not.
@@ -171,13 +178,15 @@ pub fn list(paths: &Paths) -> Result<Vec<ArchiveRow>, BackupError> {
         let metadata = entry
             .metadata()
             .map_err(|error| BackupError::io(entry.path(), error))?;
+        let (members, verification) = inspect_members(&entry.path());
         rows.push(ArchiveRow {
             bytes: metadata.len(),
             modified: metadata
                 .modified()
                 .map(format_time)
                 .unwrap_or_else(|_| "unknown".to_owned()),
-            verification: verification_of(&entry.path()),
+            members,
+            verification,
             name,
         });
     }
@@ -193,11 +202,45 @@ pub fn create_archive(paths: &Paths) -> Result<CreateReport, BackupError> {
     let dir = directory(paths);
     ensure_directory(&dir)?;
     let out = dir.join(free_name(&dir));
+    write_archive(paths, out, false)
+}
+
+/// Write one archive at a caller-named destination.
+///
+/// This is the device surface's create: a body may name the file the way
+/// `eris backup --out` names it, and everything else is the same write. Two
+/// refusals travel with it:
+///
+/// - the `/tmp` rule, stated in the crate's own sentence. The crate's
+///   `check_destination` stands that rule down for a scratch `--state-dir` run,
+///   and a device request is not a scratch run: the phone names one absolute
+///   path on the installed host, so the rule is applied here as well as there.
+/// - an existing file at the destination, which the crate refuses rather than
+///   clobbers.
+pub fn create_archive_at(
+    paths: &Paths,
+    out: PathBuf,
+    allow_tmp: bool,
+) -> Result<CreateReport, BackupError> {
+    if !allow_tmp && crate::backup::is_under_temp(&out) {
+        return Err(BackupError::Usage {
+            message: crate::backup::temporary_destination_reason(&out),
+        });
+    }
+    write_archive(paths, out, allow_tmp)
+}
+
+/// The one write both creates go through.
+fn write_archive(
+    paths: &Paths,
+    out: PathBuf,
+    allow_tmp: bool,
+) -> Result<CreateReport, BackupError> {
     let request = CreateRequest {
         out,
         include_workspace: false,
         verify: true,
-        allow_tmp: false,
+        allow_tmp,
         paths: paths.clone(),
     };
     crate::backup::create(&request)
@@ -236,14 +279,27 @@ pub fn restore_archive(paths: &Paths, name: &str) -> Result<RestoreReport, Backu
 /// disk: this process still holds the old inode open, so a row written through
 /// that handle would land in the safety copy and never be seen again.
 pub fn audit_placed_restore(paths: &Paths, detail: &str) -> Result<i64, BackupError> {
+    audit_placed(paths, "loopback", "backup.restore", detail)
+}
+
+/// The same row, for a caller that names its own actor and action.
+///
+/// The browser names `loopback`; a paired phone names the device that asked, so
+/// the Activity page shows which one restored rather than only which host did.
+pub fn audit_placed(
+    paths: &Paths,
+    actor: &str,
+    action: &str,
+    detail: &str,
+) -> Result<i64, BackupError> {
     let db = crate::db::Db::open(&paths.db_file).map_err(|error| BackupError::Db {
         message: format!("cannot open the restored database to record it: {error}"),
     })?;
     let id = db
         .with_conn(|conn| {
             conn.execute(
-                "INSERT INTO audit_log (actor, action, detail) VALUES ('loopback', 'backup.restore', ?1)",
-                [detail],
+                "INSERT INTO audit_log (actor, action, detail) VALUES (?1, ?2, ?3)",
+                rusqlite::params![actor, action, detail],
             )?;
             Ok(conn.last_insert_rowid())
         })
@@ -310,12 +366,22 @@ fn free_name(dir: &Path) -> String {
     base
 }
 
-/// The manifest and every member, as the page's per-row answer.
-fn verification_of(path: &Path) -> Result<(), String> {
-    let opened = open(path).map_err(|error| format!("{}: {error}", error.code()))?;
-    verify(&opened)
-        .map(|_| ())
-        .map_err(|error| format!("{}: {error}", error.code()))
+/// The manifest and every member, as the page's per-row answer, plus the member
+/// count the manifest states when it could be read.
+fn inspect_members(path: &Path) -> (Option<usize>, Result<(), String>) {
+    let opened = match open(path) {
+        Ok(opened) => opened,
+        Err(error) => return (None, Err(format!("{}: {error}", error.code()))),
+    };
+    // The count comes from the manifest, which `open` has already validated: it
+    // is a fact the file states, not a number this daemon computed.
+    let members = opened.manifest.members.len();
+    (
+        Some(members),
+        verify(&opened)
+            .map(|_| ())
+            .map_err(|error| format!("{}: {error}", error.code())),
+    )
 }
 
 /// One `SystemTime` as RFC 3339 UTC.

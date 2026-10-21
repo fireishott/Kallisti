@@ -80,8 +80,12 @@ impl Harness {
         mcp: Option<Arc<eris_host::mcp::Pool>>,
     ) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
-        let db = Db::open(dir.path().join("state/eris.db")).expect("db opens");
-        let engine = SetupEngine::new(db.clone(), Paths::for_root(dir.path().join("root")));
+        // The database lives where the paths say it does, so the archive code
+        // (which reads `paths.db_file`) is looking at the state this listener
+        // actually writes.
+        let paths = Paths::for_root(dir.path().join("root"));
+        let db = Db::open(&paths.db_file).expect("db opens");
+        let engine = SetupEngine::new(db.clone(), paths);
         engine
             .set_provider(provider_url, TEST_KEY_REF, &["p8-model".to_owned()])
             .expect("provider settings");
@@ -118,8 +122,9 @@ impl Harness {
     /// A listener that has not finished onboarding.
     async fn start_not_ready() -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
-        let db = Db::open(dir.path().join("state/eris.db")).expect("db opens");
-        let engine = SetupEngine::new(db, Paths::for_root(dir.path().join("root")));
+        let paths = Paths::for_root(dir.path().join("root"));
+        let db = Db::open(&paths.db_file).expect("db opens");
+        let engine = SetupEngine::new(db, paths);
         let service = DeviceService::with_key_lookup(
             engine.clone(),
             DEFAULT_SSE_BUFFER,
@@ -3065,6 +3070,21 @@ fn latest_audit(harness: &Harness) -> (String, String, Option<String>) {
         .expect("the newest audit row")
 }
 
+/// The newest audit row with one action.
+fn latest_audit_with(harness: &Harness, action: &str) -> (String, Option<String>) {
+    harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT actor, detail FROM audit_log WHERE action = ?1 ORDER BY id DESC LIMIT 1",
+                [action],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+        })
+        .expect("an audit row with that action")
+}
+
 /// Store an MCP server list, the way the settings save would.
 fn store_servers(harness: &Harness, servers: &[(&str, &str)]) {
     let list: Vec<serde_json::Value> = servers
@@ -4433,6 +4453,927 @@ async fn the_daemon_says_what_it_is_without_a_credential() {
             reply.body
         );
     }
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Backups and pairing codes from an admin phone
+// ---------------------------------------------------------------------------
+
+/// The archive directory a harness writes into.
+fn archive_dir(harness: &Harness) -> std::path::PathBuf {
+    eris_host::web::backups::directory(harness.engine.paths())
+}
+
+/// Every audit row in the database on disk, oldest first.
+///
+/// Read through a fresh handle rather than the engine's, because a restore moves
+/// a new file into place under the handle the process already holds open.
+fn placed_audit_rows(paths: &Paths) -> Vec<(String, String, Option<String>)> {
+    let db = Db::open(&paths.db_file).expect("the placed database opens");
+    db.with_conn(|conn| {
+        let mut statement = conn
+            .prepare("SELECT actor, action, detail FROM audit_log ORDER BY id")
+            .expect("the audit statement");
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("the audit rows");
+        rows.collect::<Result<Vec<_>, _>>()
+    })
+    .expect("the audit read")
+}
+
+#[tokio::test]
+async fn the_backup_and_code_routes_require_a_bearer_and_the_admin_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, device_token) = harness.device_with_token("iPhone");
+    let (other, _) = harness.device_with_token("iPad");
+
+    let cases: [(&str, String, Option<&str>); 4] = [
+        ("GET", "/v1/backups".to_owned(), None),
+        ("POST", "/v1/backups".to_owned(), None),
+        (
+            "POST",
+            "/v1/backups/kallisti-test.bk/restore".to_owned(),
+            None,
+        ),
+        ("POST", format!("/v1/devices/{other}/code"), None),
+    ];
+
+    for (method, path, body) in &cases {
+        let anonymous = harness.request(method, path, &[], *body).await;
+        assert_eq!(
+            anonymous.status, 401,
+            "{method} {path} without a bearer: {}",
+            anonymous.body
+        );
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+
+        let denied = harness
+            .request(
+                method,
+                path,
+                &[("authorization", format!("Bearer {device_token}"))],
+                *body,
+            )
+            .await;
+        assert_eq!(
+            denied.status, 403,
+            "{method} {path} without admin: {}",
+            denied.body
+        );
+        let refusal = denied.json();
+        assert_eq!(refusal["code"], "scope_denied");
+        let message = refusal["message"].as_str().expect("a message");
+        assert!(
+            message.contains("mint a pairing code with the administration box ticked"),
+            "the refusal names the pairing code that would fix it: {message}"
+        );
+    }
+
+    // None of the refusals minted anything or wrote an archive.
+    let rows = AuthStore::new(harness.engine.db().clone())
+        .pairing_rows()
+        .expect("the pairing rows");
+    assert!(rows.is_empty(), "a 403 mints no code: {rows:?}");
+    assert!(
+        !archive_dir(&harness).exists(),
+        "a 403 writes no archive directory"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_backup_created_from_a_phone_is_listed_newest_first_and_audited() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (actor_id, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // An empty directory is an empty list, not a failure: the first visit to a
+    // screen is supposed to show the empty state.
+    let empty = harness.request("GET", "/v1/backups", &auth, None).await;
+    assert_eq!(empty.status, 200, "{}", empty.body);
+    let empty_body = empty.json();
+    assert_eq!(empty_body["ok"], true);
+    assert_eq!(empty_body["count"], 0);
+    assert_eq!(empty_body["archives"].as_array().expect("a list").len(), 0);
+
+    let first = harness.request("POST", "/v1/backups", &auth, None).await;
+    assert_eq!(first.status, 201, "{}", first.body);
+    let first_body = first.json();
+    let mut keys: Vec<&str> = first_body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["bytes", "members", "name", "ok"],
+        "the create body is the documented shape and nothing else: {first_body}"
+    );
+    let first_name = first_body["name"].as_str().expect("a name").to_owned();
+    assert!(
+        first_name.starts_with("kallisti-") && first_name.ends_with(".bk"),
+        "the archive is named for its product and stamp: {first_name}"
+    );
+    assert!(
+        first_body["members"].as_u64().expect("a member count") > 0,
+        "an archive with no member is not a backup: {first_body}"
+    );
+    let on_disk = std::fs::metadata(archive_dir(&harness).join(&first_name))
+        .expect("the archive is on disk")
+        .len();
+    assert_eq!(
+        first_body["bytes"].as_u64().expect("a size"),
+        on_disk,
+        "the reported size is the file's own size: {first_body}"
+    );
+
+    let second = harness.request("POST", "/v1/backups", &auth, None).await;
+    assert_eq!(second.status, 201, "{}", second.body);
+    let second_name = second.json()["name"].as_str().expect("a name").to_owned();
+    assert_ne!(first_name, second_name, "two creates never share a name");
+
+    let listed = harness.request("GET", "/v1/backups", &auth, None).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["count"], 2);
+    let mut top: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    top.sort_unstable();
+    assert_eq!(
+        top,
+        vec!["archives", "count", "ok"],
+        "the list body is the documented shape and nothing else: {body}"
+    );
+    let archives = body["archives"].as_array().expect("an archive list");
+    assert_eq!(archives.len(), 2);
+    for row in archives {
+        let mut keys: Vec<&str> = row
+            .as_object()
+            .expect("an archive object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["bytes", "created_at", "members", "name"],
+            "the row is the documented shape and nothing else: {row}"
+        );
+        assert!(
+            row["bytes"].as_u64().is_some(),
+            "every archive row carries the size its directory entry reports: {row}"
+        );
+        assert!(
+            row["members"].as_u64().is_some_and(|members| members > 0),
+            "a written archive states its member count: {row}"
+        );
+        assert!(
+            row["created_at"]
+                .as_str()
+                .is_some_and(|at| at.contains('T')),
+            "created_at is the file's own stamp: {row}"
+        );
+    }
+    assert_eq!(
+        archives[0]["name"], second_name,
+        "the newest archive is first: {body}"
+    );
+    assert_eq!(archives[1]["name"], first_name);
+
+    // Both creates audited themselves, naming the acting device and not a secret.
+    let rows: Vec<(String, String, Option<String>)> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT actor, action, detail FROM audit_log \
+                     WHERE action = 'backup.created' ORDER BY id",
+                )
+                .expect("the audit statement");
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .expect("the audit rows");
+            rows.collect::<Result<Vec<_>, _>>()
+        })
+        .expect("the audit read");
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    for (actor, action, detail) in &rows {
+        assert_eq!(action, "backup.created");
+        assert_eq!(actor, &actor_id, "the phone that asked is the actor");
+        let detail = detail.as_deref().expect("a detail");
+        assert!(detail.contains("sha256="), "the detail names the digest");
+        assert!(!detail.to_lowercase().contains("passphrase"), "{detail}");
+    }
+    assert!(
+        rows[1]
+            .2
+            .as_deref()
+            .expect("a detail")
+            .contains(&second_name),
+        "the newest row names the archive it wrote: {rows:?}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_phone_restores_one_archive_and_the_row_names_the_device() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (actor_id, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    let paths = harness.engine.paths().clone();
+
+    let created = harness.request("POST", "/v1/backups", &auth, None).await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let name = created.json()["name"].as_str().expect("a name").to_owned();
+
+    // State that the archive does not contain, so the restore has something to
+    // undo. A device row is visible in the file on disk and needs no turn.
+    AuthStore::new(harness.engine.db().clone())
+        .register_device("after-the-archive", "ios")
+        .expect("a device row");
+    let strays = |paths: &Paths| -> i64 {
+        Db::open(&paths.db_file)
+            .expect("the database opens")
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM devices WHERE name = 'after-the-archive'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .expect("the count")
+    };
+    assert_eq!(strays(&paths), 1, "the fixture row is in the live database");
+
+    let restored = harness
+        .request("POST", &format!("/v1/backups/{name}/restore"), &auth, None)
+        .await;
+    assert_eq!(restored.status, 200, "{}", restored.body);
+    let body = restored.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["name", "ok", "restored"],
+        "the restore body is the documented shape and nothing else: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["name"], name);
+    assert_eq!(body["restored"], true);
+
+    assert_eq!(
+        strays(&paths),
+        0,
+        "the restored database is the archived one, not the live one"
+    );
+    let copies: Vec<String> = std::fs::read_dir(&paths.state_dir)
+        .expect("the state directory")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("pre-restore-"))
+        .collect();
+    assert_eq!(
+        copies.len(),
+        1,
+        "the restore took a safety copy: {copies:?}"
+    );
+
+    // The row is in the database that was placed, naming the device that asked.
+    let rows = placed_audit_rows(&paths);
+    let mine = rows
+        .iter()
+        .rev()
+        .find(|(_, action, _)| action == "backup.restored")
+        .expect("the device restore audits itself");
+    assert_eq!(mine.0, actor_id, "the acting device is the actor");
+    let detail = mine.2.as_deref().expect("a detail");
+    assert!(
+        detail.contains(&name),
+        "the detail names the archive: {detail}"
+    );
+    assert!(
+        detail.contains("safety_copy="),
+        "the detail carries the safety copy: {detail}"
+    );
+    assert!(!detail.contains(&admin_token), "no secret reaches the row");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_name_that_is_not_a_bare_filename_is_refused_by_the_rule() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    let paths = harness.engine.paths().clone();
+
+    let created = harness.request("POST", "/v1/backups", &auth, None).await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let before = std::fs::read(&paths.db_file).expect("the database reads");
+    let entries = std::fs::read_dir(archive_dir(&harness))
+        .expect("the archive directory")
+        .count();
+
+    // `%2e%2e` is `..` once the path is decoded, and `%2f` is a slash: both are
+    // refused by the name rule and not by failing later on the filesystem.
+    for escaped in [
+        "..",
+        "%2e%2e",
+        "..%2feris.db",
+        "%2e%2e%2f%2e%2e%2feris.db",
+        ".hidden.bk",
+        "%2fetc%2fpasswd",
+        "sub%2fkallisti.bk",
+        "back%5cslash.bk",
+    ] {
+        let reply = harness
+            .request(
+                "POST",
+                &format!("/v1/backups/{escaped}/restore"),
+                &auth,
+                None,
+            )
+            .await;
+        assert_eq!(
+            reply.status, 400,
+            "{escaped} must be refused by the name rule: {}",
+            reply.body
+        );
+        assert_eq!(
+            reply.json()["code"],
+            "bad_archive",
+            "{escaped} is refused by code: {}",
+            reply.body
+        );
+        assert!(
+            !reply.body.contains("/etc/passwd"),
+            "the refusal does not echo a path back: {}",
+            reply.body
+        );
+    }
+
+    // A well-shaped name that is not there is its own answer.
+    let missing = harness
+        .request(
+            "POST",
+            "/v1/backups/kallisti-not-here.bk/restore",
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.json()["code"], "archive_not_found");
+
+    // Nothing was placed, nothing was copied, nothing was moved.
+    assert_eq!(
+        std::fs::read(&paths.db_file).expect("the database reads"),
+        before,
+        "a refused restore does not touch the database"
+    );
+    assert_eq!(
+        std::fs::read_dir(archive_dir(&harness))
+            .expect("the archive directory")
+            .count(),
+        entries,
+        "the archive directory is unchanged"
+    );
+    let copies = std::fs::read_dir(&paths.state_dir)
+        .expect("the state directory")
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("pre-restore-")
+        })
+        .count();
+    assert_eq!(copies, 0, "a refused restore takes no safety copy");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_tmp_destination_needs_the_allowance_and_the_passphrase_is_refused() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // The setup passphrase file, present the way a claimed host has it.
+    let config = harness.engine.paths().config_dir.clone();
+    std::fs::create_dir_all(&config).expect("the config directory");
+    std::fs::write(config.join("first-run.txt"), "seven words here").expect("the passphrase file");
+
+    // A body that asks for the passphrase is refused, and the reason is the one
+    // the archive format states rather than a sentence invented here.
+    for body in [
+        r#"{"include_passphrase":true}"#,
+        r#"{"passphrase":"seven words here"}"#,
+    ] {
+        let refused = harness
+            .request("POST", "/v1/backups", &auth, Some(body))
+            .await;
+        assert_eq!(refused.status, 400, "{body}: {}", refused.body);
+        let reply = refused.json();
+        assert_eq!(reply["code"], "passphrase_not_archivable", "{body}");
+        let message = reply["message"].as_str().expect("a message");
+        assert!(
+            message.contains("excluded unconditionally"),
+            "the refusal states the archive format's reason: {message}"
+        );
+        assert!(
+            !message.contains("seven words here"),
+            "the refusal does not echo the passphrase back: {message}"
+        );
+    }
+
+    // A field this route does not read is named rather than silently ignored.
+    let unknown = harness
+        .request(
+            "POST",
+            "/v1/backups",
+            &auth,
+            Some(r#"{"include_workspace":true}"#),
+        )
+        .await;
+    assert_eq!(unknown.status, 400, "{}", unknown.body);
+    let reply = unknown.json();
+    assert_eq!(reply["code"], "field_unknown");
+    let message = reply["message"].as_str().expect("a message");
+    assert!(message.contains("include_workspace"), "{message}");
+    assert!(message.contains("out, allow_tmp"), "{message}");
+
+    // A destination under the system temporary directory is refused without the
+    // explicit allowance, in the crate's own words, and written with it.
+    let tmp_out = harness._dir.path().join("tmp-target.bk");
+    let tmp_out = tmp_out.display().to_string();
+    let refused = harness
+        .request(
+            "POST",
+            "/v1/backups",
+            &auth,
+            Some(&format!(r#"{{"out":"{tmp_out}"}}"#)),
+        )
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    let reply = refused.json();
+    assert_eq!(reply["code"], "usage", "{}", refused.body);
+    let message = reply["message"].as_str().expect("a message");
+    assert!(
+        message.contains("under the system temporary directory"),
+        "the refusal is the CLI's sentence: {message}"
+    );
+    assert!(
+        !std::path::Path::new(&tmp_out).exists(),
+        "a refused create writes no file"
+    );
+
+    let allowed = harness
+        .request(
+            "POST",
+            "/v1/backups",
+            &auth,
+            Some(&format!(r#"{{"out":"{tmp_out}","allow_tmp":true}}"#)),
+        )
+        .await;
+    assert_eq!(allowed.status, 201, "{}", allowed.body);
+    assert_eq!(allowed.json()["name"], "tmp-target.bk");
+    assert!(
+        std::path::Path::new(&tmp_out).exists(),
+        "the explicit allowance writes where it was told"
+    );
+
+    // A passphrase field on a create that would otherwise succeed leaves no
+    // archive behind, and no audit row either.
+    let audited: i64 = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'backup.created'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("the audit count");
+    assert_eq!(audited, 1, "only the create that was allowed is audited");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_minted_ordinary_code_redeems_into_a_token_without_admin() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (actor_id, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    let (target_id, _) = harness.device_with_token("Kitchen iPad");
+
+    let minted = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{target_id}/code"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(minted.status, 201, "{}", minted.body);
+    let body = minted.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["admin", "code", "device_id", "expires_at", "ok"],
+        "the mint body is the documented shape and nothing else: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["device_id"], target_id);
+    assert_eq!(body["admin"], false, "absent means the ordinary code");
+    let code = body["code"].as_str().expect("a code").to_owned();
+    assert_eq!(code.len(), 8, "eight characters: {code}");
+    assert!(
+        code.bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()),
+        "the code is uppercase alphanumeric: {code}"
+    );
+    for ambiguous in ['0', 'O', '1', 'I', 'L'] {
+        assert!(
+            !code.contains(ambiguous),
+            "{ambiguous} is not in the hand-copied alphabet: {code}"
+        );
+    }
+    assert!(
+        body["expires_at"]
+            .as_str()
+            .is_some_and(|at| at.contains('T')),
+        "expires_at is a stamp: {body}"
+    );
+
+    // The code redeems, and the token it produces carries no administration.
+    let paired = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(r#"{{"code":"{code}"}}"#)),
+        )
+        .await;
+    assert_eq!(paired.status, 201, "{}", paired.body);
+    let scopes: Vec<String> = paired.json()["scopes"]
+        .as_array()
+        .expect("a scope list")
+        .iter()
+        .filter_map(|scope| scope.as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        !scopes.iter().any(|scope| scope == "admin"),
+        "an ordinary code grants no administration: {scopes:?}"
+    );
+    let redeemed_token = paired.json()["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let refused = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {redeemed_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    // Single use: the second redeem is the same 401 as a code that never existed.
+    let again = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(r#"{{"code":"{code}"}}"#)),
+        )
+        .await;
+    assert_eq!(again.status, 401, "{}", again.body);
+    assert_eq!(again.json()["code"], "pairing_code_invalid");
+
+    // The audit row names the device and never the code.
+    let (audit_actor, detail) = latest_audit_with(&harness, "device.pairing_code_issued");
+    assert_eq!(audit_actor, actor_id, "the phone that minted is the actor");
+    let detail = detail.expect("a detail");
+    assert!(detail.contains("Kitchen iPad"), "{detail}");
+    assert!(
+        !detail.contains(&code),
+        "the audit row never carries the code: {detail}"
+    );
+
+    // Nothing readable is stored: not in the database file, and not in any
+    // listing this daemon serves.
+    let bytes = std::fs::read(&harness.engine.paths().db_file).expect("the database reads");
+    assert!(
+        !bytes
+            .windows(code.len())
+            .any(|window| window == code.as_bytes()),
+        "the code is not in the database in readable form"
+    );
+    for path in ["/v1/devices", "/v1/audit"] {
+        let listed = harness.request("GET", path, &auth, None).await;
+        assert_eq!(listed.status, 200, "{path}: {}", listed.body);
+        assert!(
+            !listed.body.contains(&code),
+            "{path} does not hand the code back: {}",
+            listed.body
+        );
+    }
+    let listed = harness.request("GET", "/v1/devices", &auth, None).await;
+    let body = listed.json();
+    let row = body["devices"]
+        .as_array()
+        .expect("a device list")
+        .iter()
+        .find(|row| row["id"] == target_id)
+        .expect("the target device")
+        .clone();
+    for field in [
+        "id",
+        "name",
+        "created_at",
+        "paired",
+        "can_admin",
+        "last_seen",
+    ] {
+        assert!(
+            !row[field]
+                .as_str()
+                .is_some_and(|value| value.contains(&code)),
+            "no field of the device row carries the code: {row}"
+        );
+    }
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_minted_code_with_allow_admin_redeems_into_an_admin_token() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    let (target_id, _) = harness.device_with_token("Kitchen iPad");
+
+    let minted = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{target_id}/code"),
+            &auth,
+            Some(r#"{"allow_admin":true}"#),
+        )
+        .await;
+    assert_eq!(minted.status, 201, "{}", minted.body);
+    let body = minted.json();
+    assert_eq!(body["admin"], true, "the body asked and the answer says so");
+    let code = body["code"].as_str().expect("a code").to_owned();
+
+    let paired = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(r#"{{"code":"{code}"}}"#)),
+        )
+        .await;
+    assert_eq!(paired.status, 201, "{}", paired.body);
+    let scopes: Vec<String> = paired.json()["scopes"]
+        .as_array()
+        .expect("a scope list")
+        .iter()
+        .filter_map(|scope| scope.as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        scopes.iter().any(|scope| scope == "admin"),
+        "the ticked box reaches the redeemed token: {scopes:?}"
+    );
+    let redeemed_token = paired.json()["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let allowed = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {redeemed_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(allowed.status, 200, "{}", allowed.body);
+
+    // The mint that asked for administration says so in the trail.
+    let (_, detail) = latest_audit_with(&harness, "device.pairing_code_issued");
+    let detail = detail.expect("a detail");
+    assert!(detail.contains("admin=true"), "{detail}");
+    assert!(!detail.contains(&code), "{detail}");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn minting_refuses_an_unknown_or_revoked_device_by_code() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    let missing = harness
+        .request("POST", "/v1/devices/no-such-device/code", &auth, None)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.json()["code"], "device_not_found");
+
+    // A retired device cannot be handed a code that could not redeem.
+    let (revoked_id, _) = harness.device_with_token("Old iPhone");
+    let revoked = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{revoked_id}/revoke"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, 200, "{}", revoked.body);
+    let refused = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{revoked_id}/code"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "device_revoked");
+
+    // No code was minted by either refusal.
+    let rows = AuthStore::new(harness.engine.db().clone())
+        .pairing_rows()
+        .expect("the pairing rows");
+    assert!(rows.is_empty(), "neither refusal minted a row: {rows:?}");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_browser_backups_page_still_creates_and_lists() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let app = eris_host::admin::router_with(eris_host::admin::AppState::new(
+        harness.engine.clone(),
+        false,
+    ));
+    let cookie = browser_cookie(&harness);
+
+    let (status, page) = browser_page(&app, &cookie, "/dashboard/backups").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        page.contains(r#"action="/dashboard/backups/create""#),
+        "the create form is still on the page: {page}"
+    );
+
+    let (status, _) = browser_post(&app, &cookie, "/dashboard/backups/create", "").await;
+    assert_eq!(status, 303, "the browser create redirects to the notice");
+    let name = eris_host::web::backups::list(harness.engine.paths())
+        .expect("the archive list")
+        .first()
+        .map(|row| row.name.clone())
+        .expect("an archive was written");
+    let (status, after) = browser_page(&app, &cookie, "/dashboard/backups").await;
+    assert_eq!(status, 200, "{after}");
+    assert!(
+        after.contains(&name),
+        "the page lists the archive it just wrote: {after}"
+    );
+    assert!(
+        after.contains("verified"),
+        "the page still states the verification outcome: {after}"
+    );
+    assert!(
+        !after.replace("<!DOCTYPE html>", "").contains('!'),
+        "house style holds on this page"
+    );
+    assert!(
+        !after.contains('\u{2014}'),
+        "no em dash reaches the page: {after}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_browser_devices_page_still_mints_a_code() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let app = eris_host::admin::router_with(eris_host::admin::AppState::new(
+        harness.engine.clone(),
+        false,
+    ));
+    let cookie = browser_cookie(&harness);
+
+    let (status, page) = browser_page(&app, &cookie, "/dashboard/devices").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        page.contains(r#"action="/dashboard/devices""#),
+        "the mint form is still on the page: {page}"
+    );
+    assert!(
+        page.contains(r#"name="allow_admin""#),
+        "the administration box is still on the form: {page}"
+    );
+
+    let (status, minted) = browser_post(
+        &app,
+        &cookie,
+        "/dashboard/devices",
+        "device_name=Kitchen+iPad&allow_admin=true",
+    )
+    .await;
+    assert_eq!(status, 200, "{minted}");
+    assert!(
+        minted.contains("Pairing code"),
+        "the minted code is shown once: {minted}"
+    );
+    assert!(
+        minted.contains("Kitchen iPad"),
+        "the device the code is bound to is listed: {minted}"
+    );
+    let (_, detail) = latest_audit_with(&harness, "device.pairing_code_issued");
+    let detail = detail.expect("a detail");
+    assert!(detail.contains("Kitchen iPad"), "{detail}");
+    assert!(detail.contains("admin=true"), "{detail}");
+    assert!(
+        !minted.replace("<!DOCTYPE html>", "").contains('!'),
+        "house style holds on this page"
+    );
+    assert!(
+        !minted.contains('\u{2014}'),
+        "no em dash reaches the page: {minted}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_file_that_is_not_an_archive_lists_without_invented_numbers() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // A file in the archive directory that is not an archive: its size is a
+    // directory fact, and its member count is not a fact at all.
+    let dir = archive_dir(&harness);
+    eris_host::web::backups::ensure_directory(&dir).expect("the archive directory");
+    let junk = b"not an archive".to_vec();
+    std::fs::write(dir.join("junk.bk"), &junk).expect("a stray file");
+
+    let listed = harness.request("GET", "/v1/backups", &auth, None).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["count"], 1);
+    let row = &body["archives"][0];
+    assert_eq!(row["name"], "junk.bk");
+    assert_eq!(
+        row["bytes"].as_u64(),
+        Some(junk.len() as u64),
+        "the size is the file's own size: {row}"
+    );
+    assert_eq!(
+        row["members"],
+        serde_json::Value::Null,
+        "a file that does not open as an archive has no member count to report: {row}"
+    );
 
     harness.stop();
 }

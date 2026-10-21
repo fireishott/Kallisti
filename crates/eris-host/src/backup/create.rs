@@ -38,6 +38,13 @@ use crate::backup::format::{
 use crate::config::{Paths, TomlConfig};
 use crate::db::BUSY_TIMEOUT;
 
+/// Why the setup passphrase file is never an archive member.
+///
+/// One sentence, stated by the manifest's exclusion record and by the device
+/// route when a body asks for it anyway.
+pub(crate) const PASSPHRASE_EXCLUSION: &str = "holds the setup passphrase, which is the admin credential once onboarding is ready: \
+     excluded unconditionally";
+
 /// What to back up, and where to put the result.
 #[derive(Debug, Clone)]
 pub struct CreateRequest {
@@ -275,17 +282,27 @@ fn check_destination(out: &Path, allow_tmp: bool, paths: &Paths) -> Result<(), B
     }
     if !allow_tmp && is_under_temp(out) && !is_scratch_root(paths) {
         return Err(BackupError::Usage {
-            message: format!(
-                "{} is under the system temporary directory, where a backup goes to be lost; choose a home directory path or pass --allow-tmp",
-                out.display()
-            ),
+            message: temporary_destination_reason(out),
         });
     }
     Ok(())
 }
 
+/// Why a destination under the system temporary directory is refused.
+///
+/// One sentence, built in one place, so the device route refuses the same path
+/// with the same words rather than a paraphrase of them. The CLI keeps its
+/// `--allow-tmp` escape; the device body carries the same flag.
+#[must_use]
+pub(crate) fn temporary_destination_reason(out: &Path) -> String {
+    format!(
+        "{} is under the system temporary directory, where a backup goes to be lost; choose a home directory path or pass --allow-tmp",
+        out.display()
+    )
+}
+
 /// Whether a path is inside `/tmp` or `$TMPDIR`.
-fn is_under_temp(out: &Path) -> bool {
+pub(crate) fn is_under_temp(out: &Path) -> bool {
     let mut roots = vec![PathBuf::from("/tmp")];
     let temporary = std::env::temp_dir();
     if !roots.contains(&temporary) {
@@ -437,8 +454,7 @@ fn collect(
     if paths.config_dir.join("first-run.txt").exists() {
         excluded.push(Excluded {
             path: FIRST_RUN_PATH.to_owned(),
-            reason: "holds the setup passphrase, which is the admin credential once onboarding is ready: excluded unconditionally"
-                .to_owned(),
+            reason: PASSPHRASE_EXCLUSION.to_owned(),
         });
     }
 
