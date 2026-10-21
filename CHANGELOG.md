@@ -4,8 +4,27 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
-## Unreleased
+## 1.4.1
 
+- **The whole Kallisti frontend is back, on Eris.** The iOS app launches into the
+  full Kallisti experience again - the complete sidebar (Chat, Inbox, Talk, Notes,
+  Settings), device-permission onboarding, the Senses view, and the Kallisti theme -
+  with Eris as its only backend. The reduced shell is gone. `build 86`.
+- **Eris is a full backend.** Inbox (list and actions), Notes (full CRUD, blobs,
+  recognitions, and the run lifecycle) and Push (register, deactivate, send) gain
+  real routes and their own stores, so the frontend's Inbox and Notes tabs are
+  backed rather than pending. Talk remains in development and answers a typed
+  not-implemented rather than a 404. `build 86`.
+- **The daemon has senses.** Health and location gain device routes
+  (`POST /v1/device/sensor/health`, `POST /v1/device/sensor/location`, plus
+  `GET /v1/device/health/latest` and `GET /v1/device/location`), stored in
+  `sensors.db` on the legacy schema, so the app reads live health and location
+  data instead of a placeholder. `build 86`.
+- **The web UI works on a phone.** The chat surface and the setup wizard both got
+  a responsive pass: an off-canvas sidebar drawer below the mobile breakpoint,
+  `safe-area-inset-bottom` on the composer, `100dvh` sizing, and a scrim so text
+  stays readable over the wallpaper. The setup page no longer prints the internal
+  listener telemetry into the user-facing footer. `build 86`.
 - **A photo no longer looks like a dropped connection.** The chat POST inherited
   Axum's 2 MiB body ceiling, so an iPhone screenshot over that size was refused
   while the multipart parser was still reading it, and the page said "lost the
