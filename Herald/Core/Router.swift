@@ -7,6 +7,9 @@ enum Route: Hashable {
     case connectHost
     case gatewayStatus
     case gatewayLogs
+    /// Eris daemon pairing and chat. One route: it shows the pairing form when
+    /// this device holds no usable pair and the chat surface when it does.
+    case eris
 }
 
 // MARK: - Sheet Destinations

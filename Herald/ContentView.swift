@@ -79,6 +79,8 @@ struct MainTabView: View {
             GatewayStatusScreen()
         case .gatewayLogs:
             GatewayLogsScreen()
+        case .eris:
+            ErisSurfaceScreen()
         }
     }
 
