@@ -6,6 +6,16 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **A phone can back itself up.** A paired device lists, takes and restores a backup
+  over the device API (`/v1/backups`, `/v1/backups/{name}/restore`), all admin-scoped,
+  so a backup is no longer a host-side chore. `build 81`.
+- **Fallback model.** Settings > auxiliary models grows a Fallback role. Leave it on
+  `primary` and nothing changes; pin it to another model and a turn that fails retries
+  once on that model, with the answer badged as the model that produced it and every
+  retry audited. `build 82`.
+- **A dead stream is now a failure, not a freeze.** A provider that stops sending
+  bytes for 60 seconds fails the turn instead of leaving the conversation stuck on
+  "streaming" forever, so the fallback (or a retry) has something to act on. `build 82`.
 - **Approving runs the call.** A decision used to settle the row and change nothing
   else, so an approved write waited for a CLI run on the host while the phone said
   "approved". The execution path now lives in the library and both surfaces call it:

@@ -59,8 +59,9 @@ is not in your hand.
   decides. An approval model can read the call and say what it would do - and that
   reading never decides anything.
 - **Memory you choose.** gbrain (the default), a directory of markdown, or nothing.
-- **Bring your own model.** A validated provider registry with a primary, and twelve
-  auxiliary roles that can each point at a different endpoint and model.
+- **Bring your own model.** A validated provider registry with a primary, and
+  thirteen auxiliary roles that can each point at a different endpoint and model,
+  including a fallback role that retries a failed turn on another model.
 - **Backups that cannot leak the key.** Three members: the database, the env file of
   references, the config. The setup passphrase is excluded unconditionally.
 
@@ -70,7 +71,9 @@ The daemon already speaks to paired devices over its own API, which is what the 
 carries. Today:
 
 `/v1/pair` · `/v1/token/refresh` · `/v1/turns` · `/v1/turns/{id}/events` ·
-`/v1/turns/{id}/cancel` · `/v1/sessions/{id}`
+`/v1/turns/{id}/cancel` · `/v1/sessions/{id}` · `/v1/conversations` ·
+`/v1/approvals` · `/v1/settings` · `/v1/backups` · `/v1/devices` · `/v1/mcp` ·
+`/v1/projects` · `/v1/persona` · `/v1/audit` · `/v1/version`
 
 Pairing codes expire, device tokens are opaque and stored as salted verifiers, and a
 stolen state directory yields no usable credential.
