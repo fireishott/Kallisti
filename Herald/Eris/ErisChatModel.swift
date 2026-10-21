@@ -176,6 +176,10 @@ final class ErisChatViewModel {
     private let client: ErisClient
     /// Reports the session a turn landed in, so the daemon store can remember it.
     private let onSessionID: (@MainActor (String) -> Void)?
+    /// The conversation every turn is filed under, when this model is bound to
+    /// one. `nil` is the free-standing chat tab, where a turn is a session of its
+    /// own and the daemon writes no transcript row.
+    private let conversationID: String?
 
     /// The job id of the turn in flight, for `cancel`.
     private var currentTurnID: String?
@@ -184,15 +188,39 @@ final class ErisChatViewModel {
     /// Region state for the current turn's streamed text.
     private var classifier = ErisDeltaClassifier()
 
-    init(client: ErisClient, onSessionID: (@MainActor (String) -> Void)? = nil) {
+    init(
+        client: ErisClient,
+        onSessionID: (@MainActor (String) -> Void)? = nil,
+        conversationID: String? = nil
+    ) {
         self.client = client
         self.onSessionID = onSessionID
+        self.conversationID = conversationID
     }
+
+    /// The conversation this model writes into, when it is bound to one.
+    var boundConversationID: String? { conversationID }
 
     /// Whether the send control should be enabled for this draft.
     func canSend(_ text: String) -> Bool {
         !isStreaming && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    // MARK: Transcript
+
+    /// Replace the visible rows with a stored conversation transcript.
+    ///
+    /// Called once, before the first turn, so a reopened conversation shows what
+    /// the daemon already holds: questions, answers, the reasoning behind them and
+    /// every tool row, in the order the transcript keeps them.
+    func replaceTranscript(with detail: ErisConversationDetail) {
+        items = ErisTranscriptBuilder.items(for: detail)
+        banner = nil
+        usageLine = nil
+    }
+
+    /// Whether the transcript currently has rows on screen.
+    var hasRows: Bool { !items.isEmpty }
 
     // MARK: Send
 
@@ -220,7 +248,7 @@ final class ErisChatViewModel {
         }
 
         do {
-            let turn = try await client.createTurn(text: trimmed)
+            let turn = try await client.createTurn(text: trimmed, conversation: conversationID)
             currentTurnID = turn.jobID
             onSessionID?(turn.sessionID)
             try await consume(turnID: turn.jobID)
@@ -348,4 +376,121 @@ final class ErisChatViewModel {
         if let cached = usage.cacheReadTokens { parts.append("cached \(cached)") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
+}
+
+// MARK: - Stored transcript
+
+/// Turns a stored conversation into the rows the chat surface already renders.
+///
+/// A live turn reaches this app as `delta` text with ```thinking and ```tool
+/// fences, which `ErisDeltaClassifier` splits. A stored transcript is the same
+/// information already separated by the daemon into `reasoning`, `tools` and
+/// `body`, so it is mapped back onto the same four row kinds rather than given a
+/// second renderer. One transcript, one look.
+enum ErisTranscriptBuilder {
+    /// Build the rows for one stored conversation, oldest first.
+    ///
+    /// Per assistant row the order is thought, acted, answered: the reasoning and
+    /// the tool runs happened before the text that followed them, and reading
+    /// them in that order is what makes a failed tool call make sense.
+    static func items(for detail: ErisConversationDetail) -> [ErisChatItem] {
+        var rows: [ErisChatItem] = []
+        if detail.truncated {
+            rows.append(
+                ErisChatItem(
+                    kind: .notice,
+                    text: "Earlier messages are not in this page: the daemon bounds the transcript."
+                )
+            )
+        }
+        for message in detail.messages {
+            rows.append(contentsOf: items(for: message))
+        }
+        return rows
+    }
+
+    /// The rows one stored message produces.
+    static func items(for message: ErisConversationMessage) -> [ErisChatItem] {
+        var items: [ErisChatItem] = []
+        if !message.isUser, let reasoning = message.displayReasoning {
+            items.append(ErisChatItem(kind: .reasoning, text: reasoning + "\n"))
+        }
+        if let tools = toolRunText(message.tools) {
+            items.append(ErisChatItem(kind: .toolRun, text: tools))
+        }
+        let body = message.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !body.isEmpty {
+            items.append(
+                ErisChatItem(kind: message.isUser ? .question : .answer, text: message.body)
+            )
+        }
+        if !message.isUser, message.isFailed {
+            items.append(
+                ErisChatItem(
+                    kind: .failure,
+                    text: body.isEmpty
+                        ? "This turn failed and left no reply."
+                        : "This turn was recorded as failed."
+                )
+            )
+        }
+        return items
+    }
+
+    /// The run-log text for a message's tool calls, or `nil` when it ran none.
+    ///
+    /// One line per call, then its output indented under it: the tool row renders
+    /// every line with the same glyph, so the indent is what keeps an output from
+    /// reading like a second call.
+    static func toolRunText(_ tools: [ErisToolCall]) -> String? {
+        guard !tools.isEmpty else { return nil }
+        var lines: [String] = []
+        for tool in tools {
+            var head = tool.name
+            let arguments = compact(tool.arguments)
+            if !arguments.isEmpty {
+                head += " " + arguments
+            }
+            if tool.isError {
+                head += " (failed)"
+            }
+            lines.append(head)
+            for line in outputLines(tool.output) {
+                lines.append("  " + line)
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// The output lines of one tool call, bounded so one huge output cannot bury
+    /// the conversation. The daemon already truncates; this is the second bound,
+    /// on what a phone screen should have to lay out.
+    private static func outputLines(_ output: String) -> [String] {
+        let lines = output
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let bounded = lines.prefix(maximumOutputLines)
+        var result = Array(bounded)
+        if lines.count > maximumOutputLines {
+            result.append("… \(lines.count - maximumOutputLines) more lines")
+        }
+        return result.map { String($0.prefix(maximumLineLength)) }
+    }
+
+    /// The arguments on one line: JSON with its newlines folded away.
+    private static func compact(_ arguments: String) -> String {
+        let folded = arguments
+            .split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard !folded.isEmpty else { return "" }
+        return String(folded.prefix(maximumLineLength))
+    }
+
+    /// How many output lines one tool call may show.
+    private static let maximumOutputLines = 12
+    /// How much of one line may show.
+    private static let maximumLineLength = 240
 }

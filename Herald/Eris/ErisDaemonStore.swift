@@ -45,6 +45,10 @@ final class ErisDaemonStore {
     private(set) var isVerifying = false
     /// The conversation model for the paired daemon, once there is one.
     private(set) var chat: ErisChatViewModel?
+    /// The conversation list model for the paired daemon, once there is one.
+    private(set) var conversations: ErisConversationsModel?
+    /// The settings model for the paired daemon, once there is one.
+    private(set) var settings: ErisSettingsModel?
 
     /// Manual-entry daemon address, pre-filled from the last pairing.
     var addressText: String
@@ -220,6 +224,8 @@ final class ErisDaemonStore {
         } catch {
             phase = .unpaired
             chat = nil
+            conversations = nil
+            settings = nil
             record(error)
         }
     }
@@ -244,13 +250,35 @@ final class ErisDaemonStore {
 
     // MARK: Wiring
 
-    /// Move to paired and build the conversation model for that daemon.
+    /// Move to paired and build the models for that daemon.
+    ///
+    /// One client per daemon here, shared by every model, because the pair and the
+    /// refresh are one piece of state: two clients would each hold their own view
+    /// of the token and race each other's 401 refresh.
     private func attach(_ baseURL: URL) {
         let client = makeClient(baseURL: baseURL)
         chat = ErisChatViewModel(client: client, onSessionID: { [weak self] sessionID in
             self?.noteSession(sessionID)
         })
+        conversations = ErisConversationsModel(client: client)
+        settings = ErisSettingsModel(client: client)
         phase = .paired(baseURL)
+    }
+
+    /// A detail model for one conversation on the paired daemon.
+    ///
+    /// The surface asks for one when a row is tapped, so a transcript model only
+    /// exists while a transcript is open.
+    func detailModel(conversationID: String, title: String) -> ErisConversationDetailModel? {
+        guard let baseURL = pairedBaseURL else { return nil }
+        return ErisConversationDetailModel(
+            client: makeClient(baseURL: baseURL),
+            conversationID: conversationID,
+            title: title,
+            onSessionID: { [weak self] sessionID in
+                self?.noteSession(sessionID)
+            }
+        )
     }
 
     private func dropStoredPair() async {
@@ -258,6 +286,8 @@ final class ErisDaemonStore {
         defaults.removeObject(forKey: DefaultsKey.lastSession)
         defaults.removeObject(forKey: DefaultsKey.baseURL)
         chat = nil
+        conversations = nil
+        settings = nil
         phase = .unpaired
     }
 

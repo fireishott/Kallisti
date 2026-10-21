@@ -114,6 +114,14 @@
 		C918528FD00A8BD306C8B4C3 /* ErisChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68C81A1AE42DF9E687B620B4 /* ErisChatScreen.swift */; };
 		08157DDD25EAF57DA6E98362 /* ErisChatModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3898746A565E0F35B910B232 /* ErisChatModel.swift */; };
 		0124D1E66933CD0866E874F9 /* ErisAppSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03DF41FDAE85E6B5E5AB3350 /* ErisAppSurfaceTests.swift */; };
+		5CC1968D4A7573FC91F1903E /* ErisConversationTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5766F6EB0C39C6326BBF9E07 /* ErisConversationTypes.swift */; };
+		4EAB19C6E5CA2C509D107AA9 /* ErisConversationsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = E88B96D706351BEC7A2ADCFB /* ErisConversationsScreen.swift */; };
+		559C6631343AA3594A6CE9AA /* ErisConversationDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05B6BE55E607B4A6CA6526F /* ErisConversationDetailScreen.swift */; };
+		3E022BD3AC79A20F3F709387 /* ErisSettingsTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */; };
+		12AF708C3D024837A1AEE382 /* ErisSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9990A9A65AE576398F69813B /* ErisSettingsScreen.swift */; };
+		0E2EC05B2F0807C7FF52C94A /* ErisSurfaceTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */; };
+		92473B28B51EBDD97793D23F /* ErisFailureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B47649C62EF4369D438CA5D /* ErisFailureView.swift */; };
+		6E9D3B0996D550D86FEFE166 /* ErisDeviceAPITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29B5232149B3DA57AB5C478F /* ErisDeviceAPITests.swift */; };
 		439B65BBB9069311E5CCFE19 /* UserDefaultsAppPersistenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B875D95C20954055A8C8FC6 /* UserDefaultsAppPersistenceStore.swift */; };
 		43DC29D5EF9B7F282E084369 /* KallistiActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DB1E3952A4C703165E80A4C /* KallistiActivityAttributes.swift */; };
 		444CF386B72E96CD470EEC7E /* LiveInboxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEA5308BC6B8AC2338133CE4 /* LiveInboxService.swift */; };
@@ -528,6 +536,14 @@
 		68C81A1AE42DF9E687B620B4 /* ErisChatScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisChatScreen.swift; sourceTree = "<group>"; };
 		3898746A565E0F35B910B232 /* ErisChatModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisChatModel.swift; sourceTree = "<group>"; };
 		03DF41FDAE85E6B5E5AB3350 /* ErisAppSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisAppSurfaceTests.swift; sourceTree = "<group>"; };
+		5766F6EB0C39C6326BBF9E07 /* ErisConversationTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisConversationTypes.swift; sourceTree = "<group>"; };
+		E88B96D706351BEC7A2ADCFB /* ErisConversationsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisConversationsScreen.swift; sourceTree = "<group>"; };
+		F05B6BE55E607B4A6CA6526F /* ErisConversationDetailScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisConversationDetailScreen.swift; sourceTree = "<group>"; };
+		1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSettingsTypes.swift; sourceTree = "<group>"; };
+		9990A9A65AE576398F69813B /* ErisSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSettingsScreen.swift; sourceTree = "<group>"; };
+		E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSurfaceTabs.swift; sourceTree = "<group>"; };
+		2B47649C62EF4369D438CA5D /* ErisFailureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisFailureView.swift; sourceTree = "<group>"; };
+		29B5232149B3DA57AB5C478F /* ErisDeviceAPITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisDeviceAPITests.swift; sourceTree = "<group>"; };
 		2A6239CAEC02D15C4FB3C6B1 /* ResilientInboxService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResilientInboxService.swift; sourceTree = "<group>"; };
 		2B875D95C20954055A8C8FC6 /* UserDefaultsAppPersistenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsAppPersistenceStore.swift; sourceTree = "<group>"; };
 		2C81D00ED6092082696BE8E6 /* KallistiWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KallistiWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1020,6 +1036,13 @@
 				0A853B1C0BAF89A834FF276C /* ErisQRScannerView.swift */,
 				A7F6B0D5E8C39062D375B597 /* ErisTokenStore.swift */,
 				A1E0C4D9F2B74A0C8D1E5F31 /* ErisTypes.swift */,
+				5766F6EB0C39C6326BBF9E07 /* ErisConversationTypes.swift */,
+				E88B96D706351BEC7A2ADCFB /* ErisConversationsScreen.swift */,
+				F05B6BE55E607B4A6CA6526F /* ErisConversationDetailScreen.swift */,
+				1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */,
+				9990A9A65AE576398F69813B /* ErisSettingsScreen.swift */,
+				E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */,
+				2B47649C62EF4369D438CA5D /* ErisFailureView.swift */,
 			);
 			path = Eris;
 			sourceTree = "<group>";
@@ -1137,6 +1160,7 @@
 				DF669296D5FC6FE36B05D26A /* DuplicateReplyMergeTests.swift */,
 				03DF41FDAE85E6B5E5AB3350 /* ErisAppSurfaceTests.swift */,
 				CA6E3A8B1125C39506A8E8CA /* ErisTransportTests.swift */,
+				29B5232149B3DA57AB5C478F /* ErisDeviceAPITests.swift */,
 				14712CF053F3F00A6AD2186E /* GatewayFrameContractTests.swift */,
 				4E737B312188719D2E4CE6DB /* HealthServiceTests.swift */,
 				DDF0DDDCAACDC1137100E68C /* HeraldThemeTests.swift */,
@@ -2042,6 +2066,13 @@
 				C918528FD00A8BD306C8B4C3 /* ErisChatScreen.swift in Sources */,
 				08157DDD25EAF57DA6E98362 /* ErisChatModel.swift in Sources */,
 				B2F1D5E0A3C84B1D9E2F6042 /* ErisTypes.swift in Sources */,
+				5CC1968D4A7573FC91F1903E /* ErisConversationTypes.swift in Sources */,
+				4EAB19C6E5CA2C509D107AA9 /* ErisConversationsScreen.swift in Sources */,
+				559C6631343AA3594A6CE9AA /* ErisConversationDetailScreen.swift in Sources */,
+				3E022BD3AC79A20F3F709387 /* ErisSettingsTypes.swift in Sources */,
+				12AF708C3D024837A1AEE382 /* ErisSettingsScreen.swift in Sources */,
+				0E2EC05B2F0807C7FF52C94A /* ErisSurfaceTabs.swift in Sources */,
+				92473B28B51EBDD97793D23F /* ErisFailureView.swift in Sources */,
 				79D006106865B65A82FFB7C6 /* LaunchState.swift in Sources */,
 				DA12F12A3FF56F864E78EF18 /* LegacySpeechService.swift in Sources */,
 				ACB9C952A783CA20BEDB4594 /* LiveActivityPreviews.swift in Sources */,
@@ -2240,6 +2271,7 @@
 				DEADF861027E017C11A2A203 /* DuplicateReplyMergeTests.swift in Sources */,
 				0124D1E66933CD0866E874F9 /* ErisAppSurfaceTests.swift in Sources */,
 				DB7F4B9C2236D4A617B9F9DB /* ErisTransportTests.swift in Sources */,
+				6E9D3B0996D550D86FEFE166 /* ErisDeviceAPITests.swift in Sources */,
 				05B1AD8D8D94B2481122876D /* GatewayFrameContractTests.swift in Sources */,
 				BC0085D01D3F5ED559A24DE4 /* HealthServiceTests.swift in Sources */,
 				3351749A6B9E775B55A55484 /* HeraldThemeTests.swift in Sources */,

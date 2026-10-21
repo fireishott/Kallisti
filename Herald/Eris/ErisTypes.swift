@@ -92,17 +92,24 @@ struct ErisTurn: Equatable, Sendable, Decodable {
     let sessionID: String
     /// Job state at the moment the turn was accepted (`queued`).
     let state: String
+    /// The conversation this turn was filed under, when the request named one.
+    ///
+    /// The handler echoes the same value it validated, so a client that sent a
+    /// conversation id can confirm the turn landed in the transcript it meant.
+    let conversationID: String?
 
     private enum CodingKeys: String, CodingKey {
         case jobID = "job_id"
         case sessionID = "session_id"
         case state
+        case conversationID = "conversation_id"
     }
 
-    init(jobID: String, sessionID: String, state: String) {
+    init(jobID: String, sessionID: String, state: String, conversationID: String? = nil) {
         self.jobID = jobID
         self.sessionID = sessionID
         self.state = state
+        self.conversationID = conversationID
     }
 
     init(from decoder: any Decoder) throws {
@@ -116,7 +123,8 @@ struct ErisTurn: Equatable, Sendable, Decodable {
         self.init(
             jobID: jobID,
             sessionID: sessionID,
-            state: try container.decodeIfPresent(String.self, forKey: .state) ?? "queued"
+            state: try container.decodeIfPresent(String.self, forKey: .state) ?? "queued",
+            conversationID: try container.decodeIfPresent(String.self, forKey: .conversationID)
         )
     }
 }
@@ -367,6 +375,31 @@ enum ErisError: Error, Equatable, Sendable, LocalizedError {
     /// Whether this failure is the daemon saying "refresh and try again".
     var isUnauthorized: Bool {
         status == 401
+    }
+
+    /// Whether the token is real but not allowed to do this.
+    ///
+    /// `403` is the daemon's `scope_denied`: the pair is valid, so retrying with
+    /// the same token can only fail the same way. A screen that gets this must
+    /// explain the scope rather than offer a retry that cannot work.
+    var isForbidden: Bool {
+        status == 403
+    }
+
+    /// Whether the missing scope is `admin`, which is the settings and approvals
+    /// case and the only one with a fix the operator can act on.
+    var isAdminScopeDenied: Bool {
+        status == 403 && code == "scope_denied"
+    }
+
+    /// Whether the request never reached an HTTP answer.
+    ///
+    /// Distinct from every server answer on purpose: the daemon being unreachable
+    /// says nothing about the credential, so the pair is kept and retrying is a
+    /// reasonable thing to offer.
+    var isTransport: Bool {
+        if case .transport = self { return true }
+        return false
     }
 
     var errorDescription: String? {

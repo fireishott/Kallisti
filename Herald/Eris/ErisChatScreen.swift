@@ -11,6 +11,12 @@ import SwiftUI
 struct ErisChatScreen: View {
     let store: ErisDaemonStore
     let model: ErisChatViewModel
+    /// Whether the Forget control is offered.
+    ///
+    /// The free-standing chat tab offers it. The conversation detail screen does
+    /// not: it has its own back control, and unpairing the daemon from inside a
+    /// transcript would be a trap rather than a convenience.
+    var showsForget: Bool = true
 
     @State private var draft = ""
     @FocusState private var isComposerFocused: Bool
@@ -24,12 +30,14 @@ struct ErisChatScreen: View {
         }
         .background(Design.Colors.background.ignoresSafeArea())
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Forget", role: .destructive) {
-                    Task { await store.forget() }
+            if showsForget {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Forget", role: .destructive) {
+                        Task { await store.forget() }
+                    }
+                    .font(Design.Typography.footnote)
+                    .accessibilityIdentifier("eris.forgetFromChat")
                 }
-                .font(Design.Typography.footnote)
-                .accessibilityIdentifier("eris.forgetFromChat")
             }
         }
     }
@@ -92,12 +100,16 @@ struct ErisChatScreen: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xs) {
-            Text("Eris is paired")
+            Text(model.boundConversationID == nil ? "Eris is paired" : "Nothing said here yet")
                 .font(Design.Typography.sectionTitle)
                 .foregroundStyle(Design.Colors.foreground)
-            Text("Send a message to start the first turn.")
-                .font(Design.Typography.footnote)
-                .foregroundStyle(Design.Colors.secondaryForeground)
+            Text(
+                model.boundConversationID == nil
+                    ? "Send a message to start the first turn."
+                    : "Send a message and it is filed under this conversation."
+            )
+            .font(Design.Typography.footnote)
+            .foregroundStyle(Design.Colors.secondaryForeground)
         }
         .padding(Design.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)

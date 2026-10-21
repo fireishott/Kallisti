@@ -6,9 +6,10 @@ import Foundation
 ///
 /// The paths are literals from `crates/eris-host/src/device/mod.rs`
 /// (`ROUTE_PAIR`, `ROUTE_REFRESH`, `ROUTE_TURNS`, `ROUTE_EVENTS`,
-/// `ROUTE_CANCEL`, `ROUTE_SESSION`). Every one of them lives under `/v1`; the
-/// listener answers a typed 404 for anything else, so a path typo is a hard
-/// failure rather than a fallback surprise.
+/// `ROUTE_CANCEL`, `ROUTE_SESSION`, `ROUTE_PROJECTS`, `ROUTE_CONVERSATIONS`,
+/// `ROUTE_CONVERSATION`, `ROUTE_CONVERSATION_CLEAR`, `ROUTE_SETTINGS`). Every one
+/// of them lives under `/v1`; the listener answers a typed 404 for anything else,
+/// so a path typo is a hard failure rather than a fallback surprise.
 enum ErisRoute: Equatable, Sendable {
     /// `POST /v1/pair` - redeem a pairing code.
     case pair
@@ -22,6 +23,23 @@ enum ErisRoute: Equatable, Sendable {
     case cancel(turnID: String)
     /// `GET /v1/sessions/{id}` - the snapshot a `buffer_miss` points at.
     case session(sessionID: String)
+    /// `GET /v1/conversations` - the newest conversations, newest first.
+    case conversations
+    /// `POST /v1/conversations` - start an empty conversation.
+    ///
+    /// A case of its own because the router binds two verbs to one path and
+    /// [`method`] is total: one case, one verb.
+    case createConversation
+    /// `GET /v1/conversations/{id}` - one conversation and its transcript.
+    case conversation(conversationID: String)
+    /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
+    case clearConversation(conversationID: String)
+    /// `GET /v1/settings` - the operator-facing settings snapshot.
+    case settings
+    /// `POST /v1/settings` - change a subset of those settings.
+    case updateSettings
+    /// `GET /v1/projects` - the names a conversation's `project_id` points at.
+    case projects
 
     /// The request path, with ids percent-encoded so one id cannot escape its
     /// path segment.
@@ -39,15 +57,25 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/turns/\(Self.segment(turnID))/cancel"
         case .session(let sessionID):
             return "/v1/sessions/\(Self.segment(sessionID))"
+        case .conversations, .createConversation:
+            return "/v1/conversations"
+        case .conversation(let conversationID):
+            return "/v1/conversations/\(Self.segment(conversationID))"
+        case .clearConversation(let conversationID):
+            return "/v1/conversations/\(Self.segment(conversationID))/clear"
+        case .settings, .updateSettings:
+            return "/v1/settings"
+        case .projects:
+            return "/v1/projects"
         }
     }
 
     /// The HTTP method the daemon's router binds this path to.
     var method: String {
         switch self {
-        case .events, .session:
+        case .events, .session, .conversations, .conversation, .settings, .projects:
             return "GET"
-        case .pair, .tokenRefresh, .turns, .cancel:
+        case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings:
             return "POST"
         }
     }
@@ -160,12 +188,24 @@ actor ErisClient {
     ///
     /// The response arrives before the provider is called, so this returns as
     /// soon as the job exists; the text comes from `events(turnID:)`.
-    func createTurn(text: String) async throws -> ErisTurn {
+    ///
+    /// `conversation` is the optional field the handler reads to make this turn a
+    /// transcript row pair instead of a session of its own. A conversation id the
+    /// daemon does not hold is refused here, before anything is written, so a
+    /// refused turn never leaves half a conversation behind.
+    func createTurn(text: String, conversation: String? = nil) async throws -> ErisTurn {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw ErisError.server(status: 400, code: "text_required", message: "the turn text must not be empty")
         }
-        let data = try await send(route: .turns, form: ["text": trimmed])
+        var form = ["text": trimmed]
+        if let conversation {
+            let trimmedID = conversation.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedID.isEmpty {
+                form["conversation"] = trimmedID
+            }
+        }
+        let data = try await send(route: .turns, form: form)
         return try decode(ErisTurn.self, from: data)
     }
 
@@ -200,6 +240,82 @@ actor ErisClient {
     func session(sessionID: String) async throws -> ErisSession {
         let data = try await send(route: .session(sessionID: sessionID), form: nil)
         return try decode(ErisSession.self, from: data)
+    }
+
+    // MARK: Conversations
+
+    /// `GET /v1/conversations` - the newest conversations, newest first.
+    ///
+    /// `truncated` in the answer is the daemon saying it cut the page, which is a
+    /// fact the client has to be able to state rather than a silent cap.
+    func conversations() async throws -> ErisConversationPage {
+        let data = try await send(route: .conversations, form: nil)
+        return try decode(ErisConversationPage.self, from: data)
+    }
+
+    /// `POST /v1/conversations` - start an empty conversation, `201` with its id.
+    ///
+    /// The route takes no body: the daemon names it with the same placeholder the
+    /// browser uses, and the first question renames it through the same code.
+    func createConversation() async throws -> ErisCreatedConversation {
+        let data = try await send(route: .createConversation, form: nil)
+        return try decode(ErisCreatedConversation.self, from: data)
+    }
+
+    /// `GET /v1/conversations/{id}` - one conversation and its stored transcript.
+    ///
+    /// An id the daemon does not hold is a typed 404 (`conversation_not_found`),
+    /// not an empty transcript, so "gone" and "nothing said yet" stay distinct.
+    func conversation(id: String) async throws -> ErisConversationDetail {
+        let data = try await send(route: .conversation(conversationID: id), form: nil)
+        return try decode(ErisConversationDetail.self, from: data)
+    }
+
+    /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
+    ///
+    /// Returns how many messages the daemon dropped. The conversation row itself
+    /// stays: clearing a conversation is not deleting it.
+    func clearConversation(id: String) async throws -> Int {
+        let data = try await send(route: .clearConversation(conversationID: id), form: nil)
+        return try decode(ErisClearResult.self, from: data).cleared
+    }
+
+    /// `GET /v1/projects` - the project list, so `project_id` can be shown as a
+    /// name. The conversation list carries ids only.
+    func projects() async throws -> [ErisProjectSummary] {
+        let data = try await send(route: .projects, form: nil)
+        return try decode(ErisProjectList.self, from: data).projects
+    }
+
+    // MARK: Settings
+
+    /// `GET /v1/settings` - the operator-facing snapshot.
+    ///
+    /// Needs the `admin` scope. A device paired from a code minted without the
+    /// administration box gets a typed `403 scope_denied` whose message is the
+    /// daemon's own sentence about the pairing code; that message is what the
+    /// settings screen shows, because it is more accurate than anything a client
+    /// could invent here.
+    func settings() async throws -> ErisSettingsSnapshot {
+        let data = try await send(route: .settings, form: nil)
+        return try decode(ErisSettingsSnapshot.self, from: data)
+    }
+
+    /// `POST /v1/settings` - write the subset of settings that actually changed.
+    ///
+    /// An empty patch is refused here rather than sent: the daemon answers an
+    /// empty body with `400 settings_empty`, and a client that knows it changed
+    /// nothing has no reason to make the daemon say so.
+    func updateSettings(_ patch: ErisSettingsPatch) async throws -> [String] {
+        guard !patch.isEmpty else {
+            throw ErisError.server(
+                status: 400,
+                code: "settings_empty",
+                message: "nothing changed, so nothing was sent"
+            )
+        }
+        let data = try await send(route: .updateSettings, form: patch.fields)
+        return try decode(ErisSettingsUpdate.self, from: data).changed
     }
 
     // MARK: Streaming

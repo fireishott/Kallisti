@@ -3,23 +3,23 @@ import SwiftUI
 // MARK: - Eris surface
 //
 // The one settings entry point for the Eris daemon. It shows the pairing form
-// when this device has no usable pair and the chat surface when it does, so the
-// same route serves first pairing, re-pairing after an expiry, and a relaunch
-// that lands straight back in chat.
+// when this device has no usable pair and the paired surface (chat,
+// conversations, settings) when it does, so the same route serves first pairing,
+// re-pairing after an expiry, and a relaunch that lands straight back in.
 //
 // Camera denial is not a dead end: the manual fields are always on the form, and
 // the scanner sheet explains itself and offers the same fallback.
 
-/// Routed entry: pairing when unpaired, chat when paired.
+/// Routed entry: pairing when unpaired, the paired surface when paired.
 struct ErisSurfaceScreen: View {
     @State private var store = ErisDaemonStore()
     @State private var isScannerPresented = false
 
     var body: some View {
         Group {
-            if let chat = store.chat, let baseURL = store.pairedBaseURL {
-                ErisChatScreen(store: store, model: chat)
-                    // A different daemon is a different conversation.
+            if store.chat != nil, let baseURL = store.pairedBaseURL {
+                ErisPairedSurface(store: store)
+                    // A different daemon is a different surface.
                     .id(baseURL.absoluteString)
             } else {
                 ErisPairingForm(store: store, isScannerPresented: $isScannerPresented)
