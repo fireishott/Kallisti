@@ -33,6 +33,11 @@ pub const COOKIE_NAME: &str = "kallisti_admin";
 /// How long one admin session lives before it has to be minted again.
 pub const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 
+/// How long a "keep me signed in" session lives: thirty days, so a trusted
+/// device or a browser on the LAN/tailnet is asked for the passphrase once a
+/// month instead of twice a day.
+pub const PERSISTENT_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 /// Bytes of randomness in a session secret.
 pub const SECRET_BYTES: usize = 32;
 
@@ -116,11 +121,23 @@ impl AdminSessions {
 
     /// Mint one session and return the cookie value exactly once.
     pub fn mint(&self) -> Result<MintedSession, SessionError> {
+        self.mint_with(SESSION_TTL)
+    }
+
+    /// Mint a "keep me signed in" session: same shape, thirty days instead of
+    /// twelve hours.
+    pub fn mint_persistent(&self) -> Result<MintedSession, SessionError> {
+        self.mint_with(PERSISTENT_TTL)
+    }
+
+    /// The shared mint, parameterised by lifetime so the two callers differ only
+    /// in how long the row lives.
+    fn mint_with(&self, ttl: Duration) -> Result<MintedSession, SessionError> {
         let id = uuid::Uuid::now_v7().to_string();
         let secret = auth::random_bytes::<SECRET_BYTES>()?;
         let hex_secret = hex::encode(secret);
         let verifier = auth::hash_secret(hex_secret.as_bytes())?;
-        let expires_at = auth::now() + time::Duration::seconds(SESSION_TTL.as_secs() as i64);
+        let expires_at = auth::now() + time::Duration::seconds(ttl.as_secs() as i64);
 
         self.db.with_conn(|conn| {
             conn.execute(
@@ -211,10 +228,9 @@ impl AdminSessions {
 /// HTTP, where a `Secure` cookie would never be stored. `HttpOnly` and
 /// `SameSite=Strict` are not negotiable: this cookie is the whole admin surface.
 #[must_use]
-pub fn set_cookie_header(cookie_value: &str, secure: bool) -> String {
+pub fn set_cookie_header(cookie_value: &str, secure: bool, max_age_secs: u64) -> String {
     format!(
-        "{COOKIE_NAME}={cookie_value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}{}",
-        SESSION_TTL.as_secs(),
+        "{COOKIE_NAME}={cookie_value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age_secs}{}",
         if secure { "; Secure" } else { "" }
     )
 }
@@ -355,7 +371,7 @@ mod tests {
 
     #[test]
     fn the_cookie_attributes_are_the_documented_ones() {
-        let header = set_cookie_header("id.secret", false);
+        let header = set_cookie_header("id.secret", false, SESSION_TTL.as_secs());
         assert!(header.contains("HttpOnly"));
         assert!(header.contains("SameSite=Strict"));
         assert!(header.contains("Path=/"));
@@ -363,13 +379,22 @@ mod tests {
             !header.contains("Secure"),
             "Secure would be dropped over loopback HTTP and lock the operator out"
         );
+        assert!(
+            header.contains(&format!("Max-Age={}", SESSION_TTL.as_secs())),
+            "the short session lives exactly its TTL: {header}"
+        );
         assert!(clear_cookie_header().contains("Max-Age=0"));
 
-        // The same cookie over https carries Secure, because the browser will
-        // only send it back on that scheme.
-        let secure = set_cookie_header("id.secret", true);
-        assert!(secure.contains("; Secure"), "{secure}");
-        assert!(secure.contains("HttpOnly"), "{secure}");
+        // A persistent session asks for a much longer cookie, and over https it
+        // also carries Secure because the browser only sends it back on that
+        // scheme.
+        let remember = set_cookie_header("id.secret", true, PERSISTENT_TTL.as_secs());
+        assert!(remember.contains("; Secure"), "{remember}");
+        assert!(remember.contains("HttpOnly"), "{remember}");
+        assert!(
+            remember.contains(&format!("Max-Age={}", PERSISTENT_TTL.as_secs())),
+            "the remembered session lives thirty days: {remember}"
+        );
     }
 
     #[test]

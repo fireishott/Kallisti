@@ -1296,6 +1296,12 @@ pub fn login_page(state: SetupState, error: Option<&FormError>, chrome: &Chrome)
                             "The passphrase you chose during onboarding: six words, separated by spaces."
                         }
                     }
+                    div .field {
+                        label for="remember" {
+                            input type="checkbox" id="remember" name="remember" value="true";
+                            " Keep me signed in on this device for 30 days."
+                        }
+                    }
                     div .actions {
                         button type="submit" { "Sign in" }
                     }
@@ -4893,9 +4899,84 @@ const CHAT_JS: &str = r##"(function () {
     }
   }
 
+  // A message that starts with a slash is a command, and a command is answered
+  // by the daemon rather than streamed by a model. It goes out as one small form
+  // post because the frame it answers with says which conversation the answer
+  // landed in: `/new` creates one, so the page has to be told where it now is
+  // instead of being left on the conversation the command has just left.
+  async function command(text) {
+    var shell = document.querySelector(".chat-shell");
+    var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
+    var body = new URLSearchParams();
+    body.append("message", text);
+    body.append("conversation", conversation);
+    box.value = "";
+    setBusy(true);
+    try {
+      var response = await fetch("/dashboard/chat/send", {
+        method: "POST",
+        headers: {
+          "Accept": "text/event-stream",
+          "Content-Type": "application/x-www-form-url" + "-urlencoded"
+        },
+        body: body
+      });
+      if (response.ok === false) {
+        throw new Error("HTTP " + response.status);
+      }
+      // The frame is read with the same parser the answer uses, so a command and
+      // a turn arrive as one kind of thing. No reader in this browser, no frame:
+      // the plain form is the fallback, and it renders the answer itself.
+      if (response.body === null || typeof response.body.getReader === "undefined") {
+        setBusy(false);
+        form.submit();
+        return;
+      }
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = "";
+      var running = true;
+      while (running) {
+        var chunk = await reader.read();
+        if (chunk.done) { running = false; break; }
+        buffer += decoder.decode(chunk.value, { stream: true });
+        var frames = buffer.split("\n\n");
+        buffer = frames.pop();
+        for (var index = 0; index < frames.length; index += 1) {
+          var parsed = parseFrame(frames[index]);
+          if (parsed.event === "command") {
+            var done = JSON.parse(parsed.data);
+            // The answer is in a transcript already, so the page goes to the
+            // conversation it belongs to and reads it there. A command that did
+            // not move is a plain reload: the row is what the operator came for.
+            if (done.url && (done.url === window.location.pathname) === false) {
+              window.location.assign(done.url);
+              return;
+            }
+            window.location.reload();
+            return;
+          }
+        }
+      }
+    } catch (error) {
+      // A command that could not be delivered is not a command that ran, so the
+      // words go back into the box rather than disappearing.
+      if (status) { status.textContent = "that command did not go through"; }
+      box.value = text;
+    }
+    setBusy(false);
+    box.focus();
+  }
+
   async function send() {
     var text = box.value.trim();
     if (text === "") { return; }
+    // A command is decided first, mid-turn or not: it is not text to steer with,
+    // and the daemon answers it whether or not a turn is running.
+    if (text.charAt(0) === "/" && text.length > 1) {
+      await command(text);
+      return;
+    }
     if (busy) {
       await steer(text);
       return;

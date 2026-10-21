@@ -347,6 +347,38 @@ fn a_correct_passphrase_sets_a_cookie_and_opens_the_dashboard() {
 }
 
 #[test]
+fn remember_mints_a_thirty_day_cookie_and_the_default_stays_short() {
+    let (_dir, engine, passphrase) = ready_engine();
+    let app = router_with(AppState::new(engine, false));
+
+    let remembered = block_on(send(
+        &app,
+        Call::post(
+            ROUTE_LOGIN,
+            &format!("passphrase={}&remember=true", encode(&passphrase)),
+        ),
+    ));
+    assert_eq!(remembered.status, StatusCode::SEE_OTHER);
+    let cookie = remembered.set_cookie().expect("login sets the session cookie");
+    assert!(
+        cookie.contains(&format!("Max-Age={}", crate::onboarding::session::PERSISTENT_TTL.as_secs())),
+        "a remembered session lives thirty days: {cookie}"
+    );
+
+    // The default (no checkbox) is the short session, so ticking the box is what
+    // opts a device into persistence.
+    let ordinary = block_on(send(
+        &app,
+        Call::post(ROUTE_LOGIN, &format!("passphrase={}", encode(&passphrase))),
+    ));
+    let short = ordinary.set_cookie().expect("login sets the session cookie");
+    assert!(
+        short.contains(&format!("Max-Age={}", crate::onboarding::session::SESSION_TTL.as_secs())),
+        "the default session stays short: {short}"
+    );
+}
+
+#[test]
 fn a_wrong_passphrase_is_401_and_sets_no_cookie() {
     let (_dir, engine, _passphrase) = ready_engine();
     let app = router_with(AppState::new(engine, false));

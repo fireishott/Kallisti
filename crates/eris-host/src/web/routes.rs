@@ -188,6 +188,18 @@ fn wants_html(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.to_ascii_lowercase().contains("text/html"))
 }
 
+/// Whether the composer's script asked for the event stream.
+///
+/// One question with two readers: a turn streams its answer over it, and a
+/// command uses it to answer in a frame the page can act on rather than in a
+/// redirect a `fetch` would swallow.
+fn wants_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
+}
+
 /// The status a refusal deserves. Every code not listed is a field error.
 fn failure_status(code: &str) -> StatusCode {
     match code {
@@ -1775,9 +1787,14 @@ async fn login(
         return login_refusal(&state, as_html, login_error(&error));
     }
 
-    // Minted exactly as the claim step mints it: one row, one cookie, and the
-    // secret exists only in this response.
-    let minted = match state.sessions.mint() {
+    // "Keep me signed in" mints the thirty-day session; the default stays the
+    // short one. Both go through the same mint, only the lifetime differs.
+    let remember = matches!(field(&fields, "remember").trim(), "on" | "true" | "1");
+    let minted = match if remember {
+        state.sessions.mint_persistent()
+    } else {
+        state.sessions.mint()
+    } {
         Ok(minted) => minted,
         Err(error) => {
             return ApiError::internal(
@@ -1791,8 +1808,8 @@ async fn login(
         state.db(),
         &context.actor(),
         "admin.signed_in",
-        Some(if context.trusted {
-            "login via trusted proxy"
+        Some(if remember {
+            "login direct (remember this device)"
         } else {
             "login direct"
         }),
@@ -1803,8 +1820,16 @@ async fn login(
         )
         .into_response();
     }
-    let cookie =
-        session::set_cookie_header(&minted.cookie_value, state.access.cookie_secure(&context));
+    let max_age_secs = if remember {
+        session::PERSISTENT_TTL.as_secs()
+    } else {
+        session::SESSION_TTL.as_secs()
+    };
+    let cookie = session::set_cookie_header(
+        &minted.cookie_value,
+        state.access.cookie_secure(&context),
+        max_age_secs,
+    );
     // Signing in lands on the conversation. A control panel as the landing page
     // made chat reachable only through a menu, which is a dead end for the one
     // thing an operator came to do.
@@ -1948,8 +1973,11 @@ async fn claim(
         )
         .into_response();
     }
-    let cookie =
-        session::set_cookie_header(&minted.cookie_value, state.access.cookie_secure(&context));
+    let cookie = session::set_cookie_header(
+        &minted.cookie_value,
+        state.access.cookie_secure(&context),
+        session::SESSION_TTL.as_secs(),
+    );
     let mut response = if as_html {
         see_other("/setup")
     } else {
@@ -4650,6 +4678,13 @@ fn see_other_owned(location: String) -> Response {
 /// invent a second place to put it. `append` with [`chat::State::Complete`] says
 /// the text is whole already, which it is.
 ///
+/// When the request asked for the event stream the answer is framed as one
+/// `command` event instead of a redirect, because a page that posted with `fetch`
+/// never sees a 303: it would follow it internally and leave the operator looking
+/// at the conversation the command has just left. `/new` is exactly that case, and
+/// the frame carries the conversation the answer landed in so the page can move
+/// to it without a second request.
+///
 /// A refusal is answered the same way rather than as a failed request. The command
 /// was handled, and "that model id is not in the list" is the answer to it, not an
 /// error in the form: the operator typed a command, and the transcript is where
@@ -4659,6 +4694,7 @@ fn run_command(
     requested: &str,
     command: &crate::commands::Command,
     request_id: &str,
+    streamed: bool,
 ) -> Response {
     let db = state.engine.db().clone();
     // Resolved before the match: every command but `/new` answers into the
@@ -4704,9 +4740,31 @@ fn run_command(
         &text,
         chat::State::Complete,
     ) {
+        Ok(_) if streamed => command_frame(&conversation, &text),
         Ok(_) => see_other_owned(conversation_path(&conversation)),
         Err(error) => refusal(FormError::new(None, "chat_write_failed", error.to_string())),
     }
+}
+
+/// The one frame a command answers with on the event stream.
+///
+/// It carries the conversation and the text, which is everything the page needs
+/// to say what happened and, for `/new`, to carry on in the conversation the
+/// command created. `url` is the same path the plain form's redirect would have
+/// gone to, so the script has one value to follow and the page has one shape.
+fn command_frame(conversation: &str, text: &str) -> Response {
+    let event = SseEvent::default().event("command").data(
+        serde_json::json!({
+            "conversation": conversation,
+            "url": conversation_path(conversation),
+            "text": text,
+        })
+        .to_string(),
+    );
+    let stream = tokio_stream::iter(vec![Ok::<SseEvent, Infallible>(event)]);
+    Sse::new(stream)
+        .keep_alive(SseKeepAlive::default())
+        .into_response()
 }
 
 /// The audit detail for one command: the name and the argument it carried.
@@ -5000,6 +5058,7 @@ async fn chat_send(
             field(&fields, "conversation"),
             &command,
             &request_id.0,
+            wants_stream(&headers),
         );
     }
 
@@ -5147,12 +5206,7 @@ async fn chat_send(
         }
     }
 
-    let streaming = headers
-        .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"));
-
-    if !streaming {
+    if !wants_stream(&headers) {
         let task = spawn_turn(
             &state,
             config,
