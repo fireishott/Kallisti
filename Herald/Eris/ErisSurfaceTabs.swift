@@ -1,21 +1,14 @@
 import SwiftUI
 
-// MARK: - Paired surface
+// MARK: - Full paired surface
 //
-// A paired device lands here instead of on the pairing form. Four lanes over one
-// daemon, presented as a themed tab bar - the Kallisti face - rather than a bare
-// segmented picker:
-//
-//   Chat           turns, streamed
-//   Conversations  stored transcripts, readable and continuable
-//   Approvals      the calls parked for a person, answerable (admin scope only)
-//   Settings       model, sandbox, memory, approval (admin scope only)
-//
-// Approvals and Settings are admin scope: a device paired from a code minted
-// without the administration box gets the daemon's own 403 scope_denied sentence
-// rather than a screen that pretends to work.
+// The complete Kallisti frontend over the Eris daemon - the full tab structure
+// and identity, not a reduced shell. Chat is live over Eris (/v1/turns + SSE).
+// Senses, Settings, Permissions and Approvals are wired to Eris or local iOS.
+// Inbox, Talk and Notes have no Eris route yet, so their tabs are fully present
+// but clearly marked pending-backend rather than silently removed.
 
-/// The paired surface: four themed tabs over one daemon.
+/// The paired surface: five tabs over one daemon.
 struct ErisPairedSurface: View {
     let store: ErisDaemonStore
 
@@ -24,13 +17,15 @@ struct ErisPairedSurface: View {
     /// The conversation whose transcript is open, if any. Held here so switching
     /// tabs and back does not throw the transcript model away mid-turn.
     @State private var openConversation: ErisConversationDetailModel?
+    /// Whether the session drawer (the conversation browser) is presented.
+    @State private var isSessionDrawerOpen = false
 
-    /// The lanes the device listener serves.
+    /// The tabs the app exposes.
     enum Lane: String, CaseIterable, Identifiable, Hashable {
         case chat
-        case conversations
-        case senses
-        case approvals
+        case inbox
+        case talk
+        case notes
         case settings
 
         var id: String { rawValue }
@@ -38,9 +33,9 @@ struct ErisPairedSurface: View {
         var title: String {
             switch self {
             case .chat: return "Chat"
-            case .conversations: return "Conversations"
-            case .senses: return "Senses"
-            case .approvals: return "Approvals"
+            case .inbox: return "Inbox"
+            case .talk: return "Talk"
+            case .notes: return "Notes"
             case .settings: return "Settings"
             }
         }
@@ -48,9 +43,9 @@ struct ErisPairedSurface: View {
         var icon: String {
             switch self {
             case .chat: return "bubble.left.and.bubble.right"
-            case .conversations: return "list.bullet.rectangle"
-            case .senses: return "heart.text.square"
-            case .approvals: return "checkmark.seal"
+            case .inbox: return "tray"
+            case .talk: return "waveform"
+            case .notes: return "pencil.and.outline"
             case .settings: return "gearshape"
             }
         }
@@ -59,9 +54,9 @@ struct ErisPairedSurface: View {
     var body: some View {
         TabView(selection: $lane) {
             chatTab.tag(Lane.chat)
-            conversationsTab.tag(Lane.conversations)
-            sensesTab.tag(Lane.senses)
-            approvalsTab.tag(Lane.approvals)
+            inboxTab.tag(Lane.inbox)
+            talkTab.tag(Lane.talk)
+            notesTab.tag(Lane.notes)
             settingsTab.tag(Lane.settings)
         }
         .tint(Design.Brand.accent)
@@ -71,99 +66,222 @@ struct ErisPairedSurface: View {
         .toolbarColorScheme(.dark, for: .tabBar)
     }
 
-    // MARK: Tabs
+    // MARK: Chat (live over Eris)
 
     @ViewBuilder
     private var chatTab: some View {
         NavigationStack {
             if let chat = store.chat {
                 ErisChatScreen(store: store, model: chat)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button {
+                                isSessionDrawerOpen = true
+                            } label: {
+                                Label("Sessions", systemImage: "sidebar.left")
+                                    .font(Design.Typography.footnote)
+                            }
+                            .accessibilityIdentifier("eris.sessions")
+                        }
+                    }
             } else {
                 missingModel("chat")
             }
         }
         .tabItem { Label(Lane.chat.title, systemImage: Lane.chat.icon) }
-    }
-
-    @ViewBuilder
-    private var conversationsTab: some View {
-        NavigationStack {
-            conversations
+        .sheet(isPresented: $isSessionDrawerOpen) {
+            sessionDrawer
         }
-        .tabItem { Label(Lane.conversations.title, systemImage: Lane.conversations.icon) }
     }
 
+    /// The session drawer: the conversation browser, or one open transcript.
     @ViewBuilder
-    private var sensesTab: some View {
+    private var sessionDrawer: some View {
         NavigationStack {
-            if let senses = store.senses {
-                ErisSensesScreen(model: senses)
+            if let detail = openConversation {
+                ErisConversationDetailScreen(
+                    store: store,
+                    model: detail,
+                    onBack: {
+                        openConversation = nil
+                        Task { await store.conversations?.load() }
+                    }
+                )
+                .id(detail.conversationID)
+            } else if let model = store.conversations {
+                ErisConversationsScreen(
+                    store: store,
+                    model: model,
+                    onOpen: { summary in
+                        openConversation = store.detailModel(
+                            conversationID: summary.id,
+                            title: summary.title
+                        )
+                    },
+                    onCreate: { summary in
+                        openConversation = store.detailModel(
+                            conversationID: summary.id,
+                            title: summary.title
+                        )
+                    }
+                )
+                .navigationTitle("Sessions")
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { isSessionDrawerOpen = false }
+                            .font(Design.Typography.footnote)
+                    }
+                }
             } else {
-                missingModel("senses")
+                missingModel("conversations")
             }
         }
-        .tabItem { Label(Lane.senses.title, systemImage: Lane.senses.icon) }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
     }
 
-    @ViewBuilder
-    private var approvalsTab: some View {
+    // MARK: Inbox / Talk / Notes (present, pending Eris backend)
+
+    private var inboxTab: some View {
         NavigationStack {
-            if let approvals = store.approvals {
-                ErisApprovalsScreen(store: store, model: approvals)
-            } else {
-                missingModel("approvals")
-            }
+            PendingBackendView(
+                title: "Inbox",
+                icon: "tray",
+                message: "Inbox collects completed answers and notifications from the agent. Eris does not expose an inbox route yet, so this surface is present but waiting on the backend."
+            )
         }
-        .tabItem { Label(Lane.approvals.title, systemImage: Lane.approvals.icon) }
+        .tabItem { Label(Lane.inbox.title, systemImage: Lane.inbox.icon) }
     }
 
-    @ViewBuilder
+    private var talkTab: some View {
+        NavigationStack {
+            PendingBackendView(
+                title: "Talk",
+                icon: "waveform",
+                message: "Talk is the voice lane - live conversation with the agent. Eris has no voice route yet, so this surface is present but waiting on the backend."
+            )
+        }
+        .tabItem { Label(Lane.talk.title, systemImage: Lane.talk.icon) }
+    }
+
+    private var notesTab: some View {
+        NavigationStack {
+            PendingBackendView(
+                title: "Notes",
+                icon: "pencil.and.outline",
+                message: "Notes is the handwriting and enrichment workspace. Eris has no notes route yet, so this surface is present but waiting on the backend."
+            )
+        }
+        .tabItem { Label(Lane.notes.title, systemImage: Lane.notes.icon) }
+    }
+
+    // MARK: Settings (hub)
+
     private var settingsTab: some View {
         NavigationStack {
-            if let settings = store.settings {
-                ErisSettingsScreen(store: store, model: settings)
-            } else {
-                missingModel("settings")
+            List {
+                Section("Eris") {
+                    NavigationLink {
+                        daemonSettings
+                    } label: {
+                        settingsRow("Daemon Settings", "gearshape.2", Design.Colors.foreground)
+                    }
+
+                    NavigationLink {
+                        senses
+                    } label: {
+                        settingsRow("Senses", "heart.text.square", Design.Colors.foreground)
+                    }
+
+                    NavigationLink {
+                        approvals
+                    } label: {
+                        settingsRow("Approvals", "checkmark.seal", Design.Colors.foreground)
+                    }
+                }
+
+                Section("Device") {
+                    NavigationLink {
+                        PermissionsScreen()
+                    } label: {
+                        settingsRow("Permissions", "hand.raised", Design.Colors.foreground)
+                    }
+                }
+
+                Section("Legacy - pending Eris backend") {
+                    NavigationLink {
+                        PendingBackendView(
+                            title: "Connect Host",
+                            icon: "link",
+                            message: "Connect Host configured the legacy relay gateway. Eris replaces that transport, so this surface is present but waiting on the backend."
+                        )
+                    } label: {
+                        settingsRow("Connect Host", "link", Design.Colors.tertiaryForeground)
+                    }
+
+                    NavigationLink {
+                        PendingBackendView(
+                            title: "Gateway Status",
+                            icon: "antenna.radiowaves.left.and.right",
+                            message: "Gateway Status reported on the legacy connector. Eris reports its own health, so this surface is present but waiting on the backend."
+                        )
+                    } label: {
+                        settingsRow("Gateway Status", "antenna.radiowaves.left.and.right", Design.Colors.tertiaryForeground)
+                    }
+
+                    NavigationLink {
+                        PendingBackendView(
+                            title: "Gateway Logs",
+                            icon: "doc.text",
+                            message: "Gateway Logs streamed the legacy connector's logs. Eris has no log-stream route yet, so this surface is present but waiting on the backend."
+                        )
+                    } label: {
+                        settingsRow("Gateway Logs", "doc.text", Design.Colors.tertiaryForeground)
+                    }
+                }
             }
+            .scrollContentBackground(.hidden)
+            .background(Design.Colors.background)
+            .navigationTitle("Settings")
         }
         .tabItem { Label(Lane.settings.title, systemImage: Lane.settings.icon) }
     }
 
-    // MARK: Conversations (list or one open transcript)
+    @ViewBuilder
+    private var daemonSettings: some View {
+        if let settings = store.settings {
+            ErisSettingsScreen(store: store, model: settings)
+        } else {
+            missingModel("settings")
+        }
+    }
 
     @ViewBuilder
-    private var conversations: some View {
-        if let detail = openConversation {
-            ErisConversationDetailScreen(
-                store: store,
-                model: detail,
-                onBack: {
-                    openConversation = nil
-                    // Coming back to the list is the moment the daemon's own row
-                    // counts are known to be newer than what is on screen.
-                    Task { await store.conversations?.load() }
-                }
-            )
-            .id(detail.conversationID)
-        } else if let model = store.conversations {
-            ErisConversationsScreen(
-                store: store,
-                model: model,
-                onOpen: { summary in
-                    openConversation = store.detailModel(
-                        conversationID: summary.id,
-                        title: summary.title
-                    )
-                },
-                onCreate: { summary in
-                    openConversation = store.detailModel(
-                        conversationID: summary.id,
-                        title: summary.title
-                    )
-                }
-            )
+    private var senses: some View {
+        if let senses = store.senses {
+            ErisSensesScreen(model: senses)
         } else {
-            missingModel("conversations")
+            missingModel("senses")
+        }
+    }
+
+    @ViewBuilder
+    private var approvals: some View {
+        if let approvals = store.approvals {
+            ErisApprovalsScreen(store: store, model: approvals)
+        } else {
+            missingModel("approvals")
+        }
+    }
+
+    private func settingsRow(_ title: String, _ icon: String, _ color: Color) -> some View {
+        HStack(spacing: Design.Spacing.sm) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+                .frame(width: 28)
+            Text(title)
+                .font(Design.Typography.body)
+                .foregroundStyle(color)
         }
     }
 
@@ -189,5 +307,44 @@ struct ErisPairedSurface: View {
         }
         .padding(Design.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Pending backend surface
+
+/// A full-identity placeholder for a surface whose backend Eris does not serve
+/// yet. Present (the tab and screen exist, themed correctly) but honest about
+/// being pending - not a silent removal and not a fake no-op.
+struct PendingBackendView: View {
+    let title: String
+    let icon: String
+    let message: String
+
+    var body: some View {
+        VStack(spacing: Design.Spacing.lg) {
+            Image(systemName: icon)
+                .font(.system(size: 44, weight: .regular))
+                .foregroundStyle(Design.Colors.secondaryForeground)
+            Text(title)
+                .font(Design.Typography.screenTitle2)
+                .foregroundStyle(Design.Colors.foreground)
+            Text(message)
+                .font(Design.Typography.body)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Label("Pending Eris backend", systemImage: "hourglass")
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.tertiaryForeground)
+                .padding(.horizontal, Design.Spacing.md)
+                .padding(.vertical, Design.Spacing.xs)
+                .background(Design.Colors.backgroundRaised)
+                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+        }
+        .padding(Design.Spacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Design.Colors.background.ignoresSafeArea())
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
