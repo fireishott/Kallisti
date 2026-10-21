@@ -12,6 +12,105 @@
 
 use crate::db::{Db, DbError};
 
+/// What happened when an approved call was actually run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ran {
+    /// The call was executed and its result written back into the transcript.
+    Done {
+        /// What the tool said, as the transcript keeps it.
+        content: String,
+        /// How many transcript rows were rewritten. Zero means the turn never
+        /// stored the call, which is reported rather than hidden.
+        rewritten: usize,
+    },
+    /// The call was not run, so the row stays pending and a person can look again.
+    Refused(String),
+    /// Somebody settled the row between the read and the write.
+    AlreadySettled,
+}
+
+/// Approve a parked call and actually run it.
+///
+/// The queue is only a boundary if a decision has a consequence: an approval that
+/// settles the row and runs nothing is a person saying yes to a form. Both the CLI
+/// and a paired device call this, so there is one execution path and not two.
+///
+/// `actor` is who decided, recorded on the row's audit.
+///
+/// # Errors
+///
+/// A database failure reading the row, rewriting the transcript or settling it.
+pub fn approve_and_run(
+    db: &Db,
+    paths: &crate::config::Paths,
+    id: &str,
+    actor: &str,
+) -> Result<Ran, DbError> {
+    let Some(row) = get(db, id)? else {
+        return Ok(Ran::AlreadySettled);
+    };
+    let Ok(arguments) = serde_json::from_str::<serde_json::Value>(&row.arguments) else {
+        return Ok(Ran::Refused(
+            "the parked call has arguments that cannot be read back".to_owned(),
+        ));
+    };
+
+    let engine = crate::onboarding::SetupEngine::new(db.clone(), paths.clone());
+    let workspace = engine
+        .workspace_path()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mode = engine
+        .permissions()
+        .map(|permissions| permissions.sandbox_mode)
+        .unwrap_or(crate::onboarding::permissions::SandboxMode::ReadOnly);
+    let sandbox = crate::tools::Sandbox::new(workspace, mode);
+
+    // A namespaced name is an MCP tool: approving it has to reach the server, not
+    // the local file executor. `display` is what the transcript keeps - a server's
+    // own words, not this run's JSON envelope, or a run log entry reads as soup.
+    let outcome: (crate::tools::ToolResult, String) =
+        if crate::mcp::protocol::split_qualified(&row.tool).is_some() {
+            let servers = engine
+                .setting(crate::mcp::SETTING_SERVERS)
+                .ok()
+                .flatten()
+                .and_then(|raw| crate::mcp::parse(&raw).ok())
+                .unwrap_or_default();
+            let pool = crate::mcp::Pool::new(servers);
+            match pool.call(&row.tool, &arguments) {
+                Ok(outcome) => (
+                    crate::tools::ToolResult::from_mcp(&row.tool, &outcome),
+                    outcome.text,
+                ),
+                Err(error) => (
+                    crate::tools::ToolResult::refused(&error.message),
+                    error.message.clone(),
+                ),
+            }
+        } else {
+            let result = crate::tools::execute(&row.tool, &arguments, &sandbox);
+            let text = result.content.clone();
+            (result, text)
+        };
+    let (result, display) = outcome;
+
+    if result.is_error {
+        // A refusal leaves the row pending: nothing was written, so nobody has
+        // actually said yes to anything yet.
+        return Ok(Ran::Refused(result.content));
+    }
+
+    let rewritten =
+        crate::web::chat::apply_approval_result(db, &row.id, &display, false).unwrap_or(0);
+    if !decide(db, id, Decision::Approved, actor)? {
+        return Ok(Ran::AlreadySettled);
+    }
+    Ok(Ran::Done {
+        content: result.content,
+        rewritten,
+    })
+}
+
 /// What an operator decided about a parked call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {

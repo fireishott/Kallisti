@@ -1873,12 +1873,40 @@ pub async fn decide_approval(
             .into_response();
         }
     };
-    match approvals::decide(db, &approval_id, decision, token.device_id()) {
-        Ok(true) => {}
-        Ok(false) => return DeviceError::approval_not_found().into_response(),
-        Err(error) => {
-            return DeviceError::db_unavailable(format!("cannot record the decision: {error}"))
+    // An approval runs the call. Settling the row and returning "approved" without
+    // executing would be a person saying yes to a form: the CLI runs it, so a phone
+    // takes the same path instead of a second one that stops short.
+    let mut ran_content: Option<String> = None;
+    if decision == approvals::Decision::Approved {
+        let paths = service.engine().paths().clone();
+        match approvals::approve_and_run(db, &paths, &approval_id, token.device_id()) {
+            Ok(approvals::Ran::Done { content, .. }) => ran_content = Some(content),
+            Ok(approvals::Ran::Refused(message)) => {
+                return DeviceError::new(
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                    "approval_not_run",
+                    format!("{approval_id} was approved but running it was refused: {message}"),
+                )
                 .into_response();
+            }
+            Ok(approvals::Ran::AlreadySettled) => {
+                return DeviceError::approval_not_found().into_response();
+            }
+            Err(error) => {
+                return DeviceError::db_unavailable(format!(
+                    "cannot run the approved call: {error}"
+                ))
+                .into_response();
+            }
+        }
+    } else {
+        match approvals::decide(db, &approval_id, decision, token.device_id()) {
+            Ok(true) => {}
+            Ok(false) => return DeviceError::approval_not_found().into_response(),
+            Err(error) => {
+                return DeviceError::db_unavailable(format!("cannot record the decision: {error}"))
+                    .into_response();
+            }
         }
     }
 
@@ -1901,12 +1929,17 @@ pub async fn decide_approval(
         .into_response();
     }
 
-    axum::Json(serde_json::json!({
+    let mut body = serde_json::json!({
         "ok": true,
         "id": approval_id,
         "decision": decision.as_str(),
-    }))
-    .into_response()
+    });
+    if let Some(content) = ran_content {
+        // What the call actually said, so a client can show the result rather
+        // than only that a decision was recorded.
+        body["result"] = serde_json::Value::String(content);
+    }
+    axum::Json(body).into_response()
 }
 
 /// The list `GET /v1/approvals` answers with.

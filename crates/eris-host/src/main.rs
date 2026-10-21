@@ -338,106 +338,21 @@ fn run_approvals(json: bool, state_dir: Option<PathBuf>, command: ApprovalsComma
             }
         }
         ApprovalsCommand::Approve { id } => {
-            let row = match eris_host::approvals::get(&db, &id) {
-                Ok(Some(row)) => row,
-                Ok(None) => {
-                    eprintln!("eris approvals: no approval with id {id}");
-                    return ExitCode::from(EXIT_FAILURE);
-                }
-                Err(error) => {
-                    eprintln!("eris approvals: {error}");
-                    return ExitCode::from(EXIT_FAILURE);
-                }
-            };
-
-            let arguments: serde_json::Value = match serde_json::from_str(&row.arguments) {
-                Ok(arguments) => arguments,
-                Err(error) => {
-                    eprintln!(
-                        "eris approvals: {} has unreadable arguments: {error}",
-                        row.id
-                    );
-                    return ExitCode::from(EXIT_FAILURE);
-                }
-            };
-
-            let engine = SetupEngine::new(db.clone(), paths.clone());
-            let workspace = engine
-                .workspace_path()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let mode = engine
-                .permissions()
-                .map(|permissions| permissions.sandbox_mode)
-                .unwrap_or(eris_host::onboarding::permissions::SandboxMode::ReadOnly);
-            let sandbox = eris_host::tools::Sandbox::new(workspace, mode);
-
-            // A namespaced name is an MCP tool: approving it has to reach the
-            // server, not the local file executor, or an approval would report a
-            // refusal for a tool that exists.
-            // `display` is what the transcript keeps: a server's own words, not
-            // this run's JSON envelope, or a run log entry reads as escaped soup.
-            let (result, display) =
-                if eris_host::mcp::protocol::split_qualified(&row.tool).is_some() {
-                    let servers = engine
-                        .setting(eris_host::mcp::SETTING_SERVERS)
-                        .ok()
-                        .flatten()
-                        .and_then(|raw| eris_host::mcp::parse(&raw).ok())
-                        .unwrap_or_default();
-                    let pool = eris_host::mcp::Pool::new(servers);
-                    match pool.call(&row.tool, &arguments) {
-                        Ok(outcome) => (
-                            eris_host::tools::ToolResult::from_mcp(&row.tool, &outcome),
-                            outcome.text,
-                        ),
-                        Err(error) => {
-                            let refusal = eris_host::tools::ToolResult::refused(&error.message);
-                            let text = error.message.clone();
-                            (refusal, text)
-                        }
-                    }
-                } else {
-                    let result = eris_host::tools::execute(&row.tool, &arguments, &sandbox);
-                    let text = result.content.clone();
-                    (result, text)
-                };
-            if result.is_error {
-                eprintln!(
-                    "eris approvals: {} was not run, so it stays pending: {}",
-                    row.id, result.content
-                );
-                return ExitCode::from(EXIT_FAILURE);
-            }
-
-            // The transcript is rewritten before the row is settled, so a
-            // decision that lands leaves a page that tells the truth. A zero here
-            // means the turn never stored the call; that is reported, not hidden.
-            let rewritten = eris_host::web::chat::apply_approval_result(
-                &db,
-                &row.id,
-                &display,
-                result.is_error,
-            )
-            .unwrap_or(0);
-
-            match eris_host::approvals::decide(
-                &db,
-                &id,
-                eris_host::approvals::Decision::Approved,
-                "operator",
-            ) {
-                Ok(true) => {
+            // One execution path: the same function a paired device calls, so an
+            // approval means the same thing whichever surface answered it.
+            match eris_host::approvals::approve_and_run(&db, &paths, &id, "operator") {
+                Ok(eris_host::approvals::Ran::Done { content, rewritten }) => {
                     if json {
                         println!(
                             "{}",
                             serde_json::json!({
-                                "id": row.id,
+                                "id": id,
                                 "status": "approved",
-                                "result": result.content,
+                                "result": content,
                             })
                         );
                     } else {
-                        println!("approved {id}: {}", result.content);
+                        println!("approved {id}: {content}");
                         if rewritten == 0 {
                             eprintln!(
                                 "eris approvals: the turn did not store this call, so the transcript \
@@ -447,11 +362,12 @@ fn run_approvals(json: bool, state_dir: Option<PathBuf>, command: ApprovalsComma
                     }
                     ExitCode::SUCCESS
                 }
-                Ok(false) => {
-                    eprintln!(
-                        "eris approvals: {} was already settled; the work ran but no row changed",
-                        row.id
-                    );
+                Ok(eris_host::approvals::Ran::Refused(message)) => {
+                    eprintln!("eris approvals: {id} was not run, so it stays pending: {message}");
+                    ExitCode::from(EXIT_FAILURE)
+                }
+                Ok(eris_host::approvals::Ran::AlreadySettled) => {
+                    eprintln!("eris approvals: {id} is not pending, so nothing changed");
                     ExitCode::from(EXIT_FAILURE)
                 }
                 Err(error) => {

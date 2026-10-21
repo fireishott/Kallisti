@@ -6,6 +6,13 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **Approving runs the call.** A decision used to settle the row and change nothing
+  else, so an approved write waited for a CLI run on the host while the phone said
+  "approved". The execution path now lives in the library and both surfaces call it:
+  the CLI and `POST /v1/approvals/{id}/decide` execute the call, rewrite the
+  transcript entry with the real result, and settle the row. A tool that refuses
+  leaves the row pending and answers 422 with the reason, because nothing was
+  written and nobody has said yes to anything yet.
 - **A device can administer, if the operator says so.** Minting a pairing code grows
   one unchecked box: tick it and the redeemed token carries the admin scope, leave it
   and the device chats and files conversations and nothing more. The decision travels

@@ -3233,6 +3233,12 @@ async fn deciding_an_approval_moves_the_row_and_audits_the_device() {
     let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
     let (device_id, admin_token) = harness.device_with_admin_token("iPad");
     let auth = [("authorization", format!("Bearer {admin_token}"))];
+    // An approval runs the call now, so the sandbox has to accept the write or
+    // the test would be asserting a refusal.
+    let widened = harness
+        .request_form("POST", "/v1/settings", &auth, "sandbox=workspace-write")
+        .await;
+    assert_eq!(widened.status, 200, "{}", widened.body);
     let allow_id = park(&harness, "write_file", 0, None);
     let deny_id = park(&harness, "write_file", 1, None);
 
@@ -3250,6 +3256,10 @@ async fn deciding_an_approval_moves_the_row_and_audits_the_device() {
     assert_eq!(body["ok"], true);
     assert_eq!(body["id"], allow_id.as_str());
     assert_eq!(body["decision"], "approved");
+    assert!(
+        body["result"].as_str().is_some(),
+        "the answer carries what the call said, not only that it was decided: {body}"
+    );
     let mut keys: Vec<&str> = body
         .as_object()
         .expect("a decision object")
@@ -3259,8 +3269,19 @@ async fn deciding_an_approval_moves_the_row_and_audits_the_device() {
     keys.sort_unstable();
     assert_eq!(
         keys,
-        vec!["decision", "id", "ok"],
+        vec!["decision", "id", "ok", "result"],
         "the body is the documented shape and nothing else: {body}"
+    );
+
+    // The write actually happened, which is the whole point of approving it.
+    let written = harness
+        .engine
+        .workspace_path()
+        .expect("a workspace")
+        .join("notes/a.txt");
+    assert_eq!(
+        std::fs::read_to_string(&written).expect("the approved write landed"),
+        "hi"
     );
 
     // The row moved, and the actor is the device rather than the browser.
@@ -3527,8 +3548,18 @@ async fn the_dashboard_reads_the_one_queue_a_device_answers() {
     );
 
     // The device answers it, and the same page stops counting it: one queue, one
-    // history, whichever surface settled the row.
+    // history, whichever surface settled the row. The sandbox has to accept the
+    // write, because approving it runs it.
     let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let widened = harness
+        .request_form(
+            "POST",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            "sandbox=workspace-write",
+        )
+        .await;
+    assert_eq!(widened.status, 200, "{}", widened.body);
     let decided = harness
         .request(
             "POST",
