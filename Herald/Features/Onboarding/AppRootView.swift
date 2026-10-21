@@ -207,7 +207,28 @@ struct AppRootView: View {
             && nativeClient.connectionStatus != .connected
     }
 
+    /// 1.4.0 build 82: Eris is the backend. The legacy Herald gateway behind the
+    /// splash below is retired, so a phone carrying old relay settings and a
+    /// stale login sat on "Connection struggling" forever and never reached
+    /// onboarding. Launch goes to the Eris surface instead: its pairing form is
+    /// onboarding, and a stored pair lands straight in chat. The legacy path is
+    /// kept only behind an explicit opt-in default for debugging.
+    static var usesLegacyGateway: Bool {
+        UserDefaults.standard.bool(forKey: "kallisti.legacyGatewayLaunch")
+    }
+
     var body: some View {
+        if Self.usesLegacyGateway {
+            legacyBody
+        } else {
+            NavigationStack {
+                ErisSurfaceScreen()
+            }
+            .background(Design.Colors.background.ignoresSafeArea())
+        }
+    }
+
+    private var legacyBody: some View {
         ZStack {
             Design.Colors.background
                 .ignoresSafeArea()

@@ -507,7 +507,8 @@ final class AppContainer {
             // silent connect; onboarding's startPairingLogin / startBasicLogin
             // / startInteractiveLogin all call connect() themselves after the
             // user enters a real relay URL.
-            if settingsStore.settings.relayConfiguration.activeBaseURLString != nil {
+            if settingsStore.settings.relayConfiguration.activeBaseURLString != nil,
+               UserDefaults.standard.bool(forKey: "kallisti.legacyGatewayLaunch") {
                 Task { @MainActor in
                     await nativeClient.connect()
                 }
