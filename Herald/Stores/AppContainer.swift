@@ -487,7 +487,15 @@ final class AppContainer {
         if processEnvironment["UITEST_PAIRING_MODE"] == "mock" {
             pairingService = MockPairingService()
         } else {
-            pairingService = LivePairingService()
+            pairingService = ErisPairingService()
+        }
+
+        // Eris is the only backend: one shared ErisHeraldClient serves the chat
+        // stores (via HeraldClientProtocol) and the inbox/notes services (via
+        // its client() accessor). Created up front so both can reach it.
+        let erisHeraldClient = ErisHeraldClient()
+        if !usesMockPairingService {
+            Task { @MainActor in await erisHeraldClient.connect() }
         }
 
         let apiClient = RelayAPIClient {
@@ -526,7 +534,7 @@ final class AppContainer {
         )
 
         let inboxService = ResilientInboxService(
-            primary: LiveInboxService(apiClient: apiClient),
+            primary: ErisInboxService(clientProvider: { @MainActor in await erisHeraldClient.client() }),
             fallback: MockInboxService(),
             allowsFallback: { allowMockFallbacks && (activePairingStore?.isPaired != true || usesMockPairingService) }
         )
@@ -576,9 +584,7 @@ final class AppContainer {
         if usesMockPairingService {
             heraldClient = MockHeraldClient()
         } else {
-            let erisClient = ErisHeraldClient()
-            Task { @MainActor in await erisClient.connect() }
-            heraldClient = erisClient
+            heraldClient = erisHeraldClient
         }
 
         // DSH mode: point Infrastructure at DSH so Settings cannot name a

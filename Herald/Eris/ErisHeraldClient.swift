@@ -98,7 +98,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
         clientMessageID: UUID,
         continuation: AsyncStream<StreamingUpdate>.Continuation
     ) async {
-        guard let client = store.clientForPairedDaemon() else {
+        guard let client = await pairedClient() else {
             continuation.yield(.failed("No Eris daemon is paired."))
             continuation.finish()
             return
@@ -171,7 +171,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
     }
 
     func loadConversation(id: UUID) async throws -> Conversation {
-        guard let client = store.clientForPairedDaemon() else { throw ErisHeraldError.notConnected }
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
         guard let conversationID = conversationIDByLocalID[id] else {
             return Conversation(id: id, title: "New Chat")
         }
@@ -187,7 +187,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
     }
 
     func clearConversation() async throws -> Conversation {
-        guard let client = store.clientForPairedDaemon() else { throw ErisHeraldError.notConnected }
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
         if let conversationID = currentConversationID() {
             _ = try await client.clearConversation(id: conversationID)
         }
@@ -198,7 +198,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     func ensureConversation(id: UUID) async -> Bool {
         if conversationIDByLocalID[id] != nil { return true }
-        guard let client = store.clientForPairedDaemon() else { return false }
+        guard let client = await pairedClient() else { return false }
         do {
             let created = try await client.createConversation()
             conversationIDByLocalID[id] = created.id
@@ -219,7 +219,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
     // MARK: - Sessions (conversations)
 
     func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse {
-        guard let client = store.clientForPairedDaemon() else { throw ErisHeraldError.notConnected }
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
         let page = try await client.conversations()
         let sessions = page.conversations.map { Self.summary(from: $0) }
         return SessionListResponse(sessions: sessions, total: sessions.count)
@@ -234,7 +234,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
     }
 
     func createSession(title: String) async throws -> SessionSummary {
-        guard let client = store.clientForPairedDaemon() else { throw ErisHeraldError.notConnected }
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
         let created = try await client.createConversation()
         let localID = localID(forConversation: created.id)
         return SessionSummary(
@@ -276,7 +276,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
     }
 
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
-        guard let client = store.clientForPairedDaemon() else { throw ErisHeraldError.notConnected }
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
         let erisConversationID = conversationIDByLocalID[conversationID]
         let turn = try await client.createTurn(text: text, conversation: erisConversationID)
         // Drain the stream to completion to collect the final text.
@@ -331,6 +331,27 @@ final class ErisHeraldClient: HeraldClientProtocol {
     }
 
     // MARK: - Helpers
+
+    /// The transport for the paired daemon, re-discovering the pair if it was
+    /// redeemed after `connect()` already ran. Exposed so the Eris inbox/notes
+    /// services can reach the same transport the chat stores use.
+    func client() async -> ErisClient? {
+        await pairedClient()
+    }
+
+    /// A transport for the paired daemon, re-discovering the pair if it was
+    /// redeemed by `ErisPairingService` after `connect()` already ran. `store
+    /// .start()` is idempotent, so a device that just paired lands straight in.
+    private func pairedClient() async -> ErisClient? {
+        if let client = store.clientForPairedDaemon() {
+            return client
+        }
+        await store.start()
+        if store.pairedBaseURL != nil {
+            connectionStatus = .connected
+        }
+        return store.clientForPairedDaemon()
+    }
 
     private func currentConversationID() -> String? {
         guard let currentConversation else { return nil }
