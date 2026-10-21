@@ -50,6 +50,10 @@ final class ErisDaemonStore {
     /// The settings model for the paired daemon, once there is one.
     private(set) var settings: ErisSettingsModel?
     private(set) var approvals: ErisApprovalsModel?
+    /// The read-only health/location model for the paired daemon.
+    private(set) var senses: ErisSensesModel?
+    /// The durable sensor upload pipeline for the paired daemon.
+    private(set) var sensorUpload: SensorUploadService?
 
     /// Manual-entry daemon address, pre-filled from the last pairing.
     var addressText: String
@@ -266,6 +270,27 @@ final class ErisDaemonStore {
         conversations = ErisConversationsModel(client: client)
         settings = ErisSettingsModel(client: client)
         approvals = ErisApprovalsModel(client: client)
+        senses = ErisSensesModel(client: client)
+
+        // The sensor pipeline uploads through the same client (and the same
+        // bearer/refresh) as turns, so it follows whatever daemon this device is
+        // paired to. The device collectors are permission-gated themselves: no
+        // capture happens until the user grants health/motion/location on the
+        // Permissions screen.
+        let locationService = LiveLocationService()
+        let healthService = LiveHealthService()
+        let motionService = LiveMotionService()
+        let upload = SensorUploadService(
+            erisClient: client,
+            persistence: UserDefaultsAppPersistenceStore(),
+            isPairedProvider: { [weak self] in self?.pairedBaseURL != nil },
+            locationService: locationService,
+            healthService: healthService,
+            motionService: motionService
+        )
+        upload.start()
+        sensorUpload = upload
+
         phase = .paired(baseURL)
     }
 
@@ -289,6 +314,9 @@ final class ErisDaemonStore {
         await tokenStore.clear()
         defaults.removeObject(forKey: DefaultsKey.lastSession)
         defaults.removeObject(forKey: DefaultsKey.baseURL)
+        sensorUpload?.stop()
+        sensorUpload = nil
+        senses = nil
         chat = nil
         conversations = nil
         settings = nil

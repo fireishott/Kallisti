@@ -459,6 +459,8 @@ DDC099A73FCBCAB2EB5EE04B /* ChatScreen.swift in Sources */ = {isa = PBXBuildFile
 		DB7F4B9C2236D4A617B9F9DB /* ErisTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA6E3A8B1125C39506A8E8CA /* ErisTransportTests.swift */; };
 		0124D1E66933CD0866E874F9 /* ErisAppSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03DF41FDAE85E6B5E5AB3350 /* ErisAppSurfaceTests.swift */; };
 		6E9D3B0996D550D86FEFE166 /* ErisDeviceAPITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29B5232149B3DA57AB5C478F /* ErisDeviceAPITests.swift */; };
+			A1B2C3D4E5F60718293A4B5C /* ErisSensorTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F60718293A4B5D /* ErisSensorTypes.swift */; };
+		C1B2C3D4E5F60718293A4B5E /* ErisSensesScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1B2C3D4E5F60718293A4B5F /* ErisSensesScreen.swift */; };
 	/* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1011,6 +1013,8 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 		CA6E3A8B1125C39506A8E8CA /* ErisTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisTransportTests.swift; sourceTree = "<group>"; };
 		03DF41FDAE85E6B5E5AB3350 /* ErisAppSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisAppSurfaceTests.swift; sourceTree = "<group>"; };
 		29B5232149B3DA57AB5C478F /* ErisDeviceAPITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisDeviceAPITests.swift; sourceTree = "<group>"; };
+			B1B2C3D4E5F60718293A4B5D /* ErisSensorTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSensorTypes.swift; sourceTree = "<group>"; };
+		D1B2C3D4E5F60718293A4B5F /* ErisSensesScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSensesScreen.swift; sourceTree = "<group>"; };
 	/* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1894,6 +1898,8 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				1E2F7FE189CB0E06A25E6BAE /* ErisApprovalsScreen.swift */,
 				E0AE2612137CC3B2AF6684DE /* ErisSurfaceTabs.swift */,
 				2B47649C62EF4369D438CA5D /* ErisFailureView.swift */,
+				D1B2C3D4E5F60718293A4B5F /* ErisSensesScreen.swift */,
+				B1B2C3D4E5F60718293A4B5D /* ErisSensorTypes.swift */,
 			);
 			path = Eris;
 			sourceTree = "<group>";
@@ -2250,6 +2256,8 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				4A9296FE2469F68ADF2E38E6 /* ErisApprovalsScreen.swift in Sources */,
 				0E2EC05B2F0807C7FF52C94A /* ErisSurfaceTabs.swift in Sources */,
 				92473B28B51EBDD97793D23F /* ErisFailureView.swift in Sources */,
+				C1B2C3D4E5F60718293A4B5E /* ErisSensesScreen.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5C /* ErisSensorTypes.swift in Sources */,
 				920A393FB5258B5A039B364F /* AdaptiveRootView.swift in Sources */,
 				110AD42B226BAD901C4CF22B /* AppAttestService.swift in Sources */,
 				8F0AD79D0496C7829FFE40BD /* AppContainer.swift in Sources */,

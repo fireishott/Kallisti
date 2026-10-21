@@ -674,42 +674,11 @@ final class AppContainer {
         liveLocationService.updateSyncPreference(settingsStore.settings.locationSyncPreference)
         let liveHealthService = LiveHealthService(persistence: persistence)
         let liveMotionService = LiveMotionService()
-        let sensorUploadService: SensorUploadService? = usesMockPairingService ? nil : SensorUploadService(
-            apiClient: apiClient,
-            accessTokenProvider: { [nativeGatewayClient] in
-                // Native mode never sets the legacy relay session token, so the
-                // sensor upload path 401'd with a nil bearer. Present the native
-                // gateway bearer when it exists; fall back to the relay session
-                // token for basic/pairing auth modes (same pattern as
-                // AttachmentService / HostStatusStreamService / GatewayControlService).
-                if let nativeGatewayClient,
-                   let nativeToken = await nativeGatewayClient.nativeAccessToken(),
-                   !nativeToken.isEmpty {
-                    return nativeToken
-                }
-                return await sessionStore.currentAccessToken()
-            },
-            accessTokenRefresher: { [nativeGatewayClient] in
-                if let nativeGatewayClient {
-                    await nativeGatewayClient.refreshAccessToken()
-                }
-                await sessionStore.refreshAccessTokenIfNeeded()
-                if let nativeGatewayClient,
-                   let nativeToken = await nativeGatewayClient.nativeAccessToken(),
-                   !nativeToken.isEmpty {
-                    return nativeToken
-                }
-                return await sessionStore.currentAccessToken()
-            },
-            persistence: persistence,
-            isPairedProvider: {
-                nativeGatewayClient?.hasResolvedStoredLogin == true
-                    || activePairingStore?.isPaired == true
-            },
-            locationService: liveLocationService,
-            healthService: liveHealthService,
-            motionService: liveMotionService
-        )
+        // Sensor upload is Eris-only now (re-pointed to ErisClient in the launch
+        // path). AppContainer is the retired legacy container and never runs, so
+        // its sensor pipeline is intentionally nil rather than wired to a
+        // transport that no longer exists.
+        let sensorUploadService: SensorUploadService? = nil
         let dashboardLogService = DashboardLogService(
             baseURLProvider: {
                 // Derive dashboard URL from the relay host when paired,

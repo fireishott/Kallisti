@@ -76,45 +76,14 @@ struct SensorOutboxState: Codable, Hashable, Sendable {
     }
 }
 
-/// Coordinates durable sensor uploads from the phone to the relay.
+/// Coordinates durable sensor uploads from the phone to the Eris daemon.
 ///
-/// The relay only ACKs a sample once the connector has received and stored it,
-/// so sensor state is persisted locally until a real delivery succeeds.
+/// The daemon only ACKs a sample once it has received and stored it, so sensor
+/// state is persisted locally until a real delivery succeeds.
 @MainActor
 @Observable
 final class SensorUploadService {
-    private struct SensorLocationBody: Encodable {
-        let latitude: Double
-        let longitude: Double
-        let altitude: Double?
-        let accuracy: Double
-        let address: String?
-        let recordedAt: String
-    }
-
-    private struct SensorHealthBody: Encodable {
-        struct Sample: Encodable {
-            let metric: String
-            let value: Double
-            let unit: String
-            let startAt: String
-            let endAt: String?
-        }
-
-        let samples: [Sample]
-    }
-
-    private struct DeliveryResult: Decodable {
-        let deliveryState: String
-
-        var wasDelivered: Bool {
-            deliveryState == "delivered"
-        }
-    }
-
-    private let apiClient: RelayAPIClient
-    private let accessTokenProvider: @MainActor () async -> String?
-    private let accessTokenRefresher: @MainActor () async -> String?
+    private let erisClient: ErisClient
     private let persistence: AppPersistenceStoreProtocol
     private let isPairedProvider: @MainActor () -> Bool
     private let locationService: LiveLocationService
@@ -140,18 +109,14 @@ final class SensorUploadService {
     }()
 
     init(
-        apiClient: RelayAPIClient,
-        accessTokenProvider: @escaping @MainActor () async -> String?,
-        accessTokenRefresher: @escaping @MainActor () async -> String? = { nil },
+        erisClient: ErisClient,
         persistence: AppPersistenceStoreProtocol,
         isPairedProvider: @escaping @MainActor () -> Bool,
         locationService: LiveLocationService,
         healthService: LiveHealthService,
         motionService: LiveMotionService? = nil
     ) {
-        self.apiClient = apiClient
-        self.accessTokenProvider = accessTokenProvider
-        self.accessTokenRefresher = accessTokenRefresher
+        self.erisClient = erisClient
         self.persistence = persistence
         self.isPairedProvider = isPairedProvider
         self.locationService = locationService
@@ -335,7 +300,7 @@ final class SensorUploadService {
         // Reverse geocode to get a human-readable address
         let address = await reverseGeocode(latitude: pending.latitude, longitude: pending.longitude)
 
-        let body = SensorLocationBody(
+        let body = ErisSensorLocationPayload(
             latitude: pending.latitude,
             longitude: pending.longitude,
             altitude: pending.altitude,
@@ -344,7 +309,11 @@ final class SensorUploadService {
             recordedAt: iso8601Formatter.string(from: pending.recordedAt)
         )
 
-        return await performAuthorizedUpload(path: "device/sensor/location", body: body)
+        do {
+            return try await erisClient.uploadSensorLocation(body).wasDelivered
+        } catch {
+            return false
+        }
     }
 
     private func reverseGeocode(latitude: Double, longitude: Double) async -> String? {
@@ -385,11 +354,10 @@ final class SensorUploadService {
             Array(samples[start..<min(start + batchSize, samples.count)])
         }
 
-        var deliveredCount = 0
         for batch in batches {
-            let body = SensorHealthBody(
+            let body = ErisSensorHealthPayload(
                 samples: batch.map { sample in
-                    SensorHealthBody.Sample(
+                    ErisSensorHealthPayload.Sample(
                         metric: sample.metric,
                         value: sample.value,
                         unit: sample.unit,
@@ -399,35 +367,14 @@ final class SensorUploadService {
                 }
             )
 
-            let delivered = await performAuthorizedUpload(path: "device/sensor/health", body: body)
-            guard delivered else {
+            do {
+                let delivered = try await erisClient.uploadSensorHealth(body).wasDelivered
+                guard delivered else { return false }
+            } catch {
                 return false
             }
-            deliveredCount += batch.count
         }
 
         return true
-    }
-
-    private func performAuthorizedUpload<Body: Encodable>(path: String, body: Body) async -> Bool {
-        do {
-            return try await executeUpload(path: path, body: body, accessToken: await accessTokenProvider())
-        } catch RelayAPIClient.ClientError.unauthorized {
-            guard let refreshedToken = await accessTokenRefresher(), !refreshedToken.isEmpty else {
-                return false
-            }
-            return (try? await executeUpload(path: path, body: body, accessToken: refreshedToken)) ?? false
-        } catch {
-            return false
-        }
-    }
-
-    private func executeUpload<Body: Encodable>(path: String, body: Body, accessToken: String?) async throws -> Bool {
-        let result: DeliveryResult = try await apiClient.post(
-            path: path,
-            body: body,
-            accessToken: accessToken
-        )
-        return result.wasDelivered
     }
 }

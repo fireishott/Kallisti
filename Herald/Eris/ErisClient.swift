@@ -44,6 +44,14 @@ enum ErisRoute: Equatable, Sendable {
     case approvals
     /// `POST /v1/approvals/{id}/decide` - settle one, and run it when approved.
     case decideApproval(approvalID: String)
+    /// `POST /v1/device/sensor/location` - deliver one location sample.
+    case sensorLocation
+    /// `POST /v1/device/sensor/health` - deliver a batch of health samples.
+    case sensorHealth
+    /// `GET /v1/device/health/latest` - the newest metric per tracked kind.
+    case healthLatest
+    /// `GET /v1/device/location` - the most recent location the daemon holds.
+    case location
 
     /// The request path, with ids percent-encoded so one id cannot escape its
     /// path segment.
@@ -75,16 +83,25 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/approvals"
         case .decideApproval(let approvalID):
             return "/v1/approvals/\(Self.segment(approvalID))/decide"
+        case .sensorLocation:
+            return "/v1/device/sensor/location"
+        case .sensorHealth:
+            return "/v1/device/sensor/health"
+        case .healthLatest:
+            return "/v1/device/health/latest"
+        case .location:
+            return "/v1/device/location"
         }
     }
 
     /// The HTTP method the daemon's router binds this path to.
     var method: String {
         switch self {
-        case .events, .session, .conversations, .conversation, .settings, .projects, .approvals:
+        case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
+             .healthLatest, .location:
             return "GET"
         case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings,
-             .decideApproval:
+             .decideApproval, .sensorLocation, .sensorHealth:
             return "POST"
         }
     }
@@ -349,6 +366,33 @@ actor ErisClient {
         return try ErisApprovalOutcome.decode(data)
     }
 
+    // MARK: Sensors & health
+    //
+    // These routes mirror the legacy connector payloads exactly, so the daemon
+    // being built to accept them sees the same shapes the old relay forwarded.
+
+    /// `POST /v1/device/sensor/location` - deliver one location sample.
+    func uploadSensorLocation(_ body: ErisSensorLocationPayload) async throws -> ErisDeliveryResult {
+        try await sendJSON(route: .sensorLocation, body: body)
+    }
+
+    /// `POST /v1/device/sensor/health` - deliver a batch of health samples.
+    func uploadSensorHealth(_ body: ErisSensorHealthPayload) async throws -> ErisDeliveryResult {
+        try await sendJSON(route: .sensorHealth, body: body)
+    }
+
+    /// `GET /v1/device/health/latest` - the newest metric per tracked kind.
+    func latestHealthMetrics() async throws -> ErisHealthLatest {
+        let data = try await send(route: .healthLatest, form: nil)
+        return try decode(ErisHealthLatest.self, from: data)
+    }
+
+    /// `GET /v1/device/location` - the most recent location the daemon holds.
+    func latestLocation() async throws -> ErisLocationSnapshot {
+        let data = try await send(route: .location, form: nil)
+        return try decode(ErisLocationSnapshot.self, from: data)
+    }
+
     // MARK: Streaming
 
     /// Open the stream, refresh once on a 401, and feed bytes to the decoder.
@@ -469,6 +513,50 @@ actor ErisClient {
                 "application/x-www-form-urlencoded; charset=utf-8",
                 forHTTPHeaderField: "Content-Type"
             )
+        }
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    /// A JSON-bodied request carrying the bearer, retried once after a refresh on
+    /// a 401. Same contract as `send`, but the body is `application/json` rather
+    /// than form-encoded - the sensor routes take structured payloads.
+    private func sendJSON<Body: Encodable, T: Decodable>(route: ErisRoute, body: Body) async throws -> T {
+        var refreshed = false
+        while true {
+            let request = try await authorizedJSONRequest(route: route, body: body)
+            let (data, response) = try await perform(request)
+            let status = Self.status(of: response)
+            if status == 401 && !refreshed {
+                _ = try await refresh()
+                refreshed = true
+                continue
+            }
+            guard (200..<300).contains(status) else {
+                throw Self.serverError(status: status, data: data)
+            }
+            return try decode(T.self, from: data)
+        }
+    }
+
+    private func authorizedJSONRequest<Body: Encodable>(route: ErisRoute, body: Body) async throws -> URLRequest {
+        guard let stored = try await tokenStore.load(), !stored.accessToken.isEmpty else {
+            throw ErisError.missingToken
+        }
+        var request = try makeJSONRequest(route: route, body: body)
+        request.setValue("Bearer \(stored.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private func makeJSONRequest<Body: Encodable>(route: ErisRoute, body: Body) throws -> URLRequest {
+        var request = URLRequest(url: try Self.url(baseURL: baseURL, route: route))
+        request.httpMethod = route.method
+        request.timeoutInterval = 30
+        if route.method == "POST" {
+            let encoder = JSONEncoder()
+            request.httpBody = try encoder.encode(body)
+            request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return request

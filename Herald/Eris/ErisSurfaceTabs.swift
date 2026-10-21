@@ -29,6 +29,7 @@ struct ErisPairedSurface: View {
     enum Lane: String, CaseIterable, Identifiable, Hashable {
         case chat
         case conversations
+        case senses
         case approvals
         case settings
 
@@ -38,6 +39,7 @@ struct ErisPairedSurface: View {
             switch self {
             case .chat: return "Chat"
             case .conversations: return "Conversations"
+            case .senses: return "Senses"
             case .approvals: return "Approvals"
             case .settings: return "Settings"
             }
@@ -47,6 +49,7 @@ struct ErisPairedSurface: View {
             switch self {
             case .chat: return "bubble.left.and.bubble.right"
             case .conversations: return "list.bullet.rectangle"
+            case .senses: return "heart.text.square"
             case .approvals: return "checkmark.seal"
             case .settings: return "gearshape"
             }
@@ -57,6 +60,7 @@ struct ErisPairedSurface: View {
         TabView(selection: $lane) {
             chatTab.tag(Lane.chat)
             conversationsTab.tag(Lane.conversations)
+            sensesTab.tag(Lane.senses)
             approvalsTab.tag(Lane.approvals)
             settingsTab.tag(Lane.settings)
         }
@@ -87,6 +91,18 @@ struct ErisPairedSurface: View {
             conversations
         }
         .tabItem { Label(Lane.conversations.title, systemImage: Lane.conversations.icon) }
+    }
+
+    @ViewBuilder
+    private var sensesTab: some View {
+        NavigationStack {
+            if let senses = store.senses {
+                ErisSensesScreen(model: senses)
+            } else {
+                missingModel("senses")
+            }
+        }
+        .tabItem { Label(Lane.senses.title, systemImage: Lane.senses.icon) }
     }
 
     @ViewBuilder
