@@ -2,47 +2,48 @@
 
 > **To the Most Beautiful.** The most beautiful way to meet your agent.
 
-Kallisti is a complete package, not a client and not a daemon. A native **iPhone and
-iPad app**, a **relay** that connects it to your hardware, and **Kallisti-Eris**, the
-daemon that holds the brain, the tools and the memory. Nothing leaves your
-infrastructure, and there is no third party to leave it to.
+Kallisti is a complete package built from two halves. **Kallisti for iOS** is the
+frontend - a native Swift 6 / SwiftUI app for iPhone and iPad. **Kallisti-Eris** is
+the backend - a Rust daemon that holds the brain, the tools and the memory, on
+hardware you own. The app talks to the daemon over its device API; there is no
+third-party relay, and nothing leaves your infrastructure.
 
 **Private TestFlight beta in progress.** MIT licensed.
 
 ---
 
-## The package
+## The two halves
 
-| Part | What it is |
+| Half | What it is |
 |---|---|
-| **Kallisti for iOS** | The senses. A native Swift 6 / SwiftUI app for iPhone, iPad and Apple Watch. |
-| **Kallisti Relay** | The connector. Carries paired-device traffic between the app and your daemon. |
-| **Kallisti-Eris** | The brain. A Rust daemon and a web UI, on hardware you own. |
+| **Kallisti for iOS** | The front. The literal Kallisti 0.4.0 UI - rich chat, the full sidebar (Chat, Inbox, Talk, Notes, Settings), health and sensors - as a native Swift 6 / SwiftUI app for iPhone and iPad. |
+| **Kallisti-Eris** | The back. A Rust daemon and a web UI on your hardware: turns, tools, memory, MCP, approvals, sensors, inbox, notes, push and device pairing. |
 
-The app extends the agent with what only a phone has. The daemon keeps the state, the
-credentials, the sandbox and the tools. The relay joins them, and the phone never
-holds your model keys.
+Eris is the backend; Kallisti is the frontend. The daemon keeps the state, the
+credentials, the sandbox and the tools. The phone never holds your model keys.
 
 ## What the iOS app does
 
 Native surfaces, all first-class rather than wrapped in a web view:
 
-- **Rich chat** - streaming, markdown, syntax-highlighted code, and the model's
-  reasoning beside the answer.
-- **Health and sensors** - HealthKit, CoreLocation and CoreMotion, so the agent can
-  answer with what the device already knows.
-- **Camera and photos** - capture, attach, and have the image described or acted on.
-- **Handwriting and OCR** - iPad, on-device text recognition.
-- **Widgets and Live Activities** - a turn in progress, visible without opening the app.
-- **Push notifications** - the agent reaching you, not just answering you.
-- **Session management** - conversations across devices.
-- **Gateway control** - start, stop and steer the backend from the phone.
-- **Security and privacy** - device pairing with opaque tokens, salted verifiers, and
-  no password on disk.
+- **The 0.4.0 UI, on Eris.** The app is the Kallisti 0.4.0 frontend unchanged -
+  `AppRootView` -> the full `AdaptiveRootView` sidebar. Its `HeraldClientProtocol`
+  ships as `ErisHeraldClient`, so those screens run over Eris as they are.
+- **Rich chat** - streaming over Eris `/v1/turns` and SSE, markdown,
+  syntax-highlighted code, and the model's reasoning beside the answer.
+- **Health and sensors** - HealthKit, CoreLocation and CoreMotion, uploaded to the
+  daemon's `sensors.db` and shown in the Senses view.
+- **Inbox** - the daemon's inbox items and actions.
+- **Notes** - local-first on device today; server sync is the next pass.
+- **Camera and photos**, **handwriting and OCR** on iPad, **widgets and Live
+  Activities**, **push notifications**.
+- **Device pairing with opaque tokens.** The 0.4.0 onboarding posts the daemon
+  address and a pairing code to `/v1/pair`; the pair lands in the keychain and the
+  client restores it into chat.
 
-**In development:** Voice Mode, the Plugin Engine, and a native watchOS app. Labelled
-as such on the site and in the app, because a roadmap presented as a feature is a lie
-with good typography.
+**In development:** Voice Mode (Talk answers a typed in-development), the Plugin
+Engine, and a native watchOS app. Labelled as such, because a roadmap presented as
+a feature is a lie with good typography.
 
 ## What Kallisti-Eris does
 
@@ -62,33 +63,31 @@ is not in your hand.
 - **Bring your own model.** A validated provider registry with a primary, and
   thirteen auxiliary roles that can each point at a different endpoint and model,
   including a fallback role that retries a failed turn on another model.
+- **The senses.** Health and location device routes (`/v1/device/sensor/*`) into
+  `sensors.db`.
+- **Inbox, notes and push.** Device routes for inbox items and actions, notes (CRUD,
+  blobs, recognitions, enrichment runs), and push token registration.
 - **Backups that cannot leak the key.** Three members: the database, the env file of
   references, the config. The setup passphrase is excluded unconditionally.
 
-## Relay ready
+## Device API
 
-The daemon already speaks to paired devices over its own API, which is what the relay
-carries. Today:
+The app talks to the daemon's own device API - there is no relay in between. Today:
 
 `/v1/pair` · `/v1/token/refresh` · `/v1/turns` · `/v1/turns/{id}/events` ·
 `/v1/turns/{id}/cancel` · `/v1/sessions/{id}` · `/v1/conversations` ·
-`/v1/approvals` · `/v1/settings` · `/v1/backups` · `/v1/devices` · `/v1/mcp` ·
-`/v1/projects` · `/v1/persona` · `/v1/audit` · `/v1/version`
+`/v1/approvals` · `/v1/settings` · `/v1/devices` · `/v1/mcp` · `/v1/projects` ·
+`/v1/persona` · `/v1/audit` · `/v1/version` · `/v1/device/sensor/*` ·
+`/v1/device/health/latest` · `/v1/device/location` · `/v1/inbox` · `/v1/notes` ·
+`/v1/note-runs` · `/v1/push/*` · `/v1/talk/*` (placeholder)
 
 Pairing codes expire, device tokens are opaque and stored as salted verifiers, and a
 stolen state directory yields no usable credential.
 
-What a paired device gets today is narrower than what a browser gets, and it is
-worth being exact about it: a device turn streams text only. The reasoning, the tool
-loop and the run log that the browser shows are not forwarded - a device turn is a
-bare provider call, and a device that sends `/stop` spends tokens doing it. The full
-gap, capability by capability, is graded in
-[`docs/relay-readiness.md`](docs/relay-readiness.md): five of thirty-six capabilities
-exposed, and what each missing one would need.
-
-Not yet exposed to a device: settings, approvals, tool configuration and memory
-choice. Those are the control surfaces a relay needs before "full control" is a
-truthful phrase, and they are the next thing to build.
+A device turn streams text and reasoning. A few `HeraldClientProtocol` members are
+still typed-stubbed pending their device routes (session delete/archive/pin/rename,
+title generation, job status, cancel/interrupt, voice transcript, note sync), and
+attachments are text-only. That list is the current backlog.
 
 ## Security model, enforced rather than asserted
 
@@ -114,7 +113,7 @@ hostname that points at a private address.
 | `ios-host` | on-device surface stub: a UniFFI export with no I/O of its own, so the core never imports a device framework and every permission prompt belongs to the Swift shell. |
 
 ```sh
-cargo test --workspace        # 497 tests
+cargo test --workspace        # 515 tests
 cargo clippy --workspace --all-targets
 cargo fmt --check
 ```
@@ -135,8 +134,8 @@ First boot generates a six-word passphrase once, prints it, and writes it to
 
 ## Status
 
-Shipped and running: Kallisti-Eris 1.4.0 and the web UI.
-In private beta: the iOS app, TestFlight in progress.
+Shipped and running: Kallisti-Eris 1.4.1 and the web UI.
+In private beta: the iOS app (Kallisti 0.4.0 UI on Eris), TestFlight build 89.
 In development: Voice Mode, Plugin Engine, watchOS.
 
 ## Licence

@@ -6,10 +6,17 @@ observe; commit history carries the detail.
 
 ## 1.4.1
 
-- **The whole Kallisti frontend is back, on Eris.** The iOS app launches into the
-  full Kallisti experience again - the complete sidebar (Chat, Inbox, Talk, Notes,
-  Settings), device-permission onboarding, the Senses view, and the Kallisti theme -
-  with Eris as its only backend. The reduced shell is gone. `build 86`.
+Two halves, back together: **Kallisti 0.4.0 is the iOS frontend, Eris is the
+backend.** Versions align at 1.4.1 (daemon build 86, iOS app build 89).
+
+- **The Kallisti 0.4.0 UI is the app, on Eris.** The iOS frontend is the literal
+  0.4.0 UI restored unchanged - `AppEntry` -> `AppRootView` -> the full
+  `AdaptiveRootView` sidebar (Chat, Inbox, Talk, Notes, Settings), device-permission
+  onboarding, the Senses view and the Kallisti theme. No reduced shell, no new
+  screens: `HeraldClientProtocol` is implemented by `ErisHeraldClient`, so the 0.4.0
+  screens run over Eris as they are. A fresh install pairs to Eris through
+  `ErisPairingService` (the onboarding's address + code posts to `/v1/pair`, the pair
+  lands in the keychain, and the client restores it into chat). `iOS 1.4.1 build 89`.
 - **Eris is a full backend.** Inbox (list and actions), Notes (full CRUD, blobs,
   recognitions, and the run lifecycle) and Push (register, deactivate, send) gain
   real routes and their own stores, so the frontend's Inbox and Notes tabs are
