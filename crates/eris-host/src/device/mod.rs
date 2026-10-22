@@ -578,6 +578,15 @@ impl DeviceService {
         self
     }
 
+    /// Attach the web dashboard's live table, so a device turn that names a
+    /// conversation is visible there for as long as it runs. Called once by
+    /// [`crate::admin`] while it builds its state.
+    #[must_use]
+    pub fn with_live(self, live: crate::web::live::LiveHub) -> Self {
+        self.hub.set_live(live);
+        self
+    }
+
     /// The MCP pool this service was handed, if any.
     #[must_use]
     pub fn mcp(&self) -> Option<&Arc<crate::mcp::Pool>> {

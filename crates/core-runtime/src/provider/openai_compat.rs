@@ -39,6 +39,29 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// conversation row on `streaming` forever.
 const STREAM_STALL: Duration = Duration::from_secs(60);
 
+/// How long one pooled connection may sit idle before it stops being offered to
+/// the next request.
+///
+/// The pool default is 90 seconds, which is longer than the keep-alive any
+/// gateway in front of a local model actually honours - 9router answers
+/// `Keep-Alive: timeout=5` - so a client that trusts the pool writes into a
+/// socket the server has already dropped. That failure arrives before a single
+/// response byte ("connection closed before message completed") and it lands in
+/// the middle of a long turn, whenever one tool call takes longer than the
+/// gateway's idle timer. Dropping the idle connection first keeps the client on a
+/// socket both ends agree is alive; a fresh loopback connection costs
+/// microseconds and a wasted turn costs the whole answer.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How many times one request goes on the wire before its failure is reported.
+///
+/// A request that dies before any response byte was read has, by definition,
+/// streamed nothing, so a second attempt cannot duplicate text, a tool call or an
+/// approval. What it can do is survive a connection closed under it - by the
+/// peer, a proxy, or a pool race no client can fully close - which is otherwise
+/// reported to the operator as a dead turn with half an answer.
+const SEND_ATTEMPTS: usize = 2;
+
 /// An OpenAI-compatible chat-completions provider.
 #[derive(Debug)]
 pub struct OpenAiCompatProvider {
@@ -68,6 +91,7 @@ impl OpenAiCompatProvider {
         let http = Client::builder()
             .user_agent(concat!("kallisti-eris/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(CONNECT_TIMEOUT)
+            .pool_idle_timeout(POOL_IDLE_TIMEOUT)
             .build()
             .map_err(|error| {
                 classify::protocol(format!("could not build the HTTP client: {error}"))
@@ -229,22 +253,40 @@ impl OpenAiCompatProvider {
         let url = self.chat_completions_url();
         let body = self.build_body(request);
 
-        let response = self
-            .http
-            .post(&url)
-            .bearer_auth(key.expose())
-            .header(reqwest::header::ACCEPT, "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| {
-                classify::classify_request_failure(
-                    error.is_connect(),
-                    error.is_timeout(),
-                    error.is_body(),
-                    &describe_request_error(&url, &error),
-                )
-            })?;
+        // One retry, and only for the failure that means "the connection went
+        // away before the answer started". See `SEND_ATTEMPTS`.
+        let mut attempt = 1;
+        let response = loop {
+            let sent = self
+                .http
+                .post(&url)
+                .bearer_auth(key.expose())
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .json(&body)
+                .send()
+                .await;
+            match sent {
+                Ok(response) => break response,
+                Err(error)
+                    if worth_another_attempt(
+                        attempt,
+                        error.is_connect(),
+                        error.is_timeout(),
+                        error.is_body(),
+                    ) =>
+                {
+                    attempt += 1;
+                }
+                Err(error) => {
+                    return Err(classify::classify_request_failure(
+                        error.is_connect(),
+                        error.is_timeout(),
+                        error.is_body(),
+                        &describe_request_error(&url, &error),
+                    ));
+                }
+            }
+        };
 
         let status = response.status();
         if !status.is_success() {
@@ -328,6 +370,23 @@ impl Provider for OpenAiCompatProvider {
     fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
+}
+
+/// Whether a failed request is worth one more attempt on a fresh connection.
+///
+/// `connect` and `timeout` are endpoint-level verdicts: a refused or unreachable
+/// gateway refuses or hangs again, so a retry only doubles the wait before the
+/// operator reads the same failure. A body error is this client's own encoding,
+/// which a second attempt would repeat byte for byte. What is left is the request
+/// that reached a socket and got nothing back - the connection closed under it -
+/// and that is exactly the case a fresh connection fixes.
+const fn worth_another_attempt(
+    attempt: usize,
+    is_connect: bool,
+    is_timeout: bool,
+    is_body: bool,
+) -> bool {
+    attempt < SEND_ATTEMPTS && !is_connect && !is_timeout && !is_body
 }
 
 /// Describe a failed request without leaking anything but the URL and the cause.
@@ -507,5 +566,39 @@ mod tests {
             OpenAiCompatProvider::new(profile, ModelProfile::new("llama3"), capabilities),
             Err(LlmError::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn a_request_the_peer_dropped_gets_exactly_one_more_attempt() {
+        assert!(worth_another_attempt(1, false, false, false));
+        assert!(
+            !worth_another_attempt(2, false, false, false),
+            "the budget is one retry, not a loop"
+        );
+    }
+
+    #[test]
+    fn endpoint_level_failures_are_reported_rather_than_retried() {
+        for (is_connect, is_timeout, is_body) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            assert!(
+                !worth_another_attempt(1, is_connect, is_timeout, is_body),
+                "connect={is_connect} timeout={is_timeout} body={is_body} \
+                 cannot be fixed by a second connection"
+            );
+        }
+    }
+
+    #[test]
+    fn the_client_does_not_hold_a_connection_past_a_gateway_keep_alive() {
+        // 9router advertises `Keep-Alive: timeout=5`; a pooled connection kept
+        // longer than that is one the server has already dropped.
+        assert!(
+            POOL_IDLE_TIMEOUT < Duration::from_secs(5),
+            "an idle pool entry must expire before a 5 second gateway timer does"
+        );
     }
 }

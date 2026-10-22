@@ -22,7 +22,9 @@ tokio-stream = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }
+# `net` and `io-util` are for the keep-alive test: the only honest way to prove a
+# dropped connection is retried is to be the server that drops it.
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }
 uuid = { workspace = true }
 
 [lints]

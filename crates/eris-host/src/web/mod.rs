@@ -10,6 +10,7 @@ pub mod backups;
 pub mod chat;
 pub mod css;
 pub mod dsml;
+pub mod live;
 pub mod proxy;
 pub mod qr;
 pub mod quota;
