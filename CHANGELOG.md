@@ -6,6 +6,17 @@ observe; commit history carries the detail.
 
 ## 1.4.2
 
+- **A connection closed mid-turn no longer costs the answer.** A long turn on
+  2026-10-22 got twenty-two rounds into a conversation, then died with "connection
+  closed before message completed" and kept the half-sentence it had written. The
+  request had been written into a socket the gateway had already dropped, so the
+  gateway logged nothing at all and only the client ever saw the failure. Two
+  changes. The HTTP client no longer offers a pooled connection that has been idle
+  longer than a gateway's own keep-alive (9router advertises five seconds; the pool
+  default was ninety), and a request that dies before a single response byte is put
+  on a fresh connection once, which cannot duplicate anything because nothing had
+  streamed. A repeated failure still reports normally. `build 94`.
+
 - **Asking is a normal move again.** The old stack had a clarify card: a turn could
   stop mid-flight, ask, and resume on the answer. 1.0 had no such path, so a turn
   facing a real decision either guessed or stalled, and "does clarify work" was a
