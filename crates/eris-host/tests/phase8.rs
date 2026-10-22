@@ -86,6 +86,20 @@ impl Harness {
         let paths = Paths::for_root(dir.path().join("root"));
         let db = Db::open(&paths.db_file).expect("db opens");
         let engine = SetupEngine::new(db.clone(), paths);
+        // A workspace inside the temp root, created here rather than left to the
+        // default. Without it the daemon falls back to `~/kallisti-workspace`, so
+        // a test that approves a write passes only on a host where that directory
+        // happens to exist - which is exactly how this suite was green here and
+        // red on CI, where approving the call answered 422 approval_not_run with
+        // "No such file or directory".
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        engine
+            .set_setting(
+                eris_host::onboarding::SETTING_WORKSPACE,
+                &workspace.display().to_string(),
+            )
+            .expect("workspace setting");
         engine
             .set_provider(provider_url, TEST_KEY_REF, &["p8-model".to_owned()])
             .expect("provider settings");
