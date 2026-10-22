@@ -27,10 +27,31 @@ observe; commit history carries the detail.
 - **The conversation gets the window.** The transcript used to sit in an 880px
   column inside the 1180px prose wrap, so on a wide screen a band of empty width
   ran down each side of it that nothing could be typed into. The chat page now
-  lets its wrap fill the window, the shell keeps a 1180px cap so a very wide
-  display does not stretch a paragraph to 200 characters a line, and a bubble is
-  as wide as what is in it up to that cap instead of stopping at a fixed 48rem.
-  `build 88`.
+  lets its wrap fill the window, and the shell keeps a 1180px cap so a very wide
+  display does not run the composer off the screen. `build 88`.
+- **A bubble is sized by the screen, not by its text.** Two things were wrong at
+  once. The transcript was a grid with no column declared, so its implicit `auto`
+  track sized to the widest child: one long paragraph, code block or table made
+  the whole column wider than the window, which pushed a right-aligned operator
+  bubble off the right edge and left the answer scrolling sideways. The track is
+  now one bounded column (`minmax(0, 1fr)`), and a bubble takes a fixed share of
+  the window (`width: min(100%, clamp(22rem, 78vw, 52rem))`) so every message sits
+  in the same column - a short answer no longer hugs its text while the next one
+  spans the screen. A bubble and its contents are capped at `100%`, and the 520px
+  table floor that used to apply to every table on a phone now applies only to a
+  settings card, so a table in a reply cannot widen the conversation either.
+  `build 90`. Supersedes the `max-width`-only measure in `build 89`, which capped
+  how wide a bubble may *look* without stopping its content from widening the row.
+
+- **The run log holds its shape.** Command output used to wrap, so every time
+  the window or the panel changed width the log re-laid itself out under the
+  reader - the lines moved while they were being read. It does not reflow now:
+  a line is the width the command printed, `white-space: pre`, and the window
+  scrolls left to right so the end of a long line is a drag away instead of a
+  rewrap. The window keeps its own width (`max-width: 100%`) so the conversation
+  around it does not resize either, and `overflow: auto` keeps the vertical scroll
+  it already had. Reading the log is a manual act, so nothing about it is
+  automatic. `build 90`.
 
 - **A rate or usage limit is no longer a silent failure.** 9router reports a
   locked account as a 503 whose body carries the upstream `[429]`; Eris now reads

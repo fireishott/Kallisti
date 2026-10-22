@@ -1144,6 +1144,11 @@ pre.code {
   position: relative;
   z-index: 1;
   display: grid;
+  /* One explicit track, bounded by the container. An implicit `auto` track sizes
+     to its widest item's max-content, so one long paragraph, code block or table
+     made the whole column wider than the window and pushed the right-aligned
+     operator bubble off the screen edge. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-content: start;
   padding: 4px 2px 12px;
@@ -1154,10 +1159,17 @@ pre.code {
 }
 .thread:empty { display: none; }
 
-/* A bubble is as wide as what is in it, up to the column: a one-line answer
-   still reads as one line, and a table or a long paragraph uses the width the
-   window actually has instead of wrapping at a fixed 48rem inside it. */
-.msg { display: flex; flex-direction: column; max-width: 100%; }
+/* A bubble is sized by the screen, not by its own text: every bubble takes the
+   same share of the window, so a three-word answer and a table sit in one column
+   and the conversation reads as a column instead of a ragged stack. The floor
+   keeps a readable measure in a narrow split view; the ceiling stops a paragraph
+   becoming one 130-character line on a desk display. */
+.msg {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, clamp(22rem, 78vw, 52rem));
+  min-width: 0;
+}
 .msg.user { margin-left: auto; align-items: flex-end; }
 .msg.assistant { margin-right: auto; align-items: flex-start; }
 .msg .who {
@@ -1178,7 +1190,13 @@ pre.code {
   font-size: 14.5px;
   line-height: 1.62;
   overflow-wrap: anywhere;
+  /* Neither the bubble nor what it holds may widen the column it sits in. */
+  max-width: 100%;
+  min-width: 0;
 }
+.msg .bubble pre,
+.msg .bubble pre.code,
+.msg .bubble table { max-width: 100%; }
 .msg.user .bubble {
   border-radius: 14px 14px 5px 14px;
   border-color: var(--line-strong);
@@ -1385,9 +1403,18 @@ pre.code {
   color: var(--text);
   opacity: 0.9;
   max-height: 132px;
+  /* Both axes, because the body no longer wraps: a long line runs past the right
+     edge and the operator scrolls to it. The window keeps its width, so nothing
+     outside it moves. */
+  max-width: 100%;
   overflow: auto;
 }
-.msg .term-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Output does not reflow. A command's line is the width it printed, and the
+   window scrolls left to right to reach the end of it. Wrapping here made the
+   log re-lay itself out every time the window or the panel changed width, which
+   moved text under the operator's eyes while they were reading it. The log is
+   something a person reads and scrolls by hand, so it holds its shape. */
+.msg .term-line { white-space: pre; overflow-wrap: normal; }
 /* The command reads like the command, in the accent, because it is the line the
    operator typed and the rest answers it. */
 .msg .term-line.prompt { color: var(--platinum); opacity: 0.85; }
@@ -2045,7 +2072,7 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
   /* The figure sits right of centre in the artwork. Cropped to a phone's width
      the centre of the frame is empty sky, so the frame is anchored where she is. */
   .app-wall { background-position: 88% center; }
-  .msg { max-width: 100%; }
+  .msg { width: 100%; }
   /* A pairing code at desktop scale would need a desktop-width screen. It drops
      to a size that fits a phone and wraps instead of pushing the card wide. */
   .pairing-code { font-size: 17px; letter-spacing: 0.12em; padding: 12px 14px; }
@@ -2059,7 +2086,7 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
 @media (max-width: 700px) {
   th, td { padding: 9px 8px; }
   .card:has(table) { overflow-x: auto; }
-  table { min-width: 520px; }
+  .card:has(table) table { min-width: 520px; }
   .card:has(table) > h2 { position: sticky; left: 0; }
 }
 "#;
@@ -2131,6 +2158,32 @@ mod tests {
         );
     }
 
+    /// The run log holds its shape. Output is not prose, so it does not reflow:
+    /// a long line runs past the right edge of its window and the operator
+    /// scrolls to the end of it, both axes, by hand. Wrapping was what made the
+    /// log re-lay itself out under the reader whenever the window changed width.
+    #[test]
+    fn the_run_log_holds_its_shape_and_scrolls_instead_of_rewrapping() {
+        let term = rule(".msg .term-line");
+        assert!(
+            term.contains("white-space: pre;"),
+            "output keeps the width it printed: {term}"
+        );
+        assert!(
+            term.contains("overflow-wrap: normal"),
+            "and is never broken mid-token to fit: {term}"
+        );
+        let body = rule(".msg .win-body");
+        assert!(
+            body.contains("overflow: auto"),
+            "the window scrolls on both axes, so a wide line is reachable: {body}"
+        );
+        assert!(
+            body.contains("max-width: 100%"),
+            "and the window never widens the conversation: {body}"
+        );
+    }
+
     /// The send control is a control in the row: one height, one corner, a quiet
     /// surface, and the platinum channel kept for the label so it still reads as
     /// the submit. It also keeps a focus ring.
@@ -2174,9 +2227,10 @@ mod tests {
     }
 
     /// The conversation is the page: the transcript is not held inside the prose
-    /// measure, and a bubble may use the width the window actually has. The 880px
-    /// shell centred in a capped 1180px column is what left an empty band down
-    /// each side of the chat that nothing could be typed into.
+    /// measure, and a bubble is sized by the screen rather than by its own text.
+    /// The 880px shell centred in a capped 1180px column is what left an empty
+    /// band down each side of the chat that nothing could be typed into; the row
+    /// that tracked its widest child is what pushed a reply off the edge.
     #[test]
     fn the_transcript_uses_the_width_the_window_has() {
         let wrap = rule(".app > .wrap:has(> .chat-shell)");
@@ -2194,8 +2248,16 @@ mod tests {
             "the shell keeps a readable cap of its own"
         );
         assert!(
-            rule(".msg").contains("max-width: 100%"),
-            "a bubble is not capped below the column it sits in"
+            rule(".thread").contains("grid-template-columns: minmax(0, 1fr)"),
+            "the transcript has one track that cannot be widened by its contents"
+        );
+        assert!(
+            rule(".msg").contains("width: min(100%, clamp(22rem, 78vw, 52rem))"),
+            "a bubble is sized by the screen, up to a readable cap"
+        );
+        assert!(
+            rule(".msg .bubble").contains("max-width: 100%"),
+            "a bubble cannot widen the column it sits in"
         );
     }
 
