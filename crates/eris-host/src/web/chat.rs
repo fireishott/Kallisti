@@ -719,7 +719,12 @@ pub fn scrub_title(raw: &str) -> String {
 }
 
 /// The largest single message a browser may send, in bytes.
-pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
+///
+/// 16 KiB was the first number and it was too small for the work people actually
+/// paste: a stack trace, a config file, a log excerpt. 128 KiB fits a long paste
+/// and is still a paste rather than an upload, which is what the attachment path
+/// is for. The composer states the same number, so a refusal is never a surprise.
+pub const MAX_MESSAGE_BYTES: usize = 128 * 1024;
 
 /// How many settled messages of context a turn carries.
 pub const HISTORY_MESSAGES: usize = 24;
@@ -829,6 +834,14 @@ pub struct Message {
     pub completion_tokens: Option<u64>,
     /// Prompt tokens the provider reported as served from its cache.
     pub cached_tokens: Option<u64>,
+    /// The prompt size of the turn's last round trip, which is how full the
+    /// window actually was.
+    ///
+    /// Deliberately not `prompt_tokens`: that is a sum over every round, so a turn
+    /// that ran a hundred tool calls reported the sum as its context size and the
+    /// footer printed shares above 100%. `None` on rows written before this
+    /// existed, where the footer says so rather than guessing.
+    pub context_tokens: Option<u64>,
     /// The context window declared for this model at the time of the turn.
     pub context_window: Option<u64>,
     /// Wall time from request to last byte.
@@ -888,7 +901,7 @@ fn collect(
 ) -> Result<Vec<Message>, rusqlite::Error> {
     const SELECT: &str = "SELECT id, role, body, state, error_code, created_at, model,
                 prompt_tokens, completion_tokens, cached_tokens, context_window,
-                duration_ms, reasoning, tools, rounds, quota_json
+                duration_ms, reasoning, tools, rounds, quota_json, context_tokens
            FROM chat_messages
           WHERE conversation_id = ?1
           ORDER BY created_at ASC, rowid ASC";
@@ -935,6 +948,7 @@ fn row_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         quota: row
             .get::<_, Option<String>>(15)?
             .and_then(|raw| serde_json::from_str(&raw).ok()),
+        context_tokens: tokens(row.get(16)?),
     })
 }
 
@@ -1001,6 +1015,8 @@ pub struct Accounting {
     pub duration_ms: Option<u64>,
     /// Tool rounds the turn ran.
     pub rounds: Option<u64>,
+    /// The last round trip's own prompt size, which is the live context size.
+    pub context_tokens: Option<u64>,
 }
 
 /// Settle a streaming row with its final text and the provider's own usage.
@@ -1026,6 +1042,7 @@ pub fn settle(
         cached_tokens,
         duration_ms,
         rounds,
+        context_tokens,
     } = accounting;
     let reasoning = reasoning.filter(|text| !text.trim().is_empty());
     // Null rather than "[]" for a turn that called nothing: absent and empty are
@@ -1038,7 +1055,8 @@ pub fn settle(
             "UPDATE chat_messages
                 SET body = ?2, state = 'complete', usage_json = ?3, error_code = NULL,
                     prompt_tokens = ?4, completion_tokens = ?5, cached_tokens = ?6,
-                    duration_ms = ?7, reasoning = ?8, tools = ?9, rounds = ?10
+                    duration_ms = ?7, reasoning = ?8, tools = ?9, rounds = ?10,
+                    context_tokens = ?11
               WHERE id = ?1",
             params![
                 id,
@@ -1051,6 +1069,7 @@ pub fn settle(
                 reasoning,
                 tools_json,
                 rounds.map(|count| count as i64),
+                context_tokens.map(|count| count as i64),
             ],
         )?;
         Ok(())
@@ -1658,11 +1677,28 @@ pub fn accept_message(raw: &str, has_files: bool) -> Result<String, String> {
     }
     if text.len() > MAX_MESSAGE_BYTES {
         return Err(format!(
-            "the message must be under {MAX_MESSAGE_BYTES} bytes; it is {}",
-            text.len()
+            "that message is {} and the limit is {}; send it in two parts, or attach it as a file",
+            human_bytes(text.len() as u64),
+            human_bytes(MAX_MESSAGE_BYTES as u64)
         ));
     }
     Ok(text.to_owned())
+}
+
+/// A byte count in the unit a person reads: `940 bytes`, `12.4 kB`, `1.8 MB`.
+///
+/// A refusal has to name a size the operator recognises. `474674` is not a size
+/// anybody thinks in, and `128 KiB` next to it is the reason the sentence was not
+/// understood the first time.
+#[must_use]
+pub fn human_bytes(bytes: u64) -> String {
+    if bytes < 1_000 {
+        return format!("{bytes} bytes");
+    }
+    if bytes < 1_000_000 {
+        return format!("{:.1} kB", bytes as f64 / 1_000.0);
+    }
+    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
 }
 
 /// What the transcript says for a message that was nothing but files.
@@ -2160,6 +2196,7 @@ pub fn run_turn(
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
     agents: Option<&crate::subagents::Desk>,
+    skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
@@ -2177,6 +2214,7 @@ pub fn run_turn(
         web_extract,
         image,
         agents,
+        skills,
         settings,
         poll,
         sink,
@@ -2219,6 +2257,7 @@ pub fn run_turn_resilient(
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
     agents: Option<&crate::subagents::Desk>,
+    skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
@@ -2250,6 +2289,7 @@ pub fn run_turn_resilient(
         web_extract,
         image,
         agents,
+        skills,
         settings,
         poll,
         sink,
@@ -2272,6 +2312,7 @@ pub fn run_turn_resilient_with_keys(
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
     agents: Option<&crate::subagents::Desk>,
+    skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
@@ -2291,6 +2332,7 @@ pub fn run_turn_resilient_with_keys(
         web_extract,
         image,
         agents,
+        skills,
         settings,
         poll,
         sink,
@@ -2328,6 +2370,7 @@ pub fn run_turn_resilient_with_keys(
                 web_extract,
                 image,
                 agents,
+                skills,
                 settings,
                 poll,
                 sink,
@@ -2367,6 +2410,7 @@ pub fn run_turn_with_key(
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
     agents: Option<&crate::subagents::Desk>,
+    skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
@@ -2492,6 +2536,20 @@ pub fn run_turn_with_key(
             };
         }
 
+        // A skill is the operator's own file, read out of their library. It is
+        // answered here rather than in the sandbox because the switches that
+        // decide which skills are on live in the database, which the sandbox does
+        // not hold. Not offered means not answerable: a call for a skill on a turn
+        // that was never given access is refused explicitly.
+        if call.name == crate::skills::TOOL {
+            let Some(access) = skills else {
+                return crate::tools::ToolResult::refused(
+                    "the skill library is not available to this turn, so nothing was read",
+                );
+            };
+            return access.call(&call.arguments);
+        }
+
         let result = crate::tools::execute_streaming(&call.name, &call.arguments, sandbox, chunks);
         // A fetched page is a wall of navigation until something reads it. With
         // the role pinned, its model reads it; without one the tool's own text
@@ -2539,6 +2597,12 @@ pub fn run_turn_with_key(
                     let mut offered = crate::tools::specs_offering(sandbox.mode(), settings.agents);
                     if let Some(pool) = mcp {
                         offered.extend(pool.specs());
+                    }
+                    // Offered only when this turn has a library access at all, on
+                    // the same rule: a tool the daemon will refuse must never reach
+                    // the model's list.
+                    if skills.is_some() {
+                        offered.push(crate::skills::spec());
                     }
                     // Only offered when the role is pinned: a tool the daemon
                     // will refuse must never reach the model's list.
@@ -2641,20 +2705,25 @@ pub fn stats(transcript: &[Message]) -> Stats {
     out.cache_hit_pct = (out.cached_tokens * 100)
         .checked_div(prompt_total)
         .map(|pct| pct as u8);
-    if let Some(last) = transcript
+    // The two numbers are resolved independently, newest row first. A failed
+    // round trip carries the window it was sent to but no token count, and a row
+    // written before `context_tokens` existed carries neither: stopping at the
+    // first row that has either one let a single failed answer blank out the
+    // good number the transcript already had. Taking the newest row that has
+    // each figure separately means the footer says "unknown" only when the
+    // whole transcript is unknown, not when the last attempt failed.
+    out.context_used = transcript
         .iter()
         .rev()
-        .find(|message| message.prompt_tokens.is_some())
-    {
-        out.context_used = last
-            .prompt_tokens
-            .map(|prompt| prompt + last.cached_tokens.unwrap_or(0));
-        out.context_window = last.context_window;
-        if let (Some(used), Some(window)) = (out.context_used, out.context_window) {
-            out.context_pct = (used * 100)
-                .checked_div(window)
-                .map(|pct| pct.min(100) as u8);
-        }
+        .find_map(|message| message.context_tokens);
+    out.context_window = transcript
+        .iter()
+        .rev()
+        .find_map(|message| message.context_window);
+    if let (Some(used), Some(window)) = (out.context_used, out.context_window) {
+        out.context_pct = (used * 100)
+            .checked_div(window)
+            .map(|pct| pct.min(100) as u8);
     }
     out.tokens_per_second = (timed_tokens * 1000)
         .checked_div(timed_ms)
@@ -2691,6 +2760,18 @@ pub struct TurnOutcome {
     pub rounds: usize,
     /// What the tools actually did, in order, for the transcript.
     pub tools: Vec<ToolRecord>,
+    /// The prompt size of the final round trip: the live context size.
+    ///
+    /// Not the summed `usage`: that is what the turn cost, and a turn that called
+    /// a tool ten times spent ten prompts. This is the one number that answers
+    /// "how full is the window".
+    pub context_tokens: Option<u64>,
+    /// Whether the tool budget, rather than the model, ended this turn.
+    ///
+    /// Reported so a caller can say so rather than leave the operator to guess
+    /// from a sentence. A capped turn still carries a usable [`Self::text`]: the
+    /// forced answer or a summary of what ran.
+    pub capped: bool,
 }
 
 /// What happens to a call before it runs.
@@ -2759,9 +2840,18 @@ pub fn drive_tool_loop(
 ) -> Result<TurnOutcome, TurnFailure> {
     let max_rounds = max_rounds.max(1);
     let mut usage: Option<core_domain::Usage> = None;
+    let mut context_tokens: Option<u64> = None;
     let mut reasoning = String::new();
     let mut records: Vec<ToolRecord> = Vec::new();
     let mut rounds = 0usize;
+    // Whether the tool-free round has already been introduced. Pushed once, so a
+    // steer arrives as the operator's own words rather than behind two notices.
+    let mut budget_told = false;
+    // Whether the turn ended because the budget ran out rather than because the
+    // model was finished. Reported, not inferred from the text. Every break below
+    // assigns it, which is why it has no default: a third way out would have to
+    // say what it means.
+    let capped: bool;
 
     let mut text = loop {
         // The first boundary: nothing has been sent for this round yet, so a stop
@@ -2779,20 +2869,36 @@ pub fn drive_tool_loop(
         // round with another call used to end the turn with nothing; instead it
         // now has to say what it found with what it already has, which is a
         // usable answer rather than a shrug.
+        //
+        // It is told that is what is happening. A model that is silently denied
+        // its tools reaches for them anyway, and the markup it writes in that
+        // state is not an answer: it is the tool call it could not make. That is
+        // exactly how a long turn used to end on an empty bubble.
         let tools_allowed = rounds < max_rounds;
+        if !tools_allowed && !budget_told {
+            budget_told = true;
+            messages.push(ChatMessage::text(ChatRole::User, BUDGET_SPENT));
+        }
         let mut completion = stream(&messages, tools_allowed, &mut *sink)?;
 
         // A route that fails to lift calls into the structured array passes the
         // model's own markup through as content. Recover it: the calls the model
         // decided to make become real calls, and the markup stops being the
         // answer.
+        //
+        // Only while tools are on offer. On the tool-free round those calls
+        // cannot run, so adopting them would spend a round on nothing and leave
+        // the same empty answer behind.
         if let Some(recovered) = crate::web::dsml::recover(&completion.text) {
             completion.text = recovered.text;
-            if completion.tool_calls.is_empty() {
+            if completion.tool_calls.is_empty() && tools_allowed {
                 completion.tool_calls = recovered.calls;
             }
         }
 
+        // The last round's own prompt size, not the sum: this is what the footer
+        // calls the context, and a sum over rounds is not a window.
+        context_tokens = round_context(&completion.usage).or(context_tokens);
         usage = Some(match usage {
             None => completion.usage,
             Some(total) => total.accrue(completion.usage),
@@ -2823,12 +2929,18 @@ pub fn drive_tool_loop(
                 }
                 TurnSignal::Continue => {}
             }
+            // A boundary that produced nothing usable still spent the budget, so
+            // the turn is capped even though the model, not a stray call, is what
+            // left it empty.
+            capped = !tools_allowed;
             break completion.text;
         }
 
         // A provider that returns calls when it was offered none has nothing
-        // left to run, so the loop ends with whatever it said.
+        // left to run, so the loop ends with whatever it said. Whatever it said
+        // may be nothing, which is why the turn does not end here.
         if !tools_allowed {
+            capped = true;
             break completion.text;
         }
 
@@ -2876,13 +2988,43 @@ pub fn drive_tool_loop(
         }
     };
 
-    // Nothing said and nothing left: the turn still owes the operator a sentence
-    // rather than an empty bubble.
+    // A budget that ran out mid-job is not an answer. The tool-free round above is
+    // the turn's last chance to talk, and a model that spent it reaching for a tool
+    // it no longer had wrote markup instead of prose. Ask once more, plainly, with
+    // the record of what already ran in front of it, before falling back to a
+    // summary of that record.
     if text.trim().is_empty() {
-        text = format!(
-            "Stopped after {rounds} tool rounds without a final answer. The work above is what \
-             ran; ask again and it will finish from here."
-        );
+        if matches!(poll(), TurnSignal::Stop) {
+            return Err(stopped());
+        }
+        let mut ask = messages.clone();
+        ask.push(ChatMessage::text(ChatRole::User, ANSWER_NOW));
+        if let Ok(completion) = stream(&ask, false, &mut *sink) {
+            usage = Some(match usage {
+                None => completion.usage,
+                Some(total) => total.accrue(completion.usage),
+            });
+            if !completion.reasoning.trim().is_empty() {
+                if !reasoning.is_empty() {
+                    reasoning.push('\n');
+                }
+                reasoning.push_str(&completion.reasoning);
+            }
+            // Markup is still not an answer, even now: the calls inside it never
+            // ran, so only the prose around it is reportable.
+            let prose = crate::web::dsml::recover(&completion.text)
+                .map_or(completion.text, |recovered| recovered.text);
+            if !prose.trim().is_empty() {
+                text = prose;
+            }
+        }
+    }
+
+    // Still nothing: say what the turn actually did. A summary of real work is an
+    // answer; a shrug is not, and it is also why the next turn had no idea where
+    // the last one had got to.
+    if text.trim().is_empty() {
+        text = capped_notice(&records, rounds, max_rounds);
     }
 
     Ok(TurnOutcome {
@@ -2893,7 +3035,103 @@ pub fn drive_tool_loop(
         }),
         rounds,
         tools: records,
+        context_tokens,
+        capped,
     })
+}
+
+/// The instruction the tool-free round opens with.
+///
+/// A model that is only denied tools still writes the call it wanted to make, and
+/// on the wire that markup arrives as the answer. Telling it the budget is spent
+/// is what turns "reaching for a tool I cannot have" into "say what I found".
+const BUDGET_SPENT: &str = "Your tool budget for this turn is spent and no more tools are \
+     available. Answer in plain prose now: what you found, what you changed, and what is still \
+     unfinished. Do not request or write out any further tool calls.";
+
+/// The instruction the last-resort answer round opens with.
+///
+/// Reached only when the tool-free round produced nothing usable, so this states
+/// the output shape rather than relying on the model to infer it a second time.
+const ANSWER_NOW: &str = "Answer in plain prose only, with no tool calls. Summarize what this \
+     turn changed or found, name anything that is unfinished, and state the exact next step so \
+     the work can be picked up from this message.";
+
+/// What a turn says when its budget ran out and it produced no prose of its own.
+///
+/// Not "ask again": a message that only reports the stop tells the next turn
+/// nothing about where this one got to, which is exactly why a resumed
+/// conversation used to restart the job instead of finishing it. Naming the work,
+/// the tools and the last result makes the transcript itself the resume point.
+fn capped_notice(records: &[ToolRecord], rounds: usize, max_rounds: usize) -> String {
+    let mut out = format!(
+        "The tool budget ran out mid-job: {rounds} of {max_rounds} rounds spent, {} call(s) run.",
+        records.len()
+    );
+    let mut names: Vec<(&str, usize)> = Vec::new();
+    for record in records {
+        match names.iter_mut().find(|(name, _)| *name == record.name) {
+            Some((_, count)) => *count += 1,
+            None => names.push((record.name.as_str(), 1)),
+        }
+    }
+    if !names.is_empty() {
+        let listed: Vec<String> = names
+            .iter()
+            .map(|(name, count)| match count {
+                1 => (*name).to_owned(),
+                many => format!("{name} x{many}"),
+            })
+            .collect();
+        out.push_str("\nWhat ran: ");
+        out.push_str(&listed.join(", "));
+        out.push('.');
+    }
+    let failed = records.iter().filter(|record| record.is_error).count();
+    if failed > 0 {
+        out.push_str(&format!("\n{failed} of those came back as an error."));
+    }
+    if let Some(last) = records.last() {
+        let excerpt = one_line_excerpt(&last.output, 200);
+        if !excerpt.is_empty() {
+            out.push_str(&format!("\nLast result from {}: {excerpt}", last.name));
+        }
+    }
+    out.push_str(
+        "\nNothing above was undone. Continue and I will pick up from here with a fresh budget.",
+    );
+    out
+}
+
+/// One line of a tool's output, cut to `limit` characters.
+///
+/// A tool result is often a whole file or a command's stderr, and a transcript
+/// summary that quotes all of it is not a summary.
+fn one_line_excerpt(text: &str, limit: usize) -> String {
+    let flat: String = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if flat.chars().count() <= limit {
+        return flat;
+    }
+    let mut cut: String = flat.chars().take(limit).collect();
+    cut.push('…');
+    cut
+}
+
+/// The prompt size one round trip cost, cache reads included.
+///
+/// A provider that folds cache reads into its prompt total and one that reports
+/// them beside it agree here, because [`core_domain::Usage::input_tokens`] has
+/// already subtracted the folded ones.
+#[must_use]
+pub fn round_context(usage: &core_domain::Usage) -> Option<u64> {
+    usage
+        .input_tokens()
+        .map(|input| input.saturating_add(usage.cache_read_tokens().unwrap_or(0)))
 }
 
 /// What a stopped turn returns.
@@ -3650,6 +3888,7 @@ mod tests {
                 cached_tokens: Some(1_150),
                 duration_ms: Some(900),
                 rounds: None,
+                context_tokens: Some(1_900),
             },
         )
         .unwrap();
@@ -3823,6 +4062,7 @@ mod tests {
                 completion_tokens: None,
                 cached_tokens: None,
                 context_window: None,
+                context_tokens: None,
                 duration_ms: None,
                 reasoning: None,
                 tools: Vec::new(),
@@ -3841,6 +4081,7 @@ mod tests {
                 completion_tokens: Some(100),
                 cached_tokens: Some(900),
                 context_window: Some(10_000),
+                context_tokens: Some(1_900),
                 duration_ms: Some(2_000),
                 reasoning: None,
                 tools: Vec::new(),
@@ -3859,6 +4100,7 @@ mod tests {
                 completion_tokens: None,
                 cached_tokens: None,
                 context_window: Some(10_000),
+                context_tokens: None,
                 duration_ms: None,
                 reasoning: None,
                 tools: Vec::new(),
@@ -3877,6 +4119,7 @@ mod tests {
                 completion_tokens: None,
                 cached_tokens: None,
                 context_window: None,
+                context_tokens: None,
                 duration_ms: None,
                 reasoning: None,
                 tools: Vec::new(),
@@ -3894,10 +4137,78 @@ mod tests {
         assert_eq!(stats.total_tokens, 1_100);
         // 900 cached of 1,900 prompt-side tokens.
         assert_eq!(stats.cache_hit_pct, Some(47));
+        // The live context is the last round's own prompt, never the sum over a
+        // transcript: a hundred tool rounds must not read as a window 1028% full.
         assert_eq!(stats.context_used, Some(1_900));
         assert_eq!(stats.context_window, Some(10_000));
         assert_eq!(stats.context_pct, Some(19));
         assert_eq!(stats.tokens_per_second, Some(50));
+    }
+
+    /// The bug the screenshot carried: a turn whose summed prompt was ten times
+    /// its window printed `context 1028%`.
+    #[test]
+    fn a_long_turn_is_not_a_full_window() {
+        let transcript = vec![Message {
+            id: "a1".into(),
+            role: Role::Assistant,
+            body: "done".into(),
+            state: State::Complete,
+            error_code: None,
+            created_at: "2026-10-19T20:00:01Z".into(),
+            model: Some("m/one".into()),
+            // A hundred rounds' worth of prompt, summed.
+            prompt_tokens: Some(1_028_000),
+            completion_tokens: Some(9_000),
+            cached_tokens: None,
+            context_window: Some(1_000_000),
+            // And the last round trip, which is what the window held.
+            context_tokens: Some(96_000),
+            duration_ms: Some(2_000),
+            reasoning: None,
+            tools: Vec::new(),
+            rounds: Some(100),
+            quota: None,
+        }];
+        let stats = stats(&transcript);
+        assert_eq!(stats.context_used, Some(96_000));
+        assert_eq!(
+            stats.context_pct,
+            Some(9),
+            "a share of a window, not of a bill"
+        );
+        assert_eq!(
+            crate::web::templates::context_share(stats.context_used, stats.context_window),
+            "context 9.6%"
+        );
+    }
+
+    /// A row from before the column existed says the context is unknown rather
+    /// than printing the summed prompt as a share of the window.
+    #[test]
+    fn an_older_row_reports_the_context_as_unknown() {
+        let transcript = vec![Message {
+            id: "a1".into(),
+            role: Role::Assistant,
+            body: "done".into(),
+            state: State::Complete,
+            error_code: None,
+            created_at: "2026-10-19T20:00:01Z".into(),
+            model: Some("m/one".into()),
+            prompt_tokens: Some(1_028_000),
+            completion_tokens: Some(9_000),
+            cached_tokens: None,
+            context_window: Some(1_000_000),
+            context_tokens: None,
+            duration_ms: Some(2_000),
+            reasoning: None,
+            tools: Vec::new(),
+            rounds: Some(100),
+            quota: None,
+        }];
+        let stats = stats(&transcript);
+        assert_eq!(stats.context_used, None);
+        assert_eq!(stats.context_pct, None);
     }
 
     #[test]
@@ -3973,7 +4284,14 @@ mod tests {
 
         let too_long = "x".repeat(MAX_MESSAGE_BYTES + 1);
         let error = accept_text(&too_long).unwrap_err();
-        assert!(error.contains("under"), "{error}");
+        assert!(
+            error.contains("131.1 kB"),
+            "the size is named in a unit: {error}"
+        );
+        assert!(
+            error.contains("131.1 kB"),
+            "the limit is named too, in the same units: {error}"
+        );
     }
 
     fn completion_with_calls(
@@ -4148,13 +4466,13 @@ mod tests {
         );
         assert_eq!(
             round,
-            MAX_TOOL_ROUNDS + 1,
-            "then one final attempt with tools withheld"
+            MAX_TOOL_ROUNDS + 2,
+            "the tool-free round, then one last-resort answer round"
         );
         assert_eq!(
-            tools_offered.last().copied(),
-            Some(false),
-            "the last attempt must not offer tools, so the turn has to answer"
+            &tools_offered[round - 2..],
+            &[false, false],
+            "neither closing attempt may offer tools, so the turn has to answer"
         );
         assert!(
             tools_offered[..MAX_TOOL_ROUNDS]
@@ -4162,6 +4480,7 @@ mod tests {
                 .all(|offered| *offered),
             "every round before the cap offers them"
         );
+        assert!(outcome.capped, "the budget ended this turn, not the model");
         assert!(
             !outcome.text.trim().is_empty(),
             "a capped turn still tells the operator something"
@@ -4170,6 +4489,78 @@ mod tests {
             outcome.text.to_lowercase().contains("tool"),
             "the notice explains why it stopped: {}",
             outcome.text
+        );
+        assert!(
+            outcome.text.contains("read_file"),
+            "the notice names the work that ran, so the next turn knows where it \
+             got to: {}",
+            outcome.text
+        );
+        assert!(
+            outcome.text.contains("Continue"),
+            "the notice says how to pick the job back up: {}",
+            outcome.text
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A model that reaches for a tool it is no longer offered writes that call as
+    /// markup, which used to become an empty answer and a shrug. It is asked once
+    /// more in plain prose, and that prose is the answer.
+    #[test]
+    fn a_capped_turn_answers_when_it_is_asked_plainly() {
+        let root = scratch_workspace("cap-answer");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::ReadOnly,
+        );
+
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "read_file",
+            serde_json::json!({"path": "a.txt"}),
+        )
+        .expect("a call");
+
+        let mut attempt = 0usize;
+        let outcome = drive_tool_loop(
+            &mut |call: &core_domain::ToolCall, chunks: &mut dyn FnMut(&str)| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
+            },
+            vec![ChatMessage::text(ChatRole::User, "loop forever")],
+            &mut |_call| GateDecision::Run,
+            1,
+            &mut |_part| {},
+            &mut || TurnSignal::Continue,
+            |_messages, tools, _emit| {
+                attempt += 1;
+                // Round one runs a tool. Every later attempt - the tool-free one
+                // and the plain-prose one - has only markup to give until the
+                // final ask, which answers.
+                if tools {
+                    Ok(completion_with_calls(vec![call.clone()], ""))
+                } else if attempt < 3 {
+                    Ok(completion_with_calls(
+                        Vec::new(),
+                        "<|DSML|tool_calls><|DSML|invoke name=\"read_file\"></|DSML|invoke>",
+                    ))
+                } else {
+                    Ok(completion_with_calls(
+                        Vec::new(),
+                        "Read a.txt: it says alpha. Nothing else is unfinished.",
+                    ))
+                }
+            },
+        )
+        .expect("a turn");
+
+        assert!(outcome.capped, "the cap ended it");
+        assert_eq!(outcome.rounds, 1, "one tool round, then the boundary");
+        assert_eq!(
+            outcome.text, "Read a.txt: it says alpha. Nothing else is unfinished.",
+            "the plain ask is what produced a usable answer"
         );
 
         let _ = std::fs::remove_dir_all(&root);

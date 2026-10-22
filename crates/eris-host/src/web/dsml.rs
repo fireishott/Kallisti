@@ -193,10 +193,10 @@ mod tests {
     use super::*;
 
     /// The shape seen in the wild, pipes and spaces included.
-    const SAMPLE: &str = "Let me check the warehouse.\n\
+    const SAMPLE: &str = "Let me check the notes.\n\
         <| | DSML | | calls>\n\
         <| | DSML | | invoke name=\"run_command\">\n\
-        <| | DSML | | parameter name=\"command\" string=\"true\">cd ~/sports-warehouse && ls -la db</| | DSML | | parameter>\n\
+        <| | DSML | | parameter name=\"command\" string=\"true\">cd ~/notes && ls -la</| | DSML | | parameter>\n\
         </| | DSML | | invoke>\n\
         <| | DSML | | invoke name=\"read_file\">\n\
         <| | DSML | | parameter name=\"path\" string=\"true\">notes.md</| | DSML | | parameter>\n\
@@ -211,14 +211,14 @@ mod tests {
         assert_eq!(recovered.calls[0].name, "run_command");
         assert_eq!(
             recovered.calls[0].arguments["command"],
-            "cd ~/sports-warehouse && ls -la db"
+            "cd ~/notes && ls -la"
         );
         assert_eq!(recovered.calls[1].name, "read_file");
         assert_eq!(recovered.calls[1].arguments["path"], "notes.md");
 
         assert!(!recovered.text.contains("DSML"), "{}", recovered.text);
         assert!(
-            recovered.text.contains("Let me check the warehouse."),
+            recovered.text.contains("Let me check the notes."),
             "the prose the model wrote is kept: {}",
             recovered.text
         );

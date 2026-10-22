@@ -4,6 +4,55 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.2
+
+- **A turn that spends its tool budget answers instead of shrugging.** The
+  tool-free last round was already there, but the model was never told its tools
+  were gone, so it did the natural thing and wrote the call it wanted to make.
+  That markup arrived as the reply, was lifted out of the text as a tool call that
+  could not run, and left an empty answer behind - which is how a long turn ended
+  on "Stopped after 75 tool rounds without a final answer" with nothing to act on.
+  Three changes close it. The tool-free round now opens with a notice that the
+  budget is spent and prose is what is wanted. Recovered calls are only adopted
+  while tools are actually on offer, so markup on the closing round is not spent
+  on a call that cannot run. And if that round still yields no prose, the turn
+  asks once more, plainly, then falls back to a summary of the work itself: the
+  rounds spent, every tool that ran with its count, how many came back as errors,
+  and the last result. "Nothing above was undone. Continue and I will pick up from
+  here with a fresh budget." The transcript is the resume point, so the next turn
+  knows where the last one got to instead of restarting the job. `build 92`.
+- **Schedules.** A conversation can be put on a cron. A run is a real turn on the
+  same path the composer uses, titled after the schedule, so it appears in the
+  transcript like anything else. The expression is parsed when it is saved and
+  `next_fire_at` is stored, so a bad one is refused at the form rather than
+  discovered at three in the morning; the claim is a conditional update, so two
+  ticks cannot double-fire the same run. A settings group carries the global
+  switch, the create form, a toggle per schedule and its eight most recent runs,
+  pruned to fifty. Anything left `running` by a dead process is settled at boot
+  the way chat, subagents and device turns already were. `build 92`.
+- **Skills.** The operator's own procedures are offered to a turn by name and one
+  line of description; the body is never injected, so a library of eighty-nine
+  costs the prompt a catalog rather than a library. A turn follows one by calling
+  `read_skill` with its key, validated as a slug and capped at 64 KiB per file and
+  24 KiB per read. The library is a directory on the settings page, one toggle per
+  skill, rescanned on save. `build 92`.
+- **The footer's context number is the window, not the sum.** `context_used` used
+  to come from the first row that carried a window, and a failed round trip
+  carries a window but no token count, so one failure blanked out a number the
+  transcript already had. Used and window are now resolved independently, newest
+  row first, and the footer says "unknown" only when the whole transcript is
+  unknown. `build 92`.
+- **A reload control, for windows with no chrome.** An installed homepage app has
+  no browser reload button at all, so a daemon restart or a dropped stream left the
+  operator with nothing to click. The composer row now carries a quiet **Reload**
+  that fetches the conversation from the daemon and lands at the bottom of it. It
+  is revealed by the script and turns visibly stale when the page has a reason to
+  be reloaded, so a control that cannot act is never shown to a reader who has no
+  script. `build 92`.
+- **A paste is a message up to 128 KiB.** The ceiling was 16 KiB, which a stack
+  trace or a log excerpt exceeds. The refusal names the limit in the units a person
+  would use, and attachments remain the route for anything larger. `build 92`.
+
 ## 1.4.1
 
 - **A fresh Linux box is one line.** `curl -fsSL

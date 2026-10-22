@@ -974,6 +974,7 @@ fn the_page_shows_the_usage_the_transcript_carries() {
             cached_tokens: Some(1_150),
             duration_ms: Some(900),
             rounds: None,
+            context_tokens: Some(1_200),
         },
     )
     .unwrap();

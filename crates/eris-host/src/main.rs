@@ -472,6 +472,16 @@ fn run_serve(
         Err(error) => eprintln!("eris serve: could not settle interrupted turn(s): {error}"),
     }
 
+    // And the same sweep for scheduled runs. A `running` row at boot is a run
+    // whose turn this process never started: left alone it sits in the history
+    // as work still happening, and its schedule keeps saying `running` with
+    // nothing behind it.
+    match eris_host::scheduler::fail_orphaned(&db) {
+        Ok(0) => {}
+        Ok(count) => eprintln!("eris serve: settled {count} interrupted scheduled run(s)"),
+        Err(error) => eprintln!("eris serve: could not settle interrupted scheduled runs: {error}"),
+    }
+
     let engine = SetupEngine::new(db, paths.clone());
 
     // First boot: reconcile the state against the credential table, then
@@ -567,11 +577,15 @@ fn run_serve(
         "device listener decision"
     );
 
+    let scheduler_state = state.clone();
     let outcome = runtime.block_on(async move {
         if device_enabled {
             state.device.start();
         }
-        admin::serve_listeners(state, listeners).await
+        let ticker = tokio::spawn(eris_host::scheduler::tick(scheduler_state));
+        let served = admin::serve_listeners(state, listeners).await;
+        ticker.abort();
+        served
     });
 
     // The listeners have stopped, by a signal or by a failure. What is left is

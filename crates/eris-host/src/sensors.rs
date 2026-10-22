@@ -430,7 +430,7 @@ mod tests {
             longitude,
             altitude: Some(150.0),
             accuracy: 5.0,
-            address: Some("Louisville, KY".to_owned()),
+            address: Some("Springfield, MO".to_owned()),
             recorded_at: recorded_at.to_owned(),
         }
     }
@@ -454,15 +454,15 @@ mod tests {
     fn location_post_upserts_current_and_appends_history() {
         let store = store();
         store
-            .record_location(&location(38.25, -85.76, "2026-10-19T12:00:00.000Z"))
+            .record_location(&location(37.2090, -93.2923, "2026-10-19T12:00:00.000Z"))
             .expect("first location");
 
         let snapshot = store.current_location().expect("current").expect("present");
-        assert_eq!(snapshot.latitude, 38.25);
-        assert_eq!(snapshot.longitude, -85.76);
+        assert_eq!(snapshot.latitude, 37.2090);
+        assert_eq!(snapshot.longitude, -93.2923);
         assert_eq!(snapshot.altitude, Some(150.0));
         assert_eq!(snapshot.accuracy, Some(5.0));
-        assert_eq!(snapshot.address.as_deref(), Some("Louisville, KY"));
+        assert_eq!(snapshot.address.as_deref(), Some("Springfield, MO"));
         assert_eq!(snapshot.recorded_at, "2026-10-19T12:00:00.000Z");
         assert_eq!(count(&store, "SELECT COUNT(*) FROM location_history"), 1);
 
@@ -479,10 +479,10 @@ mod tests {
     fn location_duplicate_is_suppressed() {
         let store = store();
         store
-            .record_location(&location(38.25, -85.76, "2026-10-19T12:00:00.000Z"))
+            .record_location(&location(37.2090, -93.2923, "2026-10-19T12:00:00.000Z"))
             .expect("first");
         store
-            .record_location(&location(38.25, -85.76, "2026-10-19T12:00:00.000Z"))
+            .record_location(&location(37.2090, -93.2923, "2026-10-19T12:00:00.000Z"))
             .expect("duplicate");
         assert_eq!(count(&store, "SELECT COUNT(*) FROM location_history"), 1);
     }
@@ -540,7 +540,7 @@ mod tests {
             .record_health(&[sample("step_count", 512.0, "2026-10-19T12:00:00.000Z")])
             .expect("health");
         store
-            .record_location(&location(38.25, -85.76, "2026-10-19T12:00:00.000Z"))
+            .record_location(&location(37.2090, -93.2923, "2026-10-19T12:00:00.000Z"))
             .expect("location");
 
         let health = serde_json::to_string(&HealthLatest {
@@ -557,7 +557,7 @@ mod tests {
                 .expect("location json");
         assert_eq!(
             location,
-            r#"{"latitude":38.25,"longitude":-85.76,"altitude":150.0,"accuracy":5.0,"address":"Louisville, KY","recorded_at":"2026-10-19T12:00:00.000Z"}"#
+            r#"{"latitude":37.209,"longitude":-93.2923,"altitude":150.0,"accuracy":5.0,"address":"Springfield, MO","recorded_at":"2026-10-19T12:00:00.000Z"}"#
         );
 
         let delivered = serde_json::to_string(&Delivered::new()).expect("delivered json");

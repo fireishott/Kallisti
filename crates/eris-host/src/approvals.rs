@@ -264,9 +264,9 @@ mod tests {
         let db = db();
         let id = queue(&db, "conv-1", "write_file", &serde_json::json!({}), None).expect("queued");
 
-        assert!(decide(&db, &id, Decision::Approved, "curtis").expect("decided"));
+        assert!(decide(&db, &id, Decision::Approved, "operator").expect("decided"));
         assert!(
-            !decide(&db, &id, Decision::Denied, "curtis").expect("a second attempt"),
+            !decide(&db, &id, Decision::Denied, "operator").expect("a second attempt"),
             "a settled row must not be decided twice"
         );
         assert!(
@@ -297,14 +297,14 @@ mod tests {
             1,
             "advice alone must not settle the row"
         );
-        assert!(decide(&db, &id, Decision::Approved, "curtis").expect("decided"));
+        assert!(decide(&db, &id, Decision::Approved, "operator").expect("decided"));
     }
 
     #[test]
     fn a_decision_records_who_made_it() {
         let db = db();
         let id = queue(&db, "conv-1", "write_file", &serde_json::json!({}), None).expect("queued");
-        decide(&db, &id, Decision::Denied, "curtis").expect("decided");
+        decide(&db, &id, Decision::Denied, "operator").expect("decided");
 
         let (status, decided_by): (String, String) = db
             .with_conn(|conn| {
@@ -317,6 +317,6 @@ mod tests {
             .expect("row");
 
         assert_eq!(status, "denied");
-        assert_eq!(decided_by, "curtis");
+        assert_eq!(decided_by, "operator");
     }
 }

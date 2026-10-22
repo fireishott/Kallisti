@@ -51,7 +51,10 @@ One long-running process on your hardware, and a web UI in any browser when the 
 is not in your hand.
 
 - **Streaming chat** with reasoning, usage accounting, and a run log of every call the
-  turn executed - Full, Summary, or Off.
+  turn executed - Full, Summary, or Off. A turn that spends its whole tool budget still
+  answers: the last round is offered no tools and asked for prose, and if it still says
+  nothing the turn reports the rounds it spent, every tool that ran with its count and
+  the last result, so the next message continues the job instead of restarting it.
 - **Tools with a boundary.** Read, write and list inside a workspace, run commands,
   fetch a URL, draw an image, and call any MCP server you configure.
 - **MCP client.** Real stdio JSON-RPC: handshake, `tools/list`, `tools/call`, one owned
@@ -67,6 +70,14 @@ is not in your hand.
   `sensors.db`.
 - **Inbox, notes and push.** Device routes for inbox items and actions, notes (CRUD,
   blobs, recognitions, enrichment runs), and push token registration.
+- **Schedules.** A prompt on a cron: a name, an expression and the question to ask,
+  fired by the daemon itself. Every run is a real conversation titled after the
+  schedule, with its own run history, pruned to the last fifty. A bad expression is
+  refused when it is saved, not when it fires.
+- **Skills.** A library of procedures at `~/.config/kallisti/skills`, one directory
+  per skill holding a `SKILL.md`. The prompt carries names and descriptions only;
+  the model calls `read_skill` to pull one in when the task fits. Each skill has its
+  own switch.
 - **Backups that cannot leak the key.** Three members: the database, the env file of
   references, the config. The setup passphrase is excluded unconditionally.
 
@@ -234,7 +245,8 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 
-Shipped and running: Kallisti-Eris 1.4.1 and the web UI.
+Shipped and running: Kallisti-Eris 1.4.2 and the web UI, with the cron scheduler and
+the skills library switched on.
 In private beta: the iOS app (Kallisti 0.4.0 UI on Eris), TestFlight build 89.
 In development: Voice Mode, Plugin Engine, watchOS.
 

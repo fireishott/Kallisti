@@ -435,10 +435,7 @@ fn the_pairing_qr_carries_the_stored_relay_and_is_drawn() {
             conn.execute(
                 "INSERT INTO settings (key, value) VALUES (?1, ?2)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [
-                    crate::device::SETTING_RELAY,
-                    "https://fih-ai-host.tail4d497d.ts.net",
-                ],
+                [crate::device::SETTING_RELAY, "https://eris.example.test"],
             )
         })
         .expect("store the relay");
@@ -451,7 +448,7 @@ fn the_pairing_qr_carries_the_stored_relay_and_is_drawn() {
     ));
     assert_eq!(html.status, StatusCode::OK, "{}", html.body);
     assert!(
-        html.body.contains("https://fih-ai-host.tail4d497d.ts.net"),
+        html.body.contains("https://eris.example.test"),
         "the page states the address the code carries: {}",
         html.body
     );
@@ -475,7 +472,7 @@ fn the_pairing_qr_carries_the_stored_relay_and_is_drawn() {
     assert_eq!(json.status, StatusCode::OK, "{}", json.body);
     assert_eq!(
         json.json()["relay"],
-        "https://fih-ai-host.tail4d497d.ts.net",
+        "https://eris.example.test",
         "the pairing response names the same relay"
     );
 }

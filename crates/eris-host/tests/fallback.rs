@@ -115,6 +115,9 @@ async fn run(
             None,
             None,
             None,
+            // No skill library in this suite: the fallback path is what is under
+            // test, and a catalog would only add prompt text to compare.
+            None,
             TurnSettings {
                 tools: false,
                 max_rounds: 1,

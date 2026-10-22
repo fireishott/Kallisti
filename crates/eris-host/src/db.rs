@@ -29,19 +29,19 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The seventeen tables the migrations create. `schema_migrations` is the
-/// eighteenth and is created by the runner, not by a migration. 0001 creates the
+/// The nineteen tables the migrations create. `schema_migrations` is the
+/// twentieth and is created by the runner, not by a migration. 0001 creates the
 /// first nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds
 /// columns to `jobs` and no table at all; 0005 adds `chat_messages`; 0008 adds
 /// `chat_attachments`; 0009 adds `approvals`; 0013 adds `projects`; 0014 adds
 /// `subagents`; 0015 adds the opt-in `admin` flag to `pairing_codes` and no
-/// table at all.
-pub const TABLES: [&str; 17] = [
+/// table at all; 0017 adds `schedules` and `schedule_runs`.
+pub const TABLES: [&str; 19] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
@@ -56,6 +56,8 @@ pub const TABLES: [&str; 17] = [
     "jobs",
     "pairing_codes",
     "projects",
+    "schedule_runs",
+    "schedules",
     "sessions",
     "settings",
     "subagents",
@@ -149,6 +151,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 16,
         name: "0016_turn_footer",
         sql: MIGRATION_0016,
+    },
+    Migration {
+        version: 17,
+        name: "0017_schedules",
+        sql: MIGRATION_0017,
+    },
+    Migration {
+        version: 18,
+        name: "0018_context_tokens",
+        sql: MIGRATION_0018,
     },
 ];
 
@@ -596,6 +608,55 @@ ALTER TABLE chat_messages ADD COLUMN rounds INTEGER;
 ALTER TABLE chat_messages ADD COLUMN quota_json TEXT;
 ";
 
+/// Migration 0017: cron schedules and their run history.
+///
+/// `next_fire_at` is a stored RFC 3339 UTC string rather than a computed column:
+/// the claim that stops two ticks running one schedule twice is a conditional
+/// update against this value, so it has to be a value. `status` is a closed set,
+/// and `schedule_runs` cascades with its schedule so a delete leaves nothing
+/// behind.
+const MIGRATION_0017: &str = r"
+CREATE TABLE schedules (
+    id            TEXT PRIMARY KEY NOT NULL,
+    name          TEXT NOT NULL,
+    cron          TEXT NOT NULL,
+    prompt        TEXT NOT NULL,
+    enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    next_fire_at  TEXT,
+    last_fired_at TEXT,
+    last_status   TEXT CHECK (last_status IN ('running', 'ok', 'failed', 'refused')),
+    last_error    TEXT,
+    fired_count   INTEGER NOT NULL DEFAULT 0 CHECK (fired_count >= 0),
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX idx_schedules_due ON schedules (enabled, next_fire_at);
+
+CREATE TABLE schedule_runs (
+    id              TEXT PRIMARY KEY NOT NULL,
+    schedule_id     TEXT NOT NULL REFERENCES schedules (id) ON DELETE CASCADE,
+    status          TEXT NOT NULL DEFAULT 'running'
+                    CHECK (status IN ('running', 'ok', 'failed', 'refused')),
+    conversation_id TEXT REFERENCES chat_conversations (id) ON DELETE SET NULL,
+    summary         TEXT,
+    error_code      TEXT,
+    started_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    finished_at     TEXT
+);
+CREATE INDEX idx_schedule_runs_schedule ON schedule_runs (schedule_id, started_at DESC);
+";
+
+/// Migration 0018: how big the window actually was on the last round trip.
+///
+/// `prompt_tokens` is a sum over every round of a turn, which is the right number
+/// for what the turn cost and the wrong number for how full the window is: a turn
+/// that ran a hundred tool rounds reported the sum as its context size and the
+/// footer printed shares above 100%. This column carries the last round's own
+/// prompt total, so the two questions have two answers.
+const MIGRATION_0018: &str = r"
+ALTER TABLE chat_messages ADD COLUMN context_tokens INTEGER;
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 
@@ -711,6 +772,20 @@ pub struct Db {
 struct Inner {
     conn: Mutex<Connection>,
     path: Option<PathBuf>,
+}
+
+/// A handle is described by its file, never by its contents.
+///
+/// `Db` is held by values that derive `Debug` (a skill access, a dispatch desk),
+/// and the connection behind it is a mutex of a `rusqlite::Connection` that
+/// cannot be formatted. Printing the path is what an operator needs in a panic
+/// message and what the log may safely carry: no row, no token, no secret.
+impl std::fmt::Debug for Db {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Db")
+            .field("path", &self.inner.path)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Db {

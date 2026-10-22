@@ -1555,6 +1555,16 @@ pre.code {
 .composer .hint { font-size: 11px; color: var(--muted); }
 .composer button[hidden] { display: none; }
 
+/* The reload control is quiet until the page has a reason to be reloaded. A
+   control that shouts on every visit is noise; a control that stays quiet when
+   the transcript on screen may be behind the daemon is a trap. So it sits in the
+   row as one more secondary button, and the stale mark is the only thing that
+   ever changes its colour. */
+#reload.stale {
+  border-color: var(--platinum);
+  color: var(--platinum);
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

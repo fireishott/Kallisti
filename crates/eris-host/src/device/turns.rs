@@ -1357,6 +1357,10 @@ impl TurnHub {
                 None,
                 None,
                 None,
+                // The phone gets the same turn loop but not the skill library:
+                // reading a procedure is a capability this surface has no view
+                // for, so it is not offered.
+                None,
                 settings,
                 // Nothing hears this turn. Steering belongs to the browser: `/v1`
                 // has no surface for a second message into a running job, so a
@@ -1450,6 +1454,9 @@ fn accounting_from(usage: &serde_json::Value) -> crate::web::chat::Accounting {
             cached_tokens: usage.cache_read_tokens(),
             duration_ms: None,
             rounds: None,
+            // The terminal frame carries the turn's summed usage, not a single
+            // round, so the live context size is not something this worker knows.
+            context_tokens: None,
         })
         .unwrap_or_default()
 }

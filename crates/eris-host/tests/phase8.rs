@@ -1762,7 +1762,7 @@ async fn projects_create_list_and_assign_round_trip() {
             "POST",
             "/v1/projects",
             &auth,
-            Some(r#"{"project_name":"Isaacs contract renewal"}"#),
+            Some(r#"{"project_name":"Quarterly contract renewal"}"#),
         )
         .await;
     assert_eq!(created.status, 201, "{}", created.body);
@@ -1770,7 +1770,7 @@ async fn projects_create_list_and_assign_round_trip() {
     assert_eq!(body["ok"], true);
     let project = body["project"].clone();
     let project_id = project["id"].as_str().expect("a project id").to_owned();
-    assert_eq!(project["name"], "Isaacs contract renewal");
+    assert_eq!(project["name"], "Quarterly contract renewal");
     assert!(
         project["created_at"]
             .as_str()
@@ -1785,7 +1785,7 @@ async fn projects_create_list_and_assign_round_trip() {
         projects,
         serde_json::json!([{
             "id": project_id,
-            "name": "Isaacs contract renewal",
+            "name": "Quarterly contract renewal",
             "created_at": project["created_at"],
         }]),
         "the list is the row that was created"

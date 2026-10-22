@@ -22,7 +22,7 @@ use crate::db::{Db, DbError};
 
 /// The longest project name, in characters rather than bytes.
 ///
-/// Sized for a rail heading: long enough for "Isaacs contract renewal", short
+/// Sized for a rail heading: long enough for "Quarterly contract renewal", short
 /// enough that it cannot push the sessions it heads off the rail.
 pub const MAX_NAME_CHARS: usize = 60;
 
@@ -179,13 +179,13 @@ mod tests {
     #[test]
     fn create_stores_a_trimmed_name_and_lists_it() {
         let (db, _conversation) = scratch();
-        let id = create(&db, "  Isaacs contract renewal  ").expect("the project is created");
+        let id = create(&db, "  Quarterly contract renewal  ").expect("the project is created");
 
         let projects = list(&db).expect("the list reads");
         assert_eq!(projects.len(), 1, "one project was created: {projects:?}");
         assert_eq!(projects[0].id, id);
         assert_eq!(
-            projects[0].name, "Isaacs contract renewal",
+            projects[0].name, "Quarterly contract renewal",
             "the name is trimmed before it is stored"
         );
         assert!(

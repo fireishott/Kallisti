@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 91;
+pub const BUILD: u32 = 92;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -175,6 +175,11 @@ pub const ROUTE_SETTINGS_MCP: &str = "/dashboard/settings/mcp";
 
 /// `POST /dashboard/settings/greeting` - the generated line on an empty chat page.
 pub const ROUTE_SETTINGS_GREETING: &str = "/dashboard/settings/greeting";
+/// `POST /dashboard/settings/schedules` - create, toggle and delete schedules.
+pub const ROUTE_SETTINGS_SCHEDULES: &str = "/dashboard/settings/schedules";
+
+/// `POST /dashboard/settings/skills` - the skill library switch, directory and rescan.
+pub const ROUTE_SETTINGS_SKILLS: &str = "/dashboard/settings/skills";
 
 /// `POST /dashboard/sidebar` - show or hide the conversation rail.
 pub const ROUTE_SIDEBAR: &str = "/dashboard/sidebar";
@@ -290,6 +295,8 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_MCP,
     ROUTE_SETTINGS_GREETING,
+    ROUTE_SETTINGS_SCHEDULES,
+    ROUTE_SETTINGS_SKILLS,
     ROUTE_SIDEBAR,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",
@@ -922,7 +929,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.4.1");
+        assert_eq!(VERSION, "1.4.2");
     }
 
     #[test]

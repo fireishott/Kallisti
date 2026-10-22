@@ -34,8 +34,9 @@ use crate::admin::{
     ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING,
     ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_QUOTA,
-    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE,
-    ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
+    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS,
+    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -121,6 +122,8 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_AUX, post(save_aux))
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
         .route(ROUTE_SETTINGS_GREETING, post(save_greeting))
+        .route(ROUTE_SETTINGS_SCHEDULES, post(save_schedules))
+        .route(ROUTE_SETTINGS_SKILLS, post(save_skills))
         .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
@@ -799,6 +802,51 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     let (selected, custom_present) = wallpaper_choice(state)?;
     view.wallpaper = selected;
     view.wallpaper_custom = custom_present;
+
+    view.schedules_enabled = crate::scheduler::enabled(
+        engine
+            .setting(crate::scheduler::SETTING_ENABLED)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
+    view.schedules_clock = crate::zone::Zone::parse(
+        engine
+            .setting(crate::zone::SETTING_TIMEZONE)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    )
+    .as_str();
+    view.schedules = crate::scheduler::list(engine.db()).map_err(|error| db_error(&error))?;
+    for schedule in &view.schedules {
+        let history =
+            crate::scheduler::runs(engine.db(), &schedule.id, crate::scheduler::RUNS_SHOWN)
+                .map_err(|error| db_error(&error))?;
+        view.schedule_runs.insert(schedule.id.clone(), history);
+    }
+
+    view.skills_enabled = crate::skills::enabled(
+        engine
+            .setting(crate::skills::SETTING_ENABLED)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
+    view.skills_dir = engine
+        .setting(crate::skills::SETTING_DIR)
+        .map_err(|error| form_error(&error))?
+        .unwrap_or_default();
+    match crate::skills::list(engine.db(), Some(&view.skills_dir)) {
+        Ok((skills, path)) => {
+            view.skills = skills;
+            view.skills_path = path.display().to_string();
+        }
+        Err(error) => {
+            view.skills = Vec::new();
+            view.skills_path = crate::skills::library_dir(Some(&view.skills_dir))
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "the default library".to_owned());
+            view.skills_error = Some(error.to_string());
+        }
+    }
     Ok(view)
 }
 
@@ -2861,6 +2909,12 @@ const SAVED_TIMEZONE: &str = "/dashboard/settings?saved=timezone";
 /// Where the memory form returns to.
 const SAVED_MEMORY: &str = "/dashboard/settings?saved=memory";
 
+/// Where the schedules form returns to.
+const SAVED_SCHEDULES: &str = "/dashboard/settings?saved=schedules";
+
+/// Where the skills form returns to.
+const SAVED_SKILLS: &str = "/dashboard/settings?saved=skills";
+
 /// The shortest sign-in credential this build accepts.
 ///
 /// The six-word passphrase exists because a fresh host has to be claimable by
@@ -3099,6 +3153,8 @@ fn saved_group(uri: &Uri) -> Option<SettingsGroup> {
             "permissions" => Some(SettingsGroup::Permissions),
             "persona" => Some(SettingsGroup::Persona),
             "greeting" => Some(SettingsGroup::Greeting),
+            "schedules" => Some(SettingsGroup::Schedules),
+            "skills" => Some(SettingsGroup::Skills),
             _ => None,
         };
     }
@@ -5955,6 +6011,138 @@ struct TurnJob {
 /// while it streams: it is moved into the blocking task so the entry lives exactly
 /// as long as the turn does. Dropping it at the end of the task is what makes the
 /// next message a turn of its own again.
+/// Run one scheduled turn to completion, then settle its run row.
+///
+/// This is the same turn the composer starts: a fresh conversation named after
+/// the schedule, the schedule's prompt as the question, one provider turn, and
+/// the answer in the ordinary transcript. The run row records which conversation
+/// got the answer and how the turn ended.
+pub(crate) async fn run_scheduled(
+    state: &AppState,
+    schedule: crate::scheduler::Schedule,
+    run_id: String,
+) {
+    let db = state.engine.db().clone();
+    let Some(config) = chat::turn_config(&state.engine).ok().flatten() else {
+        let _ = crate::scheduler::settle_run(
+            &db,
+            &schedule.id,
+            &run_id,
+            "refused",
+            None,
+            None,
+            Some("no_provider"),
+        );
+        return;
+    };
+    let model = config.model.clone();
+    let context_window = state
+        .engine
+        .provider_contexts()
+        .ok()
+        .and_then(|contexts| contexts.get(&model).copied());
+
+    let conversation = match chat::create_conversation(&db) {
+        Ok(id) => id,
+        Err(_) => return,
+    };
+    // The conversation is named after the schedule, not after a truncation of
+    // its prompt: that is what makes a scheduled run findable in the rail.
+    let _ = chat::set_title(&db, &conversation, &schedule.prompt, &schedule.name);
+
+    let _ = chat::append(
+        &db,
+        &conversation,
+        chat::Role::User,
+        &schedule.prompt,
+        chat::State::Complete,
+    );
+    let answer_id = match chat::append_answer(&db, &conversation, &model, context_window) {
+        Ok(id) => id,
+        Err(_) => return,
+    };
+    let _ = chat::touch_conversation(&db, &conversation);
+
+    let transcript = match chat::load(&db, &conversation) {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    let history = chat::history(&transcript, &answer_id);
+    let dropped = chat::dropped(&transcript, &answer_id);
+
+    let lease = match state.steering.claim(&conversation, &schedule.prompt) {
+        chat::Claim::Turn(lease) => lease,
+        chat::Claim::Steered(_) => return,
+    };
+
+    let task = spawn_turn(
+        state,
+        config,
+        TurnJob {
+            conversation: conversation.clone(),
+            question: schedule.prompt.clone(),
+            answer_id: answer_id.clone(),
+            compression: None,
+            vision: None,
+            files: Vec::new(),
+            dropped,
+            history,
+        },
+        lease,
+        None,
+    );
+    if let Err(join) = task.await {
+        let _ = crate::scheduler::settle_run(
+            &db,
+            &schedule.id,
+            &run_id,
+            "failed",
+            Some(&conversation),
+            None,
+            Some("join_error"),
+        );
+        let _ = join;
+        return;
+    }
+
+    // The turn already settled its answer row, so the run row is read from what
+    // the transcript now says rather than from a return value.
+    let transcript = chat::load(&db, &conversation).unwrap_or_default();
+    let answer = transcript.iter().find(|message| message.id == answer_id);
+    let first_line = |body: &str| {
+        let line: String = body
+            .split_whitespace()
+            .take(24)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if body.split_whitespace().count() > 24 {
+            format!("{line}...")
+        } else {
+            line
+        }
+    };
+    let (status, summary, error_code) = match answer {
+        Some(message) if message.state == chat::State::Complete => {
+            ("ok", Some(first_line(&message.body)), None)
+        }
+        Some(message) => (
+            "failed",
+            Some(first_line(&message.body)).filter(|text| !text.is_empty()),
+            message.error_code.clone(),
+        ),
+        None => ("failed", None, Some("no_answer".to_owned())),
+    };
+    let _ = crate::scheduler::settle_run(
+        &db,
+        &schedule.id,
+        &run_id,
+        status,
+        Some(&conversation),
+        summary.as_deref(),
+        error_code.as_deref(),
+    );
+}
+
 fn spawn_turn(
     state: &AppState,
     config: chat::TurnConfig,
@@ -6096,6 +6284,28 @@ fn spawn_turn(
         .setting(crate::persona::SETTING_PERSONA_ENABLED)
         .ok()
         .flatten();
+    // The skill library: the operator's own procedures, offered by name. Both
+    // readings are taken before the blocking task, because the catalog is part of
+    // the system prompt and the access is what answers a `read_skill` call. A
+    // library that cannot be read yields no catalog and no tool: a turn still
+    // answers, and the settings page is where the reason is stated.
+    let skills_enabled = crate::skills::enabled(
+        state
+            .engine
+            .setting(crate::skills::SETTING_ENABLED)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    let skills_dir = state
+        .engine
+        .setting(crate::skills::SETTING_DIR)
+        .ok()
+        .flatten();
+    let skills_catalog = crate::skills::catalog_for(&db, skills_enabled, skills_dir.as_deref());
+    let skills = skills_catalog
+        .is_some()
+        .then(|| crate::skills::Access::new(db.clone(), skills_dir.clone()));
     // Read before the blocking task, like every other setting: the closure owns
     // strings, not a borrow of the app state.
     let agents_enabled = crate::subagents::enabled(
@@ -6274,6 +6484,17 @@ fn spawn_turn(
             (system, None) => system,
         };
 
+        // The skill catalog rides at the end of the prompt: names, descriptions
+        // and the instruction to read one before following it. Bodies are never
+        // injected here - that is the whole point of `read_skill`.
+        let system = match skills_catalog {
+            Some(catalog) => Some(match system {
+                Some(system) => format!("{system}\n\n{catalog}"),
+                None => catalog,
+            }),
+            None => system,
+        };
+
         // What the page can draw, said to the model: a workspace path in
         // `![caption](path)` or `[name](path)` becomes a thumbnail or a chip.
         let system = crate::persona::PersonaConfig::with_capabilities(system);
@@ -6371,6 +6592,7 @@ fn spawn_turn(
             web_extract.as_ref(),
             image.as_ref(),
             desk.as_ref(),
+            skills.as_ref(),
             chat::TurnSettings {
                 tools: tools_enabled,
                 max_rounds: tool_rounds,
@@ -6452,6 +6674,7 @@ fn spawn_turn(
                     cached_tokens: usage.cache_read_tokens(),
                     duration_ms: Some(duration_ms),
                     rounds: Some(turn.rounds as u64),
+                    context_tokens: turn.context_tokens,
                 };
                 let raw = serde_json::to_value(usage).ok();
                 let _ = chat::settle(
@@ -6884,6 +7107,183 @@ pub async fn wallpaper_file(State(state): State<AppState>, Path(name): Path<Stri
         )
         .into_response(),
     }
+}
+
+/// `POST /dashboard/settings/schedules` - create, toggle and delete schedules.
+async fn save_schedules(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let db = state.engine.db();
+    let offset = crate::zone::Zone::parse(
+        state
+            .engine
+            .setting(crate::zone::SETTING_TIMEZONE)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    let modifier = offset.modifier();
+    let offset = crate::scheduler::local_offset(db, &modifier);
+
+    let action = field(&fields, "schedules_action").trim();
+    match action {
+        "create" => {
+            let name = field(&fields, "schedule_name").trim().to_owned();
+            let cron = field(&fields, "schedule_cron").trim().to_owned();
+            let prompt = field(&fields, "schedule_prompt").trim().to_owned();
+            let id = match crate::scheduler::create(db, &name, &cron, &prompt, offset) {
+                Ok(id) => id,
+                Err(error) => {
+                    return fail_settings(
+                        &state,
+                        as_html,
+                        FormError::new(
+                            Some("schedule_name"),
+                            "schedule_invalid",
+                            error.to_string(),
+                        ),
+                    );
+                }
+            };
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "settings.schedules",
+                Some(&format!("create id={id}")),
+            );
+        }
+        "toggle" => {
+            let id = field(&fields, "schedule_id").trim().to_owned();
+            let on = flag(&fields, "schedule_enabled");
+            match crate::scheduler::set_enabled(db, &id, on, offset) {
+                Ok(()) => {}
+                Err(error) => {
+                    return fail_settings(
+                        &state,
+                        as_html,
+                        FormError::new(Some("schedule_id"), "schedule_invalid", error.to_string()),
+                    );
+                }
+            }
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "settings.schedules",
+                Some(&format!("toggle id={id} on={on}")),
+            );
+        }
+        "delete" => {
+            let id = field(&fields, "schedule_id").trim().to_owned();
+            match crate::scheduler::delete(db, &id) {
+                Ok(()) => {}
+                Err(error) => {
+                    return fail_settings(
+                        &state,
+                        as_html,
+                        FormError::new(Some("schedule_id"), "schedule_invalid", error.to_string()),
+                    );
+                }
+            }
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "settings.schedules",
+                Some(&format!("delete id={id}")),
+            );
+        }
+        "switch" => {
+            let on = flag(&fields, "schedules_enabled");
+            if let Err(error) = store::settings_put(
+                db,
+                crate::scheduler::SETTING_ENABLED,
+                if on { "true" } else { "false" },
+            ) {
+                return store_failure(&request_id.0, crate::scheduler::SETTING_ENABLED, error);
+            }
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "settings.schedules",
+                Some(if on { "on" } else { "off" }),
+            );
+        }
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("schedules_action"),
+                    "schedule_invalid",
+                    "unknown schedules action",
+                ),
+            );
+        }
+    }
+    see_other(SAVED_SCHEDULES)
+}
+
+/// `POST /dashboard/settings/skills` - the library switch, directory and per-skill toggles.
+async fn save_skills(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let db = state.engine.db();
+    let enabled = flag(&fields, "skills_enabled");
+    if let Err(error) = store::settings_put(
+        db,
+        crate::skills::SETTING_ENABLED,
+        if enabled { "true" } else { "false" },
+    ) {
+        return store_failure(&request_id.0, crate::skills::SETTING_ENABLED, error);
+    }
+    let dir = field(&fields, "skills_dir").trim().to_owned();
+    if let Err(error) = store::settings_put(db, crate::skills::SETTING_DIR, &dir) {
+        return store_failure(&request_id.0, crate::skills::SETTING_DIR, error);
+    }
+    // A per-skill toggle carries `skills.<key>` as its field name, so every
+    // submission writes the switches the library actually lists.
+    let stored_dir = if dir.is_empty() {
+        None
+    } else {
+        Some(dir.as_str())
+    };
+    if let Ok((skills, _)) = crate::skills::list(db, stored_dir) {
+        for skill in &skills {
+            let key = crate::skills::setting_key(&skill.key);
+            if fields.contains_key(&key) {
+                let on = flag(&fields, &key);
+                if let Err(error) = store::settings_put(db, &key, if on { "true" } else { "false" })
+                {
+                    return store_failure(&request_id.0, &key, error);
+                }
+            }
+        }
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.skills",
+        Some(if enabled { "on" } else { "off" }),
+    ) {
+        return audit_failure(&request_id.0, "settings.skills", error);
+    }
+    see_other(SAVED_SKILLS)
 }
 
 #[cfg(test)]

@@ -1621,16 +1621,22 @@ pub enum SettingsGroup {
     Persona,
     /// The generated line on an empty conversation: its switch, model, window.
     Greeting,
+    /// Cron schedules and their run history.
+    Schedules,
+    /// The operator's skill library and its per-skill switches.
+    Skills,
 }
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Provider,
         Self::Workspace,
         Self::Permissions,
         Self::Persona,
         Self::Greeting,
+        Self::Schedules,
+        Self::Skills,
     ];
 
     /// The anchor and error-region id for this group.
@@ -1642,6 +1648,8 @@ impl SettingsGroup {
             Self::Permissions => "permissions",
             Self::Persona => "persona",
             Self::Greeting => "greeting",
+            Self::Schedules => "schedules",
+            Self::Skills => "skills",
         }
     }
 
@@ -1668,6 +1676,16 @@ impl SettingsGroup {
                 field,
                 "greeting_enabled" | "greeting_model" | "greeting_refresh"
             ),
+            Self::Schedules => matches!(
+                field,
+                "schedule_name"
+                    | "schedule_cron"
+                    | "schedule_prompt"
+                    | "schedule_id"
+                    | "schedules_action"
+                    | "schedules_enabled"
+            ),
+            Self::Skills => matches!(field, "skills_enabled" | "skills_dir" | "skills_library"),
         }
     }
 
@@ -1680,6 +1698,8 @@ impl SettingsGroup {
             Self::Permissions => "permissions saved",
             Self::Persona => "assistant identity saved",
             Self::Greeting => "greeting saved",
+            Self::Schedules => "schedules saved",
+            Self::Skills => "skills saved",
         }
     }
 }
@@ -1794,6 +1814,24 @@ pub struct SettingsView {
     pub mcp_errors: Vec<(String, String)>,
     /// The sentence stating what a configured server does, and that it is gated.
     pub mcp_status: String,
+    /// Whether the cron scheduler is switched on.
+    pub schedules_enabled: bool,
+    /// The clock the page states for cron expressions.
+    pub schedules_clock: String,
+    /// Every schedule, by name.
+    pub schedules: Vec<crate::scheduler::Schedule>,
+    /// Each schedule's newest run history, kept in the same order.
+    pub schedule_runs: std::collections::BTreeMap<String, Vec<crate::scheduler::Run>>,
+    /// Whether the skill library is switched on.
+    pub skills_enabled: bool,
+    /// The stored library directory, or empty for the default.
+    pub skills_dir: String,
+    /// The library as the form lists it, and where it lives.
+    pub skills: Vec<crate::skills::Skill>,
+    /// The directory the skills list was read from, stated on the page.
+    pub skills_path: String,
+    /// Why the library could not be read, when it could not.
+    pub skills_error: Option<String>,
     /// The failure to show, when this render follows a refused post.
     pub error: Option<FormError>,
     /// The group that was saved and the sentence to show, after a redirect.
@@ -1850,6 +1888,15 @@ impl SettingsView {
             mcp_servers: "[]".to_owned(),
             mcp_errors: Vec::new(),
             mcp_status: crate::mcp::STATUS.to_owned(),
+            schedules_enabled: true,
+            schedules_clock: crate::zone::HOST.to_owned(),
+            schedules: Vec::new(),
+            schedule_runs: std::collections::BTreeMap::new(),
+            skills_enabled: true,
+            skills_dir: String::new(),
+            skills: Vec::new(),
+            skills_path: String::new(),
+            skills_error: None,
             error: None,
             notice: None,
         }
@@ -2561,6 +2608,167 @@ fn mcp_group(view: &SettingsView) -> Markup {
     }
 }
 
+/// The schedules form: the global switch, the create fields, and one row per
+/// schedule with its toggle and delete controls.
+fn schedules_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_SCHEDULES) novalidate {
+            div .field {
+                label for="schedules_enabled" {
+                    input type="checkbox" id="schedules_enabled" name="schedules_enabled"
+                        value="true" checked[view.schedules_enabled];
+                    " Run scheduled turns"
+                }
+                input type="hidden" name="schedules_action" value="switch";
+                span .hint {
+                    "On, each schedule below starts one ordinary conversation turn when its cron "
+                    "expression is due. Cron is read in the " (view.schedules_clock) " clock."
+                }
+                div .actions {
+                    button type="submit" { "Save scheduler" }
+                }
+            }
+        }
+
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_SCHEDULES) novalidate {
+            h3 { "New schedule" }
+            div .field {
+                label for="schedule_name" { "Name" }
+                input id="schedule_name" type="text" name="schedule_name"
+                    maxlength=(crate::scheduler::MAX_NAME_CHARS)
+                    placeholder="Morning brief" autofocus[focuses("schedule_name")];
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("schedule_name")) {
+                    span .error { (error.message) }
+                }
+            }
+            div .field {
+                label for="schedule_cron" { "Cron" }
+                input id="schedule_cron" type="text" name="schedule_cron"
+                    value=(crate::scheduler::DEFAULT_CRON) spellcheck="false"
+                    autofocus[focuses("schedule_cron")];
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("schedule_cron")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Five fields: minute, hour, day of month, month, day of week. "
+                    "Steps, ranges, lists and weekday names are accepted, and the clock is "
+                    (view.schedules_clock) "."
+                }
+            }
+            div .field {
+                label for="schedule_prompt" { "What it asks" }
+                textarea id="schedule_prompt" name="schedule_prompt" rows="3"
+                    autofocus[focuses("schedule_prompt")] {}
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("schedule_prompt")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "The question the scheduled turn sends. The answer lands as an ordinary "
+                    "conversation named after this schedule."
+                }
+            }
+            input type="hidden" name="schedules_action" value="create";
+            div .actions {
+                button type="submit" { "Add schedule" }
+            }
+        }
+
+        @for schedule in &view.schedules {
+            div .row {
+                div .row-main {
+                    strong { (schedule.name) }
+                    code .muted { (schedule.cron) }
+                }
+                div .row-sub {
+                    span .status .ok[schedule.enabled] .off[!schedule.enabled] {
+                        @if schedule.enabled { "on" } @else { "off" }
+                    }
+                    @if let Some(at) = &schedule.next_fire_at {
+                        " next " (at)
+                    }
+                    @if let Some(status) = &schedule.last_status {
+                        " last " (status)
+                    }
+                }
+                form method="post" action=(crate::admin::ROUTE_SETTINGS_SCHEDULES) novalidate {
+                    input type="hidden" name="schedule_id" value=(schedule.id.as_str());
+                    input type="hidden" name="schedules_action" value="toggle";
+                    input type="hidden" name="schedule_enabled"
+                        value=@if schedule.enabled { "true" } @else { "false" };
+                    button type="submit" {
+                        @if schedule.enabled { "Disable" } @else { "Enable" }
+                    }
+                    " "
+                    button type="submit" class="danger" name="schedules_action" value="delete" {
+                        "Delete"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The skills form: the global switch, the directory, and one switch per skill.
+fn skills_group(view: &SettingsView) -> Markup {
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_SKILLS) novalidate {
+            div .field {
+                label for="skills_enabled" {
+                    input type="checkbox" id="skills_enabled" name="skills_enabled"
+                        value="true" checked[view.skills_enabled];
+                    " Offer the skill library to turns"
+                }
+                span .hint {
+                    "On, a turn is offered the skills below by name and may call read_skill to read "
+                    "one before following it. Bodies are never injected into the prompt."
+                }
+            }
+            div .field {
+                label for="skills_dir" { "Library directory" }
+                input id="skills_dir" type="text" name="skills_dir"
+                    value=(view.skills_dir) placeholder=(view.skills_path);
+                span .hint {
+                    "Blank uses " (view.skills_path) ". Each skill is a subdirectory holding a "
+                    "SKILL.md with a name and description in frontmatter."
+                }
+            }
+            @if let Some(error) = &view.skills_error {
+                p .small .warn { (error) }
+            }
+            @if !view.skills.is_empty() {
+                table {
+                    thead {
+                        tr {
+                            th { "Skill" } th { "On" }
+                        }
+                    }
+                    @for skill in &view.skills {
+                        tr {
+                            td {
+                                strong { (skill.name) }
+                                code .muted { (skill.key) }
+                                @if let Some(description) = &skill.description {
+                                    p .small { (description) }
+                                }
+                            }
+                            td {
+                                input type="checkbox"
+                                    name=(crate::skills::setting_key(&skill.key))
+                                    value="true" checked[skill.enabled];
+                            }
+                        }
+                    }
+                }
+            }
+            div .actions {
+                button type="submit" { "Save skills" }
+            }
+        }
+    }
+}
+
 /// The settings page: four forms, then the rows that are read-only by design.
 /// The security page: the one surface allowed to ask for a secret.
 ///
@@ -2871,6 +3079,25 @@ pub fn settings_page(view: &SettingsView) -> Markup {
         section .card aria-labelledby="mcp-heading" {
             h2 id="mcp-heading" { "MCP servers" }
             (mcp_group(view))
+        }
+
+        section .card aria-labelledby="schedules-heading" {
+            h2 id="schedules-heading" { "Schedules" }
+            p .small {
+                "Cron runs that start ordinary conversation turns. A run is the same turn the "
+                "composer starts, with the question supplied by the row, and its answer lands in "
+                "a conversation named after the schedule."
+            }
+            (schedules_group(view))
+        }
+
+        section .card aria-labelledby="skills-heading" {
+            h2 id="skills-heading" { "Skills" }
+            p .small {
+                "Your own procedures, offered to a turn by name. The catalog carries names and "
+                "descriptions only; a turn reads one on demand before following it."
+            }
+            (skills_group(view))
         }
 
         section .card aria-labelledby="appearance-heading" {
@@ -4532,6 +4759,16 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                 }
                             }
                         }
+                        // The page's own way back to the daemon. A standalone
+                        // window on a phone has no browser chrome, so it has no
+                        // reload control at all, and a daemon that restarted or
+                        // a stream that dropped leaves the operator with no way
+                        // to ask again. Rendered hidden and revealed by the
+                        // script, like the run log controls: a button that
+                        // cannot act without the script is not a control worth
+                        // showing to a reader who has no script.
+                        button type="button" id="reload" class="secondary" hidden
+                            title="Reload this conversation from the daemon" { "Reload" }
                         button type="button" id="stop" class="secondary" hidden { "Stop" }
                         button type="submit" id="send" { "Send" }
                     }
@@ -4811,6 +5048,51 @@ const CHAT_JS: &str = r##"(function () {
     if (next === pinned) { return; }
     pinned = next;
     jump.hidden = next;
+  });
+
+  // ---- Asking the daemon again -------------------------------------------
+  // A page in a standalone window on a phone has no browser chrome, so it has
+  // no reload control at all: a daemon that restarted, a session that expired or
+  // a stream that dropped leaves the operator looking at a transcript they
+  // cannot refresh. This is that control, and it asks the same route the address
+  // bar would, so what appears is what the daemon actually has rather than what
+  // this tab had.
+  var reloadControl = document.getElementById("reload");
+  var RELOAD_KEY = "kallisti.askedAgain";
+  // A page that is possibly behind the daemon says so in the place the operator
+  // is already looking, and offers the fix in the same breath. It is a mark, not
+  // a modal: reading the transcript is not blocked by the warning about it.
+  function markStale(sentence) {
+    if (reloadControl) { reloadControl.classList.add("stale"); }
+    if (status && sentence) { status.textContent = sentence; }
+  }
+  function askAgain() {
+    // The reload lands at the bottom of the conversation, not at its beginning:
+    // the newest message is why anybody asked for it.
+    try { window.sessionStorage.setItem(RELOAD_KEY, "1"); } catch (error) {}
+    window.location.reload();
+  }
+  if (reloadControl) {
+    reloadControl.hidden = false;
+    reloadControl.addEventListener("click", askAgain);
+  }
+  var cameBack = false;
+  try {
+    cameBack = window.sessionStorage.getItem(RELOAD_KEY) === "1";
+    if (cameBack) { window.sessionStorage.removeItem(RELOAD_KEY); }
+  } catch (error) {}
+  if (cameBack) {
+    pinned = true;
+    thread.scrollTop = thread.scrollHeight;
+  }
+  // Back and forward between pages can restore this one from the browser's own
+  // cache without asking the daemon anything. The transcript on screen is then
+  // as old as the last visit, which is exactly the state the reload control is
+  // for, so it says so instead of looking current.
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) {
+      markStale("this page came back from the browser cache and may be out of date");
+    }
   });
 
   // ---- One window per call, streamed -------------------------------------
@@ -5763,6 +6045,7 @@ const CHAT_JS: &str = r##"(function () {
     target.article.className = "msg assistant pending";
     var answer = "";
     var thinking = "";
+    var lostConnection = false;
     controller = new AbortController();
     try {
       var response = await fetch("/dashboard/chat/send", {
@@ -5897,6 +6180,7 @@ const CHAT_JS: &str = r##"(function () {
         // the browser lets go, so the answer is very likely on its way to the
         // transcript. Printing the browser's own words ("Load failed") would be
         // jargon standing in for a fact the operator can act on.
+        lostConnection = true;
         target.bubble.className = "bubble failed";
         target.text.textContent =
           "Lost the connection to the daemon. The turn may have finished anyway - " +
@@ -5906,6 +6190,12 @@ const CHAT_JS: &str = r##"(function () {
     controller = null;
     target.article.className = "msg assistant";
     setBusy(false);
+    // Said after the composer settles, because settling clears the status line:
+    // the point of the sentence is that the page is behind the daemon, and the
+    // way out is the control beside it.
+    if (lostConnection) {
+      markStale("the connection dropped - reload to read the rest of the transcript");
+    }
     // Nothing is waiting any more: the turn this page said had a message queued
     // for it has just ended, so the count goes rather than going stale.
     var drained = document.getElementById("composer-queued");
