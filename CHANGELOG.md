@@ -6,6 +6,32 @@ observe; commit history carries the detail.
 
 ## 1.4.1
 
+- **Resuming a turn that died always ends.** A turn interrupted by a stop, a
+  crash or a killed process used to be a stream with no ending: the phone
+  reconnected, replayed the frames that existed, then tailed a channel nobody
+  published on, so the transcript sat in "thinking" forever. Two changes close
+  it. At boot every `queued` or `running` device turn from the previous process
+  is settled through the same path a live failure takes, so the status change
+  and its terminal `error` frame are one transaction. And a stream opened on a
+  turn whose status is already terminal synthesises the ending its status
+  promises, for that response only - a read path still never writes. `build 91`.
+- **A refused device request is in the journal.** Every 4xx from the device
+  listener now logs its status and code, and an unknown path logs the method and
+  the path exactly as it arrived. `/v1/v1/pair` used to be a silent 404 in the
+  journal while the daemon was telling the client the answer in the body; now
+  the doubled prefix is a line the operator can grep for. No message, token or
+  pairing code is logged, and the response body is byte-for-byte unchanged.
+  `build 91`.
+- **Stopping the daemon stops the daemon.** `runtime.shutdown_timeout` bounds the
+  wait for blocking work at five seconds. Dropping the multi-thread runtime used
+  to block until every `spawn_blocking` task finished, and a turn runs its whole
+  provider loop on one of those, so a stop during a turn held the process open
+  past systemd's 90-second `TimeoutStopSec` and got SIGKILLed. The listeners
+  still drain first and the interruption is settled at the next boot. `build 91`.
+- **Two backups from the same second list in the order they were written.**
+  A name sort put `kallisti-<stamp>-2.bk` after `kallisti-<stamp>.bk`, because
+  `-` sorts before `.`, so the newest archive read as the older one. The stamp
+  and its collision number are compared separately now. `build 91`.
 - **A file is a message.** An empty composer with an attachment used to be a
   refusal by name, so sending a screenshot meant typing filler first. The box is
   now accepted when something is attached, and the row the transcript gets is

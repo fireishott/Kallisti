@@ -266,6 +266,28 @@ fn field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> &'a str {
     fields.get(name).map(String::as_str).unwrap_or("").trim()
 }
 
+/// The payload of a terminal frame this handler had to synthesise.
+///
+/// The shapes are the ones a worker writes for the same kind, so a client that
+/// decodes a stored frame decodes this one with the same code. `text` is only
+/// used by `done`; it comes from the retained deltas so the ending still shows
+/// what the turn had said.
+fn synthetic_terminal(kind: FrameKind, text: String) -> serde_json::Value {
+    match kind {
+        FrameKind::Done => {
+            let usage =
+                core_domain::Usage::unavailable(core_domain::UnavailableReason::FieldsAbsent);
+            serde_json::json!({ "text": text, "usage": usage })
+        }
+        FrameKind::Error => serde_json::json!({
+            "code": "interrupted",
+            "message": "the turn ended without recording a terminal frame",
+        }),
+        FrameKind::Cancelled => serde_json::json!({ "reason": "cancel" }),
+        FrameKind::Delta | FrameKind::Reasoning | FrameKind::Tool => serde_json::Value::Null,
+    }
+}
+
 /// One SSE frame: `id`, `event`, `data`, in that order.
 fn frame_event(frame: &TurnFrame) -> Event {
     Event::default()
@@ -1255,7 +1277,7 @@ pub async fn events(
     // is delivered by the channel rather than lost in the gap.
     let receiver = service.hub().subscribe(&job_id);
 
-    let replay = match store.events_after(&job_id, last_event_id) {
+    let mut replay = match store.events_after(&job_id, last_event_id) {
         Ok(replay) => replay,
         Err(error) => {
             return DeviceError::db_unavailable(format!("cannot read the event log: {error}"))
@@ -1279,7 +1301,28 @@ pub async fn events(
         .last()
         .map(|frame| frame.seq)
         .unwrap_or(last_event_id);
-    let replay_ended = replay.last().is_some_and(TurnFrame::is_terminal);
+    let mut replay_ended = replay.last().is_some_and(TurnFrame::is_terminal);
+
+    // A job that is already terminal will never be written to again, but its
+    // log can still be missing the terminal frame: a process that died between
+    // the last delta and the finish, or a sweep that has not run yet. Tailing
+    // such a stream would wait for an ending nobody can publish. Synthesise the
+    // frame the status promises, for this response only. The boot sweep owns
+    // persistence; a read path never writes.
+    if !replay_ended && let Some(kind) = FrameKind::terminal_for_status(&job.status) {
+        let text = if kind == FrameKind::Done {
+            store.reply_text(&job_id).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        replay.push(TurnFrame {
+            seq: replay_last.saturating_add(1),
+            kind,
+            data: synthetic_terminal(kind, text),
+        });
+        replay_ended = true;
+    }
+
     let replay_events: Vec<Result<Event, Infallible>> =
         replay.iter().map(|frame| Ok(frame_event(frame))).collect();
 
@@ -4281,5 +4324,73 @@ mod tests {
             };
             assert!(frame.is_terminal(), "{kind:?} must end the stream");
         }
+    }
+
+    #[tokio::test]
+    async fn a_terminal_job_without_a_terminal_frame_ends_its_stream() {
+        let fx = fixture();
+        let db = fx.service.engine().db().clone();
+        let device_id: String = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT id FROM devices LIMIT 1", [], |row| row.get(0))
+            })
+            .expect("device id");
+        // A failed job whose log stops at a delta: the shape a process that
+        // died mid-turn leaves behind. No worker will ever append to it.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO jobs (id, kind, status, device_id, finished_at) \
+                 VALUES ('job-1', 'chat', 'failed', ?1, \
+                         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                [&device_id],
+            )?;
+            conn.execute(
+                "INSERT INTO job_events (job_id, seq, kind, payload) \
+                 VALUES ('job-1', 1, 'delta', '{\"text\":\"par\"}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("job rows");
+
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri("/v1/turns/job-1/events")
+            .header("authorization", format!("Bearer {}", fx.chat))
+            .body(Body::empty())
+            .expect("request");
+        let response = fx.service.router().oneshot(request).await.expect("router");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        let body = String::from_utf8(bytes.to_vec()).expect("utf8");
+
+        let events: Vec<&str> = body
+            .lines()
+            .filter(|line| line.starts_with("event:"))
+            .collect();
+        assert_eq!(
+            events,
+            ["event: delta", "event: error"],
+            "the delta replays and the status supplies the ending"
+        );
+        assert!(
+            body.contains("id: 2"),
+            "the synthesised frame follows the replayed one: {body}"
+        );
+        assert!(
+            body.contains("\"code\":\"interrupted\""),
+            "the ending names the interruption: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_doubled_v1_prefix_is_a_typed_404() {
+        let fx = fixture();
+        let (status, body) = send(&fx.service, "POST", "/v1/v1/pair", "", "{}").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["ok"], serde_json::json!(false));
+        assert_eq!(body["code"], serde_json::json!("not_found"));
     }
 }

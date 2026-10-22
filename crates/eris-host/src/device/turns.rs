@@ -133,6 +133,21 @@ impl FrameKind {
             Self::Cancelled => Some("cancelled"),
         }
     }
+
+    /// The frame that ends a job already in `status`: the inverse of
+    /// [`FrameKind::terminal_status`].
+    ///
+    /// `None` for a status that is not terminal, so a reader can never
+    /// synthesise a frame for a job that may still be written to.
+    #[must_use]
+    pub fn terminal_for_status(status: &str) -> Option<Self> {
+        match status {
+            "succeeded" => Some(Self::Done),
+            "failed" => Some(Self::Error),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
 }
 
 /// One event, as it is stored and as it goes on the wire.
@@ -780,6 +795,48 @@ fn finish_transaction(
     }
     transaction.commit()?;
     Ok(Some(seq))
+}
+
+/// Settle every turn the previous process left unfinished, at boot.
+///
+/// A `queued` or `running` job at boot belongs to a worker this process never
+/// started, and nothing will ever claim it. Left alone it is worse than a stale
+/// row: `GET /v1/turns/{id}/events` replays the frames that exist, finds no
+/// terminal one, and then tails a broadcast channel nobody publishes on, so a
+/// client that reconnects to resume the turn waits forever.
+///
+/// Each job is finished through [`TurnStore::finish`], so the status change and
+/// its terminal `error` frame are one transaction (rules 2 and 3 at the top of
+/// this file) and the retention window is pruned exactly as a live failure
+/// would prune it. The `WHERE status IN ('queued', 'running')` guard in that
+/// statement means a job a concurrent canceller settled first is not clobbered.
+pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
+    let store = TurnStore::new(db.clone(), TurnStore::buffer_from_env());
+    let interrupted = db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT id FROM jobs WHERE status IN ('queued', 'running') ORDER BY created_at, id",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+    })?;
+
+    let mut settled = 0usize;
+    for job_id in interrupted {
+        let data = serde_json::json!({
+            "code": "interrupted",
+            "message": "the daemon stopped before this turn finished",
+        });
+        match store.finish(&job_id, FrameKind::Error, &data) {
+            Ok(Some(_)) => settled += 1,
+            // A terminal job is not settled twice: `finish` wrote nothing.
+            Ok(None) => {}
+            // One unreadable job must not keep the others hanging.
+            Err(error) => {
+                tracing::error!(%error, %job_id, "could not settle an interrupted turn");
+            }
+        }
+    }
+    Ok(settled)
 }
 
 /// Where a turn's answer is also written, when the client named a conversation.
@@ -1676,5 +1733,70 @@ mod tests {
         let config = store.provider_config().expect("read").expect("a config");
         assert_eq!(config.base_url, "http://127.0.0.1:20128/v1");
         assert_eq!(config.model, "ds/deepseek-v4-flash");
+    }
+
+    #[test]
+    fn the_boot_sweep_settles_interrupted_turns_with_a_terminal_frame() {
+        let (store, device) = store(DEFAULT_SSE_BUFFER);
+        let (queued_job, _) = queued(&store, &device);
+        let (running_job, _) = queued(&store, &device);
+        assert!(store.claim(&running_job).expect("claim"));
+
+        // A turn that was settled before the process stopped is not this
+        // process's business and must keep its own ending.
+        let (finished_job, _) = queued(&store, &device);
+        let done = serde_json::json!({ "text": "ok", "usage": {} });
+        assert!(
+            store
+                .finish(&finished_job, FrameKind::Done, &done)
+                .expect("finish")
+                .is_some()
+        );
+
+        assert_eq!(fail_orphaned(store.db()).expect("swept"), 2);
+
+        for job in [&queued_job, &running_job] {
+            assert_eq!(
+                store.status(job).expect("status").as_deref(),
+                Some("failed"),
+                "the interrupted job is settled"
+            );
+            let events = store.events_after(job, 0).expect("events");
+            let last = events.last().expect("a terminal frame");
+            assert_eq!(last.kind, FrameKind::Error);
+            assert!(last.is_terminal(), "a replay ends on this frame");
+            assert_eq!(last.data["code"], "interrupted");
+            let finished_at: Option<String> = store
+                .db()
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT finished_at FROM jobs WHERE id = ?1",
+                        params![job],
+                        |row| row.get(0),
+                    )
+                })
+                .expect("finished_at");
+            assert!(finished_at.is_some(), "a settled job records when");
+        }
+
+        assert_eq!(
+            store.status(&finished_job).expect("status").as_deref(),
+            Some("succeeded"),
+            "a terminal job is not clobbered"
+        );
+        assert_eq!(
+            store.events_after(&finished_job, 0).expect("events").len(),
+            1,
+            "no second terminal frame is appended to a settled job"
+        );
+    }
+
+    #[test]
+    fn the_boot_sweep_reports_nothing_when_every_turn_settled() {
+        let (store, device) = store(DEFAULT_SSE_BUFFER);
+        let (job, _) = queued(&store, &device);
+        let done = serde_json::json!({ "text": "ok", "usage": {} });
+        store.finish(&job, FrameKind::Done, &done).expect("finish");
+        assert_eq!(fail_orphaned(store.db()).expect("swept"), 0);
     }
 }

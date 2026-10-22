@@ -190,8 +190,40 @@ pub fn list(paths: &Paths) -> Result<Vec<ArchiveRow>, BackupError> {
             name,
         });
     }
-    rows.sort_by(|left, right| right.name.cmp(&left.name));
+    rows.sort_by(|left, right| newest_first(&right.name, &left.name));
     Ok(rows)
+}
+
+/// The order two archive names are listed in, newest name first.
+///
+/// A plain name comparison is almost a chronological one, because the stamp is
+/// fixed width - except when two creates land in the same second and the second
+/// gets a `-2` suffix. `-` sorts before `.`, so `kallisti-<stamp>-2.bk` compared
+/// by name alone comes out *older* than `kallisti-<stamp>.bk`, and the list would
+/// report the second archive as the first. Splitting the name into its stamp and
+/// its collision number puts the suffixed one after its base, which is the order
+/// they were written in.
+fn newest_first(left: &str, right: &str) -> std::cmp::Ordering {
+    fn split(name: &str) -> (&str, u32) {
+        let stem = name.trim_end_matches(ARCHIVE_SUFFIX);
+        match stem.rsplit_once('-') {
+            // Only a purely numeric tail is a collision number; a stamp's own
+            // date separator is a `-` followed by digits too, so the check has
+            // to be that the remainder is a stamp and the tail is a bare count.
+            Some((head, tail)) if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) => {
+                match tail.parse::<u32>() {
+                    Ok(number) if head.contains('T') => (head, number),
+                    _ => (stem, 0),
+                }
+            }
+            _ => (stem, 0),
+        }
+    }
+    let (left_stamp, left_number) = split(left);
+    let (right_stamp, right_number) = split(right);
+    left_stamp
+        .cmp(right_stamp)
+        .then(left_number.cmp(&right_number))
 }
 
 /// Write one archive into the archive directory with `--verify` semantics.
@@ -873,4 +905,28 @@ fn the_page_needs_a_session_like_every_other_dashboard_page() {
     let reply = block_on(send(&app, Call::get(ROUTE_BACKUPS)));
     assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
     assert_eq!(reply.json()["code"], "no_session");
+}
+
+#[cfg(test)]
+#[test]
+fn two_archives_in_one_second_are_listed_newest_first() {
+    // The same stamp twice is the case a plain name sort gets backwards: `-`
+    // sorts before `.`, so the collision-numbered name would read as older.
+    let mut names = vec![
+        "kallisti-2026-10-22T02-02-57Z-2.bk",
+        "kallisti-2026-10-22T02-02-57Z.bk",
+        "kallisti-2026-10-22T02-02-57Z-3.bk",
+        "kallisti-2026-10-22T02-02-01Z.bk",
+    ];
+    names.sort_by(|left, right| newest_first(right, left));
+    assert_eq!(
+        names,
+        vec![
+            "kallisti-2026-10-22T02-02-57Z-3.bk",
+            "kallisti-2026-10-22T02-02-57Z-2.bk",
+            "kallisti-2026-10-22T02-02-57Z.bk",
+            "kallisti-2026-10-22T02-02-01Z.bk",
+        ],
+        "the base archive is older than the suffixed one written after it"
+    );
 }

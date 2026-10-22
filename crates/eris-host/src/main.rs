@@ -17,6 +17,7 @@
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
@@ -35,6 +36,15 @@ const EXIT_FAILURE: u8 = 1;
 const EXIT_NOT_IMPLEMENTED: u8 = 2;
 /// Exit code for a device the command refuses to mint for: unknown or revoked.
 const EXIT_DEVICE_REFUSED: u8 = 3;
+
+/// How long shutdown waits for blocking work after the listeners have stopped.
+///
+/// Dropping a multi-thread runtime waits for every `spawn_blocking` task with no
+/// bound, and a turn runs its whole provider loop on one of those. Five seconds
+/// is enough for an in-flight database transaction to settle and far short of
+/// systemd's 90-second `TimeoutStopSec`, so a turn that is still streaming at
+/// shutdown is abandoned rather than holding the stop until it is killed.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -451,6 +461,17 @@ fn run_serve(
         Err(error) => eprintln!("eris serve: could not settle interrupted subagents: {error}"),
     }
 
+    // Device turns are `jobs` rows, and they need the same treatment for a
+    // sharper reason: the events route tails a broadcast channel once it has
+    // replayed the log. With no worker left to append a terminal frame, a phone
+    // resuming an interrupted turn waits for an ending that can never arrive.
+    // Settling each row writes that ending in the same transaction.
+    match eris_host::device::turns::fail_orphaned(&db) {
+        Ok(0) => {}
+        Ok(count) => eprintln!("eris serve: settled {count} interrupted turn(s)"),
+        Err(error) => eprintln!("eris serve: could not settle interrupted turn(s): {error}"),
+    }
+
     let engine = SetupEngine::new(db, paths.clone());
 
     // First boot: reconcile the state against the credential table, then
@@ -546,12 +567,26 @@ fn run_serve(
         "device listener decision"
     );
 
-    match runtime.block_on(async move {
+    let outcome = runtime.block_on(async move {
         if device_enabled {
             state.device.start();
         }
         admin::serve_listeners(state, listeners).await
-    }) {
+    });
+
+    // The listeners have stopped, by a signal or by a failure. What is left is
+    // the runtime, and dropping a multi-thread runtime blocks until every
+    // `spawn_blocking` task has finished. A device turn is one blocking task for
+    // its whole provider loop, including the thirty-second command tool and the
+    // provider's own streaming, so an implicit drop held the process open until
+    // systemd's `TimeoutStopSec` expired and SIGKILLed it. Bound the wait
+    // explicitly: ordinary work (a row being written) settles in milliseconds,
+    // and a turn the operator interrupted by stopping the daemon is abandoned.
+    // The next start settles its orphaned transcript row; a killed process left
+    // the same row for the same recovery.
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
+
+    match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("eris serve: {error}");
@@ -1120,4 +1155,73 @@ fn init_logging(level: LogLevel) {
         .with_target(false)
         .with_writer(io::stderr)
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// The runtime shape `run_serve` builds, with one blocking task on it. That
+    /// task is the stand-in for a turn: a device or browser turn is one
+    /// `spawn_blocking` call for its whole provider loop.
+    fn runtime_with_blocking_sleep(seconds: u64) -> tokio::runtime::Runtime {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a multi-thread runtime");
+        runtime.spawn_blocking(move || std::thread::sleep(Duration::from_secs(seconds)));
+        runtime
+    }
+
+    /// The shape the daemon had: the runtime falls out of scope, and its drop
+    /// waits for the blocking task however long it runs. Ignored because it
+    /// deliberately takes the whole sleep; run it with `--ignored`.
+    #[test]
+    #[ignore = "demonstrates the unbounded wait, so it takes as long as the task"]
+    fn dropping_the_runtime_waits_for_a_blocking_task() {
+        let runtime = runtime_with_blocking_sleep(5);
+        let started = Instant::now();
+        drop(runtime);
+        let elapsed = started.elapsed();
+        eprintln!("implicit drop returned after {elapsed:?} (five-second blocking task)");
+        assert!(
+            elapsed >= Duration::from_secs(5),
+            "the implicit drop returned after {elapsed:?}; it was expected to wait out the task"
+        );
+    }
+
+    /// The shape this binary now uses: the wait is bounded, so a turn that is
+    /// still streaming cannot hold the process open.
+    #[test]
+    fn shutdown_timeout_does_not_wait_for_a_blocking_task() {
+        let runtime = runtime_with_blocking_sleep(10);
+        let started = Instant::now();
+        runtime.shutdown_timeout(Duration::from_millis(100));
+        let elapsed = started.elapsed();
+        eprintln!("shutdown_timeout returned after {elapsed:?} (ten-second blocking task)");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "shutdown_timeout waited {elapsed:?} for a ten-second task"
+        );
+    }
+
+    /// The bound `run_serve` uses, against a task far longer than it. This is the
+    /// real constant, so the sleep must outlast it for the assertion to mean
+    /// anything.
+    #[test]
+    #[ignore = "takes SHUTDOWN_GRACE seconds; run with --ignored"]
+    fn the_daemon_grace_returns_seconds_before_the_task_ends() {
+        let runtime = runtime_with_blocking_sleep(30);
+        let started = Instant::now();
+        runtime.shutdown_timeout(SHUTDOWN_GRACE);
+        let elapsed = started.elapsed();
+        eprintln!(
+            "shutdown_timeout({SHUTDOWN_GRACE:?}) returned after {elapsed:?} (thirty-second blocking task)"
+        );
+        assert!(
+            elapsed >= SHUTDOWN_GRACE && elapsed < SHUTDOWN_GRACE + Duration::from_secs(2),
+            "shutdown_timeout returned after {elapsed:?}, not within {SHUTDOWN_GRACE:?}"
+        );
+    }
 }

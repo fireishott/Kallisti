@@ -49,7 +49,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::Router;
-use axum::http::{StatusCode, Uri};
+use axum::http::{Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use serde::Serialize;
@@ -487,6 +487,19 @@ impl DeviceError {
 
 impl IntoResponse for DeviceError {
     fn into_response(self) -> Response {
+        // A 4xx is the caller's mistake, not a daemon fault: a wrong pairing
+        // code must read as a refused request in the journal, never as an
+        // outage. The code is carried because it is the word a client branches
+        // on; the message and the request body are not logged, since both can
+        // carry a token or a pairing code. The body sent to the client is
+        // unchanged.
+        if self.status.is_client_error() {
+            tracing::warn!(
+                status = self.status.as_u16(),
+                code = self.code,
+                "device request refused"
+            );
+        }
         let body = DeviceErrorBody {
             ok: false,
             code: self.code.to_owned(),
@@ -889,7 +902,17 @@ pub async fn serve_address(
 
 /// Unknown path. The device listener serves `/v1` and nothing else: the wizard,
 /// the dashboard and `/healthz` are admin-plane paths and never answer here.
-async fn not_here(uri: Uri) -> DeviceError {
+///
+/// The refusal is logged with the path exactly as it arrived, because an
+/// unlogged 404 is nearly impossible to diagnose from the client side: a phone
+/// that asks for `/v1/v1/pair` should leave a line the operator can grep for,
+/// with the doubled prefix visible in it.
+async fn not_here(method: Method, uri: Uri) -> DeviceError {
+    tracing::warn!(
+        http_method = %method,
+        path = %uri.path(),
+        "unknown device route: this listener serves /v1 only"
+    );
     DeviceError::new(
         StatusCode::NOT_FOUND,
         "not_found",
@@ -900,8 +923,13 @@ async fn not_here(uri: Uri) -> DeviceError {
     )
 }
 
-/// Known path, wrong method.
-async fn wrong_method(uri: Uri) -> DeviceError {
+/// Known path, wrong method. Logged for the same reason as [`not_here`].
+async fn wrong_method(method: Method, uri: Uri) -> DeviceError {
+    tracing::warn!(
+        http_method = %method,
+        path = %uri.path(),
+        "device route does not accept that method"
+    );
     DeviceError::new(
         StatusCode::METHOD_NOT_ALLOWED,
         "method_not_allowed",
@@ -998,6 +1026,20 @@ mod tests {
         assert_eq!(
             error.snapshot_url.as_deref(),
             Some("/v1/sessions/session-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_keeps_its_body_byte_for_byte() {
+        // Logging a 4xx must not change what the client parses.
+        let response = DeviceError::unauthorized("pairing_code_invalid", "nope").into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("body");
+        assert_eq!(
+            String::from_utf8(bytes.to_vec()).expect("utf8"),
+            r#"{"ok":false,"code":"pairing_code_invalid","message":"nope"}"#
         );
     }
 }

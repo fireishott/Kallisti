@@ -121,6 +121,69 @@ cargo fmt --check
 The binary is thin and everything testable is in the library, so the acceptance tests
 drive the same router the process serves.
 
+## Install `gh` (GitHub CLI)
+
+Releases, tags and PRs are one command with `gh`. Linux, no root, one line:
+
+```sh
+mkdir -p ~/.local && v=$(curl -sI https://github.com/cli/cli/releases/latest | tr -d '\r' | sed -n 's#^[Ll]ocation: .*/tag/v##p') && a=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && curl -fsSL "https://github.com/cli/cli/releases/download/v$v/gh_${v}_linux_$a.tar.gz" | tar xz -C ~/.local --strip-components=1 && ~/.local/bin/gh --version
+```
+
+macOS, same idea, Homebrew keeps it updated:
+
+```sh
+brew install gh
+```
+
+Windows:
+
+```sh
+winget install --id GitHub.cli
+```
+
+Debian or Ubuntu, if you want the official GitHub apt repo instead of a tarball:
+
+```sh
+(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+  && sudo mkdir -p -m 755 /etc/apt/keyrings \
+  && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+  && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+  && sudo apt update && sudo apt install gh -y
+```
+
+The tarball route puts one binary at `~/.local/bin/gh`. If that directory is not
+on your `PATH`, either add it or install the binary system-wide and drop the
+directory:
+
+```sh
+sudo install -m 755 ~/.local/bin/gh /usr/local/bin/gh
+```
+
+Then authenticate. Interactively is one command, and it works over SSH without a
+browser (it prints a one-time code to paste into any browser you do have):
+
+```sh
+gh auth login
+```
+
+Non-interactively, with a token that carries `repo` scope - the form a script or
+an agent needs:
+
+```sh
+gh auth login --with-token <<< "$GITHUB_TOKEN"
+```
+
+Check it: `gh auth status` should name the account and the scopes.
+
+Two traps worth knowing. Do not install the distro's own `gh` from
+`universe` - the 2.45/2.46 builds are broken against current GitHub APIs, which
+is why the apt block above points at GitHub's own repo. And on a headless box,
+`gh auth login --with-token` can block on a keyring that is not there; if it
+hangs, add `--insecure-storage`, or set `GH_TOKEN` in the environment and skip
+the login step entirely.
+
 ## Run the daemon
 
 ```sh
