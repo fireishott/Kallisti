@@ -29,14 +29,15 @@ use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
     ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_FILE, ROUTE_CHAT_ID,
     ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_WORKSPACE,
-    ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS,
-    ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING,
-    ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
-    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_QUOTA,
-    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS,
-    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
+    ROUTE_DASHBOARD, ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN,
+    ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION,
+    ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE,
+    ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
+    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
+    ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING,
+    ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
+    VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -129,6 +130,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SESSIONS, get(sessions))
         .route(ROUTE_SESSION, get(session_detail))
         .route(ROUTE_DEVICES, get(devices).post(mint_pairing_code))
+        .route(ROUTE_DEVICE_REMOVE, post(remove_devices))
         .route(ROUTE_BACKUPS, get(backups_page_handler))
         .route(ROUTE_BACKUPS_CREATE, post(create_backup))
         .route(ROUTE_BACKUPS_RESTORE, post(restore_backup))
@@ -2803,6 +2805,137 @@ async fn revoke_device(
             &state,
             as_html,
             FormError::new(Some("device_id"), error.code(), error.to_string()),
+        ),
+    }
+}
+
+/// The form field a ticked device row arrives in.
+///
+/// One key per device (`device:<id>=1`) rather than a repeated `device_id`,
+/// because the form-body parser keeps one value per name and a repeated name
+/// would silently drop every row but the last. A prefix keeps the selection
+/// lossless without a second parser.
+const DEVICE_TICK: &str = "device:";
+
+/// `POST /dashboard/device/remove` - the bulk action on the device table.
+///
+/// Three verbs on one route, because they are three answers to the same
+/// question ("what should happen to these rows"):
+///
+/// - `revoke` retires the tokens of every ticked row and marks it revoked,
+///   which is what the single-row button does, several rows at a time;
+/// - `delete` removes every ticked row and its tokens for good;
+/// - `delete_revoked` ignores the ticks and removes every row that is already
+///   revoked, which is the whole list of probes in one press.
+///
+/// Deleting is never implied: an active row only goes when it was ticked and the
+/// operator chose the deleting verb.
+async fn remove_devices(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return refusal(error),
+    };
+
+    let action = field(&fields, "action");
+    let selected: Vec<String> = fields
+        .iter()
+        .filter(|(name, value)| {
+            name.starts_with(DEVICE_TICK) && !value.is_empty() && *value != "0" && *value != "false"
+        })
+        .map(|(name, _)| name[DEVICE_TICK.len()..].to_owned())
+        .collect();
+
+    let store = state.engine.auth();
+    match action {
+        "revoke" | "delete" => {
+            if selected.is_empty() {
+                return fail_dashboard(
+                    &state,
+                    as_html,
+                    FormError::new(
+                        Some("device_id"),
+                        "device_required",
+                        "tick at least one device, or use the revoke button on its row",
+                    ),
+                );
+            }
+            let mut changed = 0_usize;
+            for device_id in &selected {
+                let outcome = if action == "delete" {
+                    store.delete_device(device_id).map(|()| 1)
+                } else {
+                    store.revoke_device(device_id)
+                };
+                match outcome {
+                    Ok(count) => changed += count,
+                    Err(error) => {
+                        return fail_dashboard(
+                            &state,
+                            as_html,
+                            FormError::new(
+                                Some("device_id"),
+                                error.code(),
+                                format!("{device_id}: {error}"),
+                            ),
+                        );
+                    }
+                }
+            }
+            let verb = if action == "delete" {
+                "deleted"
+            } else {
+                "revoked"
+            };
+            let detail = format!("{verb} {} device(s), {changed} token(s)", selected.len());
+            let _ = store.audit("loopback", "dashboard.devices_bulk", Some(&detail));
+            if as_html {
+                render_dashboard_ok(&state, detail)
+            } else {
+                ok_json(serde_json::json!({
+                    "ok": true,
+                    "action": action,
+                    "devices": selected.len(),
+                    "changed": changed,
+                }))
+            }
+        }
+        "delete_revoked" => match store.delete_revoked_devices() {
+            Ok(deleted) => {
+                let detail = format!("deleted {deleted} revoked device(s)");
+                let _ = store.audit("loopback", "dashboard.devices_bulk", Some(&detail));
+                if as_html {
+                    render_dashboard_ok(&state, detail)
+                } else {
+                    ok_json(serde_json::json!({
+                        "ok": true,
+                        "action": action,
+                        "devices": deleted,
+                    }))
+                }
+            }
+            Err(error) => fail_dashboard(
+                &state,
+                as_html,
+                FormError::new(None, error.code(), error.to_string()),
+            ),
+        },
+        _ => fail_dashboard(
+            &state,
+            as_html,
+            FormError::new(
+                Some("action"),
+                "action_required",
+                "choose revoke, delete or delete_revoked",
+            ),
         ),
     }
 }

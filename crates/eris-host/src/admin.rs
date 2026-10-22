@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 94;
+pub const BUILD: u32 = 95;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -201,6 +201,11 @@ pub const ROUTE_SESSIONS: &str = "/dashboard/sessions";
 /// the one form that mints a pairing code.
 pub const ROUTE_DEVICES: &str = "/dashboard/devices";
 
+/// `POST /dashboard/device/remove` - the bulk action on the device table. One
+/// route, three verbs: revoke the selected rows, delete the selected rows, or
+/// delete every row that is already revoked.
+pub const ROUTE_DEVICE_REMOVE: &str = "/dashboard/device/remove";
+
 /// `GET /dashboard/backups` - every archive on this host, whether each one
 /// verifies, and the two forms: create one, restore one.
 pub const ROUTE_BACKUPS: &str = "/dashboard/backups";
@@ -300,6 +305,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SIDEBAR,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",
+    ROUTE_DEVICE_REMOVE,
     "/dashboard/mode",
     ROUTE_DEVICES,
     // The two backup posts. Neither carries a path: the restore form names an

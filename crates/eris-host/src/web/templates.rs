@@ -3853,50 +3853,77 @@ pub fn devices_page(view: &DevicesView) -> Markup {
                     "the device step in the wizard."
                 }
             } @else {
-                table {
-                    thead {
-                        tr {
-                            th scope="col" { "Name" }
-                            th scope="col" { "Platform" }
-                            th scope="col" { "Paired" }
-                            th scope="col" { "Last seen" }
-                            th scope="col" { "State" }
-                            th scope="col" { "Access" }
-                            th scope="col" { "Action" }
-                        }
-                    }
-                    tbody {
-                        @for row in &view.rows {
+                // One form around the table, so a selection can be ticked and
+                // acted on in one press. The per-row Revoke button is a submit
+                // button with its own `formaction`: the single-row path is still
+                // the same route, and there is no second form nested in this one,
+                // which is invalid markup and swallows the ticks anyway.
+                form method="post" action=(crate::admin::ROUTE_DEVICE_REMOVE) novalidate {
+                    table {
+                        thead {
                             tr {
-                                td { (row.name) }
-                                td { (row.platform) }
-                                td .mono {
-                                    @if row.paired {
-                                        (row.paired_at.as_deref().unwrap_or("not yet"))
-                                    } @else {
-                                        "not yet"
+                                th scope="col" { "Select" }
+                                th scope="col" { "Name" }
+                                th scope="col" { "Platform" }
+                                th scope="col" { "Paired" }
+                                th scope="col" { "Last seen" }
+                                th scope="col" { "State" }
+                                th scope="col" { "Access" }
+                                th scope="col" { "Action" }
+                            }
+                        }
+                        tbody {
+                            @for row in &view.rows {
+                                tr {
+                                    td {
+                                        input type="checkbox"
+                                            name=(format!("device:{}", row.id))
+                                            value="1" aria-label=(format!("Select {}", row.name));
                                     }
-                                }
-                                td .mono { (row.last_seen_at.as_deref().unwrap_or("never")) }
-                                td {
-                                    span class=(state_class(row.state_label())) {
-                                        (row.state_label())
+                                    td { (row.name) }
+                                    td { (row.platform) }
+                                    td .mono {
+                                        @if row.paired {
+                                            (row.paired_at.as_deref().unwrap_or("not yet"))
+                                        } @else {
+                                            "not yet"
+                                        }
                                     }
-                                }
-                                td .small { (row.admin_label()) }
-                                td {
-                                    @if row.revoked_at.is_some() {
-                                        span .small { "revoked" }
-                                    } @else {
-                                        form .inline-form method="post"
-                                            action="/dashboard/device/revoke" novalidate {
-                                            input type="hidden" name="device_id" value=(row.id);
-                                            button type="submit" class="danger" { "Revoke" }
+                                    td .mono { (row.last_seen_at.as_deref().unwrap_or("never")) }
+                                    td {
+                                        span class=(state_class(row.state_label())) {
+                                            (row.state_label())
+                                        }
+                                    }
+                                    td .small { (row.admin_label()) }
+                                    td {
+                                        @if row.revoked_at.is_some() {
+                                            span .small { "revoked" }
+                                        } @else {
+                                            button type="submit" class="danger"
+                                                formaction="/dashboard/device/revoke"
+                                                name="device_id" value=(row.id) { "Revoke" }
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                    div .actions {
+                        button type="submit" name="action" value="revoke" { "Revoke selected" }
+                        button type="submit" name="action" value="delete" class="danger" {
+                            "Delete selected permanently"
+                        }
+                        button type="submit" name="action" value="delete_revoked" class="danger" {
+                            "Delete all revoked"
+                        }
+                    }
+                    p .small {
+                        "Revoking keeps the row so the list still says the device was cut off. "
+                        "Deleting removes the row and every token it owned, and cannot be undone. "
+                        "\"Delete all revoked\" ignores the ticks and takes every row that is "
+                        "already revoked, which is the fast way to clear a list full of probes; an "
+                        "active device is never swept up by it."
                     }
                 }
             }

@@ -6,6 +6,17 @@ observe; commit history carries the detail.
 
 ## 1.4.2
 
+- **The device list can be emptied the way the operator asked for it.** Thirty-four
+  rows had piled up on this host, twenty-one of them revoked probes named after
+  whatever the test was called, and the page could only revoke one row at a time
+  while keeping every row for ever. The table now carries a tick per row and three
+  verbs: revoke the ticked rows, delete the ticked rows, or delete every row that is
+  already revoked. Revoking still keeps the row, which is the record that a device
+  was cut off. Deleting removes the row and, by the schema's own cascade, every token
+  it owned, and there is no undo - so an active row only goes when it was ticked and
+  the deleting verb was chosen, and "delete all revoked" can never sweep up a pair
+  that is still in use. The single-row Revoke button is unchanged and still posts to
+  its own route, now as a submit button rather than a nested form. `build 95`.
 - **A connection closed mid-turn no longer costs the answer.** A long turn on
   2026-10-22 got twenty-two rounds into a conversation, then died with "connection
   closed before message completed" and kept the half-sentence it had written. The

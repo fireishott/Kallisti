@@ -368,6 +368,18 @@ impl TokenService {
         self.store.revoke_device(device_id)
     }
 
+    /// Delete one device row and every token it owned, for good. Unlike a
+    /// revoke there is no row left afterwards, so the audit line is the only
+    /// record that it existed.
+    pub fn delete_device(&self, device_id: &str) -> Result<(), AuthError> {
+        self.store.delete_device(device_id)
+    }
+
+    /// Delete every device that is already revoked. Returns how many went.
+    pub fn delete_revoked_devices(&self) -> Result<usize, AuthError> {
+        self.store.delete_revoked_devices()
+    }
+
     /// Revoke one token by row id.
     pub fn revoke_token(&self, token_id: &str) -> Result<(), AuthError> {
         if !self.store.mark_token_revoked(token_id, &now())? {

@@ -554,3 +554,313 @@ fn minting_with_the_box_ticked_records_it_on_the_code() {
         "the audit row carries the decision and never the code"
     );
 }
+
+/// The bulk action's route and the field a ticked row arrives in.
+const REMOVE: &str = "/dashboard/device/remove";
+
+fn device_rows(db: &crate::db::Db) -> Vec<String> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare("SELECT id FROM devices ORDER BY id")?;
+        let mut rows = statement.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(row.get::<_, String>(0)?);
+        }
+        Ok(out)
+    })
+    .expect("device ids")
+}
+
+fn token_rows(db: &crate::db::Db) -> Vec<String> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare("SELECT id FROM auth_tokens ORDER BY id")?;
+        let mut rows = statement.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(row.get::<_, String>(0)?);
+        }
+        Ok(out)
+    })
+    .expect("token ids")
+}
+
+#[test]
+fn deleting_the_ticked_rows_removes_them_and_their_tokens() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+
+    for id in ["dev-keep", "dev-drop", "dev-old"] {
+        seed_device(
+            db,
+            id,
+            id,
+            "ios",
+            Some("2026-10-19T09:00:00.000Z"),
+            None,
+            None,
+        );
+        seed_token(
+            db,
+            &format!("tok-{id}"),
+            id,
+            "chat",
+            "2030-01-01T00:00:00.000Z",
+        );
+    }
+    // dev-old is already revoked; it is not ticked, so it must survive.
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE devices SET revoked_at = '2026-10-20T00:00:00.000Z' WHERE id = 'dev-old'",
+            [],
+        )
+    })
+    .expect("mark dev-old revoked");
+
+    let reply = block_on(send(
+        &app,
+        Call::post(REMOVE, "action=delete&device:dev-drop=1").cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.json()["ok"], true);
+    assert_eq!(reply.json()["action"], "delete");
+    assert_eq!(reply.json()["devices"], 1);
+
+    assert_eq!(
+        device_rows(db),
+        vec!["dev-keep".to_owned(), "dev-old".to_owned()],
+        "only the ticked row is gone"
+    );
+    assert_eq!(
+        token_rows(db),
+        vec!["tok-dev-keep".to_owned(), "tok-dev-old".to_owned()],
+        "the deleted device's token went with it, and no other did"
+    );
+
+    // The audit says what happened, and names the row that no longer exists.
+    let deletes: Vec<_> = audit_rows(db)
+        .into_iter()
+        .filter(|row| row.action == "auth.delete_device" || row.action == "dashboard.devices_bulk")
+        .collect();
+    assert!(
+        deletes
+            .iter()
+            .any(|row| row.detail.as_deref() == Some("dev-drop")),
+        "the delete of dev-drop is audited: {deletes:?}"
+    );
+}
+
+#[test]
+fn deleting_all_revoked_leaves_every_active_device_alone() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+
+    seed_device(
+        db,
+        "dev-live",
+        "iPhone",
+        "ios",
+        Some("2026-10-19T09:00:00.000Z"),
+        Some("2026-10-19T12:00:00.000Z"),
+        None,
+    );
+    for id in ["dev-probe-a", "dev-probe-b"] {
+        seed_device(
+            db,
+            id,
+            id,
+            "ios",
+            Some("2026-10-18T09:00:00.000Z"),
+            None,
+            Some("2026-10-19T09:00:00.000Z"),
+        );
+    }
+    seed_token(
+        db,
+        "tok-live",
+        "dev-live",
+        "chat",
+        "2030-01-01T00:00:00.000Z",
+    );
+    seed_token(
+        db,
+        "tok-probe",
+        "dev-probe-a",
+        "chat",
+        "2030-01-01T00:00:00.000Z",
+    );
+
+    let reply = block_on(send(
+        &app,
+        Call::post(REMOVE, "action=delete_revoked").cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.json()["devices"], 2, "{}", reply.body);
+
+    assert_eq!(
+        device_rows(db),
+        vec!["dev-live".to_owned()],
+        "the active device is untouched"
+    );
+    assert_eq!(token_rows(db), vec!["tok-live".to_owned()]);
+}
+
+#[test]
+fn revoking_the_ticked_rows_keeps_them_and_retires_their_tokens() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+
+    for id in ["dev-one", "dev-two"] {
+        seed_device(
+            db,
+            id,
+            id,
+            "ios",
+            Some("2026-10-19T09:00:00.000Z"),
+            None,
+            None,
+        );
+        seed_token(
+            db,
+            &format!("tok-{id}"),
+            id,
+            "chat",
+            "2030-01-01T00:00:00.000Z",
+        );
+    }
+
+    let reply = block_on(send(
+        &app,
+        Call::post(REMOVE, "action=revoke&device:dev-one=1&device:dev-two=1").cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.json()["devices"], 2);
+    assert_eq!(reply.json()["changed"], 2, "both tokens were retired");
+
+    assert_eq!(
+        device_rows(db),
+        vec!["dev-one".to_owned(), "dev-two".to_owned()],
+        "a revoke keeps the rows"
+    );
+    let revoked: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM devices WHERE revoked_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("count revoked");
+    assert_eq!(revoked, 2);
+    let live: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM auth_tokens WHERE revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("count live tokens");
+    assert_eq!(live, 0, "no token of a revoked row is still live");
+}
+
+#[test]
+fn a_bulk_action_with_nothing_ticked_is_refused() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    seed_device(
+        db,
+        "dev-a",
+        "iPhone",
+        "ios",
+        Some("2026-10-19T09:00:00.000Z"),
+        None,
+        None,
+    );
+
+    for action in ["delete", "revoke"] {
+        let reply = block_on(send(
+            &app,
+            Call::post(REMOVE, &format!("action={action}")).cookie(Some(&cookie)),
+        ));
+        assert!(
+            !reply.status.is_success(),
+            "{action} with no tick is refused, not a quiet 200: {} {}",
+            reply.status,
+            reply.body
+        );
+    }
+    assert_eq!(
+        device_rows(db),
+        vec!["dev-a".to_owned()],
+        "nothing was deleted"
+    );
+
+    // An unknown verb is refused too, rather than falling through to a delete.
+    let reply = block_on(send(
+        &app,
+        Call::post(REMOVE, "action=burn&device:dev-a=1").cookie(Some(&cookie)),
+    ));
+    assert!(
+        !reply.status.is_success(),
+        "{} {}",
+        reply.status,
+        reply.body
+    );
+    assert_eq!(device_rows(db), vec!["dev-a".to_owned()]);
+}
+
+#[test]
+fn the_page_offers_a_tick_per_row_and_the_three_bulk_verbs() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    seed_device(
+        db,
+        "dev-a",
+        "iPhone",
+        "ios",
+        Some("2026-10-19T09:00:00.000Z"),
+        None,
+        None,
+    );
+    seed_device(
+        db,
+        "dev-b",
+        "OldPhone",
+        "android",
+        Some("2026-10-01T09:00:00.000Z"),
+        None,
+        Some("2026-10-10T09:00:00.000Z"),
+    );
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_DEVICES).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(r#"action="/dashboard/device/remove""#),
+        "the table posts to the bulk route"
+    );
+    assert!(
+        page.body.contains(r#"name="device:dev-a""#)
+            && page.body.contains(r#"name="device:dev-b""#),
+        "every row carries its own tick"
+    );
+    for verb in ["revoke", "delete", "delete_revoked"] {
+        assert!(
+            page.body.contains(&format!(r#"value="{verb}""#)),
+            "the form offers the {verb} verb"
+        );
+    }
+    // The single-row route is still what a row's own button posts to, and it
+    // never nests a second form inside the bulk one.
+    let row = row_window(&page.body, "iPhone");
+    assert!(
+        row.contains(r#"formaction="/dashboard/device/revoke""#),
+        "the row keeps a single-device revoke: {row}"
+    );
+    assert!(
+        !row.contains("<form"),
+        "no nested form inside the bulk form: {row}"
+    );
+}

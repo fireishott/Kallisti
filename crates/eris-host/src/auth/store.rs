@@ -273,6 +273,44 @@ impl AuthStore {
         Ok(tokens)
     }
 
+    /// Delete one device row for good, and with it every token it owned.
+    ///
+    /// Revoking keeps the row on purpose: it is the record that a device was cut
+    /// off, and the operator can still see what it was. This is the other
+    /// operation, the one for a list that filled up with probes nobody will pair
+    /// again - the row is not a device any more, and keeping a hash of its tokens
+    /// for ever is clutter, not history. `auth_tokens` cascades on the delete, so
+    /// no verifier outlives the row that owns it.
+    pub fn delete_device(&self, device_id: &str) -> Result<(), AuthError> {
+        if self.device(device_id)?.is_none() {
+            return Err(AuthError::UnknownDevice);
+        }
+        self.db.with_conn(|conn| {
+            conn.execute("DELETE FROM devices WHERE id = ?1", params![device_id])
+        })?;
+        self.audit("loopback", "auth.delete_device", Some(device_id))?;
+        Ok(())
+    }
+
+    /// Delete every device that is already revoked, and return how many went.
+    ///
+    /// Scoped to revoked rows on purpose: an active device is never swept up by a
+    /// button that says "revoked", and a pair still in use cannot be deleted by a
+    /// slip. One statement, so the count is the count.
+    pub fn delete_revoked_devices(&self) -> Result<usize, AuthError> {
+        let deleted = self.db.with_conn(|conn| {
+            conn.execute("DELETE FROM devices WHERE revoked_at IS NOT NULL", [])
+        })?;
+        if deleted > 0 {
+            self.audit(
+                "loopback",
+                "auth.delete_revoked_devices",
+                Some(&format!("devices={deleted}")),
+            )?;
+        }
+        Ok(deleted)
+    }
+
     /// Write one pairing code verifier and return the row id.
     ///
     /// `admin` is what the operator asked for at mint time. It is stored on the
