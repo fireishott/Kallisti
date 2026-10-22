@@ -121,27 +121,81 @@ cargo fmt --check
 The binary is thin and everything testable is in the library, so the acceptance tests
 drive the same router the process serves.
 
+## Install (one line)
+
+Fresh Linux box, no root, no compiler:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/fireishott/Kallisti/main/install.sh | sh
+```
+
+That is the whole install. What it does:
+
+- Installs a **prebuilt binary** for `linux/x86_64` or `linux/aarch64` from the
+  newest release, verifying the published `.sha256`.
+- Falls back to **building from source** on the pinned toolchain when there is no
+  asset for the machine. It installs `rustup` itself if Rust is absent, and tells
+  you the one `apt` line if the C toolchain is missing.
+- Puts the binary at `~/.local/opt/kallisti/bin/eris`, symlinked to
+  `~/.local/bin/eris`.
+- Creates `~/.config/kallisti` (`eris.env` and `keys.env`, both mode 0600),
+  `~/.local/share/kallisti` and `~/kallisti-workspace`.
+- Writes and starts a systemd **user** unit, `kallisti-eris.service`, and tells you
+  if `Linger` is off.
+
+Then two edits and you are in:
+
+```sh
+$EDITOR ~/.config/kallisti/eris.env    # base URL and model
+$EDITOR ~/.config/kallisti/keys.env    # the key the reference names
+```
+
+Open `http://127.0.0.1:7340`, claim the wizard with the six-word passphrase the
+daemon printed on first start (`~/.config/kallisti/first-run.txt`).
+
+| Flag | What it changes |
+|---|---|
+| `--from-source` | Skip the prebuilt binary and build |
+| `--version <tag>` | Install a specific release instead of the newest |
+| `--prefix <dir>` | Where the binary lives (default `~/.local/opt/kallisti`) |
+| `--bin-dir <dir>` | Where the symlink lives (default `~/.local/bin`) |
+| `--no-service` | Do not write or start the systemd unit |
+| `--dry-run` | Print the plan, change nothing |
+
+Read it before you pipe it to `sh` - it is 311 lines and nothing in it needs root:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/fireishott/Kallisti/main/install.sh | less
+```
+
+## Build from source
+
+```sh
+git clone https://github.com/fireishott/Kallisti.git && cd Kallisti
+cargo build --release --locked
+./target/release/eris serve
+```
+
+The toolchain is pinned in `rust-toolchain.toml` (1.99.1); plain `cargo` picks it
+up if `rustup` is installed. First boot generates the six-word passphrase once,
+prints it, and writes it to `~/.config/kallisti/first-run.txt` at mode 0600. The
+dashboard is at `http://127.0.0.1:7340`; the device listener is loopback-only on
+`:7341` and off until the dashboard switch or `--device-listen` turns it on.
+
 ## Install `gh` (GitHub CLI)
 
-Releases, tags and PRs are one command with `gh`. Linux, no root, one line:
+Releases, tags and PRs are one command with `gh`. Linux, no root, no keyring, one
+line:
 
 ```sh
-mkdir -p ~/.local && v=$(curl -sI https://github.com/cli/cli/releases/latest | tr -d '\r' | sed -n 's#^[Ll]ocation: .*/tag/v##p') && a=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && curl -fsSL "https://github.com/cli/cli/releases/download/v$v/gh_${v}_linux_$a.tar.gz" | tar xz -C ~/.local --strip-components=1 && ~/.local/bin/gh --version
+mkdir -p ~/.local/bin && v=$(curl -sI https://github.com/cli/cli/releases/latest | tr -d '\r' | sed -n 's#^[Ll]ocation: .*/tag/v##p') && curl -fsSL "https://github.com/cli/cli/releases/download/v$v/gh_${v}_linux_amd64.tar.gz" | tar xz -C ~/.local --strip-components=1 && ~/.local/bin/gh --version
 ```
 
-macOS, same idea, Homebrew keeps it updated:
+On an arm64 box change `linux_amd64` to `linux_arm64`; that is the only difference.
 
-```sh
-brew install gh
-```
-
-Windows:
-
-```sh
-winget install --id GitHub.cli
-```
-
-Debian or Ubuntu, if you want the official GitHub apt repo instead of a tarball:
+macOS, Homebrew keeps it updated: `brew install gh`.
+Windows: `winget install --id GitHub.cli`.
+Debian or Ubuntu with root, from GitHub's own repo (not `universe`):
 
 ```sh
 (type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
@@ -153,13 +207,8 @@ Debian or Ubuntu, if you want the official GitHub apt repo instead of a tarball:
   && sudo apt update && sudo apt install gh -y
 ```
 
-The tarball route puts one binary at `~/.local/bin/gh`. If that directory is not
-on your `PATH`, either add it or install the binary system-wide and drop the
-directory:
-
-```sh
-sudo install -m 755 ~/.local/bin/gh /usr/local/bin/gh
-```
+If `~/.local/bin` is not on your `PATH`, either add it or drop the binary
+system-wide: `sudo install -m 755 ~/.local/bin/gh /usr/local/bin/gh`.
 
 Then authenticate. Interactively is one command, and it works over SSH without a
 browser (it prints a one-time code to paste into any browser you do have):
@@ -175,25 +224,13 @@ an agent needs:
 gh auth login --with-token <<< "$GITHUB_TOKEN"
 ```
 
-Check it: `gh auth status` should name the account and the scopes.
+Check it with `gh auth status`; it should name the account and the scopes.
 
-Two traps worth knowing. Do not install the distro's own `gh` from
-`universe` - the 2.45/2.46 builds are broken against current GitHub APIs, which
-is why the apt block above points at GitHub's own repo. And on a headless box,
-`gh auth login --with-token` can block on a keyring that is not there; if it
-hangs, add `--insecure-storage`, or set `GH_TOKEN` in the environment and skip
-the login step entirely.
-
-## Run the daemon
-
-```sh
-cargo build --release
-./target/release/eris serve
-```
-
-First boot generates a six-word passphrase once, prints it, and writes it to
-`~/.config/kallisti/first-run.txt` at mode 0600. The dashboard is at
-`http://127.0.0.1:7340`; the device listener is loopback-only on `:7341`.
+Two traps worth knowing. Do not install the distro's own `gh` from `universe` -
+the 2.45/2.46 builds are broken against current GitHub APIs, which is why the apt
+block points at GitHub's own repo. And on a headless box,
+`gh auth login --with-token` can block on a keyring that is not there; if it hangs,
+add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 

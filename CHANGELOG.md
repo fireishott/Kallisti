@@ -6,6 +6,21 @@ observe; commit history carries the detail.
 
 ## 1.4.1
 
+- **A fresh Linux box is one line.** `curl -fsSL
+  https://raw.githubusercontent.com/fireishott/Kallisti/main/install.sh | sh`
+  installs the daemon, the config, the workspace and a systemd user unit, with no
+  root, no compiler and no manual step. The script prefers a prebuilt release
+  binary and verifies its `.sha256`; it falls back to a source build on the pinned
+  toolchain, installing `rustup` itself when Rust is absent. Already present, so
+  nobody has to find them: `--from-source`, `--version`, `--prefix`,
+  `--no-service` and `--dry-run`. A new `release` workflow builds the
+  `linux-x86_64` and `linux-aarch64` tarballs the installer downloads, so the
+  fast path exists on the first tagged push rather than only for whoever has a
+  Rust toolchain. No daemon behaviour changed and no build number moved.
+- **The `gh` install line is the line, not a puzzle.** The README's GitHub CLI
+  section now leads with a no-root one-liner with the architecture written out,
+  says the single token to change on arm64, and keeps the apt route and the two
+  traps (the broken `universe` builds, the headless keyring) below it.
 - **Resuming a turn that died always ends.** A turn interrupted by a stop, a
   crash or a killed process used to be a stream with no ending: the phone
   reconnected, replayed the frames that existed, then tailed a channel nobody
