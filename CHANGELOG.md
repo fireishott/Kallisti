@@ -6,6 +6,15 @@ observe; commit history carries the detail.
 
 ## 1.4.2
 
+- **Asking is a normal move again.** The old stack had a clarify card: a turn could
+  stop mid-flight, ask, and resume on the answer. 1.0 had no such path, so a turn
+  facing a real decision either guessed or stalled, and "does clarify work" was a
+  fair question with the honest answer "no". It does now, without the card: every
+  turn is told it may ask, that one question belongs at the end of the answer with
+  the options it would accept, and that the operator's reply arrives in the same
+  transcript so the next turn continues from it. The transcript is the resume path,
+  the same principle the capped-turn fix rests on, and nothing is parked mid-turn,
+  so there is no callback to lose. `build 93`.
 - **A turn that spends its tool budget answers instead of shrugging.** The
   tool-free last round was already there, but the model was never told its tools
   were gone, so it did the natural thing and wrote the call it wanted to make.

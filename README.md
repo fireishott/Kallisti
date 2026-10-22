@@ -55,6 +55,10 @@ is not in your hand.
   answers: the last round is offered no tools and asked for prose, and if it still says
   nothing the turn reports the rounds it spent, every tool that ran with its count and
   the last result, so the next message continues the job instead of restarting it.
+- **Questions, not guesses.** A turn that needs a decision, or a fact no tool can
+  supply, asks for it and ends - one question, naming the options it would accept. The
+  reply lands in the same transcript, so the next turn continues from the answer rather
+  than starting over.
 - **Tools with a boundary.** Read, write and list inside a workspace, run commands,
   fetch a URL, draw an image, and call any MCP server you configure.
 - **MCP client.** Real stdio JSON-RPC: handshake, `tools/list`, `tools/call`, one owned

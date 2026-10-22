@@ -260,16 +260,32 @@ The path is relative to the workspace and must be one a tool result named; do no
 invent a path and do not paste base64. Use at most a few per answer, each next to \
 the sentence that explains it.";
 
-    /// `text` with the capability note appended, or the note alone.
+    /// How a turn asks instead of guessing.
+    ///
+    /// This is the 1.0 form of the old `clarify` card. There is no callback and no
+    /// mid-turn wait: the transcript is the resume path. A question ends the turn,
+    /// the operator answers in the same conversation, and the next turn continues
+    /// from it. Saying that in the prompt is what makes an ask a normal move
+    /// rather than a failure, which is why a turn used to guess or stall instead.
+    pub const ASKING: &'static str = "\
+When an answer depends on a decision that is the operator's to make, or on a fact \
+no tool can supply, ask instead of guessing. One question, at the end of your answer, \
+naming the options you would accept. The turn ends there: the operator replies in \
+the transcript and the next turn continues from it, so a question costs one round \
+trip. Never guess a credential, and never pick between real alternatives, on \
+something you could have asked.";
+
+    /// `text` with the capability notes appended, or the notes alone.
     #[must_use]
     pub fn with_capabilities(text: Option<String>) -> Option<String> {
+        let notes = format!("{}\n\n{}", Self::CAPABILITIES, Self::ASKING);
         Some(match text {
-            Some(text) if !text.trim().is_empty() => format!("{text}\n\n{}", Self::CAPABILITIES),
-            _ => Self::CAPABILITIES.to_owned(),
+            Some(text) if !text.trim().is_empty() => format!("{text}\n\n{notes}"),
+            _ => notes,
         })
     }
 
-    /// Where the environment context lives: `context.md` beside the persona.    /// Where the environment context lives: `context.md` beside the persona.
+    /// Where the environment context lives: `context.md` beside the persona.
     #[must_use]
     pub fn context_path(&self) -> PathBuf {
         self.path.with_file_name(CONTEXT_FILE_NAME)
@@ -375,6 +391,37 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let config = PersonaConfig::at_path(dir.path().join("persona.md"));
         assert_eq!(config.load(None).expect("missing is fine"), None);
+    }
+
+    /// A turn with no persona at all still learns that it may ask. Asking is a
+    /// capability, not something an operator has to write into their persona for
+    /// it to be allowed, and the old clarify card is why that matters.
+    #[test]
+    fn every_turn_is_told_that_it_may_ask_and_how_the_answer_arrives() {
+        let notes = PersonaConfig::with_capabilities(None).expect("notes");
+        assert!(notes.contains("ask instead of guessing"), "{notes}");
+        assert!(notes.contains("next turn continues"), "{notes}");
+        assert!(
+            notes.contains("![caption]"),
+            "the file note is kept: {notes}"
+        );
+
+        let with_persona =
+            PersonaConfig::with_capabilities(Some("You are a daemon.".to_owned())).expect("notes");
+        assert!(
+            with_persona.starts_with("You are a daemon."),
+            "{with_persona}"
+        );
+        assert!(
+            with_persona.contains("ask instead of guessing"),
+            "{with_persona}"
+        );
+
+        // An empty persona is the same case as no persona: notes only, no blank
+        // paragraph where the operator's text would have been.
+        let blank = PersonaConfig::with_capabilities(Some("   ".to_owned())).expect("notes");
+        assert!(!blank.starts_with('\n'), "{blank}");
+        assert!(blank.contains("ask instead of guessing"), "{blank}");
     }
 
     #[test]
