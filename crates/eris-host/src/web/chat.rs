@@ -4006,7 +4006,10 @@ mod tests {
     /// message, and the row it writes still says something.
     #[test]
     fn an_empty_message_is_only_a_refusal_when_nothing_is_attached() {
-        assert_eq!(accept_message("   ", false).unwrap_err(), "a message is required");
+        assert_eq!(
+            accept_message("   ", false).unwrap_err(),
+            "a message is required"
+        );
         assert_eq!(accept_message("", true).expect("a file is a message"), "");
         assert_eq!(accept_message("  hi  ", true).expect("trimmed"), "hi");
         let too_long = "x".repeat(MAX_MESSAGE_BYTES + 1);

@@ -322,7 +322,9 @@ fn the_run_log_offers_expand_and_collapse_only_when_it_has_calls() {
         "Show all is a plain toggle, pressed off at rest: {body}"
     );
     assert!(
-        body.contains(r#"aria-label="Show every tool call in this run log, not only the running one""#),
+        body.contains(
+            r#"aria-label="Show every tool call in this run log, not only the running one""#
+        ),
         "the toggle says what it does: {body}"
     );
     assert!(
@@ -599,9 +601,12 @@ fn the_shell_tells_the_script_which_run_log_mode_is_stored() {
 
     let reply = block_on(send(
         &app,
-        Call::post(ROUTE_SETTINGS_TOOLS, "tools_enabled=true&tool_log=summary&tool_rounds=12")
-            .html()
-            .cookie(Some(&cookie)),
+        Call::post(
+            ROUTE_SETTINGS_TOOLS,
+            "tools_enabled=true&tool_log=summary&tool_rounds=12",
+        )
+        .html()
+        .cookie(Some(&cookie)),
     ));
     assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
 
