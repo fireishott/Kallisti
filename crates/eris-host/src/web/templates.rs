@@ -5045,7 +5045,13 @@ const CHAT_JS: &str = r##"(function () {
     var run = function () {
       followQueued = false;
       if (pinned === false) { return; }
-      if (document.activeElement === box) { return; }
+      // Focus alone is not typing. The composer is focused on load and after
+      // every send, so bailing on focus meant the transcript never followed its
+      // own turn on a desktop at all. What the guard was protecting is the iOS
+      // keyboard: writing scrollTop while somebody is mid-sentence is what drops
+      // it. So the guard is a draft with text in it, which is the only state
+      // where moving the page under the cursor costs anything.
+      if (document.activeElement === box && box.value.length > 0) { return; }
       thread.scrollTop = thread.scrollHeight;
     };
     if (typeof window.requestAnimationFrame === "function") {
@@ -5053,6 +5059,16 @@ const CHAT_JS: &str = r##"(function () {
       return;
     }
     run();
+  }
+
+  // The thinking bubble is bounded and scrolls itself, so the newest thought is
+  // visible without the bubble growing over the answer. Only the send path did
+  // this; a turn this page re-attached to appended to a bubble that stayed at
+  // its first line.
+  function thinkToBottom(container, body) {
+    if (container === null || body === null) { return; }
+    container.hidden = false;
+    body.scrollTop = body.scrollHeight;
   }
 
 
@@ -5120,6 +5136,261 @@ const CHAT_JS: &str = r##"(function () {
     if (event.persisted) {
       markStale("this page came back from the browser cache and may be out of date");
     }
+  });
+
+  // ---- Watching a turn this page did not start ----------------------------
+  // The response that carries a turn belongs to the tab that sent it. A tablet
+  // that suspends Safari mid-answer, a second window, a reload: all of them lose
+  // that response, and the page was then left with a row the server marks
+  // `streaming` and no way to see any of it. The word sat there for as long as
+  // the turn ran - which at a fifty-round budget is half an hour - and the reload
+  // control redrew the same nothing.
+  //
+  // The daemon publishes the same frames to the conversation, so this attaches to
+  // them. The first frame says where the turn already is; every frame after it is
+  // a change to that state, and the same functions that paint a live send paint
+  // these.
+  var liveSource = null;
+  var liveTarget = null;
+  var liveAnswer = "";
+
+  function conversationId() {
+    var shell = document.querySelector(".chat-shell");
+    return shell === null ? "" : (shell.getAttribute("data-conversation") || "");
+  }
+
+  function assistantLabel() {
+    var shell = document.querySelector(".chat-shell");
+    return shell === null ? "assistant" : (shell.getAttribute("data-assistant") || "assistant");
+  }
+
+  function roundLabel(round, max, toolsAllowed) {
+    if (toolsAllowed === false) {
+      return "round " + round + " of " + max + " \u00b7 answering without tools";
+    }
+    return "round " + round + " of " + max;
+  }
+
+  function closeLive() {
+    if (liveSource === null) {
+      liveTarget = null;
+      liveAnswer = "";
+      return;
+    }
+    liveSource.close();
+    liveSource = null;
+    liveTarget = null;
+    liveAnswer = "";
+  }
+
+  // Fill the bubble from a snapshot. Authoritative rather than additive, so a
+  // reconnect repaints the same state instead of doubling the answer.
+  function paintSnapshot(target, snapshot) {
+    // Monotonic, not authoritative: a page that streamed part of an answer and
+    // then re-attached would otherwise watch its own text shorten back to
+    // whatever the row last flushed. The row is only ever behind, never ahead.
+    var incoming = typeof snapshot.body === "string" ? snapshot.body : "";
+    if (incoming.length >= liveAnswer.length) { liveAnswer = incoming; }
+    target.text.textContent = liveAnswer;
+    if (target.think && target.thinkBody && typeof snapshot.reasoning === "string") {
+      target.thinkBody.textContent = snapshot.reasoning;
+      if (snapshot.reasoning.length > 0) { thinkToBottom(target.think, target.thinkBody); }
+    }
+    if (Array.isArray(snapshot.tools)) {
+      snapshot.tools.forEach(function (tool) { target.addTool(tool); });
+    }
+    if (typeof snapshot.rounds === "number" && snapshot.rounds > 0 && status) {
+      status.textContent = snapshot.rounds === 1 ? "1 round run" : snapshot.rounds + " rounds run";
+    }
+    toBottom();
+  }
+
+  // Settle the live bubble in place, without the reload the answer would
+  // otherwise need: the transcript is only re-rendered by the server, and the
+  // text and the footer are what the operator came back for.
+  function finishLive(target, snapshot) {
+    target.article.className = "msg assistant";
+    if (snapshot && typeof snapshot.body === "string") {
+      liveAnswer = snapshot.body;
+      target.text.textContent = liveAnswer;
+    }
+    if (snapshot && target.meta) {
+      target.meta.textContent = metaFor({
+        model: snapshot.model,
+        rounds: snapshot.rounds
+      });
+    }
+    renderAnswerFiles(target.text, liveAnswer);
+    closeLive();
+    toBottom();
+  }
+
+  function attachLive(existing) {
+    // One live view at a time. EventSource reconnects on its own, so a second
+    // attach here would only stack two readers on the same turn.
+    if (liveSource) { return; }
+    var target = null;
+    if (existing) {
+      // A page whose own send lost its stream keeps what it already drew and
+      // rejoins the turn from there.
+      target = existing;
+      liveAnswer = existing.text.textContent;
+    } else {
+      // Only when this page is behind a turn that is still running. A page opened
+      // on a settled conversation has nothing to attach to.
+      var pending = thread.querySelector(".msg.assistant.pending");
+      if (pending === null || busy === true) { return; }
+      // The pending row is server-rendered markup: a bubble and a footer, with no
+      // run log yet and no machinery to grow one. Replacing it with the builder
+      // the live send uses means one painter for both paths, rather than a second
+      // one that would drift.
+      pending.parentNode.removeChild(pending);
+      target = line("assistant", assistantLabel());
+      liveAnswer = "";
+    }
+    var conversation = conversationId();
+    if (conversation === "") { return; }
+    target.article.className = "msg assistant pending";
+    liveTarget = target;
+
+    var source = new EventSource(
+      "/dashboard/chat/live?conversation=" + encodeURIComponent(conversation)
+    );
+    liveSource = source;
+
+    source.addEventListener("snapshot", function (event) {
+      var snapshot = {};
+      try { snapshot = JSON.parse(event.data); } catch (error) {}
+      if (snapshot.id === null || snapshot.id === undefined) {
+        // Nothing left to watch: the row this page was told about is gone.
+        closeLive();
+        markStale("that turn is no longer running - reload to read the transcript");
+        return;
+      }
+      paintSnapshot(target, snapshot);
+      if (snapshot.state === "streaming") {
+        if (status) { status.textContent = "attached to the running turn"; }
+      } else {
+        finishLive(target, snapshot);
+      }
+    });
+
+    source.addEventListener("delta", function (event) {
+      var frame = {};
+      try { frame = JSON.parse(event.data); } catch (error) { return; }
+      liveAnswer += frame.text;
+      target.text.textContent = liveAnswer;
+      toBottom();
+    });
+
+    source.addEventListener("round", function (event) {
+      var frame = {};
+      try { frame = JSON.parse(event.data); } catch (error) { return; }
+      if (status) {
+        status.textContent = roundLabel(frame.round, frame.max_rounds, frame.tools_allowed);
+      }
+    });
+
+    source.addEventListener("tool", function (event) {
+      var tool = {};
+      try { tool = JSON.parse(event.data); } catch (error) { return; }
+      target.addTool(tool);
+      if (status) { status.textContent = tool.name + " ran"; }
+      toBottom();
+    });
+
+    source.addEventListener("tool_output", function (event) {
+      var chunk = {};
+      try { chunk = JSON.parse(event.data); } catch (error) { return; }
+      target.streamChunk(chunk.name, chunk.chunk);
+    });
+
+    source.addEventListener("reasoning", function (event) {
+      var frame = {};
+      try { frame = JSON.parse(event.data); } catch (error) { return; }
+      if (target.think === null || target.thinkBody === null) { return; }
+      target.thinkBody.textContent += frame.text;
+      thinkToBottom(target.think, target.thinkBody);
+      if (offMode === false) { toBottom(); }
+    });
+
+    source.addEventListener("notice", function (event) {
+      var notice = {};
+      try { notice = JSON.parse(event.data); } catch (error) { return; }
+      if (status) { status.textContent = notice.message || ""; }
+    });
+
+    source.addEventListener("subagent", function (event) {
+      try { noteSubagent(JSON.parse(event.data)); } catch (error) {}
+    });
+
+    source.addEventListener("done", function (event) {
+      var final = {};
+      try { final = JSON.parse(event.data); } catch (error) { return; }
+      if (typeof final.text === "string") {
+        liveAnswer = final.text;
+        target.text.textContent = liveAnswer;
+      }
+      if (target.meta) { target.meta.textContent = metaFor(final); }
+      if (typeof final.reasoning === "string" && final.reasoning.trim().length > 0
+          && target.think && target.thinkBody) {
+        target.thinkBody.textContent = final.reasoning;
+        target.think.hidden = false;
+      }
+      if (status) { status.textContent = ""; }
+      finishLive(target, null);
+    });
+
+    source.addEventListener("error", function (event) {
+      // Two different events share this name: a frame the daemon sent, and the
+      // transport giving up. A frame is the answer failing; a transport error is
+      // this page's problem, and EventSource retries by itself.
+      if (typeof event.data === "string" && event.data.length > 0) {
+        // A frame the daemon sent: the answer failed.
+      } else {
+        // The transport gave up; EventSource retries by itself.
+        if (status) { status.textContent = "lost the live view - reconnecting"; }
+        return;
+      }
+      var failure = {};
+      try { failure = JSON.parse(event.data); } catch (error) { return; }
+      target.bubble.className = "bubble failed";
+      target.text.textContent = failure.message || "that turn failed";
+      if (target.meta) {
+        var tail = [failure.code];
+        if (failure.resets_in) { tail.push("resets in " + failure.resets_in); }
+        target.meta.textContent = tail.join(" \u00b7 ");
+      }
+      if (status) { status.textContent = ""; }
+      finishLive(target, null);
+      target.bubble.className = "bubble failed";
+    });
+
+    source.addEventListener("resync", function (event) {
+      // This page fell behind the turn. Reopening re-reads the row, which is the
+      // same state a reload has and costs one request.
+      closeLive();
+      attachLive();
+    });
+  }
+
+  // A suspended page comes back with a dead connection and a live turn. This is
+  // the difference between "still streaming" and "still streaming, and here is
+  // what happened while you were away".
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") {
+      // Rejoin below.
+    } else {
+      return;
+    }
+    if (thread.querySelector(".msg.assistant.pending") === null) { closeLive(); return; }
+    closeLive();
+    attachLive();
+  });
+  window.addEventListener("online", function () {
+    if (thread.querySelector(".msg.assistant.pending") === null) { return; }
+    closeLive();
+    attachLive();
   });
 
   // ---- One window per call, streamed -------------------------------------
@@ -6073,6 +6344,10 @@ const CHAT_JS: &str = r##"(function () {
     var answer = "";
     var thinking = "";
     var lostConnection = false;
+    // Whether the turn's own closing frame arrived. A stream that ends without
+    // one is not an answer that finished, it is this page losing the socket, and
+    // the turn carries on either way.
+    var sawDone = false;
     controller = new AbortController();
     try {
       var response = await fetch("/dashboard/chat/send", {
@@ -6163,6 +6438,7 @@ const CHAT_JS: &str = r##"(function () {
             toBottom();
           }
           if (parsed.event === "done") {
+            sawDone = true;
             var final = JSON.parse(parsed.data);
             answer = final.text;
             target.meta.textContent = metaFor(final);
@@ -6220,8 +6496,13 @@ const CHAT_JS: &str = r##"(function () {
     // Said after the composer settles, because settling clears the status line:
     // the point of the sentence is that the page is behind the daemon, and the
     // way out is the control beside it.
-    if (lostConnection) {
-      markStale("the connection dropped - reload to read the rest of the transcript");
+    if (lostConnection || sawDone === false) {
+      // The opening page lost the thread mid-answer: rejoin the turn instead of
+      // leaving a bubble that will never be written to. Attaching is cheaper than
+      // a reload and keeps whatever already streamed here.
+      markStale("the connection dropped - rejoining the turn");
+      target.article.className = "msg assistant pending";
+      attachLive(target);
     }
     // Nothing is waiting any more: the turn this page said had a message queued
     // for it has just ended, so the count goes rather than going stale.
@@ -6448,6 +6729,40 @@ const CHAT_JS: &str = r##"(function () {
       if (controller) { controller.abort(); }
     });
   }
+
+  // Land on the newest message. A scroll box opens at the top of its content,
+  // which is where the answer was forty turns ago: every visit to a conversation
+  // began with a scroll to find the thing it was opened for. Twice, because the
+  // height this measures is not final while the fonts and any attachments are
+  // still arriving.
+  function land() {
+    pinned = true;
+    thread.scrollTop = thread.scrollHeight;
+  }
+  land();
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(land);
+  }
+  // Twice was the old reading of "the height is not final yet". It is not final
+  // for longer than two frames: a web font that arrives after the first paint
+  // re-measures every line, and the answer ends up one scrollbar-length short of
+  // the bottom with nothing having said so. Both of these fire once, and only
+  // while the page is still pinned - a reading somebody has taken hold of is not
+  // theirs to move.
+  window.addEventListener("load", function () { if (pinned) { land(); } });
+  if (document.fonts && typeof document.fonts.ready === "object") {
+    document.fonts.ready.then(function () { if (pinned) { land(); } });
+  }
+  // A tab that was hidden while the fonts arrived comes back with the same
+  // problem, and `visibilitychange` is the only notification of it.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && pinned) { land(); }
+  });
+
+  // A page that loads with a row still marked streaming is behind a turn whose
+  // response it never had. Attach before the composer is focused, so the status
+  // line is already saying what is happening.
+  attachLive();
 
   box.focus();
 })();"##;

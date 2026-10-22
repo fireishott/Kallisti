@@ -1019,6 +1019,43 @@ pub struct Accounting {
     pub context_tokens: Option<u64>,
 }
 
+/// Record what a running turn has produced so far, without settling it.
+///
+/// The row exists before the first token precisely so a refresh mid-answer shows
+/// the partial reply. It only did that if something wrote the partial reply, and
+/// nothing did: `settle` was the only writer, and that runs when there is no
+/// partial reply left to show. A page that reloaded therefore showed an empty
+/// bubble under the word "Streaming" for as long as the turn ran - the shape the
+/// operator cannot distinguish from a daemon that has stopped working.
+///
+/// So the turn writes what it has as it goes. The body, the calls that already
+/// ran, and the round count are the whole of what a reloaded page needs, and all
+/// three are what the row's own transcript rendering already reads.
+///
+/// Only a row still streaming is written. A turn that was stopped or failed by
+/// something else keeps that decision: progress must never resurrect a row whose
+/// state the operator already changed.
+pub fn progress(
+    db: &Db,
+    id: &str,
+    body: &str,
+    tools: &[ToolRecord],
+    rounds: usize,
+) -> Result<(), DbError> {
+    let tools_json = (!tools.is_empty())
+        .then(|| serde_json::to_string(tools).ok())
+        .flatten();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_messages
+                SET body = ?2, tools = ?3, rounds = ?4
+              WHERE id = ?1 AND state = 'streaming'",
+            params![id, body, tools_json, rounds as i64],
+        )?;
+        Ok(())
+    })
+}
+
 /// Settle a streaming row with its final text and the provider's own usage.
 ///
 /// `reasoning` is the model's own thinking when it streamed some. It is stored
@@ -2163,6 +2200,23 @@ pub enum StreamPart<'a> {
         /// What it wrote, this chunk.
         chunk: &'a str,
     },
+    /// A round is starting, before the model has said anything.
+    ///
+    /// The longest silence in a turn is the model call itself: nothing is written
+    /// for as long as the provider takes, which on a hundred-thousand-token
+    /// context is minutes. Without this the page had no way to tell a turn that
+    /// was thinking from a turn that had died, and the operator's only reading was
+    /// the word "Streaming" sitting still. Sent before the call, so the count on
+    /// screen is the round about to run rather than the one that just finished.
+    Round {
+        /// Which round is starting, one-based, never above the budget.
+        round: usize,
+        /// The turn's tool budget.
+        max_rounds: usize,
+        /// Whether that round may still call tools. False on the closing round,
+        /// where the model has to answer with what it already has.
+        tools_allowed: bool,
+    },
 }
 
 /// Run one turn to completion, handing each fragment to `sink`.
@@ -2879,6 +2933,16 @@ pub fn drive_tool_loop(
             budget_told = true;
             messages.push(ChatMessage::text(ChatRole::User, BUDGET_SPENT));
         }
+        // Said before the call, not after it. The model call is the longest
+        // silence in a turn, and a page that hears nothing for two minutes cannot
+        // tell work from death. The count is the round about to run, and whether
+        // it may still use tools, so the closing round reads as what it is rather
+        // than as the budget being spent twice.
+        sink(StreamPart::Round {
+            round: (rounds + 1).min(max_rounds),
+            max_rounds,
+            tools_allowed,
+        });
         let mut completion = stream(&messages, tools_allowed, &mut *sink)?;
 
         // A route that fails to lift calls into the structured array passes the
@@ -3170,6 +3234,48 @@ mod tests {
         assert_eq!(ids, vec![first.as_str(), second.as_str(), third.as_str()]);
         assert_eq!(transcript[1].role, Role::Assistant);
         assert_eq!(transcript[1].body, "hi");
+    }
+
+    #[test]
+    fn progress_writes_a_partial_answer_and_leaves_a_settled_row_alone() {
+        let db = db();
+        let answer = append_answer(&db, CONVERSATION_ID, "m/one", None).unwrap();
+        let tools = [ToolRecord {
+            name: "run_command".to_owned(),
+            arguments: r#"{"command":"echo hi"}"#.to_owned(),
+            output: "hi".to_owned(),
+            is_error: false,
+        }];
+
+        progress(&db, &answer, "half", &tools, 3).unwrap();
+        let rows = load(&db, CONVERSATION_ID).unwrap();
+        let row = rows.iter().find(|row| row.id == answer).expect("the row");
+        assert_eq!(row.body, "half");
+        assert_eq!(row.rounds, Some(3));
+        assert_eq!(row.tools, tools);
+        assert_eq!(row.state, State::Streaming);
+
+        // A settled row keeps the operator's final answer: a late progress flush
+        // from a turn that already finished must not resurrect a partial body.
+        settle(
+            &db,
+            &answer,
+            "final",
+            None,
+            &tools,
+            None,
+            Accounting {
+                rounds: Some(3),
+                ..Accounting::default()
+            },
+        )
+        .unwrap();
+        progress(&db, &answer, "stale partial", &tools, 9).unwrap();
+        let rows = load(&db, CONVERSATION_ID).unwrap();
+        let row = rows.iter().find(|row| row.id == answer).expect("the row");
+        assert_eq!(row.body, "final");
+        assert_eq!(row.rounds, Some(3), "progress must not touch a settled row");
+        assert_eq!(row.state, State::Complete);
     }
 
     #[test]

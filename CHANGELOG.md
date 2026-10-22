@@ -4,6 +4,54 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.4
+
+- **A page that lost the turn keeps watching it.** A tablet that suspended the
+  browser mid-answer, or a reload, used to leave the transcript stuck on an empty
+  "Streaming" bubble with no way back in: the only reader of a turn's stream was
+  the request that had started it, and that request was gone. Every turn now
+  publishes its frames to the conversation, `GET /dashboard/chat/live` streams
+  them to any page that asks, and a reloaded page attaches on load (and again when
+  the tab becomes visible) instead of showing dead air. The daemon also writes the
+  partial answer, the run log and the round count into the row about once a second,
+  so a reload shows real progress before it even attaches, and a row still marked
+  streaming but with no turn running it is failed honestly as `interrupted` rather
+  than left hanging for ever. The transcript lands on its newest message, and the
+  status line says which round of how many is running. `build 96`.
+- **A full sandbox does not ask before it writes.** `approval_policy = ask` parked
+  every `write_file` even when the operator had already chosen a full sandbox, so a
+  turn that wrote a file stopped dead on an approval nobody was answering - 29 rows
+  piled up on this host. A full sandbox is the operator's own decision that writes
+  are allowed there, so the gate leaves it alone; a confined sandbox still parks or
+  refuses under `ask`. The rows the old behaviour left behind were expired. The
+  device turn's gate matches: it refused a write under `ask`, and now a full sandbox
+  runs it. `build 96`.
+- **A phone-started turn shows its work in the dashboard.** A turn started from the
+  device API wrote an empty transcript row until it finished. It now flushes the
+  partial answer, run log and round count into the row the same way a web turn does,
+  so a page watching it - or a phone re-attaching after a `buffer_miss` - sees
+  progress instead of an empty "Streaming" bubble. `build 96`.
+- **A dropped stream resumes where it stopped, and says so when it cannot.** The
+  frames of a running turn now carry an SSE `id:`, so a browser that reconnects
+  by itself tells the daemon the last frame it saw and is handed the frames it
+  missed instead of silently resuming at whatever came next. A page that fell
+  further behind than the last 256 frames is told to re-read the row rather than
+  patched with half of what it lost. The daemon holds those frames only while the
+  turn runs, so a restart still fails an interrupted turn honestly. `build 96`.
+- **The transcript follows its own turn again.** The follow was bailing whenever
+  the composer held focus, and the composer is focused on load and after every
+  send, so on a desktop the page never scrolled itself. It now stands aside only
+  for a draft with text in it, which is the one case the guard was ever for.
+  `build 96`.
+- **The thinking bubble follows its own stream.** Only a turn started in this tab
+  scrolled the bubble; a page that re-attached, or reloaded, appended to a bubble
+  parked on its first line. Both paths scroll it now. `build 96`.
+- **Opening a conversation lands, and stays landed.** The transcript swept to the
+  bottom twice and then stopped, so an answer that re-measured when its web font
+  arrived ended a scrollbar short of the newest line. It lands again once the
+  fonts are ready and once when a hidden tab comes back, and never after the
+  operator has scrolled away. `build 96`.
+
 ## 1.4.2
 
 - **The device list can be emptied the way the operator asked for it.** Thirty-four

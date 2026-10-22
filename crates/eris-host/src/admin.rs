@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 95;
+pub const BUILD: u32 = 96;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -108,6 +108,14 @@ pub const ROUTE_CHAT_ID: &str = "/dashboard/chat/{id}";
 /// `GET /dashboard/chat/sessions.json` - the rail's list, for a page that stays
 /// open while conversations change underneath it.
 pub const ROUTE_CHAT_SESSIONS: &str = "/dashboard/chat/sessions.json";
+
+/// `GET /dashboard/chat/live` - watch the turn running in one conversation.
+///
+/// The one dashboard route that answers with a stream rather than a page: the
+/// page that asked for a turn is reading the response it posted, and this is how
+/// a page that was never there - a reload, a tab that came back, a second screen -
+/// reads the same turn.
+pub const ROUTE_CHAT_LIVE: &str = "/dashboard/chat/live";
 
 /// One attached file, by the id the transcript carries. Session-gated like every
 /// other dashboard route: an upload is the operator's, not the world's.
@@ -343,6 +351,13 @@ pub struct AppState {
     /// kind of thing as the approval queue's own in-memory bookkeeping rather than
     /// a row. A restart ends the turns, and with them the steers waiting for them.
     pub steering: crate::web::chat::Steering,
+    /// The turns this process is running, by conversation.
+    ///
+    /// In process for the same reason as the steering queue: a turn is a task, and
+    /// a page that wants to watch one is asking this process a question. It is
+    /// what tells a reloaded page that a turn is still running - and what tells a
+    /// row that claims to be streaming that nothing is writing it any more.
+    pub live: crate::web::live::LiveHub,
     /// The device listener's service. It binds nothing until `start` is called:
     /// at boot when the flag or the setting asks for it, and from the dashboard
     /// toggle afterwards.
@@ -383,11 +398,16 @@ impl AppState {
             eprintln!("eris: {} MCP server(s) configured", servers.len());
         }
         let mcp = Arc::new(crate::mcp::Pool::new(servers));
+        // The web and device surfaces share one table of running turns, so a page
+        // that asks about a conversation is told the truth whichever surface
+        // started the turn in it.
+        let live = crate::web::live::LiveHub::new();
         // The device surface answers `GET /v1/mcp` from the same pool the turns
         // use, so a phone sees the health this process observed rather than a
         // guess. Same process, same pool: one daemon, one answer.
         let device = DeviceService::new(engine.clone(), TurnStore::buffer_from_env())
-            .with_mcp(Arc::clone(&mcp));
+            .with_mcp(Arc::clone(&mcp))
+            .with_live(live.clone());
         Self {
             engine,
             mcp,
@@ -395,6 +415,7 @@ impl AppState {
             limiter: Arc::new(ClaimLimiter::default()),
             allow_full,
             steering: crate::web::chat::Steering::new(),
+            live,
             device,
             access: Arc::new(AdminAccess::loopback_only()),
             persona,
@@ -935,7 +956,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.4.2");
+        assert_eq!(VERSION, "1.4.4");
     }
 
     #[test]

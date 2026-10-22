@@ -28,10 +28,10 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
     ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_FILE, ROUTE_CHAT_ID,
-    ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_WORKSPACE,
-    ROUTE_DASHBOARD, ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN,
-    ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION,
-    ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE,
+    ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS,
+    ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD, ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL,
+    ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY,
+    ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE,
     ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
     ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
     ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING,
@@ -147,6 +147,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_CHAT_MODE, post(chat_mode))
         .route(ROUTE_CHAT_NEW, post(chat_new))
         .route(ROUTE_CHAT_SESSIONS, get(chat_sessions))
+        .route(ROUTE_CHAT_LIVE, get(chat_live))
         .route(ROUTE_CHAT_FILE, get(chat_file))
         .route(ROUTE_CHAT_WORKSPACE, get(chat_workspace_file))
         .route(ROUTE_CHAT_ID, get(chat_conversation_handler))
@@ -4862,6 +4863,225 @@ async fn chat_file(
         .into_response()
 }
 
+/// `GET /dashboard/chat/live` - watch the turn that is running in a conversation.
+///
+/// The page that sent the message is reading the response it posted, and that is
+/// the only page that ever could. A tablet that suspends the browser mid-answer
+/// drops that response, and what the operator came back to was a transcript row
+/// still marked `streaming` with nothing arriving: a page that was told a turn
+/// was writing it, and no way to see any of it. Reloading redrew the same page
+/// from the same row and said the same nothing.
+///
+/// This is the second way in. One frame establishes where the turn is - the row,
+/// its partial text, the calls already run and the round it is on - and every
+/// frame after that is the same one the original page was receiving, because the
+/// turn publishes to both. A page that arrives after the turn ended gets the
+/// finished row and closes, so a reload is answered immediately rather than
+/// waiting for a stream that will never carry anything again.
+async fn chat_live(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let db = state.engine.db().clone();
+    let conversation =
+        match chat::resolve_conversation(&db, query.get("conversation").map(String::as_str)) {
+            Ok(conversation) => conversation,
+            Err(error) => {
+                return refusal(FormError::new(None, "chat_unreadable", error.to_string()));
+            }
+        };
+    let transcript = match chat::load(&db, &conversation) {
+        Ok(transcript) => transcript,
+        Err(error) => {
+            return refusal(FormError::new(None, "chat_unreadable", error.to_string()));
+        }
+    };
+    // The newest answer, not the newest row: the operator's own message is the
+    // last row until the turn writes something, and it is never the thing that is
+    // streaming.
+    let Some(answer) = transcript
+        .iter()
+        .rev()
+        .find(|row| row.role == chat::Role::Assistant)
+    else {
+        return live_stream(vec![live_snapshot_frame(None)], None);
+    };
+
+    if answer.state == chat::State::Streaming {
+        match state.live.running(&conversation) {
+            // A row that no turn in this process is writing. It survived a task
+            // that ended without settling it - a panic, or a provider call that
+            // took the thread with it. Nothing will ever fill it in, so it is
+            // failed here rather than left to render as a turn that never ends.
+            // This is the same reading `fail_orphaned` takes at boot, taken at the
+            // moment somebody asks instead of a process restart later.
+            None => {
+                let detail = "this turn stopped without finishing: nothing is running it, so \
+                              reload to ask again";
+                let _ = chat::fail(&db, &answer.id, "interrupted", detail);
+                let settled = chat::load(&db, &conversation).ok();
+                return live_stream(
+                    vec![live_snapshot_frame(
+                        settled.as_ref().and_then(|rows| rows.last()),
+                    )],
+                    None,
+                );
+            }
+            Some(running) if running != answer.id => {
+                // A newer turn own the conversation, so this older row is left
+                // behind the same way. The page is told about the newer turn by
+                // the next frame it asks for.
+                let detail = "a later turn replaced this one before it finished";
+                let _ = chat::fail(&db, &answer.id, "interrupted", detail);
+            }
+            Some(_) => {}
+        }
+    }
+
+    // Where the page got to, when it is the browser reconnecting by itself after
+    // a dropped socket: `EventSource` resends the last `id:` line this route gave
+    // it. A page that was away long enough to fall past the ring is not handed a
+    // partial replay - its own text is short by an unknown amount - so it is told
+    // to re-read the row, which is the state a reload leaves it in.
+    let after = match headers.get("last-event-id") {
+        Some(value) => value.to_str().unwrap_or("").trim().parse::<u64>().ok(),
+        None => None,
+    };
+
+    let watching = state.live.watch_after(&conversation, after);
+    let Some(watch) = watching else {
+        // Nothing is running: say what the row is and stop. A page that attached
+        // late has the answer, and a stream that stays open to say nothing is how
+        // the page learned to wait forever in the first place.
+        return live_stream(vec![live_snapshot_frame(Some(answer))], None);
+    };
+    if after.is_some() {
+        if watch.missed {
+            // One frame, and the stream closes. The page's own text is short by an
+            // unknown amount, so patching it would be guessing; it is told to ask
+            // again instead, and the request it makes next carries no
+            // `Last-Event-ID` - a fresh `EventSource` never does - so that one is
+            // answered with the row.
+            return live_stream(vec![SseEvent::default().event("resync").data("{}")], None);
+        }
+        // A page that named the frame it saw is caught up by the frames it missed
+        // and nothing else. It is deliberately NOT given the snapshot: the page's
+        // own text is the row as of its last frame plus every delta since, and
+        // applying the row's body on top of a replay would count the tail twice.
+        let first: Vec<SseEvent> = watch.replay.iter().map(live_frame).collect();
+        return live_stream(first, Some(watch.frames));
+    }
+    live_stream(
+        vec![live_snapshot_frame(Some(answer))],
+        Some(watch.frames),
+    )
+}
+
+/// One published frame, as the page receives it.
+///
+/// The `id:` line is the frame's sequence. It is what makes a reconnecting page
+/// able to say where it got to, and it is the only thing the daemon sends that
+/// the browser remembers for it.
+fn live_frame(frame: &std::sync::Arc<crate::web::live::Frame>) -> SseEvent {
+    SseEvent::default()
+        .id(frame.seq.to_string())
+        .event(frame.event)
+        .data(frame.data.to_string())
+}
+
+/// The frame that establishes where a turn is.
+///
+/// Deliberately the whole of what the page draws and nothing else: the partial
+/// reply, the calls already run with the same rendering the live `tool` frame
+/// carries, and the round count. A page that paints this is correct as of now,
+/// and every frame after it is a change to that state.
+fn live_snapshot_frame(answer: Option<&chat::Message>) -> SseEvent {
+    let Some(answer) = answer else {
+        return SseEvent::default()
+            .event("snapshot")
+            .data(serde_json::json!({ "id": null, "state": "idle" }).to_string());
+    };
+    let tools: Vec<serde_json::Value> = answer
+        .tools
+        .iter()
+        .map(|record| {
+            serde_json::json!({
+                "name": record.name,
+                "arguments": record.arguments,
+                "output": record.output,
+                "is_error": record.is_error,
+                "term": crate::web::term::render(
+                    &record.name,
+                    &record.arguments,
+                    &record.output,
+                    record.is_error,
+                ),
+            })
+        })
+        .collect();
+    SseEvent::default().event("snapshot").data(
+        serde_json::json!({
+            "id": answer.id,
+            "state": answer.state.as_str(),
+            "body": answer.body,
+            "rounds": answer.rounds,
+            "model": answer.model,
+            "error_code": answer.error_code,
+            "tools": tools,
+        })
+        .to_string(),
+    )
+}
+
+/// One SSE response: the frames given now, then the turn's frames as they happen.
+///
+/// The same shape the streaming POST uses - an unbounded channel and a stream over
+/// it - because it is the same problem: frames are produced by a task that is not
+/// this request. The forwarding task ends when the page goes away or when the turn
+/// does, and that is what closes the stream rather than leaving it open to say
+/// nothing for as long as the tab lives.
+fn live_stream(
+    first: Vec<SseEvent>,
+    frames: Option<tokio::sync::broadcast::Receiver<std::sync::Arc<crate::web::live::Frame>>>,
+) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<SseEvent, Infallible>>();
+    for event in first {
+        let _ = tx.send(Ok(event));
+    }
+    if let Some(mut receiver) = frames {
+        tokio::spawn(async move {
+            loop {
+                let event = match receiver.recv().await {
+                    Ok(frame) => Some(live_frame(&frame)),
+                    // A page that fell behind is not quietly missing frames: it
+                    // is told to ask for the row again, which is the state a
+                    // reload leaves it in.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        Some(SseEvent::default().event("resync").data("{}"))
+                    }
+                    // The turn ended and dropped the last sender, so there is
+                    // nothing left to wait for. Closing here is what lets the page
+                    // stop saying "streaming".
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+                };
+                let Some(event) = event else { break };
+                if tx.send(Ok(event)).is_err() {
+                    // The page is gone. The turn carries on writing to the row.
+                    break;
+                }
+            }
+        });
+    }
+    Sse::new(UnboundedReceiverStream::new(rx))
+        .keep_alive(SseKeepAlive::default())
+        .into_response()
+}
+
 /// `GET /dashboard/chat/sessions.json`.
 ///
 /// The rail is server-rendered, which means a conversation that gains its name
@@ -6453,20 +6673,36 @@ fn spawn_turn(
     // recount the bar without polling. A plain form post has no channel and needs
     // none: the row in the database is the answer, and the next page load reads
     // it.
+    //
+    // Registered before the notify hook, because that hook is built to outlive the
+    // borrow of the turn and needs a publisher of its own: a subagent that starts
+    // while the page is suspended still has to reach the page that comes back.
+    let live = state.live.begin(&conversation, &answer_id);
+    let reporter = live.reporter();
     let notify_sender = sender.clone();
     let notify: crate::subagents::Notify =
         std::sync::Arc::new(move |report: &crate::subagents::Report<'_>| {
+            reporter.publish("subagent", subagent_frame(report));
             send_terminal(&notify_sender, "subagent", subagent_frame(report));
         });
 
     tokio::task::spawn_blocking(move || {
+        // Every frame the turn produces goes to the page that asked for it and to
+        // every page watching the conversation. Both, always: a page that stayed
+        // open is reading the response it posted, and a page that arrived late -
+        // or one whose tablet suspended Safari mid-answer - is reading this. A
+        // frame that reached one and not the other would make a live page and a
+        // reloaded page disagree about the same turn.
+        let emit = |event: &'static str, data: serde_json::Value| {
+            live.publish(event, data.clone());
+            send_terminal(&sender, event, data);
+        };
         let system = match persona.load(stored_enabled.as_deref()) {
             Ok(text) => text,
             Err(error) => {
                 let message = error.to_string();
                 let _ = chat::fail(&db, &answer_id, error.code(), "");
-                send_terminal(
-                    &sender,
+                emit(
                     "error",
                     serde_json::json!({
                         "code": error.code(),
@@ -6478,15 +6714,25 @@ fn spawn_turn(
         };
 
         // The only place a write can be stopped from reaching the filesystem.
-        // `Never` runs in-sandbox work unattended; `Ask` parks every write. A
-        // queue that cannot be written refuses the call rather than running it
-        // unapproved, because an unrecordable policy is not permission.
+        // `Never` runs in-sandbox work unattended; `Ask` parks every write that a
+        // confined sandbox would refuse anyway. A queue that cannot be written
+        // refuses the call rather than running it unapproved, because an
+        // unrecordable policy is not permission.
+        //
+        // A full sandbox is the operator's own decision that a write is allowed
+        // here, so it is not gated: asking again on every file was the permission
+        // prompt nobody wanted, and a turn that needs a decision asks for it in
+        // the transcript instead (PersonaConfig::ASKING), not in a parked queue.
         let mut gate = |call: &core_domain::ToolCall| -> chat::GateDecision {
             // A write, or any call into an MCP server: both are code the operator
             // installed acting on their behalf, so both wait under `ask`.
             let gated = call.name == "write_file"
                 || crate::mcp::protocol::split_qualified(&call.name).is_some();
-            if !gated || approval_policy == crate::onboarding::permissions::ApprovalPolicy::Never {
+            let unconfined = sandbox.mode() == crate::onboarding::permissions::SandboxMode::Full;
+            if !gated
+                || unconfined
+                || approval_policy == crate::onboarding::permissions::ApprovalPolicy::Never
+            {
                 return chat::GateDecision::Run;
             }
             // Advice before the row: the person deciding sees a reading, and the
@@ -6546,8 +6792,7 @@ fn spawn_turn(
                 ),
                 None => "no vision role is pinned, so the attached image was not read".to_owned(),
             };
-            send_terminal(
-                &sender,
+            emit(
                 "notice",
                 serde_json::json!({ "code": "vision_unavailable", "message": reason }),
             );
@@ -6651,21 +6896,56 @@ fn spawn_turn(
                 .with_notify(notify.clone())
             });
 
+        // What the turn has produced so far, kept for two readers: the row, so a
+        // page that reloads mid-answer sees the partial reply it used to see an
+        // empty bubble in front of, and the run log, so the calls already run are
+        // on screen without waiting for the turn to end.
         let mut streamed = String::new();
+        let mut records: Vec<chat::ToolRecord> = Vec::new();
+        let mut rounds = 0usize;
+        let progress_key = live.answer().to_owned();
+        let mut written_at = std::time::Instant::now();
+        // Once a second, not once a token. A body write per fragment would put a
+        // SQLite transaction between the model and the page for every few words,
+        // and the only thing that has to be fresh is "this moved recently".
+        const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(900);
+        let mut flush =
+            |force: bool, streamed: &str, records: &[chat::ToolRecord], rounds: usize| {
+                if !force && written_at.elapsed() < PROGRESS_EVERY {
+                    return;
+                }
+                written_at = std::time::Instant::now();
+                let _ = chat::progress(&db, &progress_key, streamed, records, rounds);
+            };
         let mut sink = |part: chat::StreamPart<'_>| match part {
             chat::StreamPart::Text(fragment) => {
                 streamed.push_str(fragment);
-                send_terminal(&sender, "delta", serde_json::json!({ "text": fragment }));
+                emit("delta", serde_json::json!({ "text": fragment }));
+                flush(false, &streamed, &records, rounds);
+            }
+            chat::StreamPart::Round {
+                round,
+                max_rounds,
+                tools_allowed,
+            } => {
+                // The count is the round about to run, so a page can say which
+                // one and whether the budget is still there. Stored as the rounds
+                // completed, which is what the footer means by rounds.
+                rounds = round.saturating_sub(1);
+                emit(
+                    "round",
+                    serde_json::json!({
+                        "round": round,
+                        "max_rounds": max_rounds,
+                        "tools_allowed": tools_allowed,
+                    }),
+                );
             }
             chat::StreamPart::Reasoning(fragment) => {
                 // Switched off means not sent at all, so a disabled setting also
                 // stops the reasoning leaving the daemon.
                 if show_reasoning {
-                    send_terminal(
-                        &sender,
-                        "reasoning",
-                        serde_json::json!({ "text": fragment }),
-                    );
+                    emit("reasoning", serde_json::json!({ "text": fragment }));
                 }
             }
             chat::StreamPart::Tool {
@@ -6674,6 +6954,16 @@ fn spawn_turn(
                 output,
                 is_error,
             } => {
+                // The record is kept whether or not the log is shown: a page that
+                // arrives after the turn needs to know what ran even when this
+                // page was told not to draw it.
+                records.push(chat::ToolRecord {
+                    name: name.to_owned(),
+                    arguments: arguments.to_owned(),
+                    output: output.to_owned(),
+                    is_error,
+                });
+                flush(true, &streamed, &records, rounds);
                 // Behind its own switch, not the reasoning one. Off means the run
                 // log is neither rendered nor streamed, so a disabled log does not
                 // still ship command output to the browser.
@@ -6684,8 +6974,7 @@ fn spawn_turn(
                     // the transcript stores, and a script that wanted the raw
                     // result should not have to reconstruct it.
                     let term = crate::web::term::render(name, arguments, output, is_error);
-                    send_terminal(
-                        &sender,
+                    emit(
                         "tool",
                         serde_json::json!({
                             "name": name,
@@ -6701,8 +6990,7 @@ fn spawn_turn(
                 // The same switch as the finished call, for the same reason: a
                 // log that is off must not stream a command's output either.
                 if show_tool_log {
-                    send_terminal(
-                        &sender,
+                    emit(
                         "tool_output",
                         serde_json::json!({ "name": name, "chunk": chunk }),
                     );
@@ -6750,8 +7038,7 @@ fn spawn_turn(
                         "primary={primary_model}; primary_code={primary_code}; fallback={model}"
                     )),
                 );
-                send_terminal(
-                    &sender,
+                emit(
                     "notice",
                     serde_json::json!({
                         "code": "fallback",
@@ -6789,8 +7076,7 @@ fn spawn_turn(
                 // answer to land, because losing a finished turn to a transient
                 // read error is the worse of the two failures.
                 if matches!(chat::still_streaming(&db, &answer_id), Ok(false)) {
-                    send_terminal(
-                        &sender,
+                    emit(
                         "error",
                         serde_json::json!({
                             "code": "cancelled",
@@ -6829,8 +7115,7 @@ fn spawn_turn(
                 if let Some(quota) = &quota {
                     let _ = chat::set_quota(&db, &answer_id, quota);
                 }
-                send_terminal(
-                    &sender,
+                emit(
                     "done",
                     serde_json::json!({
                         "id": answer_id,
@@ -6904,8 +7189,7 @@ fn spawn_turn(
                     "chat.failed",
                     Some(&format!("code={code}; model={}", config.model)),
                 );
-                send_terminal(
-                    &sender,
+                emit(
                     "error",
                     serde_json::json!({
                         "code": code,

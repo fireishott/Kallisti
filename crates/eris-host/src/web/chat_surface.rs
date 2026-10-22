@@ -26,8 +26,8 @@ use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
 use crate::admin::{
-    ROUTE_CHAT, ROUTE_CHAT_SEND, ROUTE_SECURITY, ROUTE_SETTINGS, ROUTE_SETTINGS_STREAMING,
-    ROUTE_SETTINGS_TOOLS,
+    ROUTE_CHAT, ROUTE_CHAT_LIVE, ROUTE_CHAT_SEND, ROUTE_SECURITY, ROUTE_SETTINGS,
+    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TOOLS,
 };
 use crate::onboarding::SetupEngine;
 use crate::web::chat::{self, CONVERSATION_ID, Role, State};
@@ -2816,5 +2816,238 @@ fn an_empty_chat_shows_the_generated_line_only_when_it_is_switched_on() {
         on.body.contains(r#"class="line""#),
         "it is rendered as its own quiet line: {}",
         on.body
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Attaching to a turn whose page is gone
+//
+// The response that carries a turn belongs to the tab that sent it. A tablet
+// that suspends the browser drops it, and the page it comes back to was told a
+// row was streaming and nothing else - for as long as the turn ran, which at a
+// fifty-round budget is half an hour. `GET /dashboard/chat/live` is the second
+// way in, and these are the rules it keeps.
+// ---------------------------------------------------------------------------
+
+/// The live route for one conversation.
+fn live_uri(conversation: &str) -> String {
+    format!("{ROUTE_CHAT_LIVE}?conversation={}", encode(conversation))
+}
+
+/// A ready daemon, its router, a cookie, and the table of running turns.
+fn ready_app_live() -> (
+    tempfile::TempDir,
+    SetupEngine,
+    axum::Router,
+    String,
+    crate::web::live::LiveHub,
+) {
+    let (dir, engine, passphrase) = crate::web::harness::ready_engine();
+    let state = crate::admin::AppState::new(engine.clone(), false);
+    let live = state.live.clone();
+    let app = crate::admin::router_with(state);
+    let cookie = crate::web::harness::sign_in(&app, &passphrase);
+    (dir, engine, app, cookie, live)
+}
+
+#[test]
+fn the_live_route_refuses_a_request_with_no_session() {
+    let (_dir, _engine, app, _cookie, _live) = ready_app_live();
+    let reply = block_on(send(
+        &app,
+        Call::get_owned(live_uri(CONVERSATION_ID)).header("accept", "text/event-stream"),
+    ));
+    assert_eq!(
+        reply.status,
+        StatusCode::FORBIDDEN,
+        "a turn is the operator's own: {}",
+        reply.body
+    );
+    assert_eq!(reply.json()["code"], "no_session");
+}
+
+/// A row still marked streaming that no turn in this process is writing will
+/// never be filled in. Attaching to it is the moment to say so, rather than the
+/// next process restart.
+#[test]
+fn a_row_left_streaming_by_a_dead_turn_is_failed_when_a_page_asks() {
+    let (_dir, engine, app, cookie, live) = ready_app_live();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "go", State::Complete).unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    assert!(live.is_empty(), "nothing is running yet");
+
+    let reply = block_on(send(
+        &app,
+        Call::get_owned(live_uri(CONVERSATION_ID))
+            .header("accept", "text/event-stream")
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(
+        reply.body.contains("event: snapshot"),
+        "the page is told the state in one frame: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains(r#""state":"failed""#),
+        "and that state is failed, not streaming: {}",
+        reply.body
+    );
+
+    let rows = chat::load(db, CONVERSATION_ID).unwrap();
+    let row = rows.iter().find(|row| row.id == answer).expect("the row");
+    assert_eq!(
+        row.state,
+        State::Failed,
+        "nothing will ever write this row, so it is not left saying a turn is running"
+    );
+    assert_eq!(row.error_code.as_deref(), Some("interrupted"));
+    assert!(
+        row.body.contains("reload to ask again"),
+        "the row says what to do about it: {}",
+        row.body
+    );
+}
+
+/// A turn that is running hands the page where it has got to, so a reload is not
+/// a blank bubble: the partial answer, the calls already run and the round.
+#[test]
+fn a_running_turn_snapshots_its_partial_answer_and_run_log() {
+    let (_dir, engine, app, cookie, live) = ready_app_live();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "go", State::Complete).unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    chat::progress(
+        db,
+        &answer,
+        "the first half of an answer",
+        &[chat::ToolRecord {
+            name: "run_command".to_owned(),
+            arguments: r#"{"command":"echo hi"}"#.to_owned(),
+            output: "hi".to_owned(),
+            is_error: false,
+        }],
+        7,
+    )
+    .unwrap();
+    let turn = live.begin(CONVERSATION_ID, &answer);
+
+    // The request is sent first and the turn is ended before the body is read.
+    // A live stream is open for as long as the turn runs, so reading it while the
+    // turn is alive would wait for an answer that is working correctly.
+    let (status, body) = block_on(async {
+        let request = Request::builder()
+            .method("GET")
+            .uri(live_uri(CONVERSATION_ID))
+            .header(header::ACCEPT, "text/event-stream")
+            .header(header::COOKIE, &cookie)
+            .body(Body::from(""))
+            .expect("a valid request");
+        let response = app.clone().oneshot(request).await.expect("a response");
+        let status = response.status();
+        // Subscribed by now: the snapshot is queued, so the turn can end.
+        drop(turn);
+        let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    });
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains("the first half of an answer"),
+        "the partial answer is in the snapshot: {body}"
+    );
+    assert!(
+        body.contains(r#""rounds":7"#),
+        "and the round it is on: {body}"
+    );
+    assert!(
+        body.contains("echo hi"),
+        "and the call that already ran, with the same rendering a live frame carries: {body}"
+    );
+    assert!(
+        body.contains(r#""state":"streaming""#),
+        "the state is the row's own: {body}"
+    );
+
+    // Still running when the page attached, so the row is not failed by it.
+    let rows = chat::load(db, CONVERSATION_ID).unwrap();
+    let row = rows.iter().find(|row| row.id == answer).expect("the row");
+    assert_eq!(
+        row.state,
+        State::Streaming,
+        "a page attaching to a live turn must not end it"
+    );
+}
+
+#[test]
+fn a_settled_conversation_answers_the_live_route_and_closes() {
+    let (_dir, engine, app, cookie, _live) = ready_app_live();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "go", State::Complete).unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    chat::settle(
+        db,
+        &answer,
+        "the whole answer",
+        None,
+        &[],
+        None,
+        chat::Accounting::default(),
+    )
+    .unwrap();
+
+    let reply = block_on(send(
+        &app,
+        Call::get_owned(live_uri(CONVERSATION_ID))
+            .header("accept", "text/event-stream")
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(
+        reply.body.contains(r#""state":"complete""#),
+        "the finished row is the answer: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains("the whole answer"),
+        "with its text: {}",
+        reply.body
+    );
+    // The body terminated rather than waiting on frames: this assertion is the
+    // whole point, because a stream that never closes is the bug.
+    assert!(
+        reply.body.len() < 4096,
+        "the response ended after the snapshot rather than holding the connection: {}",
+        reply.body
+    );
+}
+
+#[test]
+fn a_page_that_loads_mid_turn_is_told_to_attach_and_lands_at_the_bottom() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "go", State::Complete).unwrap();
+    chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(ROUTE_CHAT_LIVE),
+        "the page's script knows where to attach: {}",
+        page.body
+    );
+    assert!(
+        page.body.contains("attachLive();"),
+        "and attaches on load, not only after a send: {}",
+        page.body
+    );
+    assert!(
+        page.body
+            .contains("thread.scrollTop = thread.scrollHeight;"),
+        "the transcript lands on its newest message: {}",
+        page.body
     );
 }

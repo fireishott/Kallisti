@@ -865,6 +865,10 @@ pub struct TurnHub {
     channels: Mutex<HashMap<String, broadcast::Sender<TurnFrame>>>,
     key_lookup: KeyLookup,
     persona: Mutex<Option<PersonaConfig>>,
+    /// The web dashboard's table of running turns. A turn named for a conversation
+    /// registers here so a page that asks about that conversation is told the
+    /// truth - "a turn is running" - instead of failing the row as orphaned.
+    live: Mutex<Option<crate::web::live::LiveHub>>,
 }
 
 impl TurnHub {
@@ -884,6 +888,7 @@ impl TurnHub {
             channels: Mutex::new(HashMap::new()),
             key_lookup,
             persona: Mutex::new(None),
+            live: Mutex::new(None),
         }
     }
 
@@ -899,6 +904,14 @@ impl TurnHub {
     pub fn set_persona(&self, persona: PersonaConfig) {
         if let Ok(mut slot) = self.persona.lock() {
             *slot = Some(persona);
+        }
+    }
+
+    /// Attach the web dashboard's live table, so a device turn that names a
+    /// conversation is visible there for as long as it runs.
+    pub fn set_live(&self, live: crate::web::live::LiveHub) {
+        if let Ok(mut slot) = self.live.lock() {
+            *slot = Some(live);
         }
     }
 
@@ -984,6 +997,16 @@ impl TurnHub {
         policy: TurnPolicy,
         conversation: Option<ConversationTurn>,
     ) {
+        // A turn that named a conversation registers in the dashboard's live table
+        // for as long as it runs, so a page asking about that conversation is told
+        // a turn is running rather than failing the row as orphaned. Dropping the
+        // handle here unregisters it on every way out of this function.
+        let _live = conversation
+            .as_ref()
+            .zip(self.live.lock().ok().and_then(|slot| slot.clone()))
+            .map(|(conversation, hub)| {
+                hub.begin(&conversation.conversation, &conversation.answer_id)
+            });
         let store = self.store.clone();
         let claim = {
             let store = store.clone();
@@ -1268,6 +1291,14 @@ impl TurnHub {
         // the same reasons. It runs to completion on one dedicated thread, because
         // `stream_chat` takes `&mut dyn FnMut` and the sink is not `Send`, and the
         // writer task above still owns every row.
+        //
+        // A device turn that names a conversation keeps that row current as it
+        // goes, exactly like the browser's turn does: the partial answer, run log
+        // and round count are flushed so a re-attached phone (or a page watching
+        // from the dashboard) sees progress instead of an empty streaming bubble.
+        // The writer task still owns the settle; this only keeps the row current.
+        let progress_conversation = conversation.clone();
+        let progress_db = store.db().clone();
         let turn_task = tokio::task::spawn_blocking(move || {
             let TurnPolicy {
                 sandbox,
@@ -1281,11 +1312,15 @@ impl TurnHub {
             // approvals queue can be read and answered over `/v1`, but a running
             // turn does not park a call: nothing on this surface resumes a turn
             // after a decision lands, so a parked call would end as a turn that
-            // silently did nothing. Under `ask` it is refused with the reason and
-            // the model is told so; `never` runs it, as it does in the browser.
+            // silently did nothing. Under `ask` and a confined sandbox it is
+            // refused with the reason and the model is told so; a full sandbox or
+            // `never` runs it, because the operator already said writes are
+            // allowed here.
+            let unconfined = sandbox.mode() == crate::onboarding::permissions::SandboxMode::Full;
             let mut gate = |call: &core_domain::ToolCall| -> crate::web::chat::GateDecision {
                 let gated = call.name == "write_file";
                 if !gated
+                    || unconfined
                     || approval_policy == crate::onboarding::permissions::ApprovalPolicy::Never
                 {
                     return crate::web::chat::GateDecision::Run;
@@ -1306,10 +1341,37 @@ impl TurnHub {
                 // surface cannot show is one it should not have.
                 agents: false,
             };
+            // What the turn has produced so far, for the conversation row. Once a
+            // second, not once a token: a body write per fragment would put a
+            // SQLite transaction between the model and the phone for every few
+            // words, and the only thing that has to be fresh is "this moved
+            // recently".
+            let mut streamed = String::new();
+            let mut records: Vec<crate::web::chat::ToolRecord> = Vec::new();
+            let mut rounds = 0usize;
+            let progress_answer = progress_conversation
+                .as_ref()
+                .map(|write| write.answer_id.clone());
+            let mut written_at = std::time::Instant::now();
+            const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(900);
+            let mut flush = |force: bool,
+                             streamed: &str,
+                             records: &[crate::web::chat::ToolRecord],
+                             rounds: usize| {
+                if let Some(answer) = &progress_answer
+                    && (force || written_at.elapsed() >= PROGRESS_EVERY)
+                {
+                    written_at = std::time::Instant::now();
+                    let _ =
+                        crate::web::chat::progress(&progress_db, answer, streamed, records, rounds);
+                }
+            };
             let mut sink = |part: crate::web::chat::StreamPart<'_>| match part {
                 crate::web::chat::StreamPart::Text(fragment) => {
                     if !fragment.is_empty() {
+                        streamed.push_str(fragment);
                         let _ = tx.send(Signal::Delta(fragment.to_owned()));
+                        flush(false, &streamed, &records, rounds);
                     }
                 }
                 crate::web::chat::StreamPart::Reasoning(fragment) => {
@@ -1319,12 +1381,25 @@ impl TurnHub {
                         let _ = tx.send(Signal::Reasoning(fragment.to_owned()));
                     }
                 }
+                crate::web::chat::StreamPart::Round { round, .. } => {
+                    // The count the row stores is rounds completed. The frame is
+                    // not forwarded: the phone reads its job status instead.
+                    rounds = round.saturating_sub(1);
+                    flush(false, &streamed, &records, rounds);
+                }
                 crate::web::chat::StreamPart::Tool {
                     name,
                     arguments,
                     output,
                     is_error,
                 } => {
+                    records.push(crate::web::chat::ToolRecord {
+                        name: name.to_owned(),
+                        arguments: arguments.to_owned(),
+                        output: output.to_owned(),
+                        is_error,
+                    });
+                    flush(true, &streamed, &records, rounds);
                     // Behind its own switch, as in the browser: a run log that is
                     // off does not ship command output anyway.
                     if show_tool_log {
