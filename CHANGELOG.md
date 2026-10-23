@@ -8,8 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.4.6] - 2026-10-23
 
 The release that stops the app and the daemon from being different versions of the
-truth. App and daemon both carry **build 101**, and the frames the daemon has been
-sending since 99 are finally decoded instead of dropped.
+truth. App and daemon both carry **build 101**, and the reasoning and tool frames the
+daemon has been sending on a device turn since 1.4.1 are finally decoded instead of
+dropped.
 
 ### Added
 
