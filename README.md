@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.1-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/version-1.4.6-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/backend-Eris-C8CCD2?style=flat-square&labelColor=0C0C10" alt="Eris"/>
@@ -32,24 +32,32 @@ over Eris unchanged. A fresh install pairs through the 0.4.0 onboarding:
 `ErisPairingService` posts the daemon address + pairing code to `/v1/pair`, the pair
 lands in the keychain, and the client restores it into chat.
 
-**Backed over Eris:** pairing, chat + SSE streaming, conversations, session
-create/list/search, Inbox, Senses (health/location), Settings.
+**Backed over Eris:** pairing, chat + SSE streaming with the model's reasoning and
+tool activity decoded while the turn runs, conversations, session create/list/search,
+Inbox, Senses (health/location), Settings, the control plane (models, schedules,
+skills, auxiliary roles), gateway control, and notes enrichment through a real run.
 
 **Still typed-stubbed** pending their device routes: session delete/archive/pin/rename,
-title generation, job status, cancel/interrupt, voice transcript, note sync.
-Attachments are text-only. Notes works local-first on device. Talk is in development.
+title generation, job status, cancel/interrupt, voice transcript. Attachments are
+text-only on `/v1/turns`. Talk is in development.
+
+A turn is created once per message: the client sends an idempotency key derived from
+the message's own id, so a retry after a dropped connection resumes the turn it already
+started instead of asking the daemon twice.
 
 ## Status
 
-Private beta. TestFlight **build 89** is the current iOS 1.4.1 build - the 0.4.0 UI on
-Eris. TestFlight invites are distributed to beta testers.
+Private beta. TestFlight **1.4.6 (101)** is the current build - the 0.4.0 UI on Eris,
+with reasoning frames, the control plane and notes enrichment wired to the daemon. The
+app and the daemon carry the same build number from here on, so a screenshot says which
+pair was tested together.
 
 ## Features (0.4.0 UI)
 
-- **Rich chat** - streaming, markdown, syntax-highlighted code, reasoning beside the answer
+- **Rich chat** - streaming, markdown, syntax-highlighted code, and the model's reasoning streamed into the thought card while the turn runs rather than after it
 - **Health and sensors** - HealthKit, CoreLocation, CoreMotion into Eris `sensors.db`
 - **Inbox** - Eris inbox items and actions
-- **Notes** - local-first on device
+- **Notes** - enrichment runs on the daemon; the app opens a run and streams its progress
 - **Camera and photos**, **handwriting and OCR** (iPad), **widgets and Live Activities**, **push notifications**
 - **Device pairing with opaque tokens** - the code is never persisted
 
@@ -57,7 +65,7 @@ Eris. TestFlight invites are distributed to beta testers.
 
 - iOS 18 or newer
 - A running **Kallisti-Eris** daemon (see the `main` branch)
-- Xcode 16 or newer and an Apple Developer account only if you build from source
+- Xcode 26 or newer and an Apple Developer account only if you build from source
 
 ## Quick start
 

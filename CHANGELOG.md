@@ -5,6 +5,73 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.6] - 2026-10-23
+
+The release that stops the app and the daemon from being different versions of the
+truth. App and daemon both carry **build 101**, and the frames the daemon has been
+sending since 99 are finally decoded instead of dropped.
+
+### Added
+
+- **Reasoning and tool activity stream while the turn runs.** The transport had a
+  decoder for `delta`, `done` and `error` and silently skipped everything else, so a
+  model that thought before it answered produced a thinking bubble that stayed empty
+  and a run log that stayed blank until the reply landed. `ErisFrameBridge` and
+  `ErisTurnWire` decode the reasoning and tool frames the daemon already sends: the
+  thought card fills in as the model reasons, and tool events surface as activity.
+  A reasoning frame is explicitly non-terminal, so a thought fragment can never
+  truncate a stream that still has an answer coming.
+- **An event name no decoder knows is ignored, not fatal.** The old decoder returned
+  `nil` for an unknown name and the caller treated that as the end of the stream. A
+  frame from a newer daemon than the app now gets skipped, the same way the old
+  decoder skipped the frames it did not understand. That safety property has its own
+  test, because it is the one that decides whether an app/daemon version skew is a
+  missing feature or a broken chat.
+- **The control screens are wired to Eris.** `ErisControlBridge` and
+  `ErisControlTypes` map the daemon's models, schedules, skills and auxiliary-role
+  lists onto `ModelStore`, `CronStore`, `SkillsStore` and `AuxModelService`, and
+  `AppContainer` consults the Eris provider first. The relay-shaped and DSH paths stay
+  behind it, unreached on a paired daemon, so the screens stop reporting a backend
+  that is not serving the request.
+- **Notes enrichment opens a real run.** `ErisNotesRunTypes` plus the notes path in
+  `ErisHeraldClient` create a note on the daemon, start an enrichment run, poll its
+  event log about once a second, and map the finished revision back. The client's own
+  patience is 170 seconds, matching the sync engine's watchdog: the daemon keeps
+  working past that, the client just stops waiting.
+
+### Changed
+
+- **A turn is created once per message.** `ErisTurnWire` derives the daemon's
+  `Idempotency-Key` from the message's own `client_message_id`, so a retry after a
+  dropped connection is handed the turn it already created rather than queueing the
+  same question a second time. `ErisClient` also decodes the
+  `client_message_id` the daemon echoes back, which is what lets a reply be matched to
+  the message that asked for it.
+- **Gateway control points at the daemon.** `GatewayControlService` prefers Eris for
+  health, restart preflight, restart and update-check, so the gateway screen describes
+  the process the app is actually talking to.
+- **One authority for the credentials.** `ErisTokenStore` was rewritten. It used to
+  own a private keychain account holding a second copy of the bearer and refresh
+  token while `AppSessionStore` held its own, so a refresh could rotate one copy and
+  leave the other stale. There is now one store, and the non-credential half of a pair
+  lives in its own keychain entry so the two halves are cleared together.
+- **Pairing joins exactly one `/v1`.** `ErisRoute.path` already carries `/v1` and
+  `RelayConfiguration.normalizeBaseURL` appends `/v1` to whatever the operator typed,
+  so every request went to `/v1/v1/<route>` and the listener answered a typed 404. One
+  trailing `/v1` is stripped before joining, and a scanned or typed address both pair.
+
+### Fixed
+
+- **A stream that ends with an unknown frame no longer ends early.** See above: the
+  `nil` return was read as end-of-stream, not as "skip this one".
+
+### Known gaps
+
+- Typed-stubbed pending their device routes: session delete/archive/pin/rename, title
+  generation, job status, cancel/interrupt, voice transcript.
+- Attachments are text-only on `/v1/turns`.
+- Talk (voice mode) is in development.
+
 ## [1.4.1] - 2026-10-21
 
 The release that makes Kallisti the literal **0.4.0 UI running on Kallisti-Eris**.
