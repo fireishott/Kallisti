@@ -4,6 +4,42 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.6
+
+- **An older client stops reading a 404 as a failure to read.** The retired relay had
+  many hosts and a connector process to watch; Eris is one daemon on one box. So a
+  shipped client that still asks for `/v1/health`, `/v1/config`, `/v1/gw/status`,
+  `/v1/hosts/current`, `/v1/profiles` or `/v1/commands` was answered by a typed 404,
+  which the phone renders as "the data couldn't be read" - a phone that can pair
+  looking like a phone that cannot be configured. Sixteen legacy paths are declared;
+  fifteen answer from something the daemon really holds - the `app_state` row,
+  `config.toml`, the unit's own journal, `/etc/machine-id`, the real skill library -
+  and the sixteenth, `/v1/hosts/current/revoke`, answers `403 host_revoke_unsupported`
+  on purpose, because there is no second host to revoke. Nothing here invents a
+  multi-host world to keep dead client code happy. `build 101`.
+- **A message sent twice is one turn.** A phone that retries a `POST /v1/turns` after a
+  dropped connection used to queue a second job and answer the same question twice.
+  Turn creation now reads an `Idempotency-Key` header, and a `(device, key)` pair that
+  already owns a job is handed that job back instead of minting another one. The key
+  is derived from the message's own `client_message_id`, so a retry of the same message
+  is idempotent while a genuinely new message is not. `build 101`.
+- **Both transcript rows of a turn carry the turn's id.** The operator's question row
+  and the assistant's answer row are stamped with the job id at the moment the job
+  exists, rather than only when the turn settles. A page that refetches while the
+  provider is still warming up now sees the two rows grouped as one turn, and a row is
+  never left carrying half a turn. A turn whose rows cannot be stamped still answers -
+  an unstamped turn is a turn whose rows are not grouped, not a turn that did not
+  happen. `build 101`.
+- **The phone's control screens are wired to Eris.** Models, cron, skills and the
+  aux-model picker now have device routes on the daemon and Swift ports in the app,
+  so the screens that still pointed at the retired relay stop 404ing.
+- **Notes enrichment actually runs.** The daemon gains a worker that claims a
+  queued enrichment run, streams deltas, and stores the enriched revision, and the
+  app opens and polls a real run instead of reporting "not backed by Eris yet."
+- **Gateway control is the daemon itself.** Health, restart preflight, restart and
+  update-check routes exist on the device listener, and the app prefers Eris for
+  them. `build 99`.
+
 ## 1.4.5
 
 - **A reply on a phone keeps a share of the column.** The stylesheet sized a bubble
@@ -610,15 +646,3 @@ First working daemon.
   buffering.
 - Lite spike: a UniFFI-exported function running in-process with a fake provider, no
   network.
-
-## 1.4.6
-
-- **The phone's control screens are wired to Eris.** Models, cron, skills and the
-  aux-model picker now have device routes on the daemon and Swift ports in the app,
-  so the screens that still pointed at the retired relay stop 404ing.
-- **Notes enrichment actually runs.** The daemon gains a worker that claims a
-  queued enrichment run, streams deltas, and stores the enriched revision, and the
-  app opens and polls a real run instead of reporting "not backed by Eris yet."
-- **Gateway control is the daemon itself.** Health, restart preflight, restart and
-  update-check routes exist on the device listener, and the app prefers Eris for
-  them. `build 99`.

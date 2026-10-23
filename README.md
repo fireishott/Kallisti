@@ -2,6 +2,14 @@
 
 > **To the Most Beautiful.** The most beautiful way to meet your agent.
 
+<p align="center">
+  <img src="https://img.shields.io/badge/version-1.4.6-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/Rust-1.99-F74C00?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99"/>
+  <img src="https://img.shields.io/badge/tests-818-C8CCD2?style=flat-square&labelColor=0C0C10" alt="818 tests"/>
+  <img src="https://img.shields.io/badge/device_api-no_relay-C8CCD2?style=flat-square&labelColor=0C0C10" alt="no relay"/>
+  <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
+</p>
+
 Kallisti is a complete package built from two halves. **Kallisti for iOS** is the
 frontend - a native Swift 6 / SwiftUI app for iPhone and iPad. **Kallisti-Eris** is
 the backend - a Rust daemon that holds the brain, the tools and the memory, on
@@ -96,13 +104,34 @@ The app talks to the daemon's own device API - there is no relay in between. Tod
 `/v1/device/health/latest` · `/v1/device/location` · `/v1/inbox` · `/v1/notes` ·
 `/v1/note-runs` · `/v1/push/*` · `/v1/talk/*` (placeholder)
 
+Control plane, one screen per group: `/v1/models` · `/v1/cron` · `/v1/cron/{id}` ·
+`/v1/skills` · `/v1/skills/{key}` · `/v1/aux`. Gateway control: `/v1/gw/health` ·
+`/v1/gw/restart/preflight` · `/v1/gw/restart` · `/v1/gw/update/check` - every one of
+them behind the bearer and the `admin` scope, and the only unit any of them can name
+is this daemon's own.
+
+A turn is created once per message. `POST /v1/turns` reads an `Idempotency-Key`
+header, so a retry after a dropped connection is handed the job it already created
+rather than queueing the same question twice.
+
+**The legacy-parity surface.** A shipped client build still calls the retired relay's
+paths. Each one is either answered from state the daemon genuinely holds, or refused
+by name - never faked:
+
+`/v1/health` · `/v1/config` · `/v1/config/validate` · `/v1/gw/status` · `/v1/gw/logs` ·
+`/v1/gw/logs/stream` · `/v1/auth/refresh` · `/v1/auth/revoke` · `/v1/device/register` ·
+`/v1/device/app-state` · `/v1/hosts/current` · `/v1/connector/events` · `/v1/profiles` ·
+`/v1/commands` · `/v1/canvas/processes/stream` · and `/v1/hosts/current/revoke`, which
+answers `403 host_revoke_unsupported` because this host is the only one.
+
 Pairing codes expire, device tokens are opaque and stored as salted verifiers, and a
 stolen state directory yields no usable credential.
 
 A device turn streams text and reasoning. A few `HeraldClientProtocol` members are
 still typed-stubbed pending their device routes (session delete/archive/pin/rename,
-title generation, job status, cancel/interrupt, voice transcript, note sync), and
-attachments are text-only. That list is the current backlog.
+title generation, job status, cancel/interrupt, voice transcript), and attachments are
+text-only. Note sync is no longer on that list: a note is created, enriched through a
+real run, and polled for its events. That remainder is the current backlog.
 
 ## Security model, enforced rather than asserted
 
@@ -128,7 +157,7 @@ hostname that points at a private address.
 | `ios-host` | on-device surface stub: a UniFFI export with no I/O of its own, so the core never imports a device framework and every permission prompt belongs to the Swift shell. |
 
 ```sh
-cargo test --workspace        # 515 tests
+cargo test --workspace        # 818 tests, 0 failures
 cargo clippy --workspace --all-targets
 cargo fmt --check
 ```
@@ -252,8 +281,11 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 Shipped and running: Kallisti-Eris 1.4.6 and the web UI, with the cron scheduler and
 the skills library switched on. A dropped chat stream resumes where it stopped rather
 than silently skipping the frames that arrived while the page was away, and a reply on
-a phone keeps a share of the column instead of running edge to edge.
-In private beta: the Kallisti iOS app on the Eris daemon, TestFlight 1.4.6 (99).
+a phone keeps a share of the column instead of running edge to edge. A message sent
+twice is one turn, and the fifteen legacy relay paths an older phone build still
+calls are answered from real state instead of a typed 404.
+In private beta: the Kallisti iOS app on the Eris daemon, TestFlight 1.4.6 (101) - the
+first build where the app and the daemon carry the same number.
 In development: Voice Mode, Plugin Engine, watchOS.
 
 ## Licence
