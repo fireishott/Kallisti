@@ -46,6 +46,15 @@ final class CronStore {
     /// no matter how many reminders the harness actually held.
     var dshCronProvider: (@MainActor () async throws -> [CronJob])?
 
+    /// Eris control-plane transport. Closing over the five operations rather
+    /// than one object keeps the store independent of the client type, the
+    /// same shape the DSH hook already uses.
+    var erisCronProvider: (@MainActor () async throws -> [CronJob])?
+    var erisCreate: (@MainActor (_ name: String, _ schedule: String, _ prompt: String) async throws -> CronJob)?
+    var erisToggle: (@MainActor (_ id: String, _ enabled: Bool) async throws -> CronJob)?
+    var erisUpdate: (@MainActor (_ id: String, _ name: String, _ schedule: String, _ prompt: String) async throws -> CronJob)?
+    var erisDelete: (@MainActor (_ id: String) async throws -> Void)?
+
     /// Management operations that the DSH schedule model cannot express yet.
     /// A DSH reminder is Session-scoped and has no enable flag or five-field
     /// cron rule, so rather than silently writing to the wrong backend these
@@ -77,7 +86,9 @@ final class CronStore {
         defer { isLoading = false }
 
         do {
-            if let dshCronProvider {
+            if let erisCronProvider {
+                jobs = try await erisCronProvider()
+            } else if let dshCronProvider {
                 jobs = try await dshCronProvider()
             } else if let nativeFeatureClient = nativeFeatureClientProvider() {
                 jobs = try await nativeFeatureClient.managedCronJobs().map { CronJob(id: $0.id, name: $0.name, schedule: $0.schedule, prompt: $0.prompt, enabled: $0.enabled, lastRun: $0.lastRun, nextRun: $0.nextRun, lastResult: $0.lastResult) }
@@ -103,6 +114,10 @@ final class CronStore {
         if dshCronProvider != nil {
             throw CronStoreError.unsupportedOnDSH("Creating a schedule")
         }
+        if let erisCreate {
+            jobs.append(try await erisCreate(name, schedule, prompt))
+            return
+        }
         if let nativeFeatureClient = nativeFeatureClientProvider() {
             let job = try await nativeFeatureClient.createManagedCronJob(name: name, schedule: schedule, prompt: prompt)
             jobs.append(CronJob(id: job.id, name: job.name, schedule: job.schedule, prompt: job.prompt, enabled: job.enabled, lastRun: job.lastRun, nextRun: job.nextRun, lastResult: job.lastResult))
@@ -116,6 +131,11 @@ final class CronStore {
     func toggleJob(_ job: CronJob) async throws {
         if dshCronProvider != nil {
             throw CronStoreError.unsupportedOnDSH("Enabling or disabling a schedule")
+        }
+        if let erisToggle {
+            let updated = try await erisToggle(job.id, !job.enabled)
+            if let index = jobs.firstIndex(where: { $0.id == job.id }) { jobs[index] = updated }
+            return
         }
         if let nativeFeatureClient = nativeFeatureClientProvider() {
             let updated = try await nativeFeatureClient.updateManagedCronJob(id: job.id, enabled: !job.enabled)
@@ -131,6 +151,11 @@ final class CronStore {
     func updateJobContent(id: String, name: String, schedule: String, prompt: String) async throws {
         if dshCronProvider != nil {
             throw CronStoreError.unsupportedOnDSH("Editing a schedule")
+        }
+        if let erisUpdate {
+            let updated = try await erisUpdate(id, name, schedule, prompt)
+            if let index = jobs.firstIndex(where: { $0.id == id }) { jobs[index] = updated }
+            return
         }
         if let nativeFeatureClient = nativeFeatureClientProvider() {
             let updated = try await nativeFeatureClient.updateManagedCronJobContent(id: id, name: name, schedule: schedule, prompt: prompt)
@@ -148,6 +173,11 @@ final class CronStore {
     func deleteJob(_ job: CronJob) async throws {
         if dshCronProvider != nil {
             throw CronStoreError.unsupportedOnDSH("Deleting a schedule")
+        }
+        if let erisDelete {
+            try await erisDelete(job.id)
+            jobs.removeAll { $0.id == job.id }
+            return
         }
         if let nativeFeatureClient = nativeFeatureClientProvider() {
             try await nativeFeatureClient.deleteManagedCronJob(id: job.id)

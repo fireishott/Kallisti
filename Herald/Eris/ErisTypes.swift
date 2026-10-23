@@ -478,7 +478,7 @@ enum ErisJSON {
 
 // MARK: - SSE decoder
 
-/// Turns a byte stream into `ErisFrame`s.
+/// Turns a byte stream into `ErisFrameOutcome`s.
 ///
 /// Feed it whatever chunk sizes arrive: it holds the partial line internally, so
 /// a frame split across two chunks is decoded once, when its terminating blank
@@ -491,10 +491,10 @@ struct ErisSSEDecoder {
 
     init() {}
 
-    /// Feed one chunk of bytes and take whatever frames are now complete.
-    mutating func consume(_ chunk: Data) throws -> [ErisFrame] {
+    /// Feed one chunk of bytes and take whatever outcomes are now complete.
+    mutating func consume(_ chunk: Data) throws -> [ErisFrameOutcome] {
         buffer.append(chunk)
-        var frames: [ErisFrame] = []
+        var frames: [ErisFrameOutcome] = []
         while let newlineIndex = buffer.firstIndex(of: 0x0A) {
             var lineBytes = buffer[buffer.startIndex..<newlineIndex]
             if lineBytes.last == 0x0D {
@@ -513,8 +513,8 @@ struct ErisSSEDecoder {
     ///
     /// A well-behaved stream always terminates a frame, but a daemon that is
     /// killed mid-frame should not cost the client a frame it fully received.
-    mutating func finish() throws -> [ErisFrame] {
-        var frames: [ErisFrame] = []
+    mutating func finish() throws -> [ErisFrameOutcome] {
+        var frames: [ErisFrameOutcome] = []
         if !buffer.isEmpty {
             let line = String(decoding: buffer, as: UTF8.self)
             buffer.removeAll(keepingCapacity: true)
@@ -529,7 +529,7 @@ struct ErisSSEDecoder {
     }
 
     /// One line, per the SSE grammar: `field: value`, `: comment`, or blank.
-    private mutating func consume(line: String) throws -> ErisFrame? {
+    private mutating func consume(line: String) throws -> ErisFrameOutcome? {
         if line.isEmpty {
             return try dispatch()
         }
@@ -544,21 +544,28 @@ struct ErisSSEDecoder {
         case "data":
             dataLines.append(value)
         default:
-            // `id:` (sequence), `retry:` and anything new are not needed: the
-            // four frame kinds carry everything this client renders.
+            // `id:` (sequence), `retry:` and anything new are not needed. The
+            // frame kinds are carried in `event:`, not here, and all six of
+            // them are now rendered.
             break
         }
         return nil
     }
 
-    /// Emit the frame the accumulated fields describe, then reset.
-    private mutating func dispatch() throws -> ErisFrame? {
+    /// Emit the outcome the accumulated fields describe, then reset.
+    ///
+    /// Routed through `ErisFrameBridge` rather than `ErisFrame.decode` so the
+    /// `reasoning` and `tool` frames the daemon sends are carried. They used to
+    /// hit `ErisFrame.decode`'s `default` and return `nil`, which is why a
+    /// thought card only ever appeared after the answer, from the transcript
+    /// refetch, and why the run log was empty during a turn.
+    private mutating func dispatch() throws -> ErisFrameOutcome? {
         defer {
             event = nil
             dataLines.removeAll(keepingCapacity: true)
         }
         guard !dataLines.isEmpty else { return nil }
-        return try ErisFrame.decode(event: event, data: dataLines.joined(separator: "\n"))
+        return try ErisFrameBridge.decode(event: event, data: dataLines.joined(separator: "\n"))
     }
 
     /// Split `field: value`, dropping exactly one space after the colon.

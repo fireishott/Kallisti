@@ -494,6 +494,7 @@ final class AppContainer {
         // stores (via HeraldClientProtocol) and the inbox/notes services (via
         // its client() accessor). Created up front so both can reach it.
         let erisHeraldClient = ErisHeraldClient()
+
         if !usesMockPairingService {
             Task { @MainActor in await erisHeraldClient.connect() }
         }
@@ -802,6 +803,72 @@ final class AppContainer {
             secureStore: secureStore
         )
 
+        // Eris control-plane wiring. Models, schedules, skills and the auxiliary
+        // roles all read and write through the daemon, which is the only backend
+        // this app ships against. It lives here rather than above the container
+        // because it writes to the container's stores. The relay-shaped
+        // providers those stores already had stay for the DSH path; every check
+        // installed here is consulted first, so on a paired Eris daemon none of
+        // them is reached.
+        let erisClient: @MainActor () async throws -> ErisClient = { [weak erisHeraldClient] in
+            guard let client = await erisHeraldClient?.client() else {
+                throw ErisControlError.notPaired
+            }
+            return client
+        }
+
+        container.modelStore.erisCatalogProvider = {
+            ErisControlMapping.catalog(try await erisClient().controlModels())
+        }
+        container.modelStore.erisSwitchProvider = { name, _ in
+            try await erisClient().setControlModel(name)
+        }
+
+        container.cronStore.erisCronProvider = {
+            ErisControlMapping.jobs(try await erisClient().controlCron())
+        }
+        container.cronStore.erisCreate = { name, schedule, prompt in
+            ErisControlMapping.job(try await erisClient().createControlCron(name: name, schedule: schedule, prompt: prompt).job)
+        }
+        container.cronStore.erisToggle = { id, enabled in
+            ErisControlMapping.job(try await erisClient().setControlCronEnabled(id: id, enabled: enabled).job)
+        }
+        container.cronStore.erisUpdate = { id, name, schedule, prompt in
+            ErisControlMapping.job(try await erisClient().updateControlCron(id: id, name: name, schedule: schedule, prompt: prompt).job)
+        }
+        container.cronStore.erisDelete = { id in
+            try await erisClient().deleteControlCron(id: id)
+        }
+
+        container.skillsStore.erisSkillsProvider = {
+            ErisControlMapping.skills(try await erisClient().controlSkills())
+        }
+        container.skillsStore.erisSkillDetailProvider = { key in
+            ErisControlMapping.skillDetail(try await erisClient().controlSkill(key: key).skill)
+        }
+
+        // The aux panel needs the service to exist before it has hooks, and the
+        // relay-backed instance further down is only built when a relay base URL
+        // is configured. On Eris there is none, so this is the instance the
+        // Infrastructure screen gets.
+        if dshClientForHostStatus == nil,
+           container.auxService == nil {
+            container.auxService = AuxModelService(
+                apiClient: RelayAPIClient { "" },
+                accessTokenProvider: { nil },
+                nativeFeatureClientProvider: { nil }
+            )
+        }
+        container.auxService?.erisProvider = {
+            ErisControlMapping.auxTasks(try await erisClient().controlAux())
+        }
+        container.auxService?.erisSetter = { role, provider, model in
+            try await erisClient().setControlAux(role: role, provider: provider, model: model)
+        }
+        container.gatewayControl.erisClient = {
+            try await erisClient()
+        }
+
         // DSH mode wiring. The Skills browser reads the harness catalog, and the
         // auxiliary-model panel is left unset: this deployment has no per-task
         // aux models, so showing the relay's would advertise Hermes model routes
@@ -862,6 +929,7 @@ final class AppContainer {
         // Build 70: hoist the aux model service so Infrastructure loads at
         // connection time (Settings previously created it lazily on appear).
         if dshClientForHostStatus == nil,
+           container.auxService == nil,
            let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString {
             container.auxService = AuxModelService(
                 apiClient: RelayAPIClient { relayBase },

@@ -77,6 +77,13 @@ final class ModelStore {
     var dshCatalogProvider: (@MainActor () async throws -> (models: [HeraldModel], active: ActiveModel?))?
     var dshSwitchProvider: (@MainActor (_ name: String, _ provider: String) async throws -> Void)?
 
+    /// Eris control-plane transport. Set when an Eris daemon is paired, and
+    /// consulted before the native gateway and the relay: on Eris those two
+    /// are absent, and without this the picker reported "Not connected to a
+    /// relay." while the daemon held a real catalog.
+    var erisCatalogProvider: (@MainActor () async throws -> (models: [HeraldModel], active: ActiveModel?))?
+    var erisSwitchProvider: (@MainActor (_ name: String, _ provider: String) async throws -> Void)?
+
     init(
         apiClient: RelayAPIClient?,
         accessTokenProvider: @escaping () async -> String?,
@@ -122,6 +129,22 @@ final class ModelStore {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+
+        if let erisCatalogProvider {
+            let genAtEntry = switchGeneration
+            do {
+                let result = try await erisCatalogProvider()
+                models = result.models
+                if genAtEntry == switchGeneration, let active = result.active {
+                    activeModel = active
+                }
+                lastLoadedAt = .now
+                nativeRetryCount = 0
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            return
+        }
 
         if let dshCatalogProvider {
             let genAtEntry = switchGeneration
@@ -276,6 +299,12 @@ final class ModelStore {
     /// LEGACY path: `POST /v1/model` via relay, falling back to
     /// `POST /gw/model/switch`.
     func switchModel(to name: String, provider: String, global: Bool = false) async throws {
+        if let erisSwitchProvider {
+            switchGeneration &+= 1
+            try await erisSwitchProvider(name, provider)
+            activeModel = ActiveModel(name: name, provider: provider, contextWindow: nil)
+            return
+        }
         if let dshSwitchProvider {
             switchGeneration &+= 1
             try await dshSwitchProvider(name, provider)

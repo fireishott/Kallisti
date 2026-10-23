@@ -36,6 +36,12 @@ final class AuxModelService {
     /// Native gateway feature client provider (nil when running legacy mode).
     private let nativeFeatureClientProvider: @MainActor () -> NativeGatewayFeatureClient?
 
+    /// Eris control-plane transport. On Eris both the relay and the native
+    /// gateway are absent, so without this the panel reported the legacy GET
+    /// failing and drew nothing.
+    var erisProvider: (@MainActor () async throws -> [AuxTask])?
+    var erisSetter: (@MainActor (_ role: String, _ provider: String, _ model: String) async throws -> Void)?
+
     private(set) var tasks: [AuxTask] = []
     private(set) var lastError: String?
 
@@ -50,6 +56,17 @@ final class AuxModelService {
     }
 
     func load() async {
+        if let erisProvider {
+            do {
+                tasks = try await erisProvider()
+                lastError = nil
+            } catch {
+                lastError = error.localizedDescription
+                Self.logger.error("eris aux load failed: \(error.localizedDescription)")
+            }
+            return
+        }
+
         // NATIVE path: config.get(key:"full") -> config.auxiliary section.
         if let featureClient = nativeFeatureClientProvider() {
             do {
@@ -115,6 +132,18 @@ final class AuxModelService {
                 Self.logger.error("set rejected unknown task: \(task)")
                 return
             }
+        }
+
+        if let erisSetter {
+            do {
+                try await erisSetter(normalizedTask, provider, model)
+            } catch {
+                lastError = error.localizedDescription
+                Self.logger.error("eris aux set failed for \(normalizedTask, privacy: .public): \(error.localizedDescription)")
+                return
+            }
+            await load()
+            return
         }
 
         // Prefer the native gateway cli.exec path. The relay /v1/aux endpoint

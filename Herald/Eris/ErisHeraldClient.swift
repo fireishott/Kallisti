@@ -33,6 +33,24 @@ final class ErisHeraldClient: HeraldClientProtocol {
     private var conversationIDByLocalID: [UUID: String] = [:]
     private var localIDByConversationID: [String: UUID] = [:]
 
+    /// Local note UUID -> the daemon's note id. A note is not a conversation on
+    /// Eris: it is a note with runs against it, so the mapping is resolved from
+    /// `GET /v1/notes` and cached rather than minted locally.
+    private var erisNoteIDByLocalID: [UUID: String] = [:]
+
+    /// Local note UUID -> the newest run opened for it. This is what
+    /// `nativeSessionKey` reports, so the note records the key of the run that
+    /// actually enriched it rather than a conversation that never existed.
+    private var lastRunIDByLocalID: [UUID: String] = [:]
+
+    /// How often the run's event log is polled while an enrichment is running.
+    private static let noteRunPollInterval = Duration.milliseconds(1200)
+
+    /// How long one enrichment may run before the client gives up on it. The
+    /// daemon keeps working; this is the client's own patience, matching the
+    /// 180s the sync engine's watchdog allows.
+    private static let noteRunTimeout = Duration.seconds(170)
+
     // MARK: - Connection
 
     func connect() async {
@@ -109,14 +127,33 @@ final class ErisHeraldClient: HeraldClientProtocol {
             // dropped (the composer's text still reaches the model).
             let turn = try await client.createTurn(
                 text: message,
-                conversation: currentConversationID()
+                conversation: currentConversationID(),
+                clientMessageID: clientMessageID
             )
             let jobID = Self.stableUUID(from: turn.jobID)
             continuation.yield(.messageSent(jobID: jobID))
 
             var text = ""
             let stream = await client.events(turnID: turn.jobID)
-            for try await frame in stream {
+            for try await outcome in stream {
+                // Reasoning and tool frames are carried, not dropped. The two
+                // `activity`/`reasoningDelta` cases below are what fill the
+                // thought card and the run log while the turn is still running,
+                // instead of after it, from the transcript refetch.
+                guard case .existing(let frame) = outcome else {
+                    switch outcome {
+                    case .reasoning(let reasoning):
+                        continuation.yield(.reasoningDelta(reasoning.text))
+                    case .tool(let tool):
+                        // The daemon publishes a tool frame once, on completion,
+                        // so it arrives with its output attached and is rendered
+                        // as one finished row rather than a start/finish pair.
+                        continuation.yield(.toolStarted(tool.activity))
+                    case .existing, .ignored:
+                        break
+                    }
+                    continue
+                }
                 switch frame {
                 case .delta(let delta):
                     text += delta
@@ -278,11 +315,19 @@ final class ErisHeraldClient: HeraldClientProtocol {
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
         let erisConversationID = conversationIDByLocalID[conversationID]
-        let turn = try await client.createTurn(text: text, conversation: erisConversationID)
+        let turn = try await client.createTurn(
+            text: text,
+            conversation: erisConversationID,
+            clientMessageID: clientMessageID
+        )
         // Drain the stream to completion to collect the final text.
         var text = ""
         let stream = await client.events(turnID: turn.jobID)
-        for try await frame in stream {
+        for try await outcome in stream {
+            // This path only wants the answer text, so it looks through the two
+            // frames it does not render. They still have to be consumed rather
+            // than thrown, or a turn that reasons before it answers ends here.
+            guard case .existing(let frame) = outcome else { continue }
             if case .done(let full, _) = frame { text = full; break }
             if case .delta(let d) = frame { text += d }
             if case .error(let e) = frame { throw e }
@@ -307,21 +352,234 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     // MARK: - Notes (not the chat path; notes are handled by NotesStore)
 
+    /// One enrichment, run to completion and returned as a message.
     func sendNoteMessage(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) async -> Message {
-        Message(
+        var final: Message?
+        var failure: String?
+        for await update in sendNoteMessageStreaming(
+            text: text,
+            attachments: attachments,
+            clientMessageID: clientMessageID,
+            conversationID: conversationID,
+            title: title,
+            enrichmentModelName: nil,
+            enrichmentProvider: nil,
+            thinkingAsReasoning: true
+        ) {
+            switch update {
+            case .finished(let message, _, _, _): final = message
+            case .failed(let reason, _, _): failure = reason
+            default: break
+            }
+        }
+        if let final { return final }
+        return Message(
             id: clientMessageID,
             clientMessageID: clientMessageID,
             sender: .herald,
-            content: "Note sync is not backed by Eris yet.",
+            content: failure ?? "The enrichment did not finish.",
             status: .failed
         )
     }
 
+    /// Open an enrichment run on the daemon and stream it.
+    ///
+    /// The stages, in order: resolve the daemon's note id, stage the note's text
+    /// as a recognition so the worker has something to read, open a run, then poll
+    /// the run's event log. `delta` events become `.textDelta`, and the single
+    /// terminal event becomes `.finished` (carrying the markdown the daemon
+    /// stored), `.failed` or `.cancelled`.
     func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?, thinkingAsReasoning: Bool) -> AsyncStream<StreamingUpdate> {
         AsyncStream { continuation in
-            continuation.yield(.failed("Note sync is not backed by Eris yet."))
+            let task = Task { @MainActor [weak self] in
+                await self?.performNoteEnrichment(
+                    text: text,
+                    clientMessageID: clientMessageID,
+                    conversationID: conversationID,
+                    title: title,
+                    continuation: continuation
+                )
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func performNoteEnrichment(
+        text: String,
+        clientMessageID: UUID,
+        conversationID: UUID,
+        title: String,
+        continuation: AsyncStream<StreamingUpdate>.Continuation
+    ) async {
+        guard let client = await pairedClient() else {
+            continuation.yield(.failed("No Eris daemon is paired."))
+            continuation.finish()
+            return
+        }
+        do {
+            let noteID = try await resolveNoteID(conversationID, client: client)
+
+            // The content: the note's own text, staged so the daemon's worker
+            // reads what this note says rather than an empty note. A failure here
+            // is not fatal on its own - a run against the text the daemon already
+            // holds is better than no run - so it is reported and the run goes on.
+            let staged = Self.contentForRecognition(text)
+            if !staged.isEmpty {
+                do {
+                    _ = try await client.createNoteRecognition(
+                        noteID: noteID,
+                        payload: ErisNoteRecognitionPayload(
+                            drawingRevision: 0,
+                            engine: "ios-notes-sync",
+                            rawText: staged,
+                            userCorrectedText: staged
+                        )
+                    )
+                } catch {
+                    // Not fatal: a run against the text the daemon already holds
+                    // is better than no run, so the failure is swallowed here and
+                    // the run below reports any real problem.
+                    _ = error
+                }
+            }
+
+            let run = try await client.createNoteRun(
+                noteID: noteID,
+                payload: ErisNoteRunCreatePayload(
+                    clientRunId: clientMessageID.uuidString,
+                    directives: ["enrich"]
+                )
+            )
+            lastRunIDByLocalID[conversationID] = run.data.id
+            continuation.yield(.started(phase: "Enriching"))
+
+            var seen: Set<Int64> = []
+            var accumulated = ""
+            let deadline = ContinuousClock.now + Self.noteRunTimeout
+
+            while ContinuousClock.now < deadline {
+                if Task.isCancelled {
+                    _ = try? await client.cancelNoteRun(runID: run.data.id)
+                    continuation.yield(.cancelled)
+                    continuation.finish()
+                    return
+                }
+                let events = try await client.noteRunEvents(runID: run.data.id)
+                for event in events where !seen.contains(event.seq) {
+                    seen.insert(event.seq)
+                    switch event.payload {
+                    case .delta(let delta):
+                        accumulated += delta.text
+                        continuation.yield(.textDelta(delta.text))
+                    case .failed(_, let message):
+                        continuation.yield(.failed(message ?? "The enrichment failed on the daemon."))
+                        continuation.finish()
+                        return
+                    case .cancelled:
+                        continuation.yield(.cancelled)
+                        continuation.finish()
+                        return
+                    case .completed, .started, .other:
+                        break
+                    }
+                }
+                let state = try await client.noteRun(runID: run.data.id)
+                if state.data.isTerminal {
+                    switch state.data.status {
+                    case "completed":
+                        let markdown = state.data.result?.markdown ?? accumulated
+                        continuation.yield(.finished(
+                            Message(
+                                id: clientMessageID,
+                                clientMessageID: clientMessageID,
+                                sender: .herald,
+                                content: markdown,
+                                jobID: Self.stableUUID(from: run.data.id),
+                                status: .sent
+                            ),
+                            nil,
+                            nil,
+                            nil
+                        ))
+                    case "cancelled":
+                        continuation.yield(.cancelled)
+                    default:
+                        continuation.yield(.failed(
+                            state.data.errorText ?? "The enrichment failed on the daemon."
+                        ))
+                    }
+                    continuation.finish()
+                    return
+                }
+                try await Task.sleep(for: Self.noteRunPollInterval)
+            }
+            continuation.yield(.failed("The enrichment ran past the client's own patience; it may still finish on the daemon."))
+            continuation.finish()
+        } catch {
+            continuation.yield(.failed(error.localizedDescription))
             continuation.finish()
         }
+    }
+
+    /// The daemon's note id for a local note UUID.
+    ///
+    /// Notes are matched by `stableUUID(from:)` so a note created on the phone and
+    /// the same note read back from the daemon resolve to one id. A note the
+    /// daemon does not hold is created there, which is what makes a note written
+    /// offline syncable at all.
+    private func resolveNoteID(_ localID: UUID, client: ErisClient) async throws -> String {
+        if let cached = erisNoteIDByLocalID[localID] { return cached }
+        let list = try await client.notes()
+        if let match = list.data.first(where: { Self.stableUUID(from: $0.id) == localID }) {
+            erisNoteIDByLocalID[localID] = match.id
+            return match.id
+        }
+        let title = notesTitle(for: localID)
+        let created = try await client.createNote(ErisNoteCreatePayload(title: title))
+        erisNoteIDByLocalID[localID] = created.data.id
+        return created.data.id
+    }
+
+    /// The title to give a note the daemon is seeing for the first time.
+    ///
+    /// The sync engine owns the note's own title; the client only needs something
+    /// better than an empty string, and an empty title is what the daemon
+    /// defaults to anyway.
+    private func notesTitle(for localID: UUID) -> String {
+        "Note \(localID.uuidString.prefix(8))"
+    }
+
+    /// Pull the note's own text out of the sync prompt.
+    ///
+    /// The sync engine composes one message carrying the typed text, the OCR
+    /// draft, the directive policy and an isolation rule. The daemon's worker does
+    /// not want the policy - it has its own system message - so this takes the two
+    /// labelled lines the engine wrote and nothing else. A prompt in another shape
+    /// contributes nothing rather than the whole thing, because a run whose source
+    /// is a wall of policy is worse than a run with no staged text.
+    static func contentForRecognition(_ prompt: String) -> String {
+        var lines: [String] = []
+        for line in prompt.split(separator: "\n", omittingEmptySubsequences: false) {
+            let text = String(line)
+            if text.hasPrefix("Typed text:") || text.hasPrefix("Recognized text:") {
+                lines.append(text)
+            }
+        }
+        let joined = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.count > 12_000 ? String(joined.prefix(12_000)) : joined
+    }
+
+    /// The run that last enriched a note, so the note records a key that exists.
+    func nativeSessionKey(for conversationID: UUID) async -> String? {
+        lastRunIDByLocalID[conversationID]
+    }
+
+    /// A note's "session" is its newest run. There is nothing to resume: the run
+    /// is already over, and asking for it again is the sync engine's `.synced`
+    /// checkpoint doing its job.
+    func resumeNoteSession(conversationID: UUID, sessionKey: String) async -> Bool {
+        lastRunIDByLocalID[conversationID] = sessionKey
+        return true
     }
 
     // MARK: - Voice
@@ -392,11 +650,27 @@ final class ErisHeraldClient: HeraldClientProtocol {
         return UUID(uuid: uuid)
     }
 
+    /// One daemon transcript row as the client's own message type.
+    ///
+    /// Three fields matter beyond the text, and all three were previously left
+    /// nil, which is what made the transcript unmergeable:
+    ///
+    /// - `clientMessageID` is the id the app minted when the operator hit send,
+    ///   echoed back by the daemon. Without it the local optimistic row and the
+    ///   daemon's row have nothing in common to match on, `mergeConversationMetadata`
+    ///   falls through every branch, and the local row is dropped and redrawn -
+    ///   the disappearing first message and the duplicated pairs.
+    /// - `jobID` lets the merged rows be grouped by turn instead of by guess.
+    /// - `timestamp` is the row's real `created_at`. Without it each refresh
+    ///   restamped the row to "now", which is the spacing and the reordering.
     static func message(from m: ErisConversationMessage) -> Message {
         Message(
             id: stableUUID(from: m.id),
+            clientMessageID: m.clientMessageID.flatMap(UUID.init(uuidString:)),
             sender: m.isUser ? .user : .herald,
             content: m.body,
+            timestamp: ErisTimestamp.date(from: m.createdAt) ?? .now,
+            jobID: m.jobID.flatMap { stableUUID(from: $0) },
             status: m.isFailed ? .failed : .sent,
             toolActivities: m.tools.map {
                 ToolActivity(

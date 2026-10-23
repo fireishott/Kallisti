@@ -214,6 +214,20 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
     let reasoning: String?
     /// The tool calls this turn ran, in order.
     let tools: [ErisToolCall]
+    /// The id the sending client minted for this message, when it sent one.
+    ///
+    /// This is the only handle that can match the daemon's row to the row the
+    /// app drew the instant the operator hit send. `id` cannot: the daemon mints
+    /// its own row id, so the two are different values for the same message.
+    /// `nil` for every row written before the daemon stored it, and for turns
+    /// sent by the browser, which mints no such id.
+    let clientMessageID: String?
+    /// The turn both rows of this exchange belong to.
+    ///
+    /// Question and answer carry the same value, which is what lets a client
+    /// group an answer with its reasoning instead of guessing from timestamps.
+    /// `nil` on rows written before the daemon stamped it.
+    let jobID: String?
 
     init(
         id: String,
@@ -222,7 +236,9 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
         state: String,
         createdAt: String,
         reasoning: String?,
-        tools: [ErisToolCall]
+        tools: [ErisToolCall],
+        clientMessageID: String? = nil,
+        jobID: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -231,6 +247,8 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
         self.createdAt = createdAt
         self.reasoning = reasoning
         self.tools = tools
+        self.clientMessageID = clientMessageID
+        self.jobID = jobID
     }
 
     /// Whether the row is the operator's question.
@@ -256,10 +274,14 @@ extension ErisConversationMessage: Decodable {
         case createdAt = "created_at"
         case reasoning
         case tools
+        case clientMessageID = "client_message_id"
+        case jobID = "job_id"
     }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Empty strings are folded to nil: the daemon sends an explicit null, and
+        // a blank id is the same absence with worse manners.
         self.init(
             id: try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString,
             role: try container.decodeIfPresent(String.self, forKey: .role) ?? "",
@@ -267,8 +289,19 @@ extension ErisConversationMessage: Decodable {
             state: try container.decodeIfPresent(String.self, forKey: .state) ?? "complete",
             createdAt: try container.decodeIfPresent(String.self, forKey: .createdAt) ?? "",
             reasoning: try container.decodeIfPresent(String.self, forKey: .reasoning),
-            tools: try container.decodeIfPresent([ErisToolCall].self, forKey: .tools) ?? []
+            tools: try container.decodeIfPresent([ErisToolCall].self, forKey: .tools) ?? [],
+            clientMessageID: Self.nonEmpty(
+                try container.decodeIfPresent(String.self, forKey: .clientMessageID)
+            ),
+            jobID: Self.nonEmpty(try container.decodeIfPresent(String.self, forKey: .jobID))
         )
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return value
     }
 }
 

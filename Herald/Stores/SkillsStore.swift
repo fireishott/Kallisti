@@ -51,6 +51,10 @@ final class SkillsStore {
     var dshSkillsProvider: (() async throws -> [HeraldSkill])?
     var dshSkillDetailProvider: ((String) async throws -> SkillDetail)?
 
+    /// Eris control-plane transport: the library and one skill's body.
+    var erisSkillsProvider: (@MainActor () async throws -> [HeraldSkill])?
+    var erisSkillDetailProvider: (@MainActor (String) async throws -> SkillDetail)?
+
     init(apiClient: RelayAPIClient?, accessTokenProvider: @escaping () async -> String?, nativeFeatureClientProvider: @escaping () -> NativeGatewayFeatureClient? = { nil }) {
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
@@ -80,7 +84,9 @@ final class SkillsStore {
         do {
             // DSH path first: the relay and native gateway are both absent, so
             // without this the screen reports "Not connected to a relay."
-            if let dshSkillsProvider {
+            if let erisSkillsProvider {
+                skills = try await erisSkillsProvider()
+            } else if let dshSkillsProvider {
                 skills = try await dshSkillsProvider()
             } else if let apiClient, let token = await accessTokenProvider() {
                 let response: SkillCatalogResponse = try await apiClient.get(path: "skills", accessToken: token)
@@ -108,6 +114,9 @@ final class SkillsStore {
     /// /v1/skills/{name} endpoint (falls back to native gateway if REST is
     /// unavailable). Returns the parsed detail or throws.
     func loadDetail(name: String) async throws -> SkillDetail {
+        if let erisSkillDetailProvider {
+            return try await erisSkillDetailProvider(name)
+        }
         if let dshSkillDetailProvider {
             return try await dshSkillDetailProvider(name)
         }

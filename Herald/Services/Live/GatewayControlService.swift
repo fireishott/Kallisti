@@ -238,6 +238,12 @@ final class GatewayControlService {
     /// Latest operation state, published for observers (settings progress
     /// card, chat suspension). nil until the first submit.
     private(set) var currentOperation: RestartOperation?
+    /// Eris-backed provider. When set (a paired daemon), every call in this
+    /// service goes through ErisClient and the relay path is never reached.
+    /// The daemon has no restart-operation tracking, so submitRestart
+    /// synthesizes an operation with an empty id and verification falls back
+    /// to `GET /v1/gw/health` (the existing legacy path).
+    var erisClient: (@MainActor () async throws -> ErisClient)?
 
     init(
         apiClient: RelayAPIClient,
@@ -261,6 +267,9 @@ final class GatewayControlService {
     // MARK: Preflight
 
     func fetchPreflight(target: String) async throws -> RestartPreflight {
+        if let erisClient {
+            return try await erisClient().gwPreflight()
+        }
         let token = await accessTokenProvider()
         // Build 107: check for nil/empty token before making the request.
         // Passing nil causes an unauthenticated request which returns 401.
@@ -282,6 +291,32 @@ final class GatewayControlService {
     // MARK: Restart submission
 
     func submitRestart(target: String, preflight: RestartPreflight) async throws -> RestartOperation {
+        if let erisClient {
+            let response = try await erisClient().gwRestart(
+                target: target,
+                preflightVersion: preflight.preflightVersion
+            )
+            guard response.restarting else {
+                throw GatewayControlError.restartRejected(
+                    message: response.error ?? response.message ?? "The gateway rejected the restart."
+                )
+            }
+            // Eris has no restart-operation tracking: synthesize an accepted
+            // operation with an empty id, and pollUntilTerminal verifies via
+            // GET /v1/gw/health (the existing legacy path).
+            let operation = RestartOperation(
+                operationId: "",
+                target: target,
+                unit: preflight.unit,
+                phase: .accepted,
+                acceptedAt: ISO8601DateFormatter().string(from: Date()),
+                completedAt: nil,
+                checks: [],
+                error: nil
+            )
+            currentOperation = operation
+            return operation
+        }
         let token = await accessTokenProvider()
         // Build 107: check for nil/empty token before making the request.
         // Build 127: cookie-auth mode (basic/pairing login) has no bearer —
@@ -339,6 +374,13 @@ final class GatewayControlService {
     // MARK: Operation polling
 
     func fetchOperation(_ operationID: String) async throws -> RestartOperation {
+        if erisClient != nil {
+            // Eris does not track restart operations; the Eris flow never calls
+            // this because the synthesized operation carries an empty id.
+            throw GatewayControlError.verificationUnavailable(
+                message: "This daemon does not track restart operations."
+            )
+        }
         let token = await accessTokenProvider()
         return try await apiClient.getGatewayControl(
             path: "gw/restart/\(operationID)",
@@ -347,6 +389,9 @@ final class GatewayControlService {
     }
 
     func fetchHealth() async throws -> GatewayHealth {
+        if let erisClient {
+            return try await erisClient().gwHealth()
+        }
         let token = await accessTokenProvider()
         return try await apiClient.getGatewayControl(
             path: "gw/health",

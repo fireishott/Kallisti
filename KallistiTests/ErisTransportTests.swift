@@ -79,6 +79,16 @@ struct ErisPairingTests {
     }
 }
 
+/// Reach the underlying `ErisFrame` from an outcome, for the assertions that are
+/// about the four frames the daemon already sent rather than the two batch 101
+/// added.
+extension ErisFrameOutcome {
+    var frame: ErisFrame? {
+        if case .existing(let frame) = self { return frame }
+        return nil
+    }
+}
+
 // MARK: - SSE frames
 
 @Suite("Eris SSE decoding")
@@ -99,9 +109,9 @@ struct ErisSSETests {
             Issue.record("expected 3 frames, got \(frames.count): \(frames)")
             return
         }
-        #expect(frames[0] == .delta(text: "Hel"))
-        #expect(frames[1] == .delta(text: "lo"))
-        guard case .done(let text, let usage) = frames[2] else {
+        #expect(frames[0] == .existing(.delta(text: "Hel")))
+        #expect(frames[1] == .existing(.delta(text: "lo")))
+        guard case .existing(.done(let text, let usage)) = frames[2] else {
             Issue.record("expected a done frame, got \(frames[2])")
             return
         }
@@ -126,18 +136,21 @@ struct ErisSSETests {
         #expect(partialBody.isEmpty)
         // Third chunk is the blank line that dispatches.
         let frames = try decoder.consume(Data("\n\n".utf8))
-        #expect(frames == [.delta(text: "hi")])
+        #expect(frames == [.existing(.delta(text: "hi"))])
     }
 
     @Test("a byte-at-a-time stream decodes the same frames")
     func byteAtATime() throws {
         let stream = "event: delta\ndata: {\"text\":\"a\"}\n\nevent: cancelled\ndata: {\"reason\":\"cancel\"}\n\n"
         var decoder = ErisSSEDecoder()
-        var frames: [ErisFrame] = []
+        var frames: [ErisFrameOutcome] = []
         for byte in Data(stream.utf8) {
             frames.append(contentsOf: try decoder.consume(Data([byte])))
         }
-        #expect(frames == [.delta(text: "a"), .cancelled(reason: "cancel")])
+        #expect(frames == [
+            .existing(.delta(text: "a")),
+            .existing(.cancelled(reason: "cancel")),
+        ])
     }
 
     @Test("an error frame carries the daemon's code and message and ends the stream")
@@ -151,8 +164,8 @@ struct ErisSSETests {
             return
         }
         #expect(frame.isTerminal)
-        #expect(frame.text == nil)
-        guard case .error(let error) = frame else {
+        #expect(frame.frame?.text == nil)
+        guard case .existing(.error(let error)) = frame else {
             Issue.record("expected an error frame, got \(frame)")
             return
         }
@@ -172,7 +185,7 @@ struct ErisSSETests {
     func crlfEndings() throws {
         var decoder = ErisSSEDecoder()
         let frames = try decoder.consume(Data("event: delta\r\ndata: {\"text\":\"ok\"}\r\n\r\n".utf8))
-        #expect(frames == [.delta(text: "ok")])
+        #expect(frames == [.existing(.delta(text: "ok"))])
     }
 
     @Test("a trailing frame with no terminator is flushed by finish()")
@@ -181,15 +194,64 @@ struct ErisSSETests {
         let pending = try decoder.consume(Data("event: delta\ndata: {\"text\":\"tail\"}".utf8))
         #expect(pending.isEmpty)
         let flushed = try decoder.finish()
-        #expect(flushed == [.delta(text: "tail")])
+        #expect(flushed == [.existing(.delta(text: "tail"))])
     }
 
-    @Test("an event name this client does not know is skipped, not fatal")
-    func unknownEventNameIsSkipped() throws {
-        let stream = "event: reasoning\ndata: {\"text\":\"hidden\"}\n\nevent: delta\ndata: {\"text\":\"shown\"}\n\n"
+    // Batch 101. This test used to assert the opposite: `reasoning` fell into
+    // `ErisFrame.decode`'s default clause and was dropped, so a thought card
+    // could only appear after the turn ended, from the transcript refetch.
+    // Carrying it is the whole point of the change, so the expectation flips.
+    @Test("a reasoning event is carried as a reasoning outcome, not skipped")
+    func reasoningEventIsCarried() throws {
+        let stream = "event: reasoning\ndata: {\"text\":\"hidden\"}\n\n"
+            + "event: delta\ndata: {\"text\":\"shown\"}\n\n"
         var decoder = ErisSSEDecoder()
         let frames = try decoder.consume(Data(stream.utf8))
-        #expect(frames == [.delta(text: "shown")])
+        #expect(frames == [
+            .reasoning(ErisFrameReasoning(text: "hidden")),
+            .existing(.delta(text: "shown")),
+        ])
+        // Mid-turn news: a reasoning fragment must not be mistaken for the end
+        // of the stream.
+        #expect(!frames[0].isTerminal)
+    }
+
+    // The safety property that replaced the old `nil`. A name from a newer
+    // daemon is skipped and the stream carries on, exactly as it used to.
+    @Test("an event name this client does not know is ignored, not fatal")
+    func unknownEventNameIsIgnored() throws {
+        let stream = "event: something_new\ndata: {\"text\":\"future\"}\n\n"
+            + "event: delta\ndata: {\"text\":\"shown\"}\n\n"
+        var decoder = ErisSSEDecoder()
+        let frames = try decoder.consume(Data(stream.utf8))
+        #expect(frames == [.ignored, .existing(.delta(text: "shown"))])
+        #expect(!frames[0].isTerminal)
+    }
+
+    @Test("a tool event becomes a finished activity row")
+    func toolEventBecomesActivity() throws {
+        let stream = "event: tool\ndata: {\"name\":\"run_command\","
+            + "\"arguments\":{\"cmd\":\"ls\"},\"output\":\"ok\","
+            + "\"is_error\":false}\n\n"
+        var decoder = ErisSSEDecoder()
+        let frames = try decoder.consume(Data(stream.utf8))
+        guard let first = frames.first, frames.count == 1 else {
+            Issue.record("expected exactly 1 tool outcome, got \(frames)")
+            return
+        }
+        guard case .tool(let tool) = first else {
+            Issue.record("expected a tool outcome, got \(first)")
+            return
+        }
+        #expect(tool.name == "run_command")
+        // A nested object is re-encoded, not string-described.
+        #expect(tool.arguments == "{\"cmd\":\"ls\"}")
+        #expect(tool.output == "ok")
+        #expect(tool.isError == false)
+        let activity = tool.activity
+        #expect(activity.isActive == false)
+        #expect(activity.finishedAt != nil)
+        #expect(!first.isTerminal)
     }
 
     @Test("a data payload that is not JSON throws a typed stream error")

@@ -66,8 +66,45 @@ enum ErisRoute: Equatable, Sendable {
     case updateNote(noteID: String)
     /// `DELETE /v1/notes/{note_id}` - delete a note.
     case deleteNote(noteID: String)
+    /// `POST /v1/notes/{note_id}/recognitions` - stage the note's text content.
+    case noteRecognition(noteID: String)
+    /// `POST /v1/notes/{note_id}/runs` - open an enrichment run.
+    case noteRuns(noteID: String)
+    /// `GET /v1/note-runs/{run_id}` - one run's state.
+    case noteRun(runID: String)
+    /// `GET /v1/note-runs/{run_id}/events` - the run's event log.
+    case noteRunEvents(runID: String)
+    /// `POST /v1/note-runs/{run_id}/cancel` - stop a run.
+    case cancelNoteRun(runID: String)
     /// `GET /v1/talk/readiness` - the voice lane's placeholder readiness probe.
     case talkReadiness
+    /// `GET /v1/models` - the pin, the probed catalog and the providers.
+    case models
+    /// `POST /v1/models` - pin the default model.
+    case setModel
+    /// `GET /v1/cron` - the schedules and the ticker switch.
+    case cron
+    /// `POST /v1/cron` - create one schedule.
+    case createCron
+    /// `PATCH`/`DELETE /v1/cron/{id}` - edit, switch or remove one schedule.
+    ///
+    /// One case with the verb carried as data because the router binds three
+    /// verbs to one path, and a case per verb would triple the path literal.
+    case cronJob(id: String, verb: String)
+    /// `GET /v1/skills` - the skill library.
+    case skills
+    /// `GET /v1/skills/{key}` - one skill's body.
+    case skill(key: String)
+    /// `GET /v1/aux` - the auxiliary roles and what each may run on.
+    case aux
+    /// `POST /v1/aux` - pin one role's model and provider.
+    case setAux
+    /// `GET /v1/gw/health` - the daemon's own state.
+    case gwHealth
+    /// `GET /v1/gw/restart/preflight` - restart confirmation snapshot.
+    case gwPreflight
+    /// `POST /v1/gw/restart` - schedule a self-restart.
+    case gwRestart
 
     /// The request path, with ids percent-encoded so one id cannot escape its
     /// path segment.
@@ -119,8 +156,36 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/notes/\(Self.segment(noteID))"
         case .deleteNote(let noteID):
             return "/v1/notes/\(Self.segment(noteID))"
+        case .noteRecognition(let noteID):
+            return "/v1/notes/\(Self.segment(noteID))/recognitions"
+        case .noteRuns(let noteID):
+            return "/v1/notes/\(Self.segment(noteID))/runs"
+        case .noteRun(let runID):
+            return "/v1/note-runs/\(Self.segment(runID))"
+        case .noteRunEvents(let runID):
+            return "/v1/note-runs/\(Self.segment(runID))/events"
+        case .cancelNoteRun(let runID):
+            return "/v1/note-runs/\(Self.segment(runID))/cancel"
+        case .models, .setModel:
+            return "/v1/models"
+        case .cron, .createCron:
+            return "/v1/cron"
+        case .cronJob(let id, _):
+            return "/v1/cron/\(Self.segment(id))"
+        case .skills:
+            return "/v1/skills"
+        case .skill(let key):
+            return "/v1/skills/\(Self.segment(key))"
+        case .aux, .setAux:
+            return "/v1/aux"
         case .talkReadiness:
             return "/v1/talk/readiness"
+        case .gwHealth:
+            return "/v1/gw/health"
+        case .gwPreflight:
+            return "/v1/gw/restart/preflight"
+        case .gwRestart:
+            return "/v1/gw/restart"
         }
     }
 
@@ -128,11 +193,18 @@ enum ErisRoute: Equatable, Sendable {
     var method: String {
         switch self {
         case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
-             .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness:
+             .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
+             .models, .cron, .skills, .aux, .noteRun, .noteRunEvents, .gwHealth, .gwPreflight:
+            return "GET"
+        case .skill:
             return "GET"
         case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings,
-             .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote:
+             .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote,
+             .setModel, .createCron, .setAux,
+             .noteRecognition, .noteRuns, .cancelNoteRun, .gwRestart:
             return "POST"
+        case .cronJob(_, let verb):
+            return verb
         case .updateNote:
             return "PATCH"
         case .deleteNote:
@@ -260,7 +332,17 @@ actor ErisClient {
     /// transcript row pair instead of a session of its own. A conversation id the
     /// daemon does not hold is refused here, before anything is written, so a
     /// refused turn never leaves half a conversation behind.
-    func createTurn(text: String, conversation: String? = nil) async throws -> ErisTurn {
+    /// `clientMessageID` is the id the app minted for this message. It travels
+    /// twice: in the body as `client_message_id`, so the daemon stamps it on the
+    /// row it writes, and as the `idempotency-key` header derived from it, so a
+    /// retry of the same message resolves to the same job instead of queueing a
+    /// second turn. Passing `nil` is the old behaviour exactly: no key, no
+    /// echoed id, and a retry that duplicates.
+    func createTurn(
+        text: String,
+        conversation: String? = nil,
+        clientMessageID: UUID? = nil
+    ) async throws -> ErisTurn {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw ErisError.server(status: 400, code: "text_required", message: "the turn text must not be empty")
@@ -272,7 +354,14 @@ actor ErisClient {
                 form["conversation"] = trimmedID
             }
         }
-        let data = try await send(route: .turns, form: form)
+        var headers: [String: String] = [:]
+        if let clientMessageID {
+            form[ErisTurnWire.clientMessageIDField] = clientMessageID.uuidString
+            headers[ErisTurnWire.idempotencyHeader] = ErisTurnWire.idempotencyKey(
+                for: clientMessageID
+            )
+        }
+        let data = try await send(route: .turns, form: form, extraHeaders: headers)
         return try decode(ErisTurn.self, from: data)
     }
 
@@ -282,7 +371,7 @@ actor ErisClient {
     /// after the first terminal frame; a transport failure or a malformed frame
     /// finishes it with a thrown error, so a caller can distinguish "the turn
     /// ended" from "the stream broke".
-    func events(turnID: String) -> AsyncThrowingStream<ErisFrame, Error> {
+    func events(turnID: String) -> AsyncThrowingStream<ErisFrameOutcome, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -363,6 +452,113 @@ actor ErisClient {
     /// daemon's own sentence about the pairing code; that message is what the
     /// settings screen shows, because it is more accurate than anything a client
     /// could invent here.
+    // MARK: Control plane (models, schedules, skills, auxiliary roles)
+    //
+    // Every one of these needs the `admin` scope, so a device paired without the
+    // administration box gets the daemon's own 403 scope_denied sentence and no
+    // second implementation of the gate lives over here.
+
+    /// `GET /v1/models` - the pin, the probed catalog and the providers.
+    func controlModels() async throws -> ErisControlModels {
+        let data = try await send(route: .models, form: nil)
+        return try decode(ErisControlModels.self, from: data)
+    }
+
+    /// `POST /v1/models` - pin the default model. The id is the catalog id.
+    func setControlModel(_ model: String) async throws {
+        let _: ErisControlModelSet = try await sendJSON(
+            route: .setModel,
+            body: ErisControlModelBody(model: model)
+        )
+    }
+
+    /// `GET /v1/cron` - the schedules, plus whether the ticker runs at all.
+    func controlCron() async throws -> ErisControlCronList {
+        let data = try await send(route: .cron, form: nil)
+        return try decode(ErisControlCronList.self, from: data)
+    }
+
+    /// `POST /v1/cron` - create one schedule.
+    func createControlCron(name: String, schedule: String, prompt: String) async throws -> ErisControlCronJobEnvelope {
+        try await sendJSON(
+            route: .createCron,
+            body: ErisControlCronContent(name: name, schedule: schedule, prompt: prompt)
+        ) as ErisControlCronJobEnvelope
+    }
+
+    /// `PATCH /v1/cron/{id}` with `{"enabled": ...}` - the switch the row draws.
+    func setControlCronEnabled(id: String, enabled: Bool) async throws -> ErisControlCronJobEnvelope {
+        try await sendJSON(
+            route: .cronJob(id: id, verb: "PATCH"),
+            body: ErisControlCronFlag(enabled: enabled)
+        ) as ErisControlCronJobEnvelope
+    }
+
+    /// `PATCH /v1/cron/{id}` with all three content fields - the editor.
+    func updateControlCron(id: String, name: String, schedule: String, prompt: String) async throws -> ErisControlCronJobEnvelope {
+        try await sendJSON(
+            route: .cronJob(id: id, verb: "PATCH"),
+            body: ErisControlCronContent(name: name, schedule: schedule, prompt: prompt)
+        ) as ErisControlCronJobEnvelope
+    }
+
+    /// `DELETE /v1/cron/{id}`.
+    func deleteControlCron(id: String) async throws {
+        let _: ErisControlEmpty = try await sendJSON(
+            route: .cronJob(id: id, verb: "DELETE"),
+            body: ErisControlEmpty()
+        )
+    }
+
+    /// `GET /v1/skills` - the library.
+    func controlSkills() async throws -> ErisControlSkillList {
+        let data = try await send(route: .skills, form: nil)
+        return try decode(ErisControlSkillList.self, from: data)
+    }
+
+    /// `GET /v1/skills/{key}` - one skill's body.
+    func controlSkill(key: String) async throws -> ErisControlSkillEnvelope {
+        let data = try await send(route: .skill(key: key), form: nil)
+        return try decode(ErisControlSkillEnvelope.self, from: data)
+    }
+
+    /// `GET /v1/aux` - the roles, and the ids a picker may choose from.
+    func controlAux() async throws -> ErisControlAuxList {
+        let data = try await send(route: .aux, form: nil)
+        return try decode(ErisControlAuxList.self, from: data)
+    }
+
+    /// `POST /v1/aux` - pin one role. `"primary"` means "follow the primary".
+    func setControlAux(role: String, provider: String, model: String) async throws {
+        let _: ErisControlAuxSet = try await sendJSON(
+            route: .setAux,
+            body: ErisControlAuxBody(role: role, provider: provider, model: model)
+        )
+    }
+
+    // MARK: Gateway control (`/v1/gw/*`)
+
+    /// `GET /v1/gw/health` - the daemon's own state, in the legacy field names.
+    func gwHealth() async throws -> GatewayHealth {
+        let data = try await send(route: .gwHealth, form: nil)
+        return try decode(GatewayHealth.self, from: data)
+    }
+
+    /// `GET /v1/gw/restart/preflight` - the snapshot a restart confirmation shows.
+    func gwPreflight() async throws -> RestartPreflight {
+        let data = try await send(route: .gwPreflight, form: nil)
+        return try decode(RestartPreflight.self, from: data)
+    }
+
+    /// `POST /v1/gw/restart` - schedule a self-restart, answering the legacy
+    /// `{restarting: ...}` shape (no operation tracking on Eris).
+    func gwRestart(target: String, preflightVersion: String) async throws -> RestartResponse {
+        try await sendJSON(
+            route: .gwRestart,
+            body: RestartSubmission(target: target, preflightVersion: preflightVersion)
+        )
+    }
+
     func settings() async throws -> ErisSettingsSnapshot {
         let data = try await send(route: .settings, form: nil)
         return try decode(ErisSettingsSnapshot.self, from: data)
@@ -481,6 +677,47 @@ actor ErisClient {
         _ = try await send(route: .deleteNote(noteID: id), form: nil)
     }
 
+    // MARK: Note runs (enrichment)
+
+    /// `POST /v1/notes/{note_id}/recognitions` - stage the note's text so the
+    /// daemon's enrichment worker has something to read.
+    func createNoteRecognition(
+        noteID: String,
+        payload: ErisNoteRecognitionPayload
+    ) async throws -> ErisNoteRecognitionEnvelope {
+        try await sendJSON(route: .noteRecognition(noteID: noteID), body: payload)
+    }
+
+    /// `POST /v1/notes/{note_id}/runs` - open an enrichment run.
+    func createNoteRun(
+        noteID: String,
+        payload: ErisNoteRunCreatePayload
+    ) async throws -> ErisNoteRunEnvelope {
+        try await sendJSON(route: .noteRuns(noteID: noteID), body: payload)
+    }
+
+    /// `GET /v1/note-runs/{run_id}` - one run's state.
+    func noteRun(runID: String) async throws -> ErisNoteRunEnvelope {
+        let data = try await send(route: .noteRun(runID: runID), form: nil)
+        return try decode(ErisNoteRunEnvelope.self, from: data)
+    }
+
+    /// `GET /v1/note-runs/{run_id}/events` - the event log, oldest first.
+    ///
+    /// No cursor is sent: the log of one enrichment is tens of rows, so the whole
+    /// thing is fetched and the caller deduplicates on `seq`. A cursor would be
+    /// the right shape for a long log and this is not one.
+    func noteRunEvents(runID: String) async throws -> [ErisNoteRunEvent] {
+        let data = try await send(route: .noteRunEvents(runID: runID), form: nil)
+        let envelope = try decode(ErisNoteRunEventsEnvelope.self, from: data)
+        return envelope.data
+    }
+
+    /// `POST /v1/note-runs/{run_id}/cancel` - stop a run. Idempotent.
+    func cancelNoteRun(runID: String) async throws -> ErisNoteRunEnvelope {
+        try await sendJSON(route: .cancelNoteRun(runID: runID), body: EmptyBody())
+    }
+
     // MARK: Talk
 
     /// `GET /v1/talk/readiness` - the voice lane's placeholder readiness probe.
@@ -492,9 +729,15 @@ actor ErisClient {
     // MARK: Streaming
 
     /// Open the stream, refresh once on a 401, and feed bytes to the decoder.
+    ///
+    /// Emits `ErisFrameOutcome`, not `ErisFrame`: the daemon's vocabulary has six
+    /// frames and `ErisFrame` models four, so the stream has to be able to carry
+    /// a reasoning fragment and a finished tool call without either being dropped
+    /// (which is what `default: return nil` used to do) or pretending to be a
+    /// text delta.
     private func streamEvents(
         turnID: String,
-        into continuation: AsyncThrowingStream<ErisFrame, Error>.Continuation
+        into continuation: AsyncThrowingStream<ErisFrameOutcome, Error>.Continuation
     ) async throws {
         let route = ErisRoute.events(turnID: turnID)
         var (bytes, status) = try await openStream(
@@ -537,14 +780,14 @@ actor ErisClient {
         continuation.finish()
     }
 
-    /// Yield frames, and report whether a terminal one ended the stream.
+    /// Yield outcomes, and report whether a terminal one ended the stream.
     private func emit(
-        _ frames: [ErisFrame],
-        into continuation: AsyncThrowingStream<ErisFrame, Error>.Continuation
+        _ outcomes: [ErisFrameOutcome],
+        into continuation: AsyncThrowingStream<ErisFrameOutcome, Error>.Continuation
     ) -> Bool {
-        for frame in frames {
-            continuation.yield(frame)
-            if frame.isTerminal {
+        for outcome in outcomes {
+            continuation.yield(outcome)
+            if outcome.isTerminal {
                 continuation.finish()
                 return true
             }
@@ -555,10 +798,19 @@ actor ErisClient {
     // MARK: Requests
 
     /// A request that carries the bearer, retried once after a refresh on a 401.
-    private func send(route: ErisRoute, form: [String: String]?) async throws -> Data {
+    private func send(
+        route: ErisRoute,
+        form: [String: String]?,
+        extraHeaders: [String: String] = [:]
+    ) async throws -> Data {
         var refreshed = false
         while true {
-            let request = try await authorizedRequest(route: route, form: form, accept: "application/json")
+            let request = try await authorizedRequest(
+                route: route,
+                form: form,
+                accept: "application/json",
+                extraHeaders: extraHeaders
+            )
             let (data, response) = try await perform(request)
             let status = Self.status(of: response)
             if status == 401 && !refreshed {
@@ -588,7 +840,8 @@ actor ErisClient {
     private func authorizedRequest(
         route: ErisRoute,
         form: [String: String]?,
-        accept: String
+        accept: String,
+        extraHeaders: [String: String] = [:]
     ) async throws -> URLRequest {
         guard let stored = try await tokenStore.load(), !stored.accessToken.isEmpty else {
             throw ErisError.missingToken
@@ -596,6 +849,11 @@ actor ErisClient {
         var request = try makeRequest(route: route, form: form)
         request.setValue("Bearer \(stored.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(accept, forHTTPHeaderField: "Accept")
+        // Ridden on every attempt, refresh included: the retry after a 401 is the
+        // very retry the idempotency key exists to collapse.
+        for (field, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
         return request
     }
 
