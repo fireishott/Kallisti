@@ -119,7 +119,9 @@ fn providers_json(registry: &[Provider], primary: Option<&str>) -> serde_json::V
 /// rather than to nothing, and the resolved one is what is reported: the id a
 /// client shows should be the provider that would answer, not the one that was
 /// typed once and has since been removed.
-fn registry(engine: &SetupEngine) -> Result<(Vec<Provider>, Option<String>), DeviceError> {
+pub(crate) fn registry(
+    engine: &SetupEngine,
+) -> Result<(Vec<Provider>, Option<String>), DeviceError> {
     let providers = chat::provider_registry(engine).map_err(settings_unavailable)?;
     let stored = engine
         .setting(crate::providers::SETTING_PRIMARY)

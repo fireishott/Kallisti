@@ -853,6 +853,21 @@ pub struct Message {
     pub reasoning: Option<String>,
     /// The tool calls this turn ran, in order. Empty when it ran none.
     pub tools: Vec<ToolRecord>,
+    /// The id the client that sent this row minted for it, when it sent one.
+    ///
+    /// A device holds its own id for the message the moment the operator hits
+    /// send, which is before the daemon has a row to point at. Echoing that id
+    /// back on the row it wrote is what lets the device recognise its own
+    /// optimistic row in a later refresh instead of drawing a second copy of
+    /// the same sentence. `None` for every row written before 0019 and for
+    /// every browser turn, which mints no such id.
+    pub client_message_id: Option<String>,
+    /// The turn this row belongs to.
+    ///
+    /// Stamped on both rows of a turn once the job exists, so a client can
+    /// group the question, the answer and the reasoning that belongs to them
+    /// without guessing from timestamps. `None` on rows written before 0019.
+    pub job_id: Option<String>,
     /// How many tool rounds the turn ran, when it recorded that.
     pub rounds: Option<u64>,
     /// The gateway's limit state for the answering model, read at settle.
@@ -901,7 +916,8 @@ fn collect(
 ) -> Result<Vec<Message>, rusqlite::Error> {
     const SELECT: &str = "SELECT id, role, body, state, error_code, created_at, model,
                 prompt_tokens, completion_tokens, cached_tokens, context_window,
-                duration_ms, reasoning, tools, rounds, quota_json, context_tokens
+                duration_ms, reasoning, tools, rounds, quota_json, context_tokens,
+                client_message_id, job_id
            FROM chat_messages
           WHERE conversation_id = ?1
           ORDER BY created_at ASC, rowid ASC";
@@ -949,11 +965,17 @@ fn row_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
             .get::<_, Option<String>>(15)?
             .and_then(|raw| serde_json::from_str(&raw).ok()),
         context_tokens: tokens(row.get(16)?),
+        client_message_id: row.get(17)?,
+        job_id: row.get(18)?,
     })
 }
 
 /// Append one message. The id is minted here and returned so the caller can
 /// update the same row when the answer lands.
+///
+/// This is the browser's shape: the browser holds no id of its own for a
+/// message, so both handles are `None` and the row is identified by the id
+/// returned here alone.
 pub fn append(
     db: &Db,
     conversation: &str,
@@ -961,16 +983,82 @@ pub fn append(
     body: &str,
     state: State,
 ) -> Result<String, DbError> {
+    append_identified(db, conversation, role, body, state, None)
+}
+
+/// Append one message, optionally under the id its sender minted for it.
+///
+/// `client_message_id` is the device's own handle for the message it just sent.
+/// It is written here, on the row the daemon creates, so the two ends can agree
+/// on identity without either inferring it. A device that sends no id (and every
+/// browser turn) writes `None`, which is the same row it always got.
+pub fn append_identified(
+    db: &Db,
+    conversation: &str,
+    role: Role,
+    body: &str,
+    state: State,
+    client_message_id: Option<&str>,
+) -> Result<String, DbError> {
     let id = uuid::Uuid::now_v7().to_string();
     db.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO chat_messages (id, conversation_id, role, body, state)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, conversation, role.as_str(), body, state.as_str()],
+            "INSERT INTO chat_messages (id, conversation_id, role, body, state, client_message_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                conversation,
+                role.as_str(),
+                body,
+                state.as_str(),
+                client_message_id
+            ],
         )?;
         Ok(())
     })?;
     Ok(id)
+}
+
+/// The newest question row of a conversation, which is the row this turn's
+/// operator question just became.
+///
+/// Read back rather than carried: `append_identified` is handed `&str` and
+/// dangling borrows would outlive a `match` arm. One indexed read on a table the
+/// turn is about to write anyway, and it is the only way to name the row without
+/// changing a signature the browser also calls.
+pub fn question_id(db: &Db, conversation: &str) -> Result<Option<String>, DbError> {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT id FROM chat_messages
+              WHERE conversation_id = ?1 AND role = 'user'
+              ORDER BY created_at DESC, rowid DESC
+              LIMIT 1",
+            params![conversation],
+            |row| row.get(0),
+        )
+        .optional()
+    })
+}
+
+/// Stamp the turn's job id onto both rows of a turn.
+///
+/// The question and the answer row are written before the job exists, because a
+/// client that reads history mid-answer has to see them. The job id arrives a
+/// moment later, once the queue has accepted the turn, and this is where the two
+/// rows learn which turn they are. One statement, so a row can never carry half
+/// a turn.
+///
+/// Rows that already carry a job id are left alone: a turn is stamped once.
+pub fn stamp_turn(db: &Db, question_id: &str, answer_id: &str, job_id: &str) -> Result<(), DbError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_messages
+                SET job_id = ?1
+              WHERE id IN (?2, ?3) AND job_id IS NULL",
+            params![job_id, question_id, answer_id],
+        )?;
+        Ok(())
+    })
 }
 
 /// Append the assistant row for a turn that is about to run.
@@ -4173,6 +4261,8 @@ mod tests {
                 reasoning: None,
                 tools: Vec::new(),
                 rounds: None,
+                client_message_id: None,
+                job_id: None,
                 quota: None,
             },
             Message {
@@ -4192,6 +4282,8 @@ mod tests {
                 reasoning: None,
                 tools: Vec::new(),
                 rounds: None,
+                client_message_id: None,
+                job_id: None,
                 quota: None,
             },
             Message {
@@ -4211,6 +4303,8 @@ mod tests {
                 reasoning: None,
                 tools: Vec::new(),
                 rounds: None,
+                client_message_id: None,
+                job_id: None,
                 quota: None,
             },
             Message {
@@ -4230,6 +4324,8 @@ mod tests {
                 reasoning: None,
                 tools: Vec::new(),
                 rounds: None,
+                client_message_id: None,
+                job_id: None,
                 quota: None,
             },
         ];
@@ -4274,6 +4370,8 @@ mod tests {
             reasoning: None,
             tools: Vec::new(),
             rounds: Some(100),
+            client_message_id: None,
+            job_id: None,
             quota: None,
         }];
         let stats = stats(&transcript);
@@ -4310,6 +4408,8 @@ mod tests {
             reasoning: None,
             tools: Vec::new(),
             rounds: Some(100),
+            client_message_id: None,
+            job_id: None,
             quota: None,
         }];
         let stats = stats(&transcript);

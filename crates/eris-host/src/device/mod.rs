@@ -45,6 +45,7 @@
 pub mod control;
 pub mod gateway;
 pub mod handlers;
+pub mod legacy;
 pub mod turns;
 
 use std::sync::Arc;
@@ -367,6 +368,70 @@ pub const ROUTE_GW_RESTART: &str = "/v1/gw/restart";
 
 /// `GET /v1/gw/update/check` - what this daemon is, and what is staged next.
 pub const ROUTE_GW_UPDATE_CHECK: &str = "/v1/gw/update/check";
+
+/// The legacy-parity route paths, in one block.
+///
+/// Each one exists because a shipped client asks for it and this listener used to
+/// answer a typed 404, which the client renders as a failed decode. They are named
+/// here, separately from the paths the current build uses, so the compatibility
+/// surface is one block of the wiring rather than a scattering.
+///
+/// `POST /v1/hosts/current/revoke` is in this list and answers `403
+/// host_revoke_unsupported` on purpose: see [`legacy::hosts_current_revoke`].
+mod legacy_routes {
+    /// `GET /v1/health` - the liveness probe.
+    pub const HEALTH: &str = "/v1/health";
+    /// `GET` and `PUT /v1/config` - the Config Editor's read and write pair.
+    pub const CONFIG: &str = "/v1/config";
+    /// `POST /v1/config/validate` - the same parse, writing nothing.
+    pub const CONFIG_VALIDATE: &str = "/v1/config/validate";
+    /// `GET /v1/gw/status` - the gateway snapshot the status screen reads.
+    pub const GW_STATUS: &str = "/v1/gw/status";
+    /// `GET /v1/gw/logs` - a bounded tail of this daemon's journal.
+    pub const GW_LOGS: &str = "/v1/gw/logs";
+    /// `GET /v1/gw/logs/stream` - the same rows, followed.
+    pub const GW_LOGS_STREAM: &str = "/v1/gw/logs/stream";
+    /// `POST /v1/auth/refresh` - the legacy spelling of `/v1/token/refresh`.
+    pub const AUTH_REFRESH: &str = "/v1/auth/refresh";
+    /// `POST /v1/auth/revoke` - revoke the calling device.
+    pub const AUTH_REVOKE: &str = "/v1/auth/revoke";
+    /// `POST /v1/device/register` - the presenting device's own row, stamped.
+    pub const DEVICE_REGISTER: &str = "/v1/device/register";
+    /// `GET` and `POST /v1/device/app-state` - the daemon's own state row.
+    pub const DEVICE_APP_STATE: &str = "/v1/device/app-state";
+    /// `GET /v1/hosts/current` - this host, because this host is the only one.
+    pub const HOSTS_CURRENT: &str = "/v1/hosts/current";
+    /// `POST /v1/hosts/current/revoke` - refused: there is no host to revoke.
+    pub const HOSTS_CURRENT_REVOKE: &str = "/v1/hosts/current/revoke";
+    /// `GET /v1/connector/events` - the daemon's own health, pushed.
+    pub const CONNECTOR_EVENTS: &str = "/v1/connector/events";
+    /// `GET /v1/profiles` - the one identity, with its real skill count.
+    pub const PROFILES: &str = "/v1/profiles";
+    /// `GET /v1/commands` - the command table and the skill library.
+    pub const COMMANDS: &str = "/v1/commands";
+    /// `GET /v1/canvas/processes/stream` - the subagent rows, as SSE.
+    pub const CANVAS_PROCESSES: &str = "/v1/canvas/processes/stream";
+}
+
+/// Every legacy-parity path, for the test that keeps them all under `/v1`.
+pub const LEGACY_ROUTES: [&str; 16] = [
+    legacy_routes::HEALTH,
+    legacy_routes::CONFIG,
+    legacy_routes::CONFIG_VALIDATE,
+    legacy_routes::GW_STATUS,
+    legacy_routes::GW_LOGS,
+    legacy_routes::GW_LOGS_STREAM,
+    legacy_routes::AUTH_REFRESH,
+    legacy_routes::AUTH_REVOKE,
+    legacy_routes::DEVICE_REGISTER,
+    legacy_routes::DEVICE_APP_STATE,
+    legacy_routes::HOSTS_CURRENT,
+    legacy_routes::HOSTS_CURRENT_REVOKE,
+    legacy_routes::CONNECTOR_EVENTS,
+    legacy_routes::PROFILES,
+    legacy_routes::COMMANDS,
+    legacy_routes::CANVAS_PROCESSES,
+];
 
 /// The bodies every device-surface error uses.
 ///
@@ -930,6 +995,43 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_GW_PREFLIGHT, get(gateway::gw_restart_preflight))
         .route(ROUTE_GW_RESTART, post(gateway::gw_restart))
         .route(ROUTE_GW_UPDATE_CHECK, get(gateway::gw_update_check))
+        .route(legacy_routes::HEALTH, get(legacy::health))
+        .route(
+            legacy_routes::CONFIG,
+            get(legacy::config_read).put(legacy::config_write),
+        )
+        .route(
+            legacy_routes::CONFIG_VALIDATE,
+            post(legacy::config_validate),
+        )
+        .route(legacy_routes::GW_STATUS, get(legacy::gw_status))
+        .route(legacy_routes::GW_LOGS, get(legacy::gw_logs))
+        .route(legacy_routes::GW_LOGS_STREAM, get(legacy::gw_logs_stream))
+        .route(legacy_routes::AUTH_REFRESH, post(legacy::auth_refresh))
+        .route(legacy_routes::AUTH_REVOKE, post(legacy::auth_revoke))
+        .route(
+            legacy_routes::DEVICE_REGISTER,
+            post(legacy::device_register),
+        )
+        .route(
+            legacy_routes::DEVICE_APP_STATE,
+            get(legacy::app_state_get).post(legacy::app_state_post),
+        )
+        .route(legacy_routes::HOSTS_CURRENT, get(legacy::hosts_current))
+        .route(
+            legacy_routes::HOSTS_CURRENT_REVOKE,
+            post(legacy::hosts_current_revoke),
+        )
+        .route(
+            legacy_routes::CONNECTOR_EVENTS,
+            get(legacy::connector_events),
+        )
+        .route(legacy_routes::PROFILES, get(legacy::profiles))
+        .route(legacy_routes::COMMANDS, get(legacy::commands))
+        .route(
+            legacy_routes::CANVAS_PROCESSES,
+            get(legacy::canvas_processes),
+        )
         .fallback(not_here)
         .method_not_allowed_fallback(wrong_method)
         .layer(axum::middleware::from_fn(assign_request_id))
@@ -1060,7 +1162,10 @@ mod tests {
             ROUTE_GW_PREFLIGHT,
             ROUTE_GW_RESTART,
             ROUTE_GW_UPDATE_CHECK,
-        ] {
+        ]
+        .into_iter()
+        .chain(LEGACY_ROUTES)
+        {
             assert!(route.starts_with("/v1/"), "{route} must live under /v1");
         }
     }

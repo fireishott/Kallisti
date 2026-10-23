@@ -850,6 +850,12 @@ pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
 pub struct ConversationTurn {
     /// The conversation the turn belongs to.
     pub conversation: String,
+    /// The operator's question row, created before the provider is called.
+    ///
+    /// Empty when the row could not be read back, which is not a reason to fail a
+    /// turn that is already queued: an unstamped turn is a turn whose rows are
+    /// not grouped, not a turn that did not happen.
+    pub question_id: String,
     /// The assistant row, created before the provider is called.
     pub answer_id: String,
 }
@@ -1008,6 +1014,26 @@ impl TurnHub {
                 hub.begin(&conversation.conversation, &conversation.answer_id)
             });
         let store = self.store.clone();
+        // The job exists now, which is the moment both transcript rows of this
+        // turn can say which turn they are. Stamped before the claim so a device
+        // that refetches while the provider is still warming up already sees the
+        // two rows grouped, and so a row is never left carrying half a turn.
+        let stampable = conversation
+            .as_ref()
+            .filter(|write| !write.question_id.is_empty());
+        if let Some(write) = stampable {
+            let db = store.db();
+            if let Err(error) =
+                crate::web::chat::stamp_turn(db, &write.question_id, &write.answer_id, &job_id)
+            {
+                // Not fatal: the turn answers either way, and the only thing lost
+                // is the client's ability to group the two rows.
+                tracing::warn!(
+                    job = %job_id,
+                    "could not stamp the turn id onto the transcript rows: {error}"
+                );
+            }
+        }
         let claim = {
             let store = store.clone();
             let job_id = job_id.clone();

@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -161,6 +161,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 18,
         name: "0018_context_tokens",
         sql: MIGRATION_0018,
+    },
+    Migration {
+        version: 19,
+        name: "0019_chat_message_identity",
+        sql: MIGRATION_0019,
     },
 ];
 
@@ -655,6 +660,29 @@ CREATE INDEX idx_schedule_runs_schedule ON schedule_runs (schedule_id, started_a
 /// prompt total, so the two questions have two answers.
 const MIGRATION_0018: &str = r"
 ALTER TABLE chat_messages ADD COLUMN context_tokens INTEGER;
+";
+
+/// Migration 0019: the identity a transcript row came from.
+///
+/// A transcript row has always been the daemon's own row with the daemon's own
+/// id, which is fine for a reader and useless for a client that is trying to
+/// reconcile the row it optimistically drew against the row the daemon wrote.
+/// Without a shared handle the two can only be matched by guessing.
+///
+/// Two handles, both nullable because every row written before this existed has
+/// neither:
+///
+/// - `client_message_id` is the operator's own id for the message. A device that
+///   sends one gets it echoed on the user row, so a retry that deduplicates to
+///   the same job still lands on the same row rather than a second one.
+/// - `job_id` is the turn the row belongs to, stamped once the job exists. Both
+///   rows of a turn carry it, which is what lets a client collapse an answer and
+///   its reasoning into the one card the answer was rendered as.
+const MIGRATION_0019: &str = r"
+ALTER TABLE chat_messages ADD COLUMN client_message_id TEXT;
+ALTER TABLE chat_messages ADD COLUMN job_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_job ON chat_messages (job_id);
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

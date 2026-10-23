@@ -48,6 +48,14 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 /// Header carrying a client's idempotency key.
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 
+/// Longest `client_message_id` this surface will store.
+///
+/// A UUID is 36 characters and a ULID is 26; 128 leaves room for another scheme
+/// without leaving room for a body. Past it the id is dropped rather than cut,
+/// because half an id matches nothing and pretending otherwise would be worse
+/// than saying the row has no client id at all.
+const MAX_CLIENT_MESSAGE_ID: usize = 128;
+
 /// Header a reconnecting SSE client sends.
 const LAST_EVENT_ID_HEADER: &str = "last-event-id";
 
@@ -566,16 +574,31 @@ pub async fn create_turn(
     // rather than a transcript that appears only after the stream closes. The
     // prompt itself is built by the worker from the same text, so a turn cannot
     // stream one thing and store another.
+    // The device's own id for the message it just sent, when it sent one. Bounded
+    // and trimmed here rather than trusted: it is a copy of a client's value, and
+    // a device that pastes a kilobyte into it should not grow a transcript row by
+    // a kilobyte. Anything longer is treated as absent rather than truncated, so
+    // the id a client gets back is always the id it sent or nothing at all.
+    let client_message_id = {
+        let raw = field(&fields, "client_message_id");
+        if raw.is_empty() || raw.len() > MAX_CLIENT_MESSAGE_ID {
+            None
+        } else {
+            Some(raw.to_owned())
+        }
+    };
+
     let conversation_turn = match &conversation {
         None => None,
         Some(conversation_id) => {
             let db = service.engine().db();
-            if let Err(error) = chat::append(
+            if let Err(error) = chat::append_identified(
                 db,
                 conversation_id,
                 chat::Role::User,
                 text,
                 chat::State::Complete,
+                client_message_id.as_deref(),
             ) {
                 return DeviceError::db_unavailable(format!(
                     "cannot write the question into the conversation: {error}"
@@ -593,6 +616,20 @@ pub async fn create_turn(
                 .provider_contexts()
                 .ok()
                 .and_then(|contexts| contexts.get(&model).copied());
+            let question_id = match chat::question_id(db, conversation_id) {
+                Ok(Some(id)) => id,
+                // Reading back is not allowed to fail the turn: the rows are
+                // already written, and a question id nobody could read means the
+                // job is simply not stamped. A turn that answers is worth more
+                // than a turn whose two rows are labelled.
+                Ok(None) => String::new(),
+                Err(error) => {
+                    return DeviceError::db_unavailable(format!(
+                        "cannot read the question row back: {error}"
+                    ))
+                    .into_response();
+                }
+            };
             let answer_id = match chat::append_answer(db, conversation_id, &model, context_window) {
                 Ok(answer_id) => answer_id,
                 Err(error) => {
@@ -608,6 +645,7 @@ pub async fn create_turn(
             let _ = chat::touch_conversation(db, conversation_id);
             Some(ConversationTurn {
                 conversation: conversation_id.clone(),
+                question_id,
                 answer_id,
             })
         }
@@ -1160,6 +1198,11 @@ pub async fn conversation(
                 "created_at": message.created_at,
                 "reasoning": message.reasoning,
                 "tools": message.tools,
+                // The two handles a device needs to recognise its own rows. Sent
+                // as explicit nulls rather than omitted, so a client can tell
+                // "this row predates the column" from "the daemon forgot".
+                "client_message_id": message.client_message_id,
+                "job_id": message.job_id,
             })
         })
         .collect();
