@@ -4976,10 +4976,7 @@ async fn chat_live(
         let first: Vec<SseEvent> = watch.replay.iter().map(live_frame).collect();
         return live_stream(first, Some(watch.frames));
     }
-    live_stream(
-        vec![live_snapshot_frame(Some(answer))],
-        Some(watch.frames),
-    )
+    live_stream(vec![live_snapshot_frame(Some(answer))], Some(watch.frames))
 }
 
 /// One published frame, as the page receives it.

@@ -249,10 +249,11 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 
-Shipped and running: Kallisti-Eris 1.4.4 and the web UI, with the cron scheduler and
+Shipped and running: Kallisti-Eris 1.4.6 and the web UI, with the cron scheduler and
 the skills library switched on. A dropped chat stream resumes where it stopped rather
-than silently skipping the frames that arrived while the page was away.
-In private beta: the Kallisti iOS app on the Eris daemon, TestFlight 1.4.4 (97).
+than silently skipping the frames that arrived while the page was away, and a reply on
+a phone keeps a share of the column instead of running edge to edge.
+In private beta: the Kallisti iOS app on the Eris daemon, TestFlight 1.4.6 (99).
 In development: Voice Mode, Plugin Engine, watchOS.
 
 ## Licence

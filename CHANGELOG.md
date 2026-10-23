@@ -4,6 +4,15 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.5
+
+- **A reply on a phone keeps a share of the column.** The stylesheet sized a bubble
+  by the window on a desktop and then handed it the whole column below 900px, so a
+  reply ran edge to edge on a phone and read as a page rather than a message. The
+  phone rule now caps a bubble at 88% of the column, which leaves the gutter that
+  makes a turn read as a message while keeping both sides of a conversation in one
+  column. `build 98`.
+
 ## 1.4.4
 
 - **A page that lost the turn keeps watching it.** A tablet that suspended the
@@ -601,3 +610,15 @@ First working daemon.
   buffering.
 - Lite spike: a UniFFI-exported function running in-process with a fake provider, no
   network.
+
+## 1.4.6
+
+- **The phone's control screens are wired to Eris.** Models, cron, skills and the
+  aux-model picker now have device routes on the daemon and Swift ports in the app,
+  so the screens that still pointed at the retired relay stop 404ing.
+- **Notes enrichment actually runs.** The daemon gains a worker that claims a
+  queued enrichment run, streams deltas, and stores the enriched revision, and the
+  app opens and polls a real run instead of reporting "not backed by Eris yet."
+- **Gateway control is the daemon itself.** Health, restart preflight, restart and
+  update-check routes exist on the device listener, and the app prefers Eris for
+  them. `build 99`.

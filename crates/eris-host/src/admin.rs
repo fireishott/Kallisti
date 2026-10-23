@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 96;
+pub const BUILD: u32 = 99;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -956,7 +956,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.4.4");
+        assert_eq!(VERSION, "1.4.6");
     }
 
     #[test]

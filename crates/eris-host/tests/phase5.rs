@@ -16,7 +16,7 @@ use eris_host::db::{Db, TABLES};
 use eris_host::error::REQUEST_ID_HEADER;
 use tower::ServiceExt;
 
-const HEALTHZ_EXACT: &str = r#"{"status":"ok","version":"1.4.4","state":"setup","db":"ok"}"#;
+const HEALTHZ_EXACT: &str = r#"{"status":"ok","version":"1.4.6","state":"setup","db":"ok"}"#;
 
 /// Send one request through the router and return status, body text and headers.
 async fn send(
@@ -219,8 +219,8 @@ async fn healthz_returns_exactly_the_documented_body() {
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("healthz is json");
     assert_eq!(parsed["state"], "setup");
     assert_eq!(parsed["db"], "ok");
-    assert_eq!(parsed["version"], "1.4.4");
-    assert_eq!(VERSION, "1.4.4");
+    assert_eq!(parsed["version"], "1.4.6");
+    assert_eq!(VERSION, "1.4.6");
 }
 
 #[tokio::test]

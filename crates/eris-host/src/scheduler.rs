@@ -486,6 +486,52 @@ pub fn set_enabled(
     Ok(())
 }
 
+/// Rewrite one schedule's three text fields, and recompute its next fire.
+///
+/// All three move together. A partial edit would need a rule for which halves of
+/// the row are authoritative, and the form that edits a schedule shows all three,
+/// so there is nothing to protect by allowing one at a time.
+///
+/// The next fire is recomputed from the new expression rather than kept: an edit
+/// that changes `0 7 * * *` to `0 7 1 * *` and left the old next fire in place
+/// would fire once on the wrong schedule before settling.
+///
+/// # Errors
+///
+/// [`ScheduleError::Missing`] for an id that names nothing, the validation
+/// errors a create would raise, or the database.
+pub fn update(
+    db: &Db,
+    id: &str,
+    name: &str,
+    cron: &str,
+    prompt: &str,
+    offset: time::UtcOffset,
+) -> Result<(), ScheduleError> {
+    let Some(existing) = get(db, id)? else {
+        return Err(ScheduleError::Missing);
+    };
+    let parsed = validate(name, cron, prompt)?;
+    let next = if existing.enabled {
+        parsed
+            .next_after(OffsetDateTime::now_utc().to_offset(offset))
+            .map(|at| stamp(at.to_offset(time::UtcOffset::UTC)))
+    } else {
+        None
+    };
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE schedules
+                SET name = ?2, cron = ?3, prompt = ?4, next_fire_at = ?5,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              WHERE id = ?1",
+            rusqlite::params![id, name.trim(), cron.trim(), prompt.trim(), next],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// Delete one schedule and its run history.
 ///
 /// # Errors

@@ -500,9 +500,14 @@ mod tests {
         // The oldest frame the ring still holds is number 6, so a page whose last
         // frame was number 1 has a hole it cannot be caught up across.
         let watch = hub.watch_after("c1", Some(1)).expect("still running");
-        assert!(watch.missed, "a gap in the ring is reported, not filled silently");
+        assert!(
+            watch.missed,
+            "a gap in the ring is reported, not filled silently"
+        );
         // A page that is merely one frame behind is still served from the ring.
-        let watch = hub.watch_after("c1", Some((BACKLOG + 4) as u64)).expect("still running");
+        let watch = hub
+            .watch_after("c1", Some((BACKLOG + 4) as u64))
+            .expect("still running");
         assert!(!watch.missed);
         assert_eq!(watch.replay.len(), 1);
     }
@@ -518,7 +523,11 @@ mod tests {
         // whole ring and no more: 257 through 512, which is BACKLOG frames.
         let watch = hub.watch_after("c1", Some(256)).expect("still running");
         assert!(!watch.missed);
-        assert_eq!(watch.replay.len(), BACKLOG, "the ring holds exactly its bound");
+        assert_eq!(
+            watch.replay.len(),
+            BACKLOG,
+            "the ring holds exactly its bound"
+        );
         assert_eq!(
             watch.replay.first().map(|frame| frame.seq),
             Some(257),
@@ -542,7 +551,11 @@ mod tests {
         turn.publish("delta", serde_json::json!({ "text": "two" }));
         let watch = hub.watch_after("c1", Some(0)).expect("still running");
         let seqs: Vec<u64> = watch.replay.iter().map(|frame| frame.seq).collect();
-        assert_eq!(seqs, vec![1, 2, 3], "one sequence per conversation, whichever half sent it");
+        assert_eq!(
+            seqs,
+            vec![1, 2, 3],
+            "one sequence per conversation, whichever half sent it"
+        );
     }
 
     #[test]

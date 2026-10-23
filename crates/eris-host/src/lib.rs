@@ -46,6 +46,7 @@ pub mod inbox;
 pub mod mcp;
 pub mod memory;
 pub mod notes;
+pub mod notes_worker;
 pub mod onboarding;
 pub mod persona;
 pub mod probe;

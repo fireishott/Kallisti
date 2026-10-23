@@ -42,6 +42,8 @@
 //! behaviour rather than a bug: rebinding a listener to signal "off" would drop
 //! the SSE streams of turns that are already running.
 
+pub mod control;
+pub mod gateway;
 pub mod handlers;
 pub mod turns;
 
@@ -51,7 +53,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use axum::Router;
 use axum::http::{Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use serde::Serialize;
 use tokio::net::TcpListener;
 
@@ -335,6 +337,36 @@ pub const ROUTE_TALK_TURNS: &str = "/v1/talk/session/{id}/turns";
 
 /// `POST /v1/talk/session/{id}/inject` - placeholder transcript inject.
 pub const ROUTE_TALK_INJECT: &str = "/v1/talk/session/{id}/inject";
+
+/// `GET` and `POST /v1/models` - the probe's model list, and the pin.
+pub const ROUTE_MODELS: &str = "/v1/models";
+
+/// `GET` and `POST /v1/cron` - the schedule list, and a new schedule.
+pub const ROUTE_CRON: &str = "/v1/cron";
+
+/// `PATCH` and `DELETE /v1/cron/{id}` - edit or delete one schedule.
+pub const ROUTE_CRON_ITEM: &str = "/v1/cron/{id}";
+
+/// `GET /v1/skills` - the skill library as the model catalog sees it.
+pub const ROUTE_SKILLS: &str = "/v1/skills";
+
+/// `GET /v1/skills/{key}` - one skill's body.
+pub const ROUTE_SKILL_ITEM: &str = "/v1/skills/{key}";
+
+/// `GET` and `POST /v1/aux` - the auxiliary role pins, and one role's write.
+pub const ROUTE_AUX: &str = "/v1/aux";
+
+/// `GET /v1/gw/health` - the daemon's own state, in the legacy client's words.
+pub const ROUTE_GW_HEALTH: &str = "/v1/gw/health";
+
+/// `GET /v1/gw/restart/preflight` - the snapshot a restart confirmation shows.
+pub const ROUTE_GW_PREFLIGHT: &str = "/v1/gw/restart/preflight";
+
+/// `POST /v1/gw/restart` - schedule a self-restart.
+pub const ROUTE_GW_RESTART: &str = "/v1/gw/restart";
+
+/// `GET /v1/gw/update/check` - what this daemon is, and what is staged next.
+pub const ROUTE_GW_UPDATE_CHECK: &str = "/v1/gw/update/check";
 
 /// The bodies every device-surface error uses.
 ///
@@ -885,6 +917,19 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_TALK_SESSION_END, post(handlers::end_talk_session))
         .route(ROUTE_TALK_TURNS, post(handlers::create_talk_turn))
         .route(ROUTE_TALK_INJECT, post(handlers::inject_talk_transcript))
+        .route(ROUTE_MODELS, get(control::models).post(control::set_model))
+        .route(ROUTE_CRON, get(control::cron).post(control::create_cron))
+        .route(
+            ROUTE_CRON_ITEM,
+            patch(control::patch_cron).delete(control::delete_cron),
+        )
+        .route(ROUTE_SKILLS, get(control::skills_list))
+        .route(ROUTE_SKILL_ITEM, get(control::skill_detail))
+        .route(ROUTE_AUX, get(control::aux_roles).post(control::set_aux))
+        .route(ROUTE_GW_HEALTH, get(gateway::gw_health))
+        .route(ROUTE_GW_PREFLIGHT, get(gateway::gw_restart_preflight))
+        .route(ROUTE_GW_RESTART, post(gateway::gw_restart))
+        .route(ROUTE_GW_UPDATE_CHECK, get(gateway::gw_update_check))
         .fallback(not_here)
         .method_not_allowed_fallback(wrong_method)
         .layer(axum::middleware::from_fn(assign_request_id))
@@ -1005,6 +1050,16 @@ mod tests {
             ROUTE_TALK_SESSION_END,
             ROUTE_TALK_TURNS,
             ROUTE_TALK_INJECT,
+            ROUTE_MODELS,
+            ROUTE_CRON,
+            ROUTE_CRON_ITEM,
+            ROUTE_SKILLS,
+            ROUTE_SKILL_ITEM,
+            ROUTE_AUX,
+            ROUTE_GW_HEALTH,
+            ROUTE_GW_PREFLIGHT,
+            ROUTE_GW_RESTART,
+            ROUTE_GW_UPDATE_CHECK,
         ] {
             assert!(route.starts_with("/v1/"), "{route} must live under /v1");
         }

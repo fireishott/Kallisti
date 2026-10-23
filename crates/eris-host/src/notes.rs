@@ -6,10 +6,12 @@
 //! beside `eris.db`, following the sensor-store pattern (WAL, `busy_timeout`,
 //! `synchronous=FULL`, typed errors).
 //!
-//! The enrichment "run" execution is deliberately a stub: `create_run` records a
-//! `queued` run (and the run machinery - events, cancel, idempotency - is real),
-//! but nothing here calls an AI model. That execution is a separate, deferred
-//! worker; the contract is what matters to the frontend.
+//! This module records and settles runs; it never calls a model. Execution lives
+//! in `crate::notes_worker`, which claims a queued run through [`NotesStore::claim_next`],
+//! drives one tool-less turn, writes the event log through [`NotesStore::emit_event`]
+//! and settles the run through [`NotesStore::finish_run`] or [`NotesStore::fail_run`].
+//! The split is the point: the store owns the contract the client reads, and the
+//! worker owns the provider call.
 //!
 //! Identity note: Eris has no `users` table. The legacy `user_id` ownership
 //! column maps to `device_id`, and the `userId` field the note/run serializers
@@ -220,6 +222,52 @@ pub struct BlobDownloadView {
     pub byte_size: i64,
     #[serde(rename = "storagePath")]
     pub storage_path: String,
+}
+
+/// A run that has been claimed for execution, with everything the worker needs.
+#[derive(Debug, Clone)]
+pub struct ClaimedRun {
+    /// The run row.
+    pub run_id: String,
+    /// The device that owns it.
+    pub device_id: String,
+    /// The note being enriched.
+    pub note_id: String,
+    /// Which attempt this is, counting from one.
+    pub attempt: i64,
+    /// The drawing revision the client asked to enrich against.
+    pub source_drawing_revision: i64,
+    /// The text revision the client asked to enrich against.
+    pub source_text_revision: i64,
+    /// The directives the client sent, verbatim.
+    pub requested_directives: serde_json::Value,
+}
+
+/// One enriched revision, as stored.
+#[derive(Debug, Serialize)]
+pub struct EnrichedRevisionView {
+    pub id: String,
+    #[serde(rename = "noteId")]
+    pub note_id: String,
+    #[serde(rename = "runId")]
+    pub run_id: String,
+    #[serde(rename = "sourceDrawingRevision")]
+    pub source_drawing_revision: i64,
+    #[serde(rename = "sourceTextRevision")]
+    pub source_text_revision: i64,
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: i64,
+    pub title: String,
+    pub markdown: String,
+    #[serde(rename = "structuredSections")]
+    pub structured_sections: serde_json::Value,
+    pub citations: Option<serde_json::Value>,
+    #[serde(rename = "commandResults")]
+    pub command_results: Option<serde_json::Value>,
+    #[serde(rename = "isStale")]
+    pub is_stale: bool,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
 }
 
 /// The outcome of a note patch: one of updated, missing, or a revision clash.
@@ -741,6 +789,242 @@ impl NotesStore {
         self.get_run(device_id, run_id)
     }
 
+    // -----------------------------------------------------------------------
+    // The enrichment-run side of the store.
+    //
+    // `notes.rs` owns the run rows, the event log and the enriched revisions.
+    // These methods are what `crate::notes_worker` drives: claim, emit, settle,
+    // store. Nothing here calls a model, and nothing in the worker writes SQL.
+    // -----------------------------------------------------------------------
+
+    /// Claim the oldest run that may be worked, and lease it.
+    ///
+    /// Two rows are claimable: a `queued` one, and a `running` one whose lease
+    /// has expired, which is what a daemon that died mid-run leaves behind. The
+    /// claim is a conditional update, so two ticks racing cannot both take the
+    /// same run, and `attempt` rising is the record of how many times it was taken.
+    pub fn claim_next(&self, lease_seconds: i64) -> Result<Option<ClaimedRun>, NotesError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction()?;
+        let lease = format!("+{lease_seconds} seconds");
+        let candidate: Option<(String, i64)> = optional(transaction.query_row(
+            "SELECT id, attempt FROM note_runs
+             WHERE status = 'queued'
+                OR (status = 'running'
+                    AND lease_expires_at IS NOT NULL
+                    AND lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+             ORDER BY created_at ASC, id ASC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ))?;
+        let Some((run_id, attempt)) = candidate else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        let taken = transaction.execute(
+            "UPDATE note_runs
+                SET status = 'running',
+                    attempt = attempt + 1,
+                    lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', ?2),
+                    error_text = NULL
+              WHERE id = ?1
+                AND (status = 'queued'
+                     OR (status = 'running'
+                         AND lease_expires_at IS NOT NULL
+                         AND lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+            rusqlite::params![run_id, lease],
+        )?;
+        if taken == 0 {
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let row: (String, String, i64, i64, String) = transaction.query_row(
+            "SELECT device_id, note_id, source_drawing_revision, source_text_revision,
+                    requested_directives
+             FROM note_runs WHERE id = ?1",
+            [&run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        transaction.commit()?;
+        drop(conn);
+        Ok(Some(ClaimedRun {
+            run_id,
+            device_id: row.0,
+            note_id: row.1,
+            attempt: attempt + 1,
+            source_drawing_revision: row.2,
+            source_text_revision: row.3,
+            requested_directives: serde_json::from_str(&row.4)
+                .unwrap_or(serde_json::Value::Array(Vec::new())),
+        }))
+    }
+
+    /// Append one event, with the next `seq` for that run. Returns the sequence.
+    ///
+    /// The sequence is computed inside the same transaction as the insert, so two
+    /// writers cannot both take the same number and a client polling with a cursor
+    /// never sees a gap.
+    pub fn emit_event(
+        &self,
+        run_id: &str,
+        attempt: i64,
+        type_: &str,
+        payload: serde_json::Value,
+    ) -> Result<i64, NotesError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction()?;
+        let seq: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM note_run_events WHERE run_id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            "INSERT INTO note_run_events (id, run_id, seq, attempt, type, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                uuid::Uuid::now_v7().to_string(),
+                run_id,
+                seq,
+                attempt,
+                type_,
+                serde_json::to_string(&payload)?,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(seq)
+    }
+
+    /// The status of one run, whatever it is.
+    pub fn run_status(&self, run_id: &str) -> Result<Option<String>, NotesError> {
+        let conn = self.lock()?;
+        Ok(optional(conn.query_row(
+            "SELECT status FROM note_runs WHERE id = ?1",
+            [run_id],
+            |row| row.get(0),
+        ))?)
+    }
+
+    /// Settle a run as completed, with its result and the lease released.
+    pub fn finish_run(&self, run_id: &str, result: serde_json::Value) -> Result<(), NotesError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE note_runs
+                SET status = 'completed',
+                    result = ?2,
+                    error_text = NULL,
+                    lease_expires_at = NULL,
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              WHERE id = ?1",
+            rusqlite::params![run_id, serde_json::to_string(&result)?],
+        )?;
+        Ok(())
+    }
+
+    /// Settle a run as failed, with the reason on the row.
+    pub fn fail_run(&self, run_id: &str, error_text: &str) -> Result<(), NotesError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE note_runs
+                SET status = 'failed',
+                    error_text = ?2,
+                    lease_expires_at = NULL,
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              WHERE id = ?1",
+            rusqlite::params![run_id, error_text],
+        )?;
+        Ok(())
+    }
+
+    /// The most recent recognized text for a note, corrected text winning over raw.
+    ///
+    /// The `note_recognitions` table holds no `device_id`, so ownership is checked
+    /// through the note itself rather than assumed from the caller.
+    pub fn latest_recognition_text(&self, note_id: &str) -> Result<Option<String>, NotesError> {
+        let conn = self.lock()?;
+        Ok(optional(conn.query_row(
+            "SELECT COALESCE(user_corrected_text, raw_text)
+               FROM note_recognitions
+              WHERE note_id = ?1
+              ORDER BY created_at DESC, id DESC LIMIT 1",
+            [note_id],
+            |row| row.get(0),
+        ))?)
+    }
+
+    /// Store one enriched revision for a note and return its id.
+    pub fn store_enrichment(
+        &self,
+        note_id: &str,
+        run_id: &str,
+        source_drawing_revision: i64,
+        source_text_revision: i64,
+        title: &str,
+        markdown: &str,
+        structured_sections: serde_json::Value,
+    ) -> Result<String, NotesError> {
+        let conn = self.lock()?;
+        let id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO enriched_note_revisions
+                 (id, note_id, run_id, source_drawing_revision, source_text_revision,
+                  schema_version, title, markdown, structured_sections)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8)",
+            rusqlite::params![
+                id,
+                note_id,
+                run_id,
+                source_drawing_revision,
+                source_text_revision,
+                title,
+                markdown,
+                serde_json::to_string(&structured_sections)?,
+            ],
+        )?;
+        Ok(id)
+    }
+
+    /// The newest enriched revision for a note, when one exists.
+    pub fn latest_enrichment(
+        &self,
+        note_id: &str,
+    ) -> Result<Option<EnrichedRevisionView>, NotesError> {
+        let conn = self.lock()?;
+        Ok(optional(conn.query_row(
+            "SELECT id, note_id, run_id, source_drawing_revision, source_text_revision,
+                    schema_version, title, markdown, structured_sections, citations,
+                    command_results, is_stale, created_at
+               FROM enriched_note_revisions
+              WHERE note_id = ?1
+              ORDER BY created_at DESC, id DESC LIMIT 1",
+            [note_id],
+            enriched_to_view,
+        ))?)
+    }
+
+    /// Age a run's lease into the past, so the next claim sees it as reclaimable.
+    ///
+    /// Test scaffolding, not a control path: nothing in the daemon expires a lease
+    /// on demand, and a lease only ever runs out because a worker stopped writing.
+    #[cfg(test)]
+    pub fn expire_lease_for_test(&self, run_id: &str) -> Result<(), NotesError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE note_runs
+                SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour')
+              WHERE id = ?1",
+            [run_id],
+        )?;
+        Ok(())
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, NotesError> {
         self.inner.conn.lock().map_err(|_| NotesError::Locked)
     }
@@ -814,6 +1098,32 @@ fn recognition_to_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecognitionV
         raw_text: row.get(6)?,
         user_corrected_text: row.get(7)?,
         created_at: row.get(8)?,
+    })
+}
+
+fn enriched_to_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<EnrichedRevisionView> {
+    let sections_json: String = row.get(8)?;
+    let citations_json: Option<String> = row.get(9)?;
+    let commands_json: Option<String> = row.get(10)?;
+    Ok(EnrichedRevisionView {
+        id: row.get(0)?,
+        note_id: row.get(1)?,
+        run_id: row.get(2)?,
+        source_drawing_revision: row.get(3)?,
+        source_text_revision: row.get(4)?,
+        schema_version: row.get(5)?,
+        title: row.get(6)?,
+        markdown: row.get(7)?,
+        structured_sections: serde_json::from_str(&sections_json)
+            .unwrap_or(serde_json::Value::Null),
+        citations: citations_json
+            .as_deref()
+            .and_then(|text| serde_json::from_str(text).ok()),
+        command_results: commands_json
+            .as_deref()
+            .and_then(|text| serde_json::from_str(text).ok()),
+        is_stale: row.get(11)?,
+        created_at: row.get(12)?,
     })
 }
 

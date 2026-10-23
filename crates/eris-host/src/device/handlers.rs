@@ -73,7 +73,7 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 /// One 401 for every failure mode - missing, malformed, expired, revoked - so a
 /// client cannot use the difference between them to probe whether a token it
 /// guessed ever existed.
-fn authenticate(
+pub(crate) fn authenticate(
     service: &DeviceService,
     headers: &HeaderMap,
 ) -> Result<VerifiedToken, DeviceError> {
@@ -95,7 +95,7 @@ fn authenticate(
 
 /// The scope check, as a 403 rather than a 401: the token is real, it just is not
 /// allowed to do this.
-fn require_scope(token: &VerifiedToken, scope: Scope) -> Result<(), DeviceError> {
+pub(crate) fn require_scope(token: &VerifiedToken, scope: Scope) -> Result<(), DeviceError> {
     token.scope().require(scope).map_err(|_| {
         DeviceError::new(
             StatusCode::FORBIDDEN,
@@ -111,7 +111,7 @@ fn require_scope(token: &VerifiedToken, scope: Scope) -> Result<(), DeviceError>
 /// this rather than a bare "forbidden": the scope is missing because nobody
 /// asked for it when the code was minted, and this message is the only place
 /// that is stated out loud.
-fn require_admin(token: &VerifiedToken) -> Result<(), DeviceError> {
+pub(crate) fn require_admin(token: &VerifiedToken) -> Result<(), DeviceError> {
     token.scope().require(Scope::Admin).map_err(|_| {
         DeviceError::new(
             StatusCode::FORBIDDEN,
@@ -151,7 +151,7 @@ fn require_accepting(service: &DeviceService) -> Result<(), DeviceError> {
 }
 
 /// Read one body as a flat string map: JSON first, form-encoded otherwise.
-async fn read_fields(
+pub(crate) async fn read_fields(
     headers: &HeaderMap,
     body: Body,
 ) -> Result<BTreeMap<String, String>, DeviceError> {
@@ -1823,7 +1823,7 @@ fn permission_refusal(
 }
 
 /// The one refusal shape: the field, the value, and what the field accepts.
-fn refuse_value(
+pub(crate) fn refuse_value(
     field: &'static str,
     code: &'static str,
     submitted: &str,
@@ -1840,7 +1840,7 @@ fn refuse_value(
 
 /// A submitted value as a refusal quotes it: never a secret, and an empty
 /// submission says so rather than printing empty backticks.
-fn shown_value(raw: &str) -> String {
+pub(crate) fn shown_value(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         "an empty value".to_owned()
@@ -1850,7 +1850,7 @@ fn shown_value(raw: &str) -> String {
 }
 
 /// A settings read or write that the state store refused.
-fn settings_unavailable(error: impl std::fmt::Display) -> DeviceError {
+pub(crate) fn settings_unavailable(error: impl std::fmt::Display) -> DeviceError {
     DeviceError::db_unavailable(format!("cannot reach the settings: {error}"))
 }
 
@@ -3633,7 +3633,7 @@ pub async fn create_recognition(
         Ok(body) => body,
         Err(error) => return error.into_response(),
     };
-    let drawing_revision = obj_i64(&body, "drawingRevision").filter(|value| *value != 0);
+    let drawing_revision = obj_i64(&body, "drawingRevision");
     let engine = obj_str(&body, "engine").filter(|value| !value.trim().is_empty());
     let raw_text = obj_str(&body, "rawText").filter(|value| !value.trim().is_empty());
     let (Some(drawing_revision), Some(engine), Some(raw_text)) =
@@ -3641,7 +3641,7 @@ pub async fn create_recognition(
     else {
         return DeviceError::bad_request(
             "invalid_request",
-            "drawingRevision, engine, and rawText are required.",
+            "drawingRevision, engine, and rawText are required; drawingRevision may be 0 when the note has no ink.",
         )
         .into_response();
     };

@@ -2082,7 +2082,14 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
   /* The figure sits right of centre in the artwork. Cropped to a phone's width
      the centre of the frame is empty sky, so the frame is anchored where she is. */
   .app-wall { background-position: 88% center; }
-  .msg { width: 100%; }
+  /* A phone keeps the bubble a share of the column rather than all of it. The
+     desktop rule sizes a bubble by the window and stops a paragraph becoming one
+     long line; this override used to hand it the whole column instead, so a reply
+     ran edge to edge and read as a page. The share is smaller here because the
+     column is narrower, and the gutter it leaves is what makes the turn read as
+     a message. The user's own bubbles take the same share, so the two sides of a
+     conversation still sit in one column and not a ragged stack. */
+  .msg { width: min(100%, 88%); }
   /* A pairing code at desktop scale would need a desktop-width screen. It drops
      to a size that fits a phone and wraps instead of pushing the card wide. */
   .pairing-code { font-size: 17px; letter-spacing: 0.12em; padding: 12px 14px; }
@@ -2110,6 +2117,18 @@ mod tests {
     const PURPLE_DENYLIST: [&str; 6] = [
         "#800080", "#7B1FA2", "#6A1B9A", "#9C27B0", "#8E24AA", "#673AB7",
     ];
+
+    /// The rules inside the phone breakpoint, as one string. Read from the media
+    /// query to the line that closes it, so a rule that moved out of the
+    /// breakpoint stops satisfying a test that reads it here.
+    fn phone_block() -> &'static str {
+        let start = APP_CSS
+            .find("@media (max-width: 900px) {")
+            .expect("the phone breakpoint exists");
+        let rest = &APP_CSS[start..];
+        let end = rest.find("\n}\n").expect("the phone breakpoint closes");
+        &rest[..end]
+    }
 
     /// One rule, from its selector to the closing brace. The selector is matched
     /// at the start of a line, so `.composer` never picks up
@@ -2268,6 +2287,23 @@ mod tests {
         assert!(
             rule(".msg .bubble").contains("max-width: 100%"),
             "a bubble cannot widen the column it sits in"
+        );
+    }
+
+    /// A phone sizes a bubble below the full column. The desktop rule sizes a
+    /// bubble by the window; the phone override used to give it the whole column,
+    /// which is what ran a reply edge to edge on a phone and read as a page
+    /// rather than a message.
+    #[test]
+    fn a_phone_sizes_a_bubble_below_the_full_column() {
+        let phone = phone_block();
+        assert!(
+            phone.contains(".msg { width: min(100%, 88%); }"),
+            "a phone bubble keeps a share of the column, not all of it"
+        );
+        assert!(
+            !phone.contains(".msg { width: 100%"),
+            "a phone bubble is never handed the whole column"
         );
     }
 

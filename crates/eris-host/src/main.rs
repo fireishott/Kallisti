@@ -583,7 +583,14 @@ fn run_serve(
             state.device.start();
         }
         let ticker = tokio::spawn(eris_host::scheduler::tick(scheduler_state));
+        // The note-enrichment worker, on the same runtime and the same shape: one
+        // background task, aborted with the listeners. It claims at most one run
+        // per tick, so a queued enrichment is a billed provider call the operator
+        // asked for rather than a queue that drains itself.
+        let notes_state = state.clone();
+        let notes_worker = tokio::spawn(eris_host::notes_worker::run(notes_state));
         let served = admin::serve_listeners(state, listeners).await;
+        notes_worker.abort();
         ticker.abort();
         served
     });
