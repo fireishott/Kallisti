@@ -605,17 +605,23 @@ pub async fn create_turn(
                 ))
                 .into_response();
             }
-            let model = store
-                .provider_config()
-                .ok()
-                .flatten()
-                .map(|config| config.model)
+            // The model this conversation is on, and the window that belongs to
+            // the provider serving it. Asking the primary for the window is right
+            // only while the pin is on the primary: a conversation the composer
+            // moved to a second provider would claim the first one's window and
+            // the meter in the client would lie about what the turn can hold.
+            let turn_provider = store.provider_config().ok().flatten();
+            let model = turn_provider
+                .as_ref()
+                .map(|config| config.model.clone())
                 .unwrap_or_default();
-            let context_window = service
-                .engine()
-                .primary_provider_contexts()
-                .ok()
-                .and_then(|contexts| contexts.get(&model).copied());
+            let context_window = turn_provider.as_ref().and_then(|config| {
+                service
+                    .engine()
+                    .provider_contexts_for(&config.provider_id)
+                    .ok()
+                    .and_then(|contexts| contexts.get(&config.model).copied())
+            });
             let question_id = match chat::question_id(db, conversation_id) {
                 Ok(Some(id)) => id,
                 // Reading back is not allowed to fail the turn: the rows are
@@ -639,14 +645,26 @@ pub async fn create_turn(
                     .into_response();
                 }
             };
-            // The first question names the conversation and the rail bumps it to
-            // the top, through the same two helpers the browser calls.
+            // The first question names the conversation, the model is recorded on
+            // it, and the rail bumps it to the top, through the same helpers the
+            // browser calls. Recording the model is what lets the picker restore
+            // what this conversation is actually on when the operator comes back
+            // to it, instead of quietly moving it to the global default.
             let _ = chat::name_from_first_message(db, conversation_id, text);
+            let _ = chat::set_conversation_model(db, conversation_id, &model);
             let _ = chat::touch_conversation(db, conversation_id);
+            // The naming role, when the operator pinned one. A role on the primary
+            // is a no-op, so this is `None` on every install that never chose a
+            // naming model.
+            let title = chat::aux_pinned_config(service.engine(), "title_generation")
+                .ok()
+                .flatten();
             Some(ConversationTurn {
                 conversation: conversation_id.clone(),
                 question_id,
                 answer_id,
+                question: text.to_owned(),
+                title,
             })
         }
     };

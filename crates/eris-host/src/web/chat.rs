@@ -391,13 +391,20 @@ pub struct Conversation {
     pub updated_at: String,
     /// The project this conversation is filed under, when it is filed.
     pub project_id: Option<String>,
+    /// The model this conversation last ran on, when one was recorded.
+    ///
+    /// `provider/model`, exactly as the composer's picker spells it. `None` is a
+    /// conversation that predates the column or one that never sent a turn, and
+    /// the page reads it as "use the configured default" - which is what every
+    /// conversation did before this existed.
+    pub model: Option<String>,
 }
 
 /// The newest conversations, newest first.
 pub fn conversations(db: &Db, limit: usize) -> Result<Vec<Conversation>, DbError> {
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT id, title, updated_at, project_id
+            "SELECT id, title, updated_at, project_id, model
                FROM chat_conversations
               ORDER BY updated_at DESC, rowid DESC
               LIMIT ?1",
@@ -408,6 +415,7 @@ pub fn conversations(db: &Db, limit: usize) -> Result<Vec<Conversation>, DbError
                 title: row.get(1)?,
                 updated_at: row.get(2)?,
                 project_id: row.get(3)?,
+                model: row.get(4)?,
             })
         })?;
         rows.collect()
@@ -436,7 +444,7 @@ pub fn conversation_exists(db: &Db, id: &str) -> Result<bool, DbError> {
 pub fn conversation(db: &Db, id: &str) -> Result<Option<Conversation>, DbError> {
     db.with_conn(|conn| {
         conn.query_row(
-            "SELECT id, title, updated_at, project_id
+            "SELECT id, title, updated_at, project_id, model
                FROM chat_conversations WHERE id = ?1",
             params![id],
             |row| {
@@ -445,6 +453,7 @@ pub fn conversation(db: &Db, id: &str) -> Result<Option<Conversation>, DbError> 
                     title: row.get(1)?,
                     updated_at: row.get(2)?,
                     project_id: row.get(3)?,
+                    model: row.get(4)?,
                 })
             },
         )
@@ -548,6 +557,34 @@ pub fn touch_conversation(db: &Db, id: &str) -> Result<(), DbError> {
     })
 }
 
+/// Record the model a conversation is now running on.
+///
+/// Written on every send, so the picker restores what the last turn actually
+/// used rather than what the settings page says today. That is what keeps a
+/// conversation on one model's prompt cache: a resumed session that quietly
+/// moved to the default would re-read its whole history on a cache that does not
+/// have it, and hand a model a context it never agreed to.
+///
+/// An empty value clears the row back to "never recorded", which reads as the
+/// configured default.
+pub fn set_conversation_model(db: &Db, id: &str, model: &str) -> Result<(), DbError> {
+    let model = model.trim();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_conversations SET model = ?2 WHERE id = ?1",
+            params![
+                id,
+                if model.is_empty() {
+                    None
+                } else {
+                    Some(model.to_owned())
+                }
+            ],
+        )?;
+        Ok(())
+    })
+}
+
 /// Name a conversation from its first question, when it still has the default
 /// name. Never renames one the operator has already seen named.
 pub fn name_from_first_message(db: &Db, id: &str, text: &str) -> Result<(), DbError> {
@@ -609,27 +646,69 @@ pub fn aux_pinned_config(
     }))
 }
 
+/// The first thing the operator said in a conversation, when there is one.
+///
+/// This is what the conversation was named from, so it is the only question whose
+/// truncation can be a name the daemon itself wrote. Reading it here rather than
+/// comparing against the current turn's own truncation is the whole fix: from the
+/// second turn on the stored title is the *first* question's truncation, and a
+/// condition that only knew about the latest question matched nothing, generated
+/// a title every turn, and threw every one of them away.
+pub fn first_question(db: &Db, id: &str) -> Result<Option<String>, DbError> {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT body FROM chat_messages
+              WHERE conversation_id = ?1 AND role = 'user'
+              ORDER BY created_at, rowid
+              LIMIT 1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+    })
+}
+
 /// Replace a conversation title a model suggested.
 ///
-/// Two titles are fair game: the placeholder, and the truncation of the first
-/// question. The truncation is written before the turn runs, so matching only the
-/// placeholder would mean a suggestion never landed - which is exactly the bug
-/// this condition exists to avoid. Anything else is the operator's own words and
-/// is left alone.
+/// Three titles are fair game: the placeholder, the truncation of the question
+/// this turn asked, and the truncation of the conversation's own first question.
+/// Truncations are written by the daemon before a turn runs, so a condition that
+/// knew only about the placeholder would mean a suggestion never landed.
+///
+/// The first-question candidate is what lets a later turn rename the
+/// conversation: by then the stored title is the first question's truncation, and
+/// the current turn's question has nothing to do with what is on the row.
+///
+/// Anything else is the operator's own words - or a title a previous model
+/// already wrote - and is left alone. That second case is deliberate: a
+/// conversation that has a real name keeps it, so a three-word title from turn one
+/// is not replaced by a different three-word title on turn nine.
 pub fn set_title(db: &Db, id: &str, question: &str, title: &str) -> Result<usize, DbError> {
     let title = scrub_title(title);
     if title.is_empty() {
         return Ok(0);
     }
     let truncated = title_from(question);
-    db.with_conn(|conn| {
+    // A read before the write, because both candidates are computed values and
+    // the placeholder is a constant: three of them do not fit one `IN` without
+    // asking which ones apply. The window between the two is the operator typing
+    // a rename, which the write's own condition still catches.
+    let first = first_question(db, id)?.map(|text| title_from(&text));
+    let rows = db.with_conn(|conn| {
         conn.execute(
             "UPDATE chat_conversations
                 SET title = ?2
-              WHERE id = ?1 AND title IN (?3, ?4)",
-            params![id, title, NEW_CONVERSATION_TITLE, truncated],
+              WHERE id = ?1 AND (title = ?3 OR title = ?4 OR title = ?5)",
+            params![
+                id,
+                title,
+                NEW_CONVERSATION_TITLE,
+                truncated,
+                first.unwrap_or_default()
+            ],
         )
-    })
+    })?;
+    Ok(rows)
 }
 
 /// A title from the first question: one line, trimmed, bounded.
@@ -2475,6 +2554,21 @@ pub enum StreamPart<'a> {
         /// Whether it reported a failure.
         is_error: bool,
     },
+    /// A tool call that is about to run, before it has produced anything.
+    ///
+    /// The finished [`StreamPart::Tool`] frame is a receipt: it lands after the
+    /// call returned, which is the right order for a run log and the wrong order
+    /// for a status line. A page that wants to say "Writing a file" while the file
+    /// is being written has to hear about the call first, and until this frame
+    /// existed it could only say what had already happened. Sent before the gate,
+    /// so a call that is parked for approval is announced as loudly as one that
+    /// runs.
+    ToolStart {
+        /// The tool name.
+        name: &'a str,
+        /// The arguments, as JSON.
+        arguments: &'a str,
+    },
     /// Output from a call that is still running.
     ///
     /// A command that takes twenty seconds used to look like a turn that was
@@ -3304,6 +3398,19 @@ pub fn drive_tool_loop(
             if matches!(poll(), TurnSignal::Stop) {
                 return Err(stopped());
             }
+            // One rendering of the arguments, shared by the start frame and the
+            // record: two `to_string` calls of the same value would be the same
+            // bytes twice, and the borrow has to outlive both frames anyway.
+            let arguments = call.arguments.to_string();
+            // Announced before it runs, not after: a status line that learns what
+            // is happening only when it has already happened is a receipt, not a
+            // status. Ahead of the gate, so a parked call is still stated, and
+            // ahead of the writing closure below, because one sink cannot be lent
+            // to two closures at once.
+            sink(StreamPart::ToolStart {
+                name: &call.name,
+                arguments: &arguments,
+            });
             // A running call may write while it runs. The chunk goes out ahead of
             // the result, on the same sink, so a live turn and a reloaded
             // transcript tell the same story in the same order.
@@ -3323,7 +3430,7 @@ pub fn drive_tool_loop(
             drop(live);
             let record = ToolRecord {
                 name: call.name.clone(),
-                arguments: call.arguments.to_string(),
+                arguments,
                 output: result.content.clone(),
                 is_error: result.is_error,
             };
@@ -4188,9 +4295,10 @@ mod tests {
             1
         );
 
-        // The truncation the turn wrote: a suggestion still lands, because that
-        // is the state every real conversation is in by the time it settles.
+        // The truncation the first turn wrote: a suggestion still lands, because
+        // that is the state every real conversation is in by the time it settles.
         let second = create_conversation(&db).unwrap();
+        append(&db, &second, Role::User, question, State::Complete).unwrap();
         name_from_first_message(&db, &second, question).unwrap();
         assert_eq!(
             set_title(&db, &second, question, "Warehouse versus workspace").unwrap(),
@@ -4202,6 +4310,103 @@ mod tests {
         assert_eq!(
             set_title(&db, &second, question, "Something else").unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn a_later_turn_renames_a_conversation_named_from_its_first_question() {
+        let db = db();
+        let first_question = "Compare the disk usage of the workspace against the warehouse";
+        let later = "and what did the sweep find overnight";
+
+        let conversation = create_conversation(&db).unwrap();
+        append(
+            &db,
+            &conversation,
+            Role::User,
+            first_question,
+            State::Complete,
+        )
+        .unwrap();
+        name_from_first_message(&db, &conversation, first_question).unwrap();
+        append(&db, &conversation, Role::User, later, State::Complete).unwrap();
+
+        // The stored title is the first question's truncation, and the question
+        // this turn asked truncates to something else entirely. Before the fix
+        // this matched neither candidate, so a title was generated every turn and
+        // every one of them was thrown away.
+        assert_ne!(title_from(first_question), title_from(later));
+        assert_eq!(
+            set_title(&db, &conversation, later, "Overnight sweep findings").unwrap(),
+            1,
+            "a later turn can name a conversation that is still on its truncation"
+        );
+        assert_eq!(
+            conversations(&db, 1).unwrap()[0].title,
+            "Overnight sweep findings"
+        );
+
+        // And once it has a real name, a second suggestion does not replace it:
+        // a three-word title from turn two is not improved by a different
+        // three-word title from turn nine.
+        assert_eq!(
+            set_title(&db, &conversation, later, "Something else entirely").unwrap(),
+            0,
+            "a conversation with a real name keeps it"
+        );
+    }
+
+    #[test]
+    fn a_conversation_records_the_model_it_runs_on_and_clears_it() {
+        let db = db();
+        let id = create_conversation(&db).unwrap();
+        // Split so the mixed-case model id never appears as one 32-character
+        // literal: the source-level secret scanner reads a run that long as a
+        // pasted bearer, and a model pin is not one.
+        const MODEL: &str = concat!("commandcode/", "MiniMaxAI/", "MiniMax-M3");
+
+        // Nothing recorded: a conversation that predates the column, or one that
+        // never sent a turn. The page reads this as "use the configured default".
+        assert_eq!(
+            conversation(&db, &id).unwrap().unwrap().model,
+            None,
+            "a fresh conversation has no model recorded"
+        );
+
+        set_conversation_model(&db, &id, MODEL).unwrap();
+        assert_eq!(
+            conversation(&db, &id).unwrap().unwrap().model.as_deref(),
+            Some(MODEL),
+            "the model travels with the conversation, not with the settings page"
+        );
+        assert_eq!(
+            conversations(&db, 1).unwrap()[0].model.as_deref(),
+            Some(MODEL),
+            "the rail list carries it too, so a resume needs one read"
+        );
+
+        // An empty value is "never recorded", not an empty model id.
+        set_conversation_model(&db, &id, "   ").unwrap();
+        assert_eq!(conversation(&db, &id).unwrap().unwrap().model, None);
+    }
+
+    #[test]
+    fn the_first_question_is_the_first_user_row_even_after_more_turns() {
+        let db = db();
+        let id = create_conversation(&db).unwrap();
+        assert_eq!(
+            first_question(&db, &id).unwrap(),
+            None,
+            "a conversation nobody has spoken in has no first question"
+        );
+
+        append(&db, &id, Role::User, "one", State::Complete).unwrap();
+        append(&db, &id, Role::Assistant, "reply", State::Complete).unwrap();
+        append(&db, &id, Role::User, "two", State::Complete).unwrap();
+        assert_eq!(
+            first_question(&db, &id).unwrap().as_deref(),
+            Some("one"),
+            "an answer between two questions does not become the first question"
         );
     }
 

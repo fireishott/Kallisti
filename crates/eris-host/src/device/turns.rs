@@ -249,6 +249,12 @@ pub struct TurnRow {
 /// The provider settings a turn needs, read from `settings` at turn time.
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
+    /// The registry id of the provider that serves this model.
+    ///
+    /// Carried so a caller can ask the *right* provider for a window or a shape
+    /// instead of asking the primary: the composer can move a conversation to a
+    /// second provider, and a phone turn must claim that provider's numbers.
+    pub provider_id: String,
     /// OpenAI-compatible base URL.
     pub base_url: String,
     /// `env:NAME`, never a value.
@@ -683,6 +689,20 @@ impl TurnStore {
 
     /// The provider settings a turn needs. `None` means onboarding never stored
     /// them, which is a configuration failure rather than a provider one.
+    ///
+    /// Resolved through the provider registry, by the same rule the browser's
+    /// `turn_config` applies: the model pin is read as `provider/model` when its
+    /// first segment is a registry id, and the endpoint, the key and the request
+    /// shape all come from that provider's own entry.
+    ///
+    /// This used to read the three legacy rows and only strip the provider prefix
+    /// off the model id, which made a phone turn and a browser turn on the same
+    /// pin talk to two different endpoints: the browser honoured the registry and
+    /// the phone went to whatever `provider.base_url` said last. On an install
+    /// whose primary is not the legacy endpoint that is a 404 from one surface and
+    /// a 400 from the other, for one stored value. The legacy rows are still read,
+    /// but only to seed a registry on an install that has none - exactly what they
+    /// are for.
     pub fn provider_config(&self) -> Result<Option<ProviderConfig>, DbError> {
         let read = |conn: &mut Connection, key: &str| -> rusqlite::Result<Option<String>> {
             conn.query_row(
@@ -692,35 +712,52 @@ impl TurnStore {
             )
             .optional()
         };
-        let (base_url, key_ref, model, registry, primary) = self.db.with_conn(|conn| {
-            Ok((
-                read(conn, SETTING_PROVIDER_BASE_URL)?,
-                read(conn, SETTING_PROVIDER_KEY_REF)?,
-                read(conn, SETTING_MODEL)?,
-                read(conn, crate::providers::SETTING_REGISTRY)?,
-                read(conn, crate::providers::SETTING_PRIMARY)?,
-            ))
-        })?;
-        let (Some(base_url), Some(key_ref), Some(model)) = (base_url, key_ref, model) else {
+        let (legacy_url, legacy_key, stored_model, registry, primary) =
+            self.db.with_conn(|conn| {
+                Ok((
+                    read(conn, SETTING_PROVIDER_BASE_URL)?,
+                    read(conn, SETTING_PROVIDER_KEY_REF)?,
+                    read(conn, SETTING_MODEL)?,
+                    read(conn, crate::providers::SETTING_REGISTRY)?,
+                    read(conn, crate::providers::SETTING_PRIMARY)?,
+                ))
+            })?;
+        let Some(stored_model) = stored_model.filter(|model| !model.trim().is_empty()) else {
             return Ok(None);
         };
-        let Ok(key_ref) = SecretRef::try_from(key_ref.as_str()) else {
-            return Ok(None);
-        };
-        // The stored value is `provider/model`, and the provider half is a
-        // provider only when the registry says so. The registry rows are read
-        // here rather than through the engine because this is the worker's own
-        // read: it holds the database, not the engine.
+        // A registry that does not parse is a configuration mistake the settings
+        // page already refuses to save, and one this read cannot repair. Falling
+        // back to the legacy rows is the historical behaviour and keeps a turn
+        // answering on an install whose registry is empty rather than dead.
         let registry = registry
             .and_then(|raw| crate::providers::parse(&raw).ok())
             .filter(|providers| !providers.is_empty())
-            .unwrap_or_else(|| crate::providers::seed(&base_url, &key_ref.wire()));
+            .or_else(|| {
+                legacy_url
+                    .as_deref()
+                    .zip(legacy_key.as_deref())
+                    .map(|(base_url, key_ref)| crate::providers::seed(base_url, key_ref))
+            })
+            .unwrap_or_default();
         let primary = primary.unwrap_or_default();
-        let choice = crate::web::chat::split_model_value(&model, &registry, &primary);
+        let choice = crate::web::chat::split_model_value(&stored_model, &registry, &primary);
+        // The chosen provider's own entry. A registry with entries and no match
+        // falls back the way `resolve` does, so the endpoint a turn reaches is the
+        // one the settings page says is in force.
+        let Some(chosen) = registry
+            .iter()
+            .find(|provider| provider.id == choice.provider_id)
+            .or_else(|| crate::providers::resolve(&registry, &primary))
+        else {
+            return Ok(None);
+        };
+        let Ok(key_ref) = SecretRef::try_from(chosen.key_ref.as_str()) else {
+            return Ok(None);
+        };
         let dialect = self.db.with_conn(|conn| {
             read(
                 conn,
-                &crate::onboarding::SetupEngine::provider_dialects_key(&choice.provider_id),
+                &crate::onboarding::SetupEngine::provider_dialects_key(&chosen.id),
             )
         })?;
         let dialect = dialect
@@ -731,17 +768,12 @@ impl TurnStore {
                 .ok()
             })
             .and_then(|map| map.get(&choice.model).copied())
-            .unwrap_or_else(|| {
-                registry
-                    .iter()
-                    .find(|provider| provider.id == choice.provider_id)
-                    .map(crate::providers::dialect_of)
-                    .unwrap_or_default()
-            });
+            .unwrap_or_else(|| crate::providers::dialect_of(chosen));
         Ok(Some(ProviderConfig {
-            base_url,
+            provider_id: chosen.id.clone(),
+            base_url: chosen.base_url.clone(),
             key_ref,
-            model,
+            model: choice.model,
             dialect,
         }))
     }
@@ -899,6 +931,19 @@ pub struct ConversationTurn {
     pub question_id: String,
     /// The assistant row, created before the provider is called.
     pub answer_id: String,
+    /// What the operator asked, as the transcript stored it.
+    ///
+    /// Carried so the settled turn can hand the same two halves to the naming
+    /// role the browser hands it. Reading it back from the row instead would work
+    /// and would race a concurrent steer, so the text travels with the turn.
+    pub question: String,
+    /// The naming role, when the operator pinned one.
+    ///
+    /// Resolved by the handler from the engine, for the same reason the browser's
+    /// `spawn_turn` resolves it there: the hub is a worker, not a settings reader.
+    /// `None` means the role is on the primary, which is a no-op by design, so a
+    /// device turn that never pinned a naming model behaves exactly as before.
+    pub title: Option<crate::web::chat::TurnConfig>,
 }
 
 /// The live fan-out and the worker.
@@ -1293,6 +1338,43 @@ impl TurnHub {
                                             Some(&usage),
                                             accounting_from(&usage),
                                         );
+                                        // Then, and only then, the name. A title
+                                        // is a nicety and never sits between the
+                                        // operator and the reply, which is the same
+                                        // order the browser publishes in. Without
+                                        // this a conversation started from the
+                                        // phone kept its truncated first sentence
+                                        // forever while the browser's got a real
+                                        // name - and that reading is exactly the
+                                        // one the rail shows.
+                                        if let Some(config) = &write.title {
+                                            let suggested = crate::web::chat::suggest_title(
+                                                config,
+                                                &write.question,
+                                                &text,
+                                            );
+                                            let renamed = suggested.as_deref().and_then(|title| {
+                                                crate::web::chat::set_title(
+                                                    store.db(),
+                                                    &write.conversation,
+                                                    &write.question,
+                                                    title,
+                                                )
+                                                .ok()
+                                                .map(|rows| (title, rows))
+                                            });
+                                            // Recorded either way: a role that
+                                            // never lands is the kind of quiet
+                                            // no-op this platform refuses to ship.
+                                            let detail = match &renamed {
+                                                Some((title, rows)) => {
+                                                    format!("title=`{title}`; rows={rows}")
+                                                }
+                                                None => "no title suggested".to_owned(),
+                                            };
+                                            let _ = crate::auth::AuthStore::new(store.db().clone())
+                                                .audit("device", "chat.title", Some(&detail));
+                                        }
                                     }
                                     publish(&sender, seq, FrameKind::Done, data);
                                 }
@@ -1479,6 +1561,11 @@ impl TurnHub {
                         });
                     }
                 }
+                // A call that has started but not finished. The phone draws no
+                // live status line from the turn loop - it reads its job status -
+                // so this frame needs no signal of its own, and inventing one
+                // would be a listener with no reader.
+                crate::web::chat::StreamPart::ToolStart { .. } => {}
                 // The finished call already carries the whole output. The device
                 // stream does not carry a second frame for the chunks that built
                 // it, because the browser's `tool_output` frames exist to fill a

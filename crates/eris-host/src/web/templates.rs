@@ -4122,6 +4122,13 @@ pub struct ChatLine {
     pub duration_ms: Option<u64>,
     /// The context window declared for the model that answered.
     pub context_window: Option<u64>,
+    /// Which answer this is in the conversation, one-based, counting answers.
+    ///
+    /// The number in front of the run log's call count. The two are different
+    /// facts and used to be conflated: a reply is one turn however many calls it
+    /// ran, and the tool budget decides how many calls that can be. `None` on a
+    /// row that is not an answer, because an operator's message is not a turn.
+    pub turn: Option<u64>,
     /// Tool rounds the turn ran, when it recorded that.
     pub rounds: Option<u64>,
     /// The gateway's quota line, when the setting is on and one was read.
@@ -4740,6 +4747,9 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                 details .exec .compact {
                                     summary {
                                         span .exec-label { "Run log" }
+                                        @if let Some(turn) = line.turn {
+                                            span .exec-turn { "turn " (turn) }
+                                        }
                                         span .exec-count {
                                             (line.tools.len())
                                             @if line.tools.len() == 1 { " call" } @else { " calls" }
@@ -4760,6 +4770,9 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                 details .exec {
                                     summary {
                                         span .exec-label { "Run log" }
+                                        @if let Some(turn) = line.turn {
+                                            span .exec-turn { "turn " (turn) }
+                                        }
                                         span .exec-count {
                                             (line.tools.len())
                                             @if line.tools.len() == 1 { " call" } @else { " calls" }
@@ -4811,6 +4824,13 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                 }
                             }
                         }
+                    }
+                    @if !line.user {
+                        // What the turn is doing right now, while it is doing it.
+                        // Rendered hidden and empty on a settled page, and filled
+                        // only by a running turn's own status frames: a reloaded
+                        // transcript has nothing running, so it shows nothing.
+                        div .meta-live hidden aria-live="polite" {}
                     }
                     div .meta {
                         span .mono { (line.stamp) }
@@ -5290,6 +5310,18 @@ const CHAT_JS: &str = r##"(function () {
     return shell === null ? "assistant" : (shell.getAttribute("data-assistant") || "assistant");
   }
 
+  // Which answer this article is, counting assistant rows in the thread. The
+  // transcript is in order, so position is the ordinal - and a live turn that was
+  // appended a moment ago reads the same number a reload will render.
+  function answerOrdinal(article) {
+    if (article === null || article === undefined || thread === null) { return 0; }
+    var all = thread.querySelectorAll(".msg.assistant");
+    for (var index = 0; index < all.length; index += 1) {
+      if (all[index] === article) { return index + 1; }
+    }
+    return 0;
+  }
+
   function roundLabel(round, max, toolsAllowed) {
     if (toolsAllowed === false) {
       return "round " + round + " of " + max + " \u00b7 answering without tools";
@@ -5336,6 +5368,9 @@ const CHAT_JS: &str = r##"(function () {
   // text and the footer are what the operator came back for.
   function finishLive(target, snapshot) {
     target.article.className = "msg assistant";
+    // A settled reply claims nothing. Whatever the last status frame said is a
+    // fact about the past, and the run log is where the past is read.
+    if (typeof target.setLive === "function") { target.setLive(""); }
     if (snapshot && typeof snapshot.body === "string") {
       liveAnswer = snapshot.body;
       target.text.textContent = liveAnswer;
@@ -5377,6 +5412,10 @@ const CHAT_JS: &str = r##"(function () {
     var conversation = conversationId();
     if (conversation === "") { return; }
     target.article.className = "msg assistant pending";
+    // The reply's ordinal, read off the transcript it was just appended to. A
+    // resumed page reads the same number from position, so the pill cannot
+    // disagree with what a reload renders.
+    target.setTurn(answerOrdinal(target.article));
     liveTarget = target;
 
     var source = new EventSource(
@@ -5417,11 +5456,22 @@ const CHAT_JS: &str = r##"(function () {
       }
     });
 
+    source.addEventListener("working", function (event) {
+      var frame = {};
+      try { frame = JSON.parse(event.data); } catch (error) { return; }
+      // The bubble's own status line, not the composer hint: the hint answers
+      // "what does a second message do", and this answers "what is happening".
+      target.setLive(frame.activity || frame.name || "");
+      toBottom();
+    });
+
     source.addEventListener("tool", function (event) {
       var tool = {};
       try { tool = JSON.parse(event.data); } catch (error) { return; }
       target.addTool(tool);
-      if (status) { status.textContent = tool.name + " ran"; }
+      // The call that was running has finished, so the claim it made is over.
+      // Cleared rather than replaced with "ran": a receipt is the run log's job.
+      target.setLive("");
       toBottom();
     });
 
@@ -5464,6 +5514,7 @@ const CHAT_JS: &str = r##"(function () {
         target.think.hidden = false;
       }
       if (status) { status.textContent = ""; }
+      target.setLive("");
       finishLive(target, null);
     });
 
@@ -5652,9 +5703,17 @@ const CHAT_JS: &str = r##"(function () {
     var execLabel = document.createElement("span");
     execLabel.className = "exec-label";
     execLabel.textContent = "Run log";
+    // The turn this reply is, in front of the call count. Two numbers that were
+    // being read as one: a reply is one turn however many calls the budget let it
+    // run. Left out entirely until the page knows which answer it is drawing,
+    // rather than printed as a confident zero.
+    var execTurn = document.createElement("span");
+    execTurn.className = "exec-turn";
+    execTurn.hidden = true;
+    execSummary.appendChild(execLabel);
+    execSummary.appendChild(execTurn);
     var execCount = document.createElement("span");
     execCount.className = "exec-count";
-    execSummary.appendChild(execLabel);
     execSummary.appendChild(execCount);
     // The one-line reading summary mode shows: the call that last ran.
     var execLast = document.createElement("span");
@@ -5696,6 +5755,16 @@ const CHAT_JS: &str = r##"(function () {
     });
     function refreshCount() {
       execCount.textContent = calls + (calls === 1 ? " call" : " calls");
+    }
+    // Set once, by the page, from the answer it is about to stream. A live turn
+    // that never hears the number leaves the pill hidden.
+    function setTurn(turn) {
+      if (typeof turn === "number" && turn >= 1) {
+        execTurn.textContent = "turn " + turn;
+        execTurn.hidden = false;
+        return;
+      }
+      execTurn.hidden = true;
     }
 
     // One call becomes the current one, and the log is repainted around it: the
@@ -5831,13 +5900,34 @@ const CHAT_JS: &str = r##"(function () {
     bubble.className = "bubble";
     var text = document.createElement("p");
     bubble.appendChild(text);
+    // What the turn is doing right now, if anything. Hidden until a status frame
+    // arrives and hidden again the moment one settles, so a finished reply carries
+    // no leftover claim about work that is over.
+    var metaLive = document.createElement("div");
+    metaLive.className = "meta-live";
+    metaLive.setAttribute("aria-live", "polite");
+    metaLive.hidden = true;
     var meta = document.createElement("div");
     meta.className = "meta";
     article.appendChild(label);
     article.appendChild(think);
     article.appendChild(exec);
     article.appendChild(bubble);
+    article.appendChild(metaLive);
     article.appendChild(meta);
+
+    // The status line. It replaces the composer hint as the answer to "what is it
+    // doing": the hint was carrying a control message, a round count and a tool
+    // receipt in one span, and none of them was the thing the operator wanted.
+    function setLive(activity) {
+      if (typeof activity === "string" && activity.length > 0) {
+        metaLive.textContent = activity;
+        metaLive.hidden = false;
+        return;
+      }
+      metaLive.hidden = true;
+      metaLive.textContent = "";
+    }
     thread.appendChild(article);
     return {
       article: article,
@@ -5847,7 +5937,10 @@ const CHAT_JS: &str = r##"(function () {
       think: think,
       thinkBody: thinkBody,
       streamChunk: streamChunk,
-      addTool: addTool
+      addTool: addTool,
+      setTurn: setTurn,
+      metaLive: metaLive,
+      setLive: setLive
     };
   }
 
@@ -6467,6 +6560,9 @@ const CHAT_JS: &str = r##"(function () {
     var assistantName = shellName === null ? "assistant" : (shellName.getAttribute("data-assistant") || "assistant");
     var target = line("assistant", assistantName);
     target.article.className = "msg assistant pending";
+    // Which reply this is, counted off the thread it has just joined. The number
+    // sits in front of the run log's call count, which is a different fact.
+    target.setTurn(answerOrdinal(target.article));
     var answer = "";
     var thinking = "";
     var lostConnection = false;
@@ -6546,12 +6642,18 @@ const CHAT_JS: &str = r##"(function () {
             target.text.textContent = answer;
             toBottom();
           }
+          if (parsed.event === "working") {
+            var working = JSON.parse(parsed.data);
+            target.setLive(working.activity || working.name || "");
+          }
           if (parsed.event === "tool_output") {
             var output = JSON.parse(parsed.data);
             target.streamChunk(output.name, output.chunk);
           }
           if (parsed.event === "tool") {
             target.addTool(JSON.parse(parsed.data));
+            // The call finished, so the status line has nothing left to claim.
+            target.setLive("");
             toBottom();
           }
           if (parsed.event === "reasoning") {
@@ -6567,6 +6669,7 @@ const CHAT_JS: &str = r##"(function () {
             sawDone = true;
             var final = JSON.parse(parsed.data);
             answer = final.text;
+            target.setLive("");
             target.meta.textContent = metaFor(final);
             if (typeof final.reasoning === "string" && final.reasoning.trim().length > 0) {
               target.thinkBody.textContent = final.reasoning;
@@ -6575,6 +6678,7 @@ const CHAT_JS: &str = r##"(function () {
           }
           if (parsed.event === "error") {
             var failure = JSON.parse(parsed.data);
+            target.setLive("");
             target.bubble.className = "bubble failed";
             target.text.textContent = failure.message;
             var tail = [failure.code];

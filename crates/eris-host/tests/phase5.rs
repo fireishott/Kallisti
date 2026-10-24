@@ -62,8 +62,8 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // `schedules` and `schedule_runs`, and 0018 added `context_tokens`, so the
     // version and count below are the current ones and `TABLES` is the list.)
     let first = Db::open(&path).expect("first open");
-    assert_eq!(first.schema_version().expect("version"), 19);
-    assert_eq!(first.applied_migration_count().expect("count"), 19);
+    assert_eq!(first.schema_version().expect("version"), 20);
+    assert_eq!(first.applied_migration_count().expect("count"), 20);
 
     let mut names = first.table_names().expect("table names");
     for expected in TABLES {
@@ -89,10 +89,10 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // Second open of the same file: no error, no duplicate version row, no
     // duplicate app_state row.
     let second = Db::open(&path).expect("second open must not fail");
-    assert_eq!(second.schema_version().expect("version"), 19);
+    assert_eq!(second.schema_version().expect("version"), 20);
     assert_eq!(
         second.applied_migration_count().expect("count"),
-        19,
+        20,
         "re-running migrations must not add a version row"
     );
     assert_eq!(

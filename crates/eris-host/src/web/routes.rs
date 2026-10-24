@@ -4873,12 +4873,19 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         .map_err(|error| FormError::new(None, "chat_unreadable", error.to_string()))?;
     let transcript = chat::load(db, &conversation)
         .map_err(|error| FormError::new(None, "chat_unreadable", error.to_string()))?;
-    let model = state
-        .engine
-        .setting(SETTING_MODEL)
+    // Which model the composer starts on. A returning conversation restores the
+    // model it actually last ran on, so coming back to a session does not quietly
+    // re-point it at the global default: a conversation that has been building one
+    // model's prompt cache for ten turns must not pay to re-read its whole history
+    // on a cache that has never seen it. A conversation with nothing recorded falls
+    // back to the configured default, which is what every conversation did before
+    // the column existed.
+    let restored = chat::conversation(db, &conversation)
         .ok()
         .flatten()
-        .unwrap_or_default();
+        .and_then(|row| row.model)
+        .map(|model| model.trim().to_owned())
+        .filter(|model| !model.is_empty());
     let assistant_name = state
         .engine
         .setting(crate::persona::SETTING_ASSISTANT_NAME)
@@ -4898,10 +4905,19 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
             .flatten()
             .as_deref(),
     );
+    // The reply's ordinal, counting answers only. It is written into each line
+    // rather than counted in the template, because the template renders one line
+    // at a time and a number it had to keep for itself would drift from the
+    // transcript the moment a row was filtered out.
+    let mut answers = 0u64;
     let messages = transcript
         .iter()
         .map(|message| {
             let user = message.role == chat::Role::User;
+            if !user {
+                answers += 1;
+            }
+            let turn = (!user).then_some(answers);
             let files = carried
                 .get(&message.id)
                 .map(|rows| {
@@ -4937,6 +4953,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                 context_window: message.context_window,
                 reasoning: message.reasoning.clone(),
                 tools: message.tools.clone(),
+                turn,
                 rounds: message.rounds,
                 quota: show_quota
                     .then(|| message.quota.as_ref().map(crate::web::quota::Quota::line))
@@ -4948,15 +4965,22 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
     // The composer's picker offers every configured provider's models, qualified
     // by provider id, so choosing a model on the second provider is one click
     // rather than a settings change.
-    let models = chat::model_options(&state.engine);
-    let selected_model = if model.is_empty() {
-        models
-            .first()
-            .map(|(value, _)| value.clone())
-            .unwrap_or_default()
-    } else {
-        model
-    };
+    let mut models = chat::model_options(&state.engine);
+    // The default, qualified with the provider that would actually serve it. The
+    // stored row is whatever the settings page wrote, and the option values are
+    // `provider/model`, so comparing the two unqualified values never matches and
+    // the browser falls back to the first option in the DOM - which is a picker
+    // that reports a model no turn will use.
+    let default_model = chat::model_value(&state.engine);
+    let selected_model = restored
+        .filter(|model| !model.is_empty())
+        .unwrap_or(default_model);
+    // A choice the catalogue does not list is still what a turn would run on, so it
+    // is shown rather than dropped: an option that is missing would leave the
+    // select on the first entry, which is the one thing the picker must never do.
+    if !selected_model.is_empty() && !models.iter().any(|(value, _)| value == &selected_model) {
+        models.insert(0, (selected_model.clone(), selected_model.clone()));
+    }
     let bare = chat::split_model_value(
         &selected_model,
         &chat::provider_registry(&state.engine).unwrap_or_default(),
@@ -6399,8 +6423,12 @@ async fn chat_send(
         ));
     }
 
-    // The first question names the conversation, and the rail bumps it to the top.
+    // The first question names the conversation, the model that answered it is
+    // recorded on the conversation, and the rail bumps it to the top. The model is
+    // written before the turn runs rather than after, so a page reloaded mid-answer
+    // already shows the model this conversation is on.
     let _ = chat::name_from_first_message(&db, &conversation, &body_text);
+    let _ = chat::set_conversation_model(&db, &conversation, &model);
     let _ = chat::touch_conversation(&db, &conversation);
     let transcript = match chat::load(&db, &conversation) {
         Ok(transcript) => transcript,
@@ -7446,6 +7474,25 @@ fn spawn_turn(
                             "output": output,
                             "is_error": is_error,
                             "term": term,
+                        }),
+                    );
+                }
+            }
+            chat::StreamPart::ToolStart { name, arguments } => {
+                // What the turn is doing right now, said in the operator's own
+                // words rather than in the tool's id. A settled call is a receipt
+                // and stays in the run log; this frame exists only so the bubble
+                // can say "Writing a file" while the file is being written.
+                //
+                // Behind the same switch as the log's own output, for the same
+                // reason: with the run log off, a status line naming every call
+                // would be the log by another name.
+                if show_tool_log {
+                    emit(
+                        "working",
+                        serde_json::json!({
+                            "name": name,
+                            "activity": crate::web::term::activity(name, arguments),
                         }),
                     );
                 }

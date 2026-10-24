@@ -190,6 +190,62 @@ pub fn prompt_for(name: &str, arguments: &str) -> String {
     }
 }
 
+/// What a call is doing, as a phrase for a status line.
+///
+/// The operator's question about a running turn is "what is it doing now", and the
+/// tool's own id is not an answer: `write_file` is jargon and the JSON beside it is
+/// worse. This turns the same arguments [`prompt_for`] reads into the phrase a
+/// person would say out loud, with the subject named when naming it helps.
+///
+/// A tool nobody has taught this module falls back to its own name. That is
+/// deliberate: a label invented for a call the daemon does not recognise would be
+/// a worse answer than the id, because it would sound like knowledge.
+///
+/// Nothing here decides tone or placement. The page writes the phrase and the
+/// stylesheet paints it, which is the same rule the terminal lines follow.
+#[must_use]
+pub fn activity(name: &str, arguments: &str) -> String {
+    let parsed: Option<Value> = serde_json::from_str(arguments.trim()).ok();
+    let field = |key: &str| {
+        parsed
+            .as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    };
+    // A path or a URL names the work; a whole JSON object does not. Bounded so a
+    // deeply nested path cannot push the line across the bubble.
+    let subject = |key: &str| -> String {
+        let value = field(key).trim();
+        if value.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", shorten(value, 48))
+        }
+    };
+    let phrase = match name {
+        "write_file" => format!("Writing a file{}", subject("path")),
+        "read_file" => format!("Reading a file{}", subject("path")),
+        "list_dir" => format!("Listing a directory{}", subject("path")),
+        "run_command" => "Running a command".to_owned(),
+        "fetch_url" => format!("Fetching a page{}", subject("url")),
+        "generate_image" => "Drawing an image".to_owned(),
+        "dispatch_agent" => format!("Dispatching an agent{}", subject("label")),
+        "read_skill" => format!("Reading a skill{}", subject("key")),
+        // An MCP call is `server__tool`. The server is the part a reader can act
+        // on; the tool id is the server's own vocabulary.
+        qualified if qualified.contains("__") => {
+            let server = qualified.split("__").next().unwrap_or(qualified);
+            format!("Calling a {server} tool")
+        }
+        other => other.to_owned(),
+    };
+    // Bounded once, at the end, rather than per field: a prefix and a subject can
+    // each be short and still add up to a line that wraps the bubble. A call that
+    // falls back to its own name is bounded too, because a tool id can be long.
+    shorten(&phrase, 60)
+}
+
 /// Turn one JSON object into lines, or into pretty JSON when its shape is unknown.
 fn body(map: &Map<String, Value>, lines: &mut Vec<TermLine>) {
     // A parked or approved call is the approval rewrite's own envelope, and its
@@ -404,6 +460,68 @@ mod tests {
             term.lines.iter().all(|line| line.kind == TermKind::Out),
             "a clean run is all ordinary output"
         );
+    }
+
+    #[test]
+    fn a_status_phrase_names_the_work_rather_than_the_tool() {
+        assert_eq!(
+            activity("write_file", r#"{"path":"src/auth.rs","content":"x"}"#),
+            "Writing a file src/auth.rs"
+        );
+        assert_eq!(
+            activity("read_file", r#"{"path":"Cargo.toml"}"#),
+            "Reading a file Cargo.toml"
+        );
+        assert_eq!(
+            activity("list_dir", r#"{"path":"notes"}"#),
+            "Listing a directory notes"
+        );
+        assert_eq!(
+            activity("fetch_url", r#"{"url":"https://example.com/a"}"#),
+            "Fetching a page https://example.com/a"
+        );
+        assert_eq!(
+            activity("run_command", r#"{"command":"cargo test"}"#),
+            "Running a command"
+        );
+        assert_eq!(
+            activity("read_skill", r#"{"key":"pdf"}"#),
+            "Reading a skill pdf"
+        );
+        assert_eq!(
+            activity(
+                "dispatch_agent",
+                r#"{"label":"audit the repo","prompt":"go"}"#
+            ),
+            "Dispatching an agent audit the repo"
+        );
+    }
+
+    #[test]
+    fn a_status_phrase_falls_back_to_the_calls_own_name() {
+        // An invented phrase for a call this module does not know would be a
+        // confident answer with nothing behind it. The id is honest.
+        assert_eq!(
+            activity("something_new", r#"{"path":"a"}"#),
+            "something_new"
+        );
+        assert_eq!(activity("something_new", ""), "something_new");
+        // An MCP call names its server: the server is what a reader can act on.
+        assert_eq!(
+            activity("echo__ping", r#"{"words":"hi"}"#),
+            "Calling a echo tool"
+        );
+    }
+
+    #[test]
+    fn a_status_phrase_is_bounded_so_it_stays_one_line() {
+        let long = "a/".repeat(200);
+        let phrase = activity(
+            "write_file",
+            &serde_json::json!({ "path": long }).to_string(),
+        );
+        assert!(phrase.chars().count() <= 64, "{phrase}");
+        assert!(phrase.starts_with("Writing a file "), "{phrase}");
     }
 
     #[test]

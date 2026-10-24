@@ -1311,7 +1311,17 @@ pre.code {
   color: var(--muted);
 }
 .msg .exec > summary::-webkit-details-marker { display: none; }
+/* The turn, in front of the call count. Two facts, so two weights: the turn is
+   what the operator is reading the transcript by, the count is how much the turn
+   spent. Set back from the count so the two numbers do not read as one. */
+.msg .exec-turn {
+  margin-left: auto;
+  opacity: 0.55;
+  letter-spacing: 0.06em;
+}
+.msg .exec-turn[hidden] { display: none; }
 .msg .exec-count { margin-left: auto; opacity: 0.7; }
+.msg .exec-turn + .exec-count { margin-left: 8px; opacity: 0.85; }
 /* Summary mode: one line naming the last call, truncated so it stays one line. */
 .msg .exec.compact > summary { text-transform: none; letter-spacing: 0; font-size: 11.5px; }
 .msg .exec.compact .exec-last {
@@ -1472,6 +1482,39 @@ pre.code {
   max-height: 320px;
   overflow-y: auto;
 }
+/* What the turn is doing right now, above the settle line and under the bubble.
+   Present only while a call is running: it is cleared on the result, on done and
+   on failure, so a page sitting still never claims work is happening. */
+.msg .meta-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.02em;
+  color: var(--platinum);
+  opacity: 0.9;
+}
+.msg .meta-live[hidden] { display: none; }
+/* A pulse, so a long call reads as alive rather than as a frozen label. Never
+   the only signal: the words say what it is doing. */
+.msg .meta-live::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--platinum);
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg .meta-live::before { animation: none; opacity: 0.85; }
+}
+
 .msg .meta {
   display: flex;
   align-items: center;

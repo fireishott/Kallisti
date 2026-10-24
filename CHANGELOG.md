@@ -6,6 +6,52 @@ observe; commit history carries the detail.
 
 ## 1.4.6
 
+- **A conversation keeps the model it was on when you come back to it.** The rail
+  restored nothing, so resuming a session rendered the global default and the next
+  turn could land on a model the conversation had never run on - a fresh prompt
+  cache asked to re-read a history it had not seen, which is both slower and the
+  usual way a reply drifts. A conversation now records the model it runs on
+  (`chat_conversations.model`, schema 20) when the first turn is written, and the
+  composer restores it ahead of the configured default. A conversation with nothing
+  recorded - one that predates the column, or one that never sent a turn - still
+  opens on the default, which is what every conversation did before. `build 105`.
+- **A new conversation opens on the configured default, not on whatever sorts
+  first.** The stored pin is an unqualified model id, while the picker's options are
+  `provider/model`, so the selected option never matched, no option carried
+  `selected`, and the browser fell back to the first entry in the list. The default
+  is now resolved with `chat::model_value`, the same qualified value the settings
+  page writes, and a pin the catalogue does not list is inserted as its own option
+  rather than dropped. `build 105`.
+- **The phone and the browser reach the same endpoint for one pin.** A device turn
+  read the three legacy provider rows and only stripped the provider prefix off the
+  model, while the browser resolved the registry entry the primary names. On an
+  install whose primary is not the legacy endpoint that is one stored value talking
+  to two endpoints, which is a 404 from one surface and a 400 from the other. Device
+  turns now resolve through the registry by the same rule, and the context-window
+  meter reports the window of the provider actually serving the turn. `build 105`.
+- **A generated title lands on every turn, and on the phone.** The rename only
+  accepted the placeholder or the truncation of the *current* question, so from the
+  second turn on a suggested title matched neither, zero rows were written, and the
+  name the model produced was thrown away silently. The first question's truncation
+  is now a third candidate, so a later turn can replace a name the daemon wrote
+  itself while a name the operator or a previous model chose is still left alone.
+  Device turns now ask the naming role too, so a conversation started from the phone
+  stops being called by its first six words. `build 105`.
+- **A reply says what it is doing while it is doing it.** The line under a live
+  reply was a control hint, a round readout and a tool receipt fighting over one
+  span, and none of them answered "what is happening now" - the daemon could not
+  even say it, because the only tool frame was emitted *after* the call returned
+  while its output was already streaming. A turn now emits a start frame carrying a
+  phrase in the operator's own words - "Writing a file notes/todo.md", "Fetching a
+  page", "Reading a skill pdf", "Running a command" - and the bubble shows it until
+  the call finishes. An unfamiliar tool falls back to its own name rather than an
+  invented label, and the line is behind the same switch as the run log. `build 105`.
+- **The run log counts turns as well as calls.** A reply is one turn however many
+  calls it ran, and the tool budget decides how many that can be; the log showed only
+  the second number, so a 68-call answer and the turn it belonged to were read as the
+  same fact. The summary now carries `turn N` before the call count, in the streamed
+  log and in a reloaded one, and a reply's ordinal is read off its position in the
+  transcript so a page that attaches mid-turn cannot disagree with a reload. `build 105`.
 - **A paired phone stops expiring while it is in use.** Token lifetime was a clock
   that only ran down: an hour for an access token, thirty days for a refresh token,
   and a device that went quiet for longer than that had to be paired again from the

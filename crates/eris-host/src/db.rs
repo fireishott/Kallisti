@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -40,7 +40,8 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// columns to `jobs` and no table at all; 0005 adds `chat_messages`; 0008 adds
 /// `chat_attachments`; 0009 adds `approvals`; 0013 adds `projects`; 0014 adds
 /// `subagents`; 0015 adds the opt-in `admin` flag to `pairing_codes` and no
-/// table at all; 0017 adds `schedules` and `schedule_runs`.
+/// table at all; 0017 adds `schedules` and `schedule_runs`; 0020 adds a
+/// column to `chat_conversations` and no table at all.
 pub const TABLES: [&str; 19] = [
     "admin_credential",
     "admin_sessions",
@@ -166,6 +167,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 19,
         name: "0019_chat_message_identity",
         sql: MIGRATION_0019,
+    },
+    Migration {
+        version: 20,
+        name: "0020_conversation_model",
+        sql: MIGRATION_0020,
     },
 ];
 
@@ -683,6 +689,23 @@ ALTER TABLE chat_messages ADD COLUMN client_message_id TEXT;
 ALTER TABLE chat_messages ADD COLUMN job_id TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_job ON chat_messages (job_id);
+";
+
+/// Migration 0020: the model a conversation is running on.
+///
+/// A transcript row has always carried the model that answered it, which is the
+/// right record and the wrong answer to "which model is this conversation on".
+/// Without that answer the picker has nothing to restore, so resuming a session
+/// silently put it back on the global default - and a conversation that had been
+/// running on one model's prompt cache for ten turns was handed to another model
+/// on the eleventh, paying to re-read its whole history and giving the new model
+/// a context it never agreed to.
+///
+/// Nullable because every conversation written before this existed has no answer
+/// to give: `NULL` means "never recorded", which the page reads as "use the
+/// configured default", exactly as it did before.
+const MIGRATION_0020: &str = r"
+ALTER TABLE chat_conversations ADD COLUMN model TEXT;
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.
