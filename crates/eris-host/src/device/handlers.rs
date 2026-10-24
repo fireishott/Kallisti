@@ -613,7 +613,7 @@ pub async fn create_turn(
                 .unwrap_or_default();
             let context_window = service
                 .engine()
-                .provider_contexts()
+                .primary_provider_contexts()
                 .ok()
                 .and_then(|contexts| contexts.get(&model).copied());
             let question_id = match chat::question_id(db, conversation_id) {
@@ -1675,8 +1675,10 @@ fn parse_settings(
 
     if let Some(raw) = fields.get("model") {
         write.named = true;
-        let known = engine.provider_models().map_err(settings_unavailable)?;
-        let model = engine.check_model(raw).map_err(|_| {
+        let known = engine
+            .primary_provider_catalog()
+            .map_err(settings_unavailable)?;
+        let model = engine.check_primary_model(raw).map_err(|_| {
             let allowed = if known.is_empty() {
                 "none yet, because no provider probe has published a list".to_owned()
             } else {

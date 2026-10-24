@@ -1,10 +1,17 @@
-//! The OpenAI-compatible adapter.
+//! The OpenAI-compatible adapter, and the Anthropic Messages one beside it.
 //!
-//! One implementation, four deployments. 9router on loopback, Ollama, vLLM, and
+//! One implementation, five deployments. 9router on loopback, Ollama, vLLM and
 //! OpenRouter all speak the same `/chat/completions` shape, so nothing here
 //! branches on a vendor: the deployment differs only by `base_url`, the model
-//! id, and which environment variable holds the key. A fifth gateway needs a new
-//! config entry, not a new adapter.
+//! id, and which environment variable holds the key. A gateway that also serves
+//! Claude models serves them at `/messages`, in the Anthropic shape, because
+//! that is the only shape those models accept - so the adapter carries both
+//! request builders and picks by the profile's [`ApiDialect`], which is a
+//! property of the endpoint rather than a name brand.
+//!
+//! Chat Completions is the default and the only shape that existed before this
+//! field did, so a profile that never named a dialect keeps sending exactly the
+//! bytes it sent before.
 //!
 //! What this type is responsible for:
 //!
@@ -19,14 +26,14 @@
 
 use std::time::Duration;
 
-use core_domain::{Capabilities, LlmError, ModelProfile, Provider, ProviderProfile};
+use core_domain::{ApiDialect, Capabilities, LlmError, ModelProfile, Provider, ProviderProfile};
 use eventsource_stream::Eventsource;
 use reqwest::Client;
 use tokio_stream::StreamExt;
 
 use super::classify;
 use super::stream::ChatStreamParser;
-use super::{ChatRequest, ChatRole, Completion, ProviderEvent, SecretKey};
+use super::{ChatRequest, ChatRole, Completion, ProviderEvent, Reachability, SecretKey};
 
 /// How long to wait for the connection itself. Separate from the stream: a slow
 /// model is normal, an endpoint that will not accept a TCP connection is not.
@@ -111,9 +118,36 @@ impl OpenAiCompatProvider {
         format!("{}/chat/completions", self.profile.base_url)
     }
 
-    /// The streaming request body for one turn.
+    /// The Anthropic Messages endpoint for this profile.
+    #[must_use]
+    pub fn messages_url(&self) -> String {
+        format!("{}/messages", self.profile.base_url)
+    }
+
+    /// The endpoint this profile's dialect sends to.
+    #[must_use]
+    pub fn request_url(&self) -> String {
+        match self.profile.dialect {
+            ApiDialect::ChatCompletions => self.chat_completions_url(),
+            ApiDialect::Messages => self.messages_url(),
+        }
+    }
+
+    /// The largest answer asked for when the caller sets no cap.
     ///
-    /// Pure, so the wire shape is testable without a socket. `stream_options.
+    /// `/messages` requires the field, and a turn that omits it is refused
+    /// before the model runs (`expected number, received undefined at
+    /// max_tokens`), which would turn a working endpoint into a protocol
+    /// failure. The value is a floor every Claude model on this gateway clears,
+    /// and it is a ceiling on the answer rather than a spend: no provider bills
+    /// for tokens it did not generate.
+    pub const DEFAULT_MESSAGES_MAX_TOKENS: u32 = 8_192;
+
+    /// The streaming request body for one turn, in the OpenAI shape.
+    ///
+    /// Pure, so the wire shape is testable without a socket. A profile whose
+    /// dialect is `Messages` does not use this: see
+    /// [`OpenAiCompatProvider::build_messages_body`]. `stream_options.
     /// include_usage` is unconditional on purpose: without it several
     /// OpenAI-compatible servers omit the usage frame entirely, and the seam
     /// would then have to report usage as unavailable for a provider that can
@@ -238,6 +272,263 @@ impl OpenAiCompatProvider {
         body
     }
 
+    /// The streaming request body for one turn, in the Anthropic shape.
+    ///
+    /// Three differences from the OpenAI body, and each is a place a naive
+    /// translation would fail:
+    ///
+    /// - the system prompt is a top-level `system` field, not a message: a
+    ///   `system` role inside `messages` is rejected outright;
+    /// - a tool result is a `user` message carrying a `tool_result` block, not a
+    ///   `tool` role addressed by `tool_call_id`;
+    /// - `max_tokens` is required, so a caller that set no cap gets
+    ///   [`Self::DEFAULT_MESSAGES_MAX_TOKENS`] rather than a refused request.
+    ///
+    /// Tourniquets around consecutive same-role messages are deliberately absent:
+    /// a replayed transcript ends a tool round with the assistant's `tool_use`
+    /// then the tool results as `user`, which alternates on its own, and merging
+    /// messages the transcript kept apart would silently reorder a conversation.
+    #[must_use]
+    pub fn build_messages_body(&self, request: &ChatRequest) -> serde_json::Value {
+        let mut messages: Vec<serde_json::Value> = Vec::with_capacity(request.messages.len());
+        let last = request.messages.len().saturating_sub(1);
+        for (index, message) in request.messages.iter().enumerate() {
+            match message.role {
+                super::ChatRole::System => {
+                    // The instruction preamble lives at the top level in this
+                    // dialect. One is folded to text so a transcript that kept
+                    // several cannot be silently dropped.
+                    continue;
+                }
+                super::ChatRole::Tool => {
+                    messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": message.tool_call_id,
+                            "content": message.content,
+                        }],
+                    }));
+                }
+                super::ChatRole::Assistant if !message.tool_calls.is_empty() => {
+                    let mut blocks: Vec<serde_json::Value> = Vec::new();
+                    if !message.content.is_empty() {
+                        blocks.push(serde_json::json!({
+                            "type": "text",
+                            "text": message.content,
+                        }));
+                    }
+                    for call in &message.tool_calls {
+                        // The wire wants a materialised object here, and the
+                        // buffered form is always one: a fragment is never a
+                        // call. `{}` is the honest reading of a call that took
+                        // no arguments.
+                        blocks.push(serde_json::json!({
+                            "type": "tool_use",
+                            "id": call.id,
+                            "name": call.name,
+                            "input": call.arguments,
+                        }));
+                    }
+                    messages.push(serde_json::json!({ "role": "assistant", "content": blocks }));
+                }
+                super::ChatRole::User if index == last && !request.images.is_empty() => {
+                    let mut blocks: Vec<serde_json::Value> = Vec::new();
+                    if !message.content.trim().is_empty() {
+                        blocks.push(serde_json::json!({
+                            "type": "text",
+                            "text": message.content,
+                        }));
+                    }
+                    for url in &request.images {
+                        if let Some((media, data)) = split_data_url(url) {
+                            blocks.push(serde_json::json!({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media,
+                                    "data": data,
+                                },
+                            }));
+                        } else {
+                            // A remote URL is not fetchable by this gateway, so
+                            // it is sent as a URL source, which the dialect
+                            // defines and the endpoint may still accept.
+                            blocks.push(serde_json::json!({
+                                "type": "image",
+                                "source": { "type": "url", "url": url },
+                            }));
+                        }
+                    }
+                    messages.push(serde_json::json!({ "role": "user", "content": blocks }));
+                }
+                _ => {
+                    messages.push(serde_json::json!({
+                        "role": message.role.as_str(),
+                        "content": message.content,
+                    }));
+                }
+            }
+        }
+
+        // A transcript that carried its preamble as a message rather than in
+        // `ChatRequest::system` still reaches the wire, prepended and joined:
+        // dropping the operator's own instructions would be the worse failure.
+        let preamble = request
+            .system
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                let joined = request
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == super::ChatRole::System)
+                    .map(|message| message.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                (!joined.trim().is_empty()).then_some(joined)
+            });
+
+        let mut body = serde_json::json!({
+            "model": self.model.id,
+            "messages": messages,
+            "stream": true,
+            "max_tokens": request
+                .max_output_tokens
+                .unwrap_or(Self::DEFAULT_MESSAGES_MAX_TOKENS),
+        });
+        if let Some(system) = preamble {
+            body["system"] = serde_json::Value::String(system);
+        }
+
+        if !request.tools.is_empty() {
+            let tools: Vec<serde_json::Value> = request
+                .tools
+                .iter()
+                .map(|tool| {
+                    // `input_schema`, not `parameters`, and the function is not
+                    // wrapped in a `function` object the way OpenAI wraps it.
+                    serde_json::json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": tool.parameters,
+                    })
+                })
+                .collect();
+            body["tools"] = serde_json::Value::Array(tools);
+        }
+
+        body
+    }
+
+    /// The body this profile would send, whichever dialect it speaks.
+    #[must_use]
+    pub fn build_request_body(&self, request: &ChatRequest) -> serde_json::Value {
+        match self.profile.dialect {
+            ApiDialect::ChatCompletions => self.build_body(request),
+            ApiDialect::Messages => self.build_messages_body(request),
+        }
+    }
+
+    /// Ask the endpoint which models it serves, and which of them answer.
+    ///
+    /// The catalogue is the endpoint's own `GET {base}/models`, so a caller
+    /// never keeps a list of model ids in two places. Reachability is measured
+    /// rather than assumed, because a gateway can list a model it cannot serve:
+    /// this one does, seven times out of ninety-three on the day it was wired.
+    /// Listing a model that never answers is exactly the failure the picker must
+    /// not offer, so the two facts are returned together and kept apart.
+    ///
+    /// The pass costs one small request per model, which is why it is a
+    /// deliberate call rather than something a page load does: at ninetysomething
+    /// models it is a minute of wall clock, and the caller owns that decision.
+    pub async fn probe_models(
+        &self,
+        key: &SecretKey,
+        probe: Reachability,
+    ) -> Result<super::ModelCatalog, LlmError> {
+        let mut catalog = super::list_models(&self.profile, key).await?;
+        if probe == Reachability::Skip {
+            return Ok(catalog);
+        }
+        let dialects = catalog.dialects.clone();
+        let mut unreachable: Vec<String> = Vec::new();
+        let http = &self.http;
+        let base = self.profile.base_url.clone();
+        let capabilities = self.capabilities;
+        for model in catalog.models.clone() {
+            let dialect = dialects
+                .get(&model)
+                .copied()
+                .unwrap_or(self.profile.dialect);
+            let url = match dialect {
+                ApiDialect::ChatCompletions => format!("{base}/chat/completions"),
+                ApiDialect::Messages => format!("{base}/messages"),
+            };
+            let request = ChatRequest {
+                max_output_tokens: Some(16),
+                ..ChatRequest::user_text("hi")
+            };
+            let body = match dialect {
+                ApiDialect::ChatCompletions => {
+                    OpenAiCompatProvider::new(
+                        self.profile.clone(),
+                        ModelProfile::new(model.clone()),
+                        capabilities,
+                    )?
+                    .build_body(&request)
+                }
+                ApiDialect::Messages => {
+                    OpenAiCompatProvider::new(
+                        self.profile.clone(),
+                        ModelProfile::new(model.clone()),
+                        capabilities,
+                    )?
+                    .build_messages_body(&request)
+                }
+            };
+            match http
+                .post(&url)
+                .bearer_auth(key.expose())
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    // The body is a stream this pass does not read: the status
+                    // is the whole question being asked. Dropping the response
+                    // closes the connection, so an early-exiting model costs one
+                    // request and no more.
+                    drop(response);
+                }
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let body = response.text().await.unwrap_or_default();
+                    let detail = classify::error_message(&body);
+                    unreachable.push(super::unreachable_line(
+                        &model,
+                        &format!("{status} {detail}"),
+                    ));
+                }
+                Err(error) => {
+                    // A transport failure is not a verdict about the model, so it
+                    // is not recorded as one: the pass stops rather than writing
+                    // sixty wrong rows about a gateway that went away.
+                    return Err(classify::classify_request_failure(
+                        error.is_connect(),
+                        error.is_timeout(),
+                        error.is_body(),
+                        &describe_request_error(&url, &error),
+                    ));
+                }
+            }
+        }
+        catalog.mark_unreachable(unreachable);
+        Ok(catalog)
+    }
+
     /// Send one turn and stream it back.
     ///
     /// `sink` receives text, reasoning and completed tool calls as they parse.
@@ -250,8 +541,8 @@ impl OpenAiCompatProvider {
         key: &SecretKey,
         sink: &mut dyn FnMut(ProviderEvent),
     ) -> Result<Completion, LlmError> {
-        let url = self.chat_completions_url();
-        let body = self.build_body(request);
+        let url = self.request_url();
+        let body = self.build_request_body(request);
 
         // One retry, and only for the failure that means "the connection went
         // away before the answer started". See `SEND_ATTEMPTS`.
@@ -306,7 +597,7 @@ impl OpenAiCompatProvider {
         }
 
         let mut stream = response.bytes_stream().eventsource();
-        let mut parser = ChatStreamParser::new(self.capabilities);
+        let mut parser = ChatStreamParser::for_dialect(self.capabilities, self.profile.dialect);
 
         loop {
             // A provider that accepts the request and then sends nothing is not
@@ -370,6 +661,21 @@ impl Provider for OpenAiCompatProvider {
     fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
+}
+
+/// Split a `data:<media>;base64,<payload>` URL into its two halves.
+///
+/// Returns `None` for anything else, including an `http(s)` URL: the caller
+/// decides what to do with a URL it cannot turn into base64, and inventing a
+/// media type for it would be a guess the provider then rejects.
+fn split_data_url(url: &str) -> Option<(String, String)> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    let media = meta.strip_suffix(";base64").unwrap_or(meta);
+    if media.trim().is_empty() || payload.trim().is_empty() {
+        return None;
+    }
+    Some((media.to_owned(), payload.to_owned()))
 }
 
 /// Whether a failed request is worth one more attempt on a fresh connection.
@@ -601,4 +907,176 @@ mod tests {
             "an idle pool entry must expire before a 5 second gateway timer does"
         );
     }
+
+    fn messages_provider() -> OpenAiCompatProvider {
+        let profile = ProviderProfile::new(
+            "commandcode",
+            "https://api.commandcode.ai/provider/v1",
+            SecretRef::Env("COMMANDCODE_API_KEY".to_owned()),
+        )
+        .expect("profile should build")
+        .with_dialect(ApiDialect::Messages);
+        OpenAiCompatProvider::new(
+            profile,
+            ModelProfile::new("claude-sonnet-5-5"),
+            Capabilities::openai_compatible(),
+        )
+        .expect("provider should build")
+    }
+
+    #[test]
+    fn the_dialect_picks_the_endpoint() {
+        assert_eq!(
+            provider().request_url(),
+            "http://127.0.0.1:20128/v1/chat/completions"
+        );
+        assert_eq!(
+            messages_provider().request_url(),
+            "https://api.commandcode.ai/provider/v1/messages"
+        );
+        // Both endpoints stay reachable by name, whichever one is in force.
+        assert_eq!(
+            messages_provider().chat_completions_url(),
+            "https://api.commandcode.ai/provider/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn the_messages_body_puts_the_preamble_at_the_top_level_not_in_messages() {
+        let body = messages_provider()
+            .build_messages_body(&ChatRequest::with_system(Some("Be brief.".to_owned()), "hi"));
+        assert_eq!(body["system"], "Be brief.");
+        assert_eq!(body["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert!(
+            body["messages"]
+                .as_array()
+                .expect("array")
+                .iter()
+                .all(|message| message["role"] != "system"),
+            "a system role inside messages is refused by the endpoint: {body}"
+        );
+    }
+
+    #[test]
+    fn the_messages_body_always_carries_a_generation_cap() {
+        let body = messages_provider().build_messages_body(&ChatRequest::user_text("hi"));
+        assert_eq!(
+            body["max_tokens"],
+            serde_json::Value::from(OpenAiCompatProvider::DEFAULT_MESSAGES_MAX_TOKENS),
+            "the field is required and a missing one is refused before the model runs"
+        );
+
+        let capped = messages_provider().build_messages_body(&ChatRequest {
+            max_output_tokens: Some(64),
+            ..ChatRequest::user_text("hi")
+        });
+        assert_eq!(capped["max_tokens"], 64, "an explicit cap is not overridden");
+    }
+
+    #[test]
+    fn a_messages_tool_result_is_a_user_block_addressed_by_tool_use_id() {
+        let request = ChatRequest::user_text("weather?")
+            .with_tool_result("toolu_01", r#"{"temp_c":21}"#);
+        let body = messages_provider().build_messages_body(&request);
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "tool_result");
+        assert_eq!(body["messages"][1]["content"][0]["tool_use_id"], "toolu_01");
+        assert_eq!(body["messages"][1]["content"][0]["content"], r#"{"temp_c":21}"#);
+        assert!(
+            body["messages"]
+                .as_array()
+                .expect("array")
+                .iter()
+                .all(|message| message["role"] != "tool"),
+            "there is no tool role in this dialect: {body}"
+        );
+    }
+
+    #[test]
+    fn a_messages_assistant_tool_call_round_trips_as_a_materialised_block() {
+        let call = core_domain::ToolCall::new(
+            0,
+            "toolu_01",
+            "get_weather",
+            serde_json::json!({"city": "Louisville"}),
+        )
+        .expect("call");
+        let request = ChatRequest::user_text("weather?").with_tool_calls(vec![call.clone()]);
+        let body = messages_provider().build_messages_body(&request);
+        let block = &body["messages"][1]["content"][0];
+        assert_eq!(body["messages"][1]["role"], "assistant");
+        assert_eq!(block["type"], "tool_use");
+        assert_eq!(block["id"], "toolu_01");
+        assert_eq!(block["name"], "get_weather");
+        assert_eq!(block["input"]["city"], "Louisville");
+        assert_eq!(
+            block["input"]["city"], call.arguments["city"],
+            "the call is replayed exactly as the model produced it"
+        );
+
+        // A call-only assistant turn has no text block to send: an empty one is
+        // not a block this dialect wants.
+        assert_eq!(body["messages"][1]["content"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn a_messages_tool_definition_uses_input_schema_not_parameters() {
+        let request = ChatRequest {
+            tools: vec![ToolSpec {
+                name: "get_weather".to_owned(),
+                description: "Current weather".to_owned(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            ..ChatRequest::user_text("weather?")
+        };
+        let body = messages_provider().build_messages_body(&request);
+        assert_eq!(body["tools"][0]["name"], "get_weather");
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+        assert!(
+            body["tools"][0].get("function").is_none(),
+            "this dialect does not wrap the function the way OpenAI does: {body}"
+        );
+        assert!(body["tools"][0].get("parameters").is_none());
+    }
+
+    #[test]
+    fn a_messages_image_becomes_a_base64_source_block() {
+        let request = ChatRequest {
+            images: vec!["data:image/png;base64,AAAA".to_owned()],
+            ..ChatRequest::user_text("what is this?")
+        };
+        let body = messages_provider().build_messages_body(&request);
+        let block = &body["messages"][0]["content"][1];
+        assert_eq!(block["type"], "image");
+        assert_eq!(block["source"]["type"], "base64");
+        assert_eq!(block["source"]["media_type"], "image/png");
+        assert_eq!(block["source"]["data"], "AAAA");
+
+        // A URL that is not a data URL is not silently turned into one.
+        let remote = ChatRequest {
+            images: vec!["https://example.test/a.png".to_owned()],
+            ..ChatRequest::user_text("what is this?")
+        };
+        let body = messages_provider().build_messages_body(&remote);
+        assert_eq!(body["messages"][0]["content"][1]["source"]["type"], "url");
+    }
+
+    #[test]
+    fn the_chat_completions_body_is_unchanged_by_the_messages_work() {
+        // The dialect default is the shape every install sent before the field
+        // existed, so its bytes must be byte-identical to the recorded shape.
+        let body = provider().build_request_body(&ChatRequest::with_system(
+            Some("Be brief.".to_owned()),
+            "hi",
+        ));
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "Be brief.");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        assert!(body.get("system").is_none());
+        assert!(body.get("max_tokens").is_none());
+    }
 }
+

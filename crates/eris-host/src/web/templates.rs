@@ -431,6 +431,30 @@ pub fn layout(title: &str, state: SetupState, body: Markup, chrome: &Chrome) -> 
     shell(title, state, None, body, chrome)
 }
 
+/// The one-page answer after a restart is scheduled: the daemon is about to drop
+/// this connection, so a redirect would race the process exit. A static page that
+/// says what happened and points back at the dashboard once it returns.
+#[must_use]
+pub fn restart_page() -> Markup {
+    let chrome = Chrome::default();
+    layout(
+        "Restarting",
+        SetupState::Ready,
+        html! {
+            h1 { "Restart scheduled" }
+            p .lede { "The daemon is restarting itself. It returns in a few seconds." }
+            p .small {
+                "A restart interrupts anything still running and the process comes back on the "
+                "same addresses. Wait a moment, then return to the dashboard."
+            }
+            div .actions {
+                a .button href=(crate::admin::ROUTE_DASHBOARD) { "Back to the dashboard" }
+            }
+        },
+        &chrome,
+    )
+}
+
 /// The signed-in application shell: top bar, nav, page, footer.
 ///
 /// The nav is a `nav` element with an accessible name and one entry per section,
@@ -1790,6 +1814,16 @@ pub struct SettingsView {
     pub providers_primary: String,
     /// Every provider id in the registry, for the primary picker.
     pub provider_ids: Vec<String>,
+    /// The id and the display name of every configured provider.
+    pub provider_labels: Vec<(String, String)>,
+    /// Every model on every configured provider, as `(option value, label)`.
+    ///
+    /// The option value is `provider/model`, which is what a turn stores and
+    /// what a picker sends back. The label names the provider, so two providers
+    /// offering an identically spelled model id are still distinguishable.
+    pub model_options: Vec<(String, String)>,
+    /// The stored default model as `provider/model`.
+    pub model_selection: String,
     /// Whether a turn may call tools at all.
     pub tools_enabled: bool,
     /// How many tool rounds one turn may take.
@@ -1876,6 +1910,9 @@ impl SettingsView {
             providers_json: "[]".to_owned(),
             providers_primary: crate::providers::DEFAULT_ID.to_owned(),
             provider_ids: Vec::new(),
+            provider_labels: Vec::new(),
+            model_options: Vec::new(),
+            model_selection: String::new(),
             tools_enabled: true,
             tool_rounds: crate::tools::DEFAULT_TOOL_ROUNDS.to_string(),
             agents_enabled: true,
@@ -1986,11 +2023,42 @@ fn provider_group(view: &SettingsView) -> Markup {
                 first == Some("api_key_ref"),
                 false,
             ))
+            div .field {
+                label for="model_selection" { "Default model" }
+                select id="model_selection" name="model_selection"
+                    autofocus[focuses("model_selection")] {
+                    @if view.model_options.is_empty() {
+                        option value="" selected[view.model_selection.is_empty()] {
+                            "no probe has published a model list yet"
+                        }
+                    }
+                    // The stored value may name a model no catalogue holds - a
+                    // row written before this picker existed, or a provider that
+                    // has not been probed. It is shown as its own option rather
+                    // than dropped, so the page never silently re-points a turn.
+                    @if !view.model_selection.is_empty()
+                        && !view.model_options.iter().any(|(value, _)| *value == view.model_selection) {
+                        option value=(view.model_selection)
+                            selected[true] { (view.model_selection) " (not in any probe)" }
+                    }
+                    @for (value, label) in &view.model_options {
+                        option value=(value) selected[view.model_selection == *value] { (label) }
+                    }
+                }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("model_selection")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Every model every configured provider has published, named "
+                    "`provider/model`. Choosing one points turns at that provider, so the model "
+                    "and the endpoint move together."
+                }
+            }
             (text_field(
                 "model",
-                "Model",
+                "Model id, typed",
                 &view.model,
-                Some("The model id every turn starts with. Rotate on the dashboard to re-probe the endpoint."),
+                Some("A model id as the endpoint spells it, used when the picker above is left on its empty option. Worth preferring when a gateway serves a model it does not list."),
                 error,
                 first == Some("model"),
                 false,
@@ -1999,7 +2067,7 @@ fn provider_group(view: &SettingsView) -> Markup {
                 button type="submit" { "Save provider" }
             }
             p .small {
-                "Saving here writes the three rows and nothing else. It does not call the endpoint: "
+                "Saving here writes the rows and nothing else. It does not call the endpoint: "
                 "the rotate button on the dashboard is the probe."
             }
         }
@@ -2302,9 +2370,11 @@ fn quota_group(view: &SettingsView) -> Markup {
 fn greeting_group(view: &SettingsView) -> Markup {
     let error = view.error.as_ref();
     let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
-    let mut models: Vec<String> = Vec::with_capacity(view.models.len() + 1);
-    models.push(crate::greeting::INHERIT.to_owned());
-    models.extend(view.models.iter().cloned());
+    let mut models: Vec<(String, String)> = vec![(
+        crate::greeting::INHERIT.to_owned(),
+        "primary model".to_owned(),
+    )];
+    models.extend(view.model_options.iter().cloned());
     html! {
         form method="post" action=(crate::admin::ROUTE_SETTINGS_GREETING) novalidate {
             (group_region(view, SettingsGroup::Greeting))
@@ -2324,13 +2394,15 @@ fn greeting_group(view: &SettingsView) -> Markup {
                 label for="greeting_model" { "Model" }
                 select id="greeting_model" name="greeting_model"
                     autofocus[focuses("greeting_model")] {
-                    @for option in &models {
-                        @let label = if option == crate::greeting::INHERIT {
-                            "primary model"
-                        } else {
-                            option.as_str()
-                        };
-                        option value=(option) selected[view.greeting_model == *option] { (label) }
+                    @if !view.greeting_model.is_empty()
+                        && view.greeting_model != crate::greeting::INHERIT
+                        && !models.iter().any(|(value, _)| *value == view.greeting_model) {
+                        option value=(view.greeting_model) selected[true] {
+                            (view.greeting_model) " (not in any probe)"
+                        }
+                    }
+                    @for (value, label) in &models {
+                        option value=(value) selected[view.greeting_model == *value] { (label) }
                     }
                 }
                 @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("greeting_model")) {
@@ -2437,15 +2509,17 @@ fn providers_group(view: &SettingsView) -> Markup {
                 }
                 span .hint {
                     "A JSON array of {\"id\", \"name\", \"base_url\", \"key_ref\"}. The id is "
-                    "what auxiliary roles point at. A key reference like env:NAME, never a key."
+                    "what auxiliary roles point at. A key reference like env:NAME, never a key. "
+                    "An optional \"dialect\" of messages makes this endpoint's requests use the "
+                    "Anthropic shape; a probe that measures a model's own shape overrides it."
                 }
             }
             div .field {
                 label for="providers_primary" { "Primary" }
                 select id="providers_primary" name="providers_primary"
                     autofocus[focuses("providers_primary")] {
-                    @for id in &view.provider_ids {
-                        option value=(id) selected[view.providers_primary == *id] { (id) }
+                    @for (id, name) in &view.provider_labels {
+                        option value=(id) selected[view.providers_primary == *id] { (name) }
                     }
                 }
                 @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("providers_primary")) {
@@ -2458,6 +2532,14 @@ fn providers_group(view: &SettingsView) -> Markup {
             }
             div .actions {
                 button type="submit" { "Save providers" }
+                button type="submit" class="secondary" formaction=(crate::admin::ROUTE_SETTINGS_PROVIDERS_PROBE) {
+                    "Probe all providers now"
+                }
+            }
+            p .small {
+                "Saving stores the endpoints and nothing else. Probing calls every configured "
+                "endpoint and publishes each one's model list, which is what puts those models "
+                "into every picker on this page."
             }
         }
     }
@@ -2536,9 +2618,12 @@ fn tools_group(view: &SettingsView) -> Markup {
 
 /// Auxiliary models: one picker per role.
 fn aux_group(view: &SettingsView) -> Markup {
-    let mut options: Vec<String> = Vec::with_capacity(view.models.len() + 1);
-    options.push(crate::aux::INHERIT.to_owned());
-    options.extend(view.models.iter().cloned());
+    // Every model on every provider, provider-qualified, plus the inherit
+    // sentinel. A role pinned to a model keeps that model's provider with it, so
+    // the two selects below cannot disagree about which endpoint is meant.
+    let mut options: Vec<(String, String)> =
+        vec![(crate::aux::INHERIT.to_owned(), "primary model".to_owned())];
+    options.extend(view.model_options.iter().cloned());
 
     html! {
         form method="post" action=(crate::admin::ROUTE_SETTINGS_AUX) novalidate {
@@ -2551,14 +2636,22 @@ fn aux_group(view: &SettingsView) -> Markup {
                             selected[row.provider_selected == crate::aux::INHERIT] {
                             "primary provider"
                         }
-                        @for id in &view.provider_ids {
-                            option value=(id) selected[row.provider_selected == *id] { (id) }
+                        @for (id, name) in &view.provider_labels {
+                            option value=(id) selected[row.provider_selected == *id] { (name) }
                         }
                     }
                     select id=(format!("aux_{}", row.key)) name=(format!("aux_{}", row.key))
                         aria-label=(format!("{} model", row.label)) {
-                        @for option in &options {
-                            option value=(option) selected[row.selected == *option] { (option) }
+                        // A stored pin that no catalogue holds keeps its own
+                        // option, for the same reason the default model does.
+                        @if row.selected != crate::aux::INHERIT
+                            && !options.iter().any(|(value, _)| *value == row.selected) {
+                            option value=(row.selected) selected[true] {
+                                (row.selected) " (not in any probe)"
+                            }
+                        }
+                        @for (value, label) in &options {
+                            option value=(value) selected[row.selected == *value] { (label) }
                         }
                     }
                     span .hint {
@@ -3050,6 +3143,31 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "roles below can point at any of them."
             }
             (providers_group(view))
+        }
+
+        section .card.service aria-labelledby="daemon-heading" {
+            h2 id="daemon-heading" { "Daemon" }
+            p .small {
+                "Some changes only take effect once the process starts again: a bind address, a "
+                "flag, a fresh environment. This restarts the daemon's own service unit, not "
+                "anything else on the host."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_RESTART) novalidate {
+                div .restart-actions {
+                    button type="submit" class="danger" { "Restart daemon" }
+                }
+            }
+            p .small {
+                "A restart interrupts anything still running and the daemon returns on the same "
+                "addresses in a few seconds."
+            }
+            p .small {
+                "Adding a provider or saving its key does not need this: the model lists are read "
+                "from the database on every page load, and saving the provider table asks each "
+                "endpoint what it serves. Restart when the process itself has to change - a new "
+                "environment file, a flag, a bind address - or after editing a key by hand outside "
+                "this page, so the new value is read."
+            }
         }
 
         section .card aria-labelledby="tools-heading" {
@@ -4160,8 +4278,14 @@ pub struct ChatView {
     pub error: Option<FormError>,
     /// What this conversation has cost so far.
     pub stats: crate::web::chat::Stats,
-    /// Every model the last probe returned, for the composer's picker.
-    pub models: Vec<String>,
+    /// Every model every configured provider published, as
+    /// `(provider/model, "Provider - model")`.
+    ///
+    /// The picker is the whole point: the value it sends back names the provider
+    /// as well as the model, so choosing a model on the second provider moves the
+    /// turn there without a settings change. The label names the provider
+    /// because the same model id can appear on both.
+    pub models: Vec<(String, String)>,
     /// The model the picker starts on.
     pub selected_model: String,
     /// Whether to render the model's reasoning in a collapsed bubble.
@@ -4762,8 +4886,10 @@ pub fn chat_page(view: &ChatView) -> Markup {
                         }
                         label .sr-only for="model" { "Model" }
                         select id="model" name="model" aria-label="Model" {
-                            @for id in &view.models {
-                                option value=(id) selected[*id == view.selected_model] { (id) }
+                            @for (value, label) in &view.models {
+                                option value=(value) selected[*value == view.selected_model] {
+                                    (label)
+                                }
                             }
                         }
                         @if let Some(window) = view.context_window {

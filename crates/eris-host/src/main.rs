@@ -484,6 +484,22 @@ fn run_serve(
 
     let engine = SetupEngine::new(db, paths.clone());
 
+    // The per-provider catalogues exist from this build on. An install that
+    // predates them holds one probe under `provider.models`, and that probe was
+    // taken against the endpoint its key reference names. Seeding that
+    // provider's own row from it is a copy rather than a guess, and it is what
+    // stops a second provider from inheriting the first one's list.
+    match engine.migrate_provider_catalog() {
+        Ok(seeded) if seeded.is_empty() => {}
+        Ok(seeded) => eprintln!(
+            "eris serve: seeded provider catalogue for {}",
+            seeded.join(", ")
+        ),
+        Err(error) => {
+            eprintln!("eris serve: could not seed the provider catalogue: {error}");
+        }
+    }
+
     // First boot: reconcile the state against the credential table, then
     // generate the six-word passphrase exactly once. A daemon in `ready` never
     // touches the file and never prints the words.
@@ -578,10 +594,42 @@ fn run_serve(
     );
 
     let scheduler_state = state.clone();
+    // Publish a catalogue for any provider that has an endpoint and none yet.
+    //
+    // A restart is the one moment this process can afford to ask: the registry
+    // may name a provider that was added while the daemon was running, and until
+    // something calls its `/models` it contributes no options to any picker.
+    // Spawned, not awaited, so a slow or refused endpoint delays nothing.
+    let catalogue_state = state.clone();
     let outcome = runtime.block_on(async move {
         if device_enabled {
             state.device.start();
         }
+        tokio::spawn(async move {
+            let engine = catalogue_state.engine.clone();
+            let Ok(registry) = eris_host::web::chat::provider_registry(&engine) else {
+                return;
+            };
+            let missing: Vec<_> = registry
+                .into_iter()
+                .filter(|provider| {
+                    engine
+                        .provider_catalog(&provider.id)
+                        .map(|catalog| catalog.is_empty())
+                        .unwrap_or(true)
+                })
+                .collect();
+            if missing.is_empty() {
+                return;
+            }
+            let (probed, failed) =
+                eris_host::web::routes::probe_registry(&engine, &missing).await;
+            tracing::info!(
+                probed,
+                failed = failed.len(),
+                "startup: published provider catalogues"
+            );
+        });
         let ticker = tokio::spawn(eris_host::scheduler::tick(scheduler_state));
         // The note-enrichment worker, on the same runtime and the same shape: one
         // background task, aborted with the listeners. It claims at most one run

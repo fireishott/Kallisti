@@ -981,6 +981,7 @@ mod tests {
             key_ref: core_runtime::provider::SecretRef::try_from("env:KALLISTI_TEST_KEY")
                 .expect("a valid reference"),
             model: "stub/model".to_owned(),
+            dialect: core_domain::ApiDialect::ChatCompletions,
         };
         Desk::new(
             db.clone(),

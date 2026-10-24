@@ -32,7 +32,9 @@ use std::fmt;
 use core_domain::LlmError;
 
 pub use core_domain::{API_KEY_REF_ENV_PREFIX, SecretRef, SecretRefError};
-pub use models::{ModelCatalog, list_models, parse_model_list};
+pub use models::{
+    ModelCatalog, declared_dialect, list_models, parse_model_list, unreachable_line,
+};
 pub use openai_compat::OpenAiCompatProvider;
 pub use stream::ChatStreamParser;
 
@@ -98,6 +100,20 @@ impl fmt::Debug for SecretKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("SecretKey(<redacted>)")
     }
+}
+
+/// Whether a probe should also find out which listed models answer.
+///
+/// Listing is one request and reachability is one request per model, so the two
+/// are separable: a caller that only wants the catalogue asks for
+/// [`Reachability::Skip`], and a caller wiring a provider into a picker asks for
+/// [`Reachability::Probe`] and accepts the wall clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reachability {
+    /// `GET /models` only.
+    Skip,
+    /// `GET /models`, then one minimal request per model.
+    Probe,
 }
 
 /// Who said what in the prompt.

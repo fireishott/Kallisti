@@ -34,7 +34,8 @@ use crate::admin::{
     ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE,
     ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
     ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
-    ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING,
+    ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_QUOTA,
+    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
     ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
     VERSION, session_path,
@@ -120,6 +121,8 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SIDEBAR, post(toggle_sidebar))
         .route(ROUTE_SETTINGS_TOOLS, post(save_tools))
         .route(ROUTE_SETTINGS_PROVIDERS, post(save_providers))
+        .route(ROUTE_SETTINGS_PROVIDERS_PROBE, post(probe_providers))
+        .route(ROUTE_SETTINGS_RESTART, post(restart_daemon))
         .route(ROUTE_SETTINGS_AUX, post(save_aux))
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
         .route(ROUTE_SETTINGS_GREETING, post(save_greeting))
@@ -574,7 +577,7 @@ fn build_dashboard_view(state: &AppState) -> Result<DashboardView, FormError> {
         .setting(SETTING_PROVIDER_PROBED_AT)
         .map_err(|error| form_error(&error))?;
     view.model_count = engine
-        .provider_models()
+        .primary_provider_catalog()
         .map_err(|error| form_error(&error))?
         .len();
     view.devices = read_devices(&engine.auth()).map_err(|error| form_error(&error))?;
@@ -688,6 +691,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .setting(crate::greeting::SETTING_GREETING_MODEL)
         .map_err(|error| form_error(&error))?
         .map(|stored| crate::greeting::store_model(&stored))
+        .map(|value| chat::qualify_model(&value, &registry, &view.providers_primary.clone()))
         .unwrap_or_else(|| crate::greeting::INHERIT.to_owned());
     view.chat_hint = crate::greeting::hint(
         state
@@ -705,7 +709,17 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     )
     .as_str()
     .to_owned();
-    view.models = engine.provider_models().unwrap_or_default();
+    view.models = engine.primary_provider_catalog().unwrap_or_default();
+    // Every model on every configured provider, provider-qualified. The picker
+    // offers this list; the text field below it stays, because an endpoint's
+    // catalogue is not a closed set and an operator pasting a model id should
+    // not have to wait for a probe.
+    view.model_options = chat::model_options(engine);
+    view.model_selection = chat::model_value(engine);
+    view.provider_labels = registry
+        .iter()
+        .map(|provider| (provider.id.clone(), provider.name.clone()))
+        .collect();
     view.aux_roles = crate::aux::ROLES
         .iter()
         .map(|role| {
@@ -713,6 +727,17 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
                 .setting(&crate::aux::setting_key(role.key))
                 .ok()
                 .flatten();
+            let role_provider = crate::aux::provider_for(
+                engine
+                    .setting(&crate::aux::provider_key(role.key))
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+                &registry,
+                &view.providers_primary.clone(),
+            )
+            .map(|provider| provider.id.clone())
+            .unwrap_or_else(|| view.providers_primary.clone());
             crate::web::templates::AuxRow {
                 key: role.key.to_owned(),
                 label: role.label.to_owned(),
@@ -720,6 +745,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
                 selected: stored
                     .as_deref()
                     .map(crate::aux::store_value)
+                    .map(|value| chat::qualify_model(&value, &registry, &role_provider))
                     .unwrap_or_else(|| crate::aux::INHERIT.to_owned()),
                 provider_selected: engine
                     .setting(&crate::aux::provider_key(role.key))
@@ -2350,6 +2376,28 @@ async fn provider(
         return fail(&state, as_html, form_error(&error));
     }
     let _ = state.engine.set_provider_contexts(&catalog.context_lengths);
+    // The measured request shape of every listed model, and the ones the endpoint
+    // refused. Both are per provider, and both come from this one call.
+    let owner = state
+        .engine
+        .probe_owner()
+        .unwrap_or_else(|_| crate::providers::DEFAULT_ID.to_owned());
+    let _ = state
+        .engine
+        .set_provider_probe_detail(&owner, &catalog.dialects, &catalog.unreachable);
+    // And the same list under the provider it was taken against, so a second
+    // provider's probe cannot make this one's catalogue disappear.
+    let owner = state
+        .engine
+        .probe_owner()
+        .unwrap_or_else(|_| crate::providers::DEFAULT_ID.to_owned());
+    if let Err(error) =
+        state
+            .engine
+            .set_provider_catalog(&owner, &catalog.models, &catalog.context_lengths)
+    {
+        return fail(&state, as_html, form_error(&error));
+    }
 
     if as_html {
         see_other("/setup")
@@ -2726,6 +2774,20 @@ async fn rotate_provider(
                 return refusal(form_error(&error));
             }
             let _ = state.engine.set_provider_contexts(&catalog.context_lengths);
+            let owner = state
+                .engine
+                .probe_owner()
+                .unwrap_or_else(|_| crate::providers::DEFAULT_ID.to_owned());
+            if let Err(error) =
+                state
+                    .engine
+                    .set_provider_catalog(&owner, &catalog.models, &catalog.context_lengths)
+            {
+                return refusal(form_error(&error));
+            }
+            let _ = state
+                .engine
+                .set_provider_probe_detail(&owner, &catalog.dialects, &catalog.unreachable);
             if as_html {
                 render_dashboard_ok(&state, format!("probe ok: {} models", catalog.models.len()))
             } else {
@@ -2756,6 +2818,18 @@ fn render_dashboard_ok(state: &AppState, notice: String) -> Response {
         Ok(mut view) => {
             view.notice = Some(notice);
             page(dashboard_page(&view))
+        }
+        Err(error) => refusal(error),
+    }
+}
+
+/// A 200 settings page with one group's notice, used by the provider probe so a
+/// successful probe reads like a successful save rather than a bare redirect.
+fn render_settings_ok(state: &AppState, group: SettingsGroup, notice: String) -> Response {
+    match build_settings_view(state) {
+        Ok(mut view) => {
+            view.notice = Some((group, notice));
+            page(settings_page(&view))
         }
         Err(error) => refusal(error),
     }
@@ -3381,13 +3455,36 @@ async fn save_provider(
         Ok(fields) => fields,
         Err(error) => return fail_settings(&state, as_html, error),
     };
+    // The picker offers `provider/model`; the text field below it takes a bare
+    // id. A picker choice wins when it sent one. The text field is the authority
+    // when the picker is empty, which is how a hand-typed id that no catalogue
+    // has published yet still gets stored.
+    let picked = field(&fields, "model_selection").trim().to_owned();
+    let typed = field(&fields, "model").trim().to_owned();
+    let submitted = if picked.is_empty() {
+        typed.clone()
+    } else {
+        picked.clone()
+    };
     let (base_url, key_ref, model) = match validate_provider(
         field(&fields, "base_url"),
         field(&fields, "api_key_ref"),
-        field(&fields, "model"),
+        &submitted,
     ) {
         Ok(parts) => parts,
         Err(error) => return fail_settings(&state, as_html, error),
+    };
+    // The picker is a closed set, checked against the provider's own probe. The
+    // typed field is the escape hatch for a model a gateway serves but does not
+    // list: it is stored as given, because the endpoint is the authority until
+    // it has published a catalogue of its own.
+    let model = if picked.is_empty() {
+        model
+    } else {
+        match check_model_choice(&state, &model) {
+            Ok(model) => model,
+            Err(error) => return fail_settings(&state, as_html, error),
+        }
     };
 
     let db = state.engine.db();
@@ -3906,7 +4003,227 @@ async fn save_providers(
         return audit_failure(&request_id.0, "settings.providers", error);
     }
 
+    // Ask every provider what it serves, right here. An entry that was just
+    // added has an endpoint and no catalogue, and a catalogue is the only thing
+    // that puts its models in a picker: without this the save stores the row and
+    // the operator sees the same short list the next page loads, which reads as
+    // the save having failed. It is bounded work - one `/models` call per entry,
+    // with its own timeout - and a provider that will not answer leaves the
+    // others' catalogues exactly as they were.
+    let (probed, failed) = probe_registry(&state.engine, &providers).await;
+    let _ = state.engine.auth().audit(
+        "loopback",
+        "settings.providers.probe",
+        Some(&format!(
+            "after_save=1; probed={probed}; failed={}",
+            failed.len()
+        )),
+    );
+
     see_other(SAVED_PROVIDERS)
+}
+
+/// `POST /dashboard/settings/providers/probe` - probe every configured provider
+/// now, and write each one's catalogue under its own id.
+///
+/// The registry save above only stores the endpoints; this is what turns a new
+/// provider from a name into a source of model options. Each entry is called in
+/// order, and one entry that fails does not stop the rest: a provider that will
+/// not answer leaves its neighbours' catalogues alone, and the page states which
+/// one failed.
+/// Call every provider in the registry and publish each one's catalogue.
+///
+/// Shared by the explicit button and by the registry save, because a provider
+/// that was just added has an endpoint and no catalogue: nothing has asked it
+/// what it serves, so every picker offers nothing from it and the save looks
+/// like it did not take. One entry that will not answer does not stop the rest.
+/// `POST /dashboard/settings/providers/probe` - probe every configured provider
+/// now, and write each one's catalogue under its own id.
+///
+/// The registry save above only stores the endpoints; this is what turns a new
+/// provider from a name into a source of model options. Each entry is called in
+/// order, and one entry that fails does not stop the rest: a provider that will
+/// not answer leaves its neighbours' catalogues alone, and the page states which
+/// one failed.
+/// Call every provider in the registry and publish each one's catalogue.
+///
+/// Shared by the explicit button and by the registry save, because a provider
+/// that was just added has an endpoint and no catalogue: nothing has asked it
+/// what it serves, so every picker offers nothing from it and the save looks
+/// like it did not take. One entry that will not answer does not stop the rest.
+pub async fn probe_registry(
+    engine: &crate::onboarding::SetupEngine,
+    registry: &[crate::providers::Provider],
+) -> (usize, Vec<String>) {
+    let mut probed = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+    for provider in registry {
+        let reference = match core_domain::SecretRef::try_from(provider.key_ref.as_str()) {
+            Ok(reference) => reference,
+            Err(source) => {
+                failed.push(format!("{}: {source}", provider.id));
+                continue;
+            }
+        };
+        let key = match core_runtime::provider::resolve_api_key(&reference) {
+            Ok(key) => key,
+            Err(error) => {
+                failed.push(format!("{}: {error}", provider.id));
+                continue;
+            }
+        };
+        let profile = match core_domain::ProviderProfile::new(
+            format!("registry-probe:{}", provider.id),
+            provider.base_url.clone(),
+            reference.clone(),
+        ) {
+            Ok(profile) => profile,
+            Err(error) => {
+                failed.push(format!("{}: {error}", provider.id));
+                continue;
+            }
+        };
+        match core_runtime::provider::list_models(&profile, &key).await {
+            Ok(catalog) => {
+                if let Err(error) = engine.set_provider_catalog(
+                    &provider.id,
+                    &catalog.models,
+                    &catalog.context_lengths,
+                ) {
+                    failed.push(format!("{}: {error}", provider.id));
+                    continue;
+                }
+                let _ = engine.set_provider_probe_detail(
+                    &provider.id,
+                    &catalog.dialects,
+                    &catalog.unreachable,
+                );
+                probed += 1;
+            }
+            Err(error) => {
+                failed.push(format!("{}: {error}", provider.id));
+            }
+        }
+    }
+    (probed, failed)
+}
+
+/// `POST /dashboard/settings/providers/probe` - probe every configured provider
+/// now, and write each one's catalogue under its own id.
+async fn probe_providers(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let _ = read_fields(&headers, body).await;
+
+    let registry = match chat::provider_registry(&state.engine) {
+        Ok(registry) => registry,
+        Err(error) => return fail_settings(&state, as_html, form_error(&error)),
+    };
+    if registry.is_empty() {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("providers_registry"),
+                "providers_empty",
+                "no provider is configured, so there is nothing to probe",
+            ),
+        );
+    }
+
+    let (probed, failed) = probe_registry(&state.engine, &registry).await;
+
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.providers.probe",
+        Some(&format!("probed={probed}; failed={}", failed.len())),
+    ) {
+        return audit_failure(&request_id.0, "settings.providers.probe", error);
+    }
+
+    if failed.is_empty() {
+        if as_html {
+            render_settings_ok(&state, SettingsGroup::Provider, format!("probed {probed} provider(s)"))
+        } else {
+            ok_json(serde_json::json!({ "ok": true, "probed": probed }))
+        }
+    } else {
+        fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("providers_registry"),
+                "providers_probe_failed",
+                format!("probed {probed}, failed: {}", failed.join("; ")),
+            ),
+        )
+    }
+}
+
+/// `POST /dashboard/settings/restart` - restart this daemon, from settings.
+///
+/// The device gateway already owns the self-restart; this is the same unit and
+/// the same delayed spawn, surfaced on the admin side so the operator does not
+/// have to reach for a shell when a config or environment change needs a fresh
+/// process.
+async fn restart_daemon(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let _ = read_fields(&headers, body).await;
+
+    if !state.engine.is_ready().unwrap_or(false) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "not_ready",
+                "the daemon is not ready: it will not restart itself before setup completes",
+            ),
+        );
+    }
+
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.restart",
+        Some("restart scheduled from settings"),
+    ) {
+        return audit_failure(&request_id.0, "settings.restart", error);
+    }
+
+    tokio::spawn(async move {
+        tokio::time::sleep(crate::device::gateway::restart_delay()).await;
+        match std::process::Command::new("systemctl")
+            .args(["--user", "restart", crate::device::gateway::ERIS_UNIT])
+            .status()
+        {
+            Ok(status) => tracing::info!(%status, "settings restart command issued"),
+            Err(error) => tracing::error!(%error, "settings restart command could not run"),
+        }
+    });
+
+    if as_html {
+        // A restart lands before the browser's redirect, so answer with a page
+        // that says so rather than a 303 the new process might never serve.
+        let body = crate::web::templates::restart_page();
+        page(body)
+    } else {
+        ok_json(serde_json::json!({ "ok": true, "restarting": true }))
+    }
 }
 
 /// `POST /dashboard/settings/aux` - one model per auxiliary role.
@@ -3928,13 +4245,46 @@ async fn save_aux(
         Ok(fields) => fields,
         Err(error) => return fail_settings(&state, as_html, error),
     };
-    let known = state.engine.provider_models().unwrap_or_default();
     let providers = chat::provider_registry(&state.engine).unwrap_or_default();
+    let stored_primary = state
+        .engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let primary_id = crate::providers::resolve(&providers, &stored_primary)
+        .map(|provider| provider.id.clone())
+        .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned());
 
     let mut stored_any = 0usize;
     for role in crate::aux::ROLES {
         let field_name = format!("aux_{}", role.key);
-        let value = crate::aux::store_value(field(&fields, &field_name));
+        let submitted = crate::aux::store_value(field(&fields, &field_name));
+        // A pinned model carries its own provider in front of it, so the pin and
+        // the endpoint cannot disagree. The provider select stays as the fallback
+        // for a model typed from the composer that names no provider.
+        let choice = chat::split_model_value(&submitted, &providers, &primary_id);
+        let named_provider = submitted != crate::aux::INHERIT
+            && providers
+                .iter()
+                .any(|candidate| submitted.starts_with(&format!("{}/", candidate.id)));
+        let value = choice.model.clone();
+        let provider_field = format!("aux_provider_{}", role.key);
+        let provider = if named_provider {
+            choice.provider_id.clone()
+        } else {
+            crate::aux::store_value(field(&fields, &provider_field))
+        };
+        // The catalogue that decides whether this pin would answer belongs to
+        // the provider the role runs on, not to the primary: a model published
+        // by the second provider is a valid pin on the second provider alone.
+        let role_provider = crate::aux::provider_for(Some(&provider), &providers, &primary_id)
+            .map(|candidate| candidate.id.clone())
+            .unwrap_or_else(|| primary_id.clone());
+        let known = state
+            .engine
+            .provider_catalog(&role_provider)
+            .unwrap_or_default();
         // Only chat roles are checked against the chat-model probe. A role that
         // posts to an image endpoint would be refused for appearing in the wrong
         // catalogue, which is a check of the wrong thing.
@@ -3955,8 +4305,6 @@ async fn save_aux(
                 ),
             );
         }
-        let provider_field = format!("aux_provider_{}", role.key);
-        let provider = crate::aux::store_value(field(&fields, &provider_field));
         if provider != crate::aux::INHERIT
             && !providers.iter().any(|candidate| candidate.id == provider)
         {
@@ -4028,10 +4376,21 @@ async fn save_greeting(
     // An unchecked box sends nothing at all, so absence is the off signal.
     let enabled = crate::greeting::enabled(Some(field(&fields, "greeting_enabled")));
     let model = crate::greeting::store_model(field(&fields, "greeting_model"));
-    let known = state.engine.provider_models().unwrap_or_default();
+    let registry = chat::provider_registry(&state.engine).unwrap_or_default();
+    let primary = state
+        .engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let choice = chat::split_model_value(&model, &registry, &primary);
+    let known = state
+        .engine
+        .provider_catalog(&choice.provider_id)
+        .unwrap_or_default();
     if model != crate::greeting::INHERIT
         && !known.is_empty()
-        && !known.iter().any(|candidate| candidate == &model)
+        && !known.iter().any(|candidate| candidate == &choice.model)
     {
         return fail_settings(
             &state,
@@ -4040,7 +4399,8 @@ async fn save_greeting(
                 Some("greeting_model"),
                 "greeting_model_unknown",
                 format!(
-                    "`{model}` is not a model the last probe returned, so no line would be written"
+                    "`{}` is not in the list `{}` returned, so no line would be written",
+                    choice.model, choice.provider_id
                 ),
             ),
         );
@@ -4400,6 +4760,51 @@ fn validate_provider(
     Ok((base_url, reference.wire(), model.to_owned()))
 }
 
+/// Refuse a default model that no configured provider publishes.
+///
+/// The check is per provider rather than global, because that is now the shape
+/// of the data: a picker value names its provider, and the list it is checked
+/// against is the one that provider's own probe published. A provider that has
+/// never been probed has an empty list, and an empty list means no check rather
+/// than a refusal: the endpoint is the authority until it has said otherwise.
+///
+/// # Errors
+///
+/// A [`FormError`] naming `model_selection` and the provider that would not
+/// serve the model.
+fn check_model_choice(state: &AppState, value: &str) -> Result<String, FormError> {
+    if value.trim().is_empty() {
+        return Err(FormError::new(
+            Some("model_selection"),
+            "provider_model_required",
+            "pick a model, or type a model id this endpoint serves",
+        ));
+    }
+    let registry = chat::provider_registry(&state.engine).unwrap_or_default();
+    let primary = state
+        .engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let choice = chat::split_model_value(value, &registry, &primary);
+    let known = state
+        .engine
+        .provider_catalog(&choice.provider_id)
+        .unwrap_or_default();
+    if !known.is_empty() && !known.iter().any(|candidate| candidate == &choice.model) {
+        return Err(FormError::new(
+            Some("model_selection"),
+            "model_not_in_probe",
+            format!(
+                "`{}` is not in the list {} returned, so no turn would answer",
+                choice.model, choice.provider_id
+            ),
+        ));
+    }
+    Ok(value.trim().to_owned())
+}
+
 /// Whether a string is a shell-style environment variable name in capitals.
 fn is_env_var_name(name: &str) -> bool {
     let mut characters = name.chars();
@@ -4535,17 +4940,33 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         })
         .collect();
 
-    let models = state.engine.provider_models().unwrap_or_default();
+    // The composer's picker offers every configured provider's models, qualified
+    // by provider id, so choosing a model on the second provider is one click
+    // rather than a settings change.
+    let models = chat::model_options(&state.engine);
     let selected_model = if model.is_empty() {
-        models.first().cloned().unwrap_or_default()
+        models
+            .first()
+            .map(|(value, _)| value.clone())
+            .unwrap_or_default()
     } else {
         model
     };
+    let bare = chat::split_model_value(
+        &selected_model,
+        &chat::provider_registry(&state.engine).unwrap_or_default(),
+        &state
+            .engine
+            .setting(crate::providers::SETTING_PRIMARY)
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+    );
     let context_window = state
         .engine
-        .provider_contexts()
+        .provider_contexts_for(&bare.provider_id)
         .ok()
-        .and_then(|contexts| contexts.get(&selected_model).copied());
+        .and_then(|contexts| contexts.get(&bare.model).copied());
     let mut chrome = state.chrome();
     chrome.current_conversation = Some(conversation.clone());
     let title = chat::conversations(db, chat::SESSION_LIMIT)
@@ -4686,10 +5107,14 @@ fn greeting_config(state: &AppState) -> Option<chat::TurnConfig> {
         .setting(crate::greeting::SETTING_GREETING_MODEL)
         .ok()
         .flatten();
-    Some(chat::TurnConfig {
-        model: crate::greeting::model_for(stored.as_deref(), &primary.model),
-        ..primary
-    })
+    let mut config = primary;
+    let model = crate::greeting::model_for(stored.as_deref(), &config.model);
+    // The line follows the chat model when nothing is pinned, and a pinned model
+    // carries its own provider in front of it. Either way the endpoint and the
+    // request shape resolve together with the model, so a greeting written by a
+    // pinned model goes to the provider that model belongs to.
+    let _ = chat::apply_model(&mut config, &state.engine, &model);
+    Some(config)
 }
 
 /// `GET /dashboard/chat` - the newest conversation.
@@ -5664,7 +6089,7 @@ fn set_model(
                 .to_owned(),
         ));
     }
-    let known = match state.engine.provider_models() {
+    let known = match state.engine.primary_provider_catalog() {
         Ok(known) => known,
         Err(error) => {
             return Err(FormError::new(
@@ -5852,11 +6277,24 @@ async fn chat_send(
         Ok(model) => model,
         Err(error) => return fail_dashboard(&state, wants_html(&headers), error),
     };
+    // The window belongs to the provider that serves the chosen model, not to
+    // the primary: a `provider/model` pick on a second provider must claim that
+    // provider's window, or the context meter lies about what the turn can hold.
+    let bare = chat::split_model_value(
+        &model,
+        &chat::provider_registry(&state.engine).unwrap_or_default(),
+        &state
+            .engine
+            .setting(crate::providers::SETTING_PRIMARY)
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+    );
     let context_window = state
         .engine
-        .provider_contexts()
+        .provider_contexts_for(&bare.provider_id)
         .ok()
-        .and_then(|contexts| contexts.get(&model).copied());
+        .and_then(|contexts| contexts.get(&bare.model).copied());
 
     let db = state.engine.db().clone();
     let conversation = match chat::resolve_conversation(&db, Some(field(&fields, "conversation"))) {
@@ -5943,7 +6381,13 @@ async fn chat_send(
     // The turn may run on a model other than the stored default, so the turn
     // config is rebuilt with the chosen id.
     let mut config = config;
-    config.model = model.clone();
+    if let Err(error) = chat::apply_model(&mut config, &state.engine, &model) {
+        return refusal(FormError::new(
+            None,
+            "provider_unreadable",
+            error.to_string(),
+        ));
+    }
 
     // The first question names the conversation, and the rail bumps it to the top.
     let _ = chat::name_from_first_message(&db, &conversation, &body_text);
@@ -6039,21 +6483,34 @@ fn resolve_chat_model(
             "that model id is longer than any endpoint serves",
         ));
     }
-    match state.engine.provider_models() {
-        Ok(known) if !known.is_empty() => {
-            if known.iter().any(|id| id == requested) {
-                Ok(requested.to_owned())
-            } else {
-                Err(FormError::new(
-                    Some("model"),
-                    "model_not_in_probe",
-                    format!("`{requested}` is not in the model list this endpoint returned"),
-                ))
-            }
-        }
-        // No probe has run. The endpoint is the authority, so the request is
-        // taken at face value rather than refused for want of a list.
-        _ => Ok(requested.to_owned()),
+    let registry = chat::provider_registry(&state.engine).unwrap_or_default();
+    let primary = state
+        .engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let choice = chat::split_model_value(requested, &registry, &primary);
+    let known = state
+        .engine
+        .provider_catalog(&choice.provider_id)
+        .unwrap_or_default();
+    // No probe has run for this provider. The endpoint is the authority, so the
+    // request is taken at face value rather than refused for want of a list.
+    if known.is_empty() {
+        return Ok(requested.to_owned());
+    }
+    if known.iter().any(|id| id == &choice.model) {
+        Ok(requested.to_owned())
+    } else {
+        Err(FormError::new(
+            Some("model"),
+            "model_not_in_probe",
+            format!(
+                "`{}` is not in the model list {} returned, so no turn would answer",
+                choice.model, choice.provider_id
+            ),
+        ))
     }
 }
 
@@ -6388,7 +6845,7 @@ pub(crate) async fn run_scheduled(
     let model = config.model.clone();
     let context_window = state
         .engine
-        .provider_contexts()
+        .primary_provider_contexts()
         .ok()
         .and_then(|contexts| contexts.get(&model).copied());
 

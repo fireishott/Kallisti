@@ -1482,7 +1482,7 @@ pub async fn commands(State(service): State<DeviceService>, headers: HeaderMap) 
             "name": model,
             "provider": provider,
             "contextWindow": engine
-                .provider_contexts()
+                .primary_provider_contexts()
                 .ok()
                 .and_then(|contexts| contexts.get(&model).copied()),
         },

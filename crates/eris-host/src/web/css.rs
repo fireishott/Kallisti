@@ -731,6 +731,19 @@ p { margin: 0 0 14px; }
   margin: 0 0 18px;
 }
 .card.tight { padding: 16px 18px; }
+
+/* A service card: the two settings that change the process itself rather than
+   the answer it gives. The accent is the only warning colour on the page, so the
+   restart reads as the heavier of the two actions without a modal in front of
+   it. */
+.card.service { border-left: 3px solid var(--warn); }
+.card.service > h2 { border-bottom-color: var(--line); }
+.restart-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.restart-actions button.danger { padding-inline: 18px; }
+@media (max-width: 620px) {
+  .restart-actions { flex-direction: column; align-items: stretch; }
+  .restart-actions button { width: 100%; }
+}
 .card > h2 {
   margin: 0 0 16px;
   padding-bottom: 13px;

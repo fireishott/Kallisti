@@ -255,6 +255,13 @@ pub struct ProviderConfig {
     pub key_ref: SecretRef,
     /// The default model id.
     pub model: String,
+    /// Which request shape this endpoint serves this model in.
+    ///
+    /// Read from the same per-provider probe row the browser reads, so a phone
+    /// turn and a browser turn ask the same endpoint the same way. A row that
+    /// does not name the shape leaves the OpenAI shape standing, which is what
+    /// every provider here spoke before the field existed.
+    pub dialect: core_domain::ApiDialect,
 }
 
 /// Everything about a turn that is decided before it starts.
@@ -685,11 +692,13 @@ impl TurnStore {
             )
             .optional()
         };
-        let (base_url, key_ref, model) = self.db.with_conn(|conn| {
+        let (base_url, key_ref, model, registry, primary) = self.db.with_conn(|conn| {
             Ok((
                 read(conn, SETTING_PROVIDER_BASE_URL)?,
                 read(conn, SETTING_PROVIDER_KEY_REF)?,
                 read(conn, SETTING_MODEL)?,
+                read(conn, crate::providers::SETTING_REGISTRY)?,
+                read(conn, crate::providers::SETTING_PRIMARY)?,
             ))
         })?;
         let (Some(base_url), Some(key_ref), Some(model)) = (base_url, key_ref, model) else {
@@ -698,10 +707,42 @@ impl TurnStore {
         let Ok(key_ref) = SecretRef::try_from(key_ref.as_str()) else {
             return Ok(None);
         };
+        // The stored value is `provider/model`, and the provider half is a
+        // provider only when the registry says so. The registry rows are read
+        // here rather than through the engine because this is the worker's own
+        // read: it holds the database, not the engine.
+        let registry = registry
+            .and_then(|raw| crate::providers::parse(&raw).ok())
+            .filter(|providers| !providers.is_empty())
+            .unwrap_or_else(|| crate::providers::seed(&base_url, &key_ref.wire()));
+        let primary = primary.unwrap_or_default();
+        let choice = crate::web::chat::split_model_value(&model, &registry, &primary);
+        let dialect = self.db.with_conn(|conn| {
+            read(
+                conn,
+                &crate::onboarding::SetupEngine::provider_dialects_key(&choice.provider_id),
+            )
+        })?;
+        let dialect = dialect
+            .and_then(|raw| {
+                serde_json::from_str::<std::collections::BTreeMap<String, core_domain::ApiDialect>>(
+                    &raw,
+                )
+                .ok()
+            })
+            .and_then(|map| map.get(&choice.model).copied())
+            .unwrap_or_else(|| {
+                registry
+                    .iter()
+                    .find(|provider| provider.id == choice.provider_id)
+                    .map(crate::providers::dialect_of)
+                    .unwrap_or_default()
+            });
         Ok(Some(ProviderConfig {
             base_url,
             key_ref,
             model,
+            dialect,
         }))
     }
 
@@ -1310,6 +1351,7 @@ impl TurnHub {
             base_url: config.base_url,
             key_ref: config.key_ref,
             model: config.model,
+            dialect: config.dialect,
         };
 
         // The turn itself: the same `run_turn_with_key` the browser drives, so a

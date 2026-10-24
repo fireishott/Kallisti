@@ -57,6 +57,13 @@ pub const ERIS_UNIT: &str = "kallisti-eris";
 /// polling health does not watch a dead process for very long.
 const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// The restart delay, exposed for the admin settings route which reuses the same
+/// schedule. One delay, one behaviour, wherever the operator asks for a restart.
+#[must_use]
+pub fn restart_delay() -> std::time::Duration {
+    RESTART_DELAY
+}
+
 /// The in-flight work, read from the durable job table.
 ///
 /// A restart interrupts anything in `queued` or `running`. The web dashboard
@@ -143,7 +150,7 @@ pub async fn gw_health(State(service): State<DeviceService>, headers: HeaderMap)
     let engine = service.engine();
     let ready = engine.is_ready().unwrap_or(false);
     let models_known = engine
-        .provider_models()
+        .primary_provider_catalog()
         .map(|models| !models.is_empty())
         .unwrap_or(false);
     let (running, queued) = active_jobs(engine.db());

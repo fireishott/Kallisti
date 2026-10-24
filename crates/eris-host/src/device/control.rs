@@ -162,8 +162,14 @@ pub async fn models(State(service): State<DeviceService>, headers: HeaderMap) ->
 
 /// The snapshot `GET /v1/models` answers with.
 fn read_models(engine: &SetupEngine) -> Result<serde_json::Value, DeviceError> {
-    let catalog = engine.provider_models().map_err(settings_unavailable)?;
-    let contexts = engine.provider_contexts().map_err(settings_unavailable)?;
+    // The primary provider's own catalogue: this route reports the models the
+    // endpoint a turn resolves to has published, keyed by that provider.
+    let catalog = engine
+        .primary_provider_catalog()
+        .map_err(settings_unavailable)?;
+    let contexts = engine
+        .primary_provider_contexts()
+        .map_err(settings_unavailable)?;
     let pinned = engine
         .model()
         .map_err(settings_unavailable)?
@@ -224,8 +230,8 @@ pub async fn set_model(
         .into_response();
     };
     let engine = service.engine();
-    let known = engine.provider_models().unwrap_or_default();
-    let model = match engine.check_model(raw) {
+    let known = engine.primary_provider_catalog().unwrap_or_default();
+    let model = match engine.check_primary_model(raw) {
         Ok(model) => model,
         Err(_) => {
             let allowed = if known.is_empty() {
@@ -744,7 +750,20 @@ fn read_aux(engine: &SetupEngine) -> Result<serde_json::Value, DeviceError> {
         "ok": true,
         "primary_model": primary_model,
         "roles": roles,
-        "models": engine.provider_models().map_err(settings_unavailable)?,
+        "models": engine
+            .primary_provider_catalog()
+            .map_err(settings_unavailable)?,
+        // Every provider's own list, so a client can offer the pin each one
+        // would actually answer. `models` above stays the primary's, which is
+        // what a role that follows the primary pins against.
+        "catalogs": engine
+            .catalog_map(
+                &providers
+                    .iter()
+                    .map(|candidate| candidate.id.clone())
+                    .collect::<Vec<String>>()
+            )
+            .map_err(settings_unavailable)?,
         "providers": providers_json(&providers, primary_provider.as_deref()),
     }))
 }
@@ -795,15 +814,27 @@ pub async fn set_aux(
     };
 
     let engine = service.engine();
-    let known_models = engine.provider_models().unwrap_or_default();
-    let (providers, _) = match registry(engine) {
+    let (providers, primary_stored) = match registry(engine) {
         Ok(registry) => registry,
         Err(error) => return error.into_response(),
     };
+    let primary_id = primary_stored.unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned());
+    // The provider this role runs on, which is the one whose catalogue decides
+    // whether the pin would answer. A model the second provider published is a
+    // valid pin on the second provider and on nothing else.
+    let role_provider = fields
+        .get("provider")
+        .map(|raw| aux::store_value(raw))
+        .and_then(|value| {
+            aux::provider_for(Some(&value), &providers, &primary_id)
+                .map(|candidate| candidate.id.clone())
+        })
+        .unwrap_or_else(|| primary_id.clone());
     let mut write: Vec<(String, String)> = Vec::new();
 
     if let Some(raw) = fields.get("model") {
         let value = aux::store_value(raw);
+        let known_models = engine.provider_catalog(&role_provider).unwrap_or_default();
         if role.probe_validated
             && value != aux::INHERIT
             && !known_models.is_empty()
@@ -891,6 +922,7 @@ mod tests {
             name: "Alpha".to_owned(),
             base_url: "http://127.0.0.1:20128/v1".to_owned(),
             key_ref: "env:NINEROUTER_API_KEY".to_owned(),
+            dialect: None,
         }];
         let rendered = providers_json(&registry, Some("alpha")).to_string();
         assert!(rendered.contains("\"id\":\"alpha\""), "{rendered}");
@@ -908,12 +940,14 @@ mod tests {
                 name: "Alpha".to_owned(),
                 base_url: "http://a/v1".to_owned(),
                 key_ref: "env:A".to_owned(),
+                dialect: None,
             },
             Provider {
                 id: "beta".to_owned(),
                 name: "Beta".to_owned(),
                 base_url: "http://b/v1".to_owned(),
                 key_ref: "env:B".to_owned(),
+                dialect: None,
             },
         ];
         let rows = providers_json(&registry, Some("beta"));

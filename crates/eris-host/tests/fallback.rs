@@ -79,6 +79,7 @@ fn config(url: String, model: &str) -> TurnConfig {
         base_url: url,
         key_ref: SecretRef::Env("KALLISTI_FALLBACK_TEST_KEY".to_owned()),
         model: model.to_owned(),
+        dialect: core_domain::ApiDialect::ChatCompletions,
     }
 }
 

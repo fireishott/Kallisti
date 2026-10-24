@@ -35,8 +35,11 @@ const PERMISSIONS_POST: &str = "/dashboard/settings/permissions";
 
 /// A provider form body, with the reference spelled the way the rule requires.
 fn provider_body(base_url: &str, key_ref: &str, model: &str) -> String {
+    // `model_selection` is sent empty so the typed-model fallback path is what
+    // the test exercises: a hand-typed id is stored as given, exactly as the
+    // settings page does when the picker is left on its empty option.
     format!(
-        "base_url={}&api_key_ref={}&model={}",
+        "base_url={}&api_key_ref={}&model_selection=&model={}",
         encode(base_url),
         encode(key_ref),
         encode(model)
@@ -217,6 +220,9 @@ fn saving_the_provider_persists_and_audits() {
         engine.provider_key_ref().expect("read").as_deref(),
         Some("env:KALLISTI_TEST_KEY")
     );
+    // The typed field is the authority when the picker is empty, so the bare id
+    // is stored as given rather than qualified into the default provider's
+    // catalogue. The stored row is exactly what was typed.
     assert_eq!(
         engine.model().expect("read").as_deref(),
         Some("model-b"),

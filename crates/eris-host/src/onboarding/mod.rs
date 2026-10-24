@@ -706,7 +706,309 @@ impl SetupEngine {
         self.setting(SETTING_PROVIDER_KEY_REF)
     }
 
+    /// One provider's own catalogue, keyed by provider id.
+    ///
+    /// Before this existed the daemon had a single `provider.models` row that
+    /// every consumer read, which was true while there was one provider and a
+    /// lie the moment the registry could hold two: a model published by the
+    /// second provider was refused as "not in the probe". The keyed row is
+    /// written by the probe that ran against that provider, and the legacy row
+    /// is the seed for the provider it was written for.
+    #[must_use]
+    pub fn provider_catalog_key(provider_id: &str) -> String {
+        format!("provider.catalog.{provider_id}")
+    }
+
+    /// One provider's declared context windows, keyed by provider id.
+    #[must_use]
+    pub fn provider_contexts_key(provider_id: &str) -> String {
+        format!("provider.contexts.{provider_id}")
+    }
+
+    /// One provider's per-model request shape, keyed by provider id.
+    ///
+    /// A catalogue lists what a gateway serves and says nothing about how to ask
+    /// for it, and one gateway here serves two shapes at once: its Claude models
+    /// answer only on `/messages` and everything else on `/chat/completions`.
+    /// The probe measures that per model, so the answer is stored per model
+    /// rather than inferred from the provider it came from.
+    #[must_use]
+    pub fn provider_dialects_key(provider_id: &str) -> String {
+        format!("provider.dialects.{provider_id}")
+    }
+
+    /// The models one provider listed but refused to serve, keyed by provider id.
+    ///
+    /// Listing is not serving: a probe found seven models this gateway names and
+    /// will not answer for. Storing that is what lets a picker mark them instead
+    /// of offering a model that 404s the first turn.
+    #[must_use]
+    pub fn provider_unreachable_key(provider_id: &str) -> String {
+        format!("provider.unreachable.{provider_id}")
+    }
+
+    /// Seed the keyed rows from the legacy rows, once.
+    ///
+    /// Every install that predates this carries a single probe under
+    /// `provider.models`, and that probe was taken against whichever endpoint
+    /// the three legacy rows name. So the seed is exact rather than a guess: it
+    /// copies the legacy catalogue to the provider that endpoint belongs to.
+    ///
+    /// Returns the provider ids it wrote, so a caller can report what happened
+    /// rather than assume it.
+    pub fn migrate_provider_catalog(&self) -> Result<Vec<String>, OnboardingError> {
+        let mut written: Vec<String> = Vec::new();
+        let Some(models) = self.setting(SETTING_PROVIDER_MODELS)? else {
+            return Ok(written);
+        };
+        if models.trim().is_empty() {
+            return Ok(written);
+        }
+        let owner = self
+            .setting(SETTING_PROVIDER_KEY_REF)?
+            .map(|key_ref| crate::providers::legacy_provider_id(&self.providers(), &key_ref))
+            .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned());
+        let key = Self::provider_catalog_key(&owner);
+        if self.setting(&key)?.is_none() {
+            self.set_setting(&key, &models)?;
+            written.push(owner.clone());
+        }
+        if let Some(contexts) = self.setting(SETTING_PROVIDER_CONTEXTS)?
+            && self.setting(&Self::provider_contexts_key(&owner))?.is_none()
+        {
+            self.set_setting(&Self::provider_contexts_key(&owner), &contexts)?;
+        }
+        Ok(written)
+    }
+
+    /// The registry, as this engine reads it. A registry that does not parse is
+    /// an empty list here: the caller that needs the legacy fallback asks
+    /// `chat::provider_registry`, which owns that rule.
+    fn providers(&self) -> Vec<crate::providers::Provider> {
+        self.setting(crate::providers::SETTING_REGISTRY)
+            .ok()
+            .flatten()
+            .and_then(|raw| crate::providers::parse(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    /// One provider's catalogue, falling back to the legacy row for the
+    /// provider the legacy probe was taken against.
+    ///
+    /// An empty result is a real answer: it means no probe has published a list
+    /// for that provider, which is a different state from a probe that published
+    /// an empty one, and callers say so.
+    pub fn provider_catalog(&self, provider_id: &str) -> Result<Vec<String>, OnboardingError> {
+        if let Some(json) = self.setting(&Self::provider_catalog_key(provider_id))? {
+            return Ok(serde_json::from_str(&json).unwrap_or_default());
+        }
+        if self.legacy_probe_owner()?.as_deref() == Some(provider_id) {
+            return self.provider_models();
+        }
+        Ok(Vec::new())
+    }
+
+    /// One provider's context windows, on the same fallback rule.
+    pub fn provider_contexts_for(
+        &self,
+        provider_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, u64>, OnboardingError> {
+        if let Some(json) = self.setting(&Self::provider_contexts_key(provider_id))? {
+            return Ok(serde_json::from_str(&json).unwrap_or_default());
+        }
+        if self.legacy_probe_owner()?.as_deref() == Some(provider_id) {
+            return self.provider_contexts();
+        }
+        Ok(std::collections::BTreeMap::new())
+    }
+
+    /// The catalogue of the primary provider.
+    ///
+    /// This is what a model pin with no provider of its own applies to:
+    /// `provider.model` names the model a turn runs on, and a turn resolves its
+    /// endpoint through the primary. So the check a pin gets is the primary's
+    /// own catalogue. An install with one provider reads exactly what it always
+    /// read, because the single entry is the primary and the keyed row falls
+    /// back to the legacy one it was seeded from.
+    pub fn primary_provider_catalog(&self) -> Result<Vec<String>, OnboardingError> {
+        let owner = self.primary_provider_id()?;
+        let catalog = self.provider_catalog(&owner)?;
+        if !catalog.is_empty() || self.legacy_probe_owner()?.is_some() {
+            return Ok(catalog);
+        }
+        // No key reference is stored, so nothing on this daemon says which
+        // provider the legacy probe belonged to - which is a shape that can only
+        // hold one provider. The legacy rows are read rather than leaving a pin
+        // that looks unpublished on an install that has published one.
+        self.provider_models()
+    }
+
+    /// The context windows of the primary provider, on the same rule.
+    pub fn primary_provider_contexts(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, u64>, OnboardingError> {
+        let owner = self.primary_provider_id()?;
+        let contexts = self.provider_contexts_for(&owner)?;
+        if !contexts.is_empty() || self.legacy_probe_owner()?.is_some() {
+            return Ok(contexts);
+        }
+        self.provider_contexts()
+    }
+
+    /// The id of the primary provider, resolved the way a turn resolves it.
+    ///
+    /// A registry that does not parse, or a primary id that names no entry,
+    /// yields `default` - the same fallback [`crate::providers::resolve`] applies,
+    /// so the settings page and a turn never disagree about which provider is in
+    /// force.
+    fn primary_provider_id(&self) -> Result<String, OnboardingError> {
+        let registry = self.providers();
+        let stored = self
+            .setting(crate::providers::SETTING_PRIMARY)?
+            .unwrap_or_default();
+        Ok(crate::providers::resolve(&registry, &stored)
+            .map(|provider| provider.id.clone())
+            .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned()))
+    }
+
+    /// The provider a probe writes for.
+    ///
+    /// The endpoint a probe just called is named by the key reference it used,
+    /// so that reference is what identifies whose catalogue this is. A registry
+    /// that matches nothing yields `default`, which is the id the legacy rows
+    /// themselves belong to.
+    pub fn probe_owner(&self) -> Result<String, OnboardingError> {
+        Ok(self
+            .legacy_probe_owner()?
+            .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned()))
+    }
+
+    /// Every named provider's catalogue, for a client that shows more than one.
+    ///
+    /// Keyed by provider id, in the order asked for. A provider with no probe of
+    /// its own is present with an empty list rather than absent: "this provider
+    /// has published nothing" is an answer, and a missing key would make a
+    /// client guess at the difference.
+    pub fn catalog_map(
+        &self,
+        provider_ids: &[String],
+    ) -> Result<std::collections::BTreeMap<String, Vec<String>>, OnboardingError> {
+        let mut map = std::collections::BTreeMap::new();
+        for id in provider_ids {
+            map.insert(id.clone(), self.provider_catalog(id)?);
+        }
+        Ok(map)
+    }
+
+    /// Which provider the legacy `provider.models` row belongs to.
+    fn legacy_probe_owner(&self) -> Result<Option<String>, OnboardingError> {
+        let Some(key_ref) = self.setting(SETTING_PROVIDER_KEY_REF)? else {
+            return Ok(None);
+        };
+        Ok(Some(crate::providers::legacy_provider_id(
+            &self.providers(),
+            &key_ref,
+        )))
+    }
+
+    /// Record one provider's catalogue and context windows.
+    ///
+    /// The legacy rows are written too when this is the provider the legacy rows
+    /// already described, so an older client reading `provider.models` through
+    /// the device API keeps seeing the endpoint it is actually talking to. For
+    /// any other provider the legacy rows are left alone: clobbering them would
+    /// make a second provider's catalogue masquerade as the first one's.
+    pub fn set_provider_catalog(
+        &self,
+        provider_id: &str,
+        models: &[String],
+        contexts: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<(), OnboardingError> {
+        let catalog = serde_json::to_string(models).unwrap_or_else(|_| "[]".to_owned());
+        self.set_setting(&Self::provider_catalog_key(provider_id), &catalog)?;
+        let windows = serde_json::to_string(contexts).unwrap_or_else(|_| "{}".to_owned());
+        self.set_setting(&Self::provider_contexts_key(provider_id), &windows)?;
+        self.set_setting(
+            SETTING_PROVIDER_PROBED_AT,
+            &crate::auth::format_timestamp(crate::auth::now()),
+        )?;
+        if self.legacy_probe_owner()?.as_deref() == Some(provider_id)
+            || self.setting(SETTING_PROVIDER_MODELS)?.is_none()
+        {
+            self.set_setting(SETTING_PROVIDER_MODELS, &catalog)?;
+            self.set_setting(SETTING_PROVIDER_CONTEXTS, &windows)?;
+        }
+        Ok(())
+    }
+
+    /// Record one provider's per-model request shapes and its dead models.
+    ///
+    /// Written by the same probe that wrote the catalogue, so the three keyed
+    /// rows for one provider always describe one call. The legacy rows are not
+    /// touched: they carry no place to put either fact.
+    pub fn set_provider_probe_detail(
+        &self,
+        provider_id: &str,
+        dialects: &std::collections::BTreeMap<String, core_domain::ApiDialect>,
+        unreachable: &[String],
+    ) -> Result<(), OnboardingError> {
+        let shapes = serde_json::to_string(dialects).unwrap_or_else(|_| "{}".to_owned());
+        self.set_setting(&Self::provider_dialects_key(provider_id), &shapes)?;
+        let dead = serde_json::to_string(unreachable).unwrap_or_else(|_| "[]".to_owned());
+        self.set_setting(&Self::provider_unreachable_key(provider_id), &dead)
+    }
+
+    /// One provider's per-model request shapes.
+    pub fn provider_dialects(
+        &self,
+        provider_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, core_domain::ApiDialect>, OnboardingError> {
+        let Some(json) = self.setting(&Self::provider_dialects_key(provider_id))? else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+        Ok(serde_json::from_str(&json).unwrap_or_default())
+    }
+
+    /// The request shape to use for one model on one provider.
+    ///
+    /// The model's own declared shape wins, because that is what the endpoint
+    /// said about itself. With no declaration the provider's registry entry
+    /// decides, and with neither the OpenAI shape stands: the same three-step
+    /// fallback a turn has always had, now stated once.
+    pub fn provider_dialect_for(
+        &self,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<core_domain::ApiDialect, OnboardingError> {
+        if let Some(dialect) = self.provider_dialects(provider_id)?.get(model) {
+            return Ok(*dialect);
+        }
+        let entry = self
+            .providers()
+            .into_iter()
+            .find(|provider| provider.id == provider_id);
+        Ok(entry
+            .as_ref()
+            .map(crate::providers::dialect_of)
+            .unwrap_or_default())
+    }
+
+    /// The models one provider listed and refused, as `id\treason` lines.
+    pub fn provider_unreachable(
+        &self,
+        provider_id: &str,
+    ) -> Result<Vec<String>, OnboardingError> {
+        let Some(json) = self.setting(&Self::provider_unreachable_key(provider_id))? else {
+            return Ok(Vec::new());
+        };
+        Ok(serde_json::from_str(&json).unwrap_or_default())
+    }
+
     /// The model ids the last probe returned.
+    ///
+    /// This stays, and stays meaning exactly what it meant: the catalogue of the
+    /// provider the legacy rows describe. A caller that knows which provider it
+    /// is asking about uses [`Self::provider_catalog`] instead.
     pub fn provider_models(&self) -> Result<Vec<String>, OnboardingError> {
         let Some(json) = self.setting(SETTING_PROVIDER_MODELS)? else {
             return Ok(Vec::new());
@@ -753,6 +1055,32 @@ impl SetupEngine {
             return Err(OnboardingError::ModelRequired);
         }
         if !self.provider_models()?.iter().any(|known| known == model) {
+            return Err(OnboardingError::ModelNotInProbe);
+        }
+        Ok(model.to_owned())
+    }
+
+    /// Check a model id against the primary provider's own catalogue.
+    ///
+    /// Same rule as [`Self::check_model`], asked of the provider a turn will
+    /// actually resolve to. The difference is real on an install with two
+    /// providers: a model the second provider published is a valid pin under
+    /// this check and was refused under the old one.
+    ///
+    /// # Errors
+    ///
+    /// [`OnboardingError::ModelRequired`] for a blank id, and
+    /// [`OnboardingError::ModelNotInProbe`] for an id outside the primary's list.
+    pub fn check_primary_model(&self, model: &str) -> Result<String, OnboardingError> {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(OnboardingError::ModelRequired);
+        }
+        if !self
+            .primary_provider_catalog()?
+            .iter()
+            .any(|known| known == model)
+        {
             return Err(OnboardingError::ModelNotInProbe);
         }
         Ok(model.to_owned())
@@ -1003,7 +1331,7 @@ impl SetupEngine {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn fixture() -> (tempfile::TempDir, SetupEngine) {
@@ -1012,6 +1340,30 @@ mod tests {
         let db = Db::open(root.join("state/eris.db")).expect("db opens");
         let paths = Paths::for_root(root.join("root"));
         (dir, SetupEngine::new(db, paths))
+    }
+
+    /// A database with the two-provider registry already stored.
+    ///
+    /// The chat layer's own tests need a real engine rather than a stub: what
+    /// they check is that a model choice resolves its provider out of the
+    /// registry, and a hand-built struct would only prove the test agrees with
+    /// itself.
+    pub(crate) fn fixture_for_chat() -> (tempfile::TempDir, SetupEngine) {
+        let (dir, engine) = fixture();
+        ready_engine(&engine);
+        two_providers(&engine, "default");
+        (dir, engine)
+    }
+
+    /// Walk the wizard to a ready daemon, the way the existing tests do: the
+    /// passphrase is generated once, then claimed.
+    fn ready_engine(engine: &SetupEngine) {
+        let value = engine
+            .ensure_first_run()
+            .expect("first run")
+            .generated
+            .expect("a passphrase was generated");
+        claim_through_permissions(engine, &value);
     }
 
     fn claim_through_permissions(engine: &SetupEngine, value: &str) {
@@ -1301,5 +1653,119 @@ mod tests {
         assert!(!engine.device_listener_enabled().expect("default"));
         engine.set_device_listener(true).expect("enable");
         assert!(engine.device_listener_enabled().expect("enabled"));
+    }
+
+    /// A registry with two providers, the second of them primary.
+    fn two_providers(engine: &SetupEngine, primary: &str) {
+        let registry = r#"[{"id":"default","name":"9router",
+             "base_url":"http://127.0.0.1:20128/v1","key_ref":"env:NINEROUTER_API_KEY"},
+            {"id":"commandcode","name":"Command Code",
+             "base_url":"https://api.commandcode.ai/provider/v1",
+             "key_ref":"env:COMMANDCODE_API_KEY"}]"#;
+        crate::providers::parse(registry).expect("registry validates");
+        engine
+            .set_setting(crate::providers::SETTING_REGISTRY, registry)
+            .expect("registry stores");
+        engine
+            .set_setting(crate::providers::SETTING_PRIMARY, primary)
+            .expect("primary stores");
+    }
+
+    fn publish(engine: &SetupEngine, provider: &str, models: &[&str]) {
+        let models: Vec<String> = models.iter().map(|id| (*id).to_owned()).collect();
+        engine
+            .set_provider_catalog(provider, &models, &std::collections::BTreeMap::new())
+            .expect("catalogue stores");
+    }
+
+    #[test]
+    fn a_second_providers_probe_does_not_overwrite_the_firsts() {
+        let (_dir, engine) = fixture();
+        ready_engine(&engine);
+        publish(&engine, "commandcode", &["cc/model-one", "cc/model-two"]);
+
+        assert_eq!(
+            engine.provider_catalog("commandcode").expect("read"),
+            vec!["cc/model-one".to_owned(), "cc/model-two".to_owned()]
+        );
+        // The provider the legacy probe was taken against still reads its own
+        // list, and the legacy row itself is untouched.
+        assert_eq!(
+            engine.provider_catalog("default").expect("read"),
+            vec!["ds/deepseek-v4-flash".to_owned()]
+        );
+        assert_eq!(
+            engine.provider_models().expect("read"),
+            vec!["ds/deepseek-v4-flash".to_owned()],
+            "a second provider's catalogue must not masquerade as the first one's"
+        );
+    }
+
+    #[test]
+    fn the_primary_catalogue_follows_the_primary_not_the_legacy_row() {
+        let (_dir, engine) = fixture();
+        ready_engine(&engine);
+        two_providers(&engine, "default");
+        publish(&engine, "commandcode", &["cc/model-one"]);
+
+        assert_eq!(
+            engine.primary_provider_catalog().expect("read"),
+            vec!["ds/deepseek-v4-flash".to_owned()],
+            "while the default is primary, its own list is what a pin is checked against"
+        );
+
+        two_providers(&engine, "commandcode");
+        assert_eq!(
+            engine.primary_provider_catalog().expect("read"),
+            vec!["cc/model-one".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_model_the_second_provider_published_is_a_valid_pin_once_it_is_primary() {
+        let (_dir, engine) = fixture();
+        ready_engine(&engine);
+        two_providers(&engine, "default");
+        publish(&engine, "commandcode", &["cc/model-one"]);
+
+        // The legacy check asks the provider the legacy probe belongs to, which
+        // is what an older install means by it.
+        assert!(
+            engine.check_model("cc/model-one").is_err(),
+            "the default provider never published that id"
+        );
+        assert!(engine.check_model("ds/deepseek-v4-flash").is_ok());
+
+        two_providers(&engine, "commandcode");
+        assert_eq!(
+            engine.check_primary_model("cc/model-one").expect("accepted"),
+            "cc/model-one"
+        );
+        assert!(
+            engine.check_primary_model("ds/deepseek-v4-flash").is_err(),
+            "the new primary never published the old provider's id"
+        );
+    }
+
+    #[test]
+    fn the_legacy_probe_seeds_the_provider_its_key_reference_names() {
+        let (_dir, engine) = fixture();
+        ready_engine(&engine);
+        // The legacy rows describe 9router, and the seeded registry entry for
+        // 9router is the one they belong to.
+        let seeded = engine.migrate_provider_catalog().expect("seed");
+        assert_eq!(seeded, vec!["default".to_owned()]);
+        assert_eq!(
+            engine.provider_catalog("default").expect("read"),
+            vec!["ds/deepseek-v4-flash".to_owned()]
+        );
+        assert!(
+            engine.provider_catalog("commandcode").expect("read").is_empty(),
+            "a provider with no probe of its own is empty, not borrowed"
+        );
+        assert!(
+            engine.migrate_provider_catalog().expect("seed").is_empty(),
+            "seeding twice is a no-op rather than a second write"
+        );
     }
 }

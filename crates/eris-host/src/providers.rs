@@ -41,6 +41,15 @@ pub struct Provider {
     pub base_url: String,
     /// The `env:NAME` reference the key is read from.
     pub key_ref: String,
+    /// Which request shape this endpoint speaks, when it is not the default.
+    ///
+    /// `None` means the OpenAI shape, which is every entry that existed before
+    /// this field did. An entry names `messages` for a gateway whose Claude
+    /// models only answer in the Anthropic shape; the model's own declared
+    /// endpoint decides per turn when the catalogue publishes one, and this is
+    /// the fallback for a catalogue that publishes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialect: Option<String>,
 }
 
 /// Why a registry could not be used.
@@ -139,7 +148,30 @@ fn validate_one(provider: &Provider) -> Result<(), RegistryError> {
             provider.id
         )));
     }
+    if let Some(dialect) = provider.dialect.as_deref() {
+        let known = ["chat_completions", "messages"];
+        if !known.contains(&dialect.trim()) {
+            return Err(RegistryError::new(format!(
+                "{} names the dialect `{}`; this build speaks {}",
+                provider.id,
+                dialect.trim(),
+                known.join(" and ")
+            )));
+        }
+    }
     Ok(())
+}
+
+/// The dialect one registry entry declares, as the provider vocabulary spells
+/// it. An unknown or absent value is the OpenAI shape, which is what every
+/// deployment used before the field existed.
+#[must_use]
+pub fn dialect_of(provider: &Provider) -> core_domain::ApiDialect {
+    provider
+        .dialect
+        .as_deref()
+        .map(core_domain::ApiDialect::parse)
+        .unwrap_or(core_domain::ApiDialect::ChatCompletions)
 }
 
 /// Whether a string is an `env:NAME` reference.
@@ -179,7 +211,26 @@ pub fn seed(base_url: &str, key_ref: &str) -> Vec<Provider> {
         name: "Default".to_owned(),
         base_url: base_url.to_owned(),
         key_ref: key_ref.to_owned(),
+        dialect: None,
     }]
+}
+
+/// The provider id a stored `env:NAME` reference belongs to, by key reference.
+///
+/// The legacy `provider.api_key_ref` row names one provider's key and nothing
+/// else about it, so a key reference is the one thing that identifies which
+/// registry entry the legacy probe was taken against. Two providers sharing one
+/// reference is ambiguous and resolves to the first entry, which is the same
+/// rule [`resolve`] applies to a primary: a registry with entries is more useful
+/// than no answer.
+#[must_use]
+pub fn legacy_provider_id(providers: &[Provider], key_ref: &str) -> String {
+    let wire = key_ref.trim();
+    providers
+        .iter()
+        .find(|provider| provider.key_ref.trim() == wire)
+        .map(|provider| provider.id.clone())
+        .unwrap_or_else(|| DEFAULT_ID.to_owned())
 }
 
 /// Render a registry for the editor.
@@ -201,6 +252,7 @@ mod tests {
             name: "Local".to_owned(),
             base_url: "http://127.0.0.1:20128/v1".to_owned(),
             key_ref: "env:NINEROUTER_API_KEY".to_owned(),
+            dialect: None,
         }
     }
 
@@ -263,6 +315,52 @@ mod tests {
             "an unknown primary falls back rather than disabling the daemon"
         );
         assert!(resolve(&[], "alpha").is_none());
+    }
+
+    #[test]
+    fn an_entry_written_before_the_dialect_existed_still_parses() {
+        let raw = r#"[{"id":"default","name":"Default",
+                       "base_url":"http://127.0.0.1:20128/v1",
+                       "key_ref":"env:NINEROUTER_API_KEY"}]"#;
+        let parsed = parse(raw).expect("parses");
+        assert_eq!(parsed[0].dialect, None);
+        assert_eq!(dialect_of(&parsed[0]), core_domain::ApiDialect::ChatCompletions);
+
+        let named = parse(
+            r#"[{"id":"cc","name":"Command Code",
+                 "base_url":"https://api.commandcode.ai/provider/v1",
+                 "key_ref":"env:COMMANDCODE_API_KEY","dialect":"messages"}]"#,
+        )
+        .expect("parses");
+        assert_eq!(dialect_of(&named[0]), core_domain::ApiDialect::Messages);
+    }
+
+    #[test]
+    fn a_dialect_this_build_cannot_speak_is_refused_by_name() {
+        let mut provider = one("alpha");
+        provider.dialect = Some("responses".to_owned());
+        let error = validate(&[provider]).unwrap_err();
+        assert!(error.message.contains("alpha"), "{}", error.message);
+        assert!(error.message.contains("chat_completions"), "{}", error.message);
+    }
+
+    #[test]
+    fn the_legacy_reference_identifies_the_provider_it_belongs_to() {
+        let registry = vec![one("alpha"), one("beta")];
+        // Both seeded entries carry the same reference, so the first wins: the
+        // rule is stated rather than left to whichever order a loop happened to
+        // take.
+        assert_eq!(legacy_provider_id(&registry, "env:NINEROUTER_API_KEY"), "alpha");
+
+        let mut beta = one("beta");
+        beta.key_ref = "env:BETA_KEY".to_owned();
+        let registry = vec![one("alpha"), beta];
+        assert_eq!(legacy_provider_id(&registry, "env:BETA_KEY"), "beta");
+        assert_eq!(
+            legacy_provider_id(&registry, "env:NOTHING"),
+            DEFAULT_ID,
+            "an install whose registry never matched still has a default to seed"
+        );
     }
 
     #[test]

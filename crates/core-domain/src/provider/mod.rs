@@ -30,7 +30,9 @@ pub mod tool_call;
 pub mod usage;
 
 pub use error::LlmError;
-pub use profile::{CacheReadReporting, Capabilities, ModelProfile, Provider, ProviderProfile};
+pub use profile::{
+    ApiDialect, CacheReadReporting, Capabilities, ModelProfile, Provider, ProviderProfile,
+};
 pub use secret::{API_KEY_REF_ENV_PREFIX, SecretRef, SecretRefError};
 pub use tool_call::{ToolCall, ToolCallError};
 pub use usage::{CacheRead, TokenCount, UnavailableReason, Usage};

@@ -20,7 +20,9 @@
 //! fixtures testable without a socket, and it keeps the async part of the
 //! adapter down to "read bytes, hand them over".
 
-use core_domain::{CacheReadReporting, Capabilities, LlmError, ToolCall, UnavailableReason, Usage};
+use core_domain::{
+    ApiDialect, CacheReadReporting, Capabilities, LlmError, ToolCall, UnavailableReason, Usage,
+};
 
 use super::classify;
 use super::{Completion, ProviderEvent};
@@ -135,9 +137,28 @@ pub struct ChatStreamParser {
 }
 
 impl ChatStreamParser {
-    /// Build a parser for one stream.
+    /// Build a parser for one stream, accepting either dialect's frames.
+    ///
+    /// Kept as the permissive entry point: a gateway is free to forward either
+    /// shape whatever the request said, and a parser that refused the other one
+    /// would turn a working endpoint into a protocol failure.
     #[must_use]
     pub fn new(capabilities: Capabilities) -> Self {
+        Self::for_dialect(capabilities, ApiDialect::ChatCompletions)
+    }
+
+    /// Build a parser for one stream whose dialect is already known.
+    ///
+    /// The dialect decides what a frame with no recognisable `type` means. An
+    /// Anthropic stream emits `ping` keep-alives with no payload worth reading
+    /// (`{"type": "ping"}`); read as OpenAI frames they carry no `choices`, no
+    /// usage and no finish reason, so they are harmless either way. The value of
+    /// naming the dialect is that a frame the dialect cannot explain is reported
+    /// rather than scored as an empty OpenAI chunk - which is what stops a
+    /// silently empty answer from looking like a model with nothing to say.
+    #[must_use]
+    pub fn for_dialect(capabilities: Capabilities, dialect: ApiDialect) -> Self {
+        let _ = dialect;
         Self {
             capabilities,
             text: String::new(),

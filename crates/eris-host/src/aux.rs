@@ -203,12 +203,14 @@ mod tests {
                 name: "Alpha".to_owned(),
                 base_url: "http://a/v1".to_owned(),
                 key_ref: "env:A".to_owned(),
+                dialect: None,
             },
             Provider {
                 id: "beta".to_owned(),
                 name: "Beta".to_owned(),
                 base_url: "http://b/v1".to_owned(),
                 key_ref: "env:B".to_owned(),
+                dialect: None,
             },
         ];
 

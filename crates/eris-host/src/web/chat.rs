@@ -595,10 +595,18 @@ pub fn aux_pinned_config(
         return Ok(None);
     };
     let primary_model = engine.setting(SETTING_MODEL)?.unwrap_or_default();
+    // An unpinned role follows the chat model, which carries its own provider in
+    // front of it. Reading the bare half here rather than the whole value is
+    // what keeps a role on the endpoint its own provider row names.
+    let inherited =
+        crate::web::chat::split_model_value(&primary_model, &registry, &primary).model;
+    let model = crate::aux::effective(stored_model.as_deref(), &inherited);
+    let dialect = engine.provider_dialect_for(&provider.id, &model)?;
     Ok(Some(TurnConfig {
         base_url: provider.base_url.clone(),
         key_ref,
-        model: crate::aux::effective(stored_model.as_deref(), &primary_model),
+        model,
+        dialect,
     }))
 }
 
@@ -649,7 +657,8 @@ pub fn suggest_title(config: &TurnConfig, question: &str, answer: &str) -> Optio
         config.base_url.clone(),
         config.key_ref.clone(),
     )
-    .ok()?;
+    .ok()?
+    .with_dialect(config.dialect);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -1430,7 +1439,8 @@ pub fn summarise(config: &TurnConfig, dropped: &[Message]) -> Option<String> {
         config.base_url.clone(),
         config.key_ref.clone(),
     )
-    .ok()?;
+    .ok()?
+    .with_dialect(config.dialect);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -1525,7 +1535,9 @@ pub fn describe_images(config: &TurnConfig, files: &[Attachment]) -> Option<Stri
     }
 
     let profile =
-        ProviderProfile::new("vision", config.base_url.clone(), config.key_ref.clone()).ok()?;
+        ProviderProfile::new("vision", config.base_url.clone(), config.key_ref.clone())
+        .ok()?
+        .with_dialect(config.dialect);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -1575,7 +1587,8 @@ pub fn extract_readable(config: &TurnConfig, page: &str) -> Option<String> {
         config.base_url.clone(),
         config.key_ref.clone(),
     )
-    .ok()?;
+    .ok()?
+    .with_dialect(config.dialect);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -1623,7 +1636,9 @@ pub fn advise_approval(
     sandbox_mode: &str,
 ) -> Option<String> {
     let profile =
-        ProviderProfile::new("approval", config.base_url.clone(), config.key_ref.clone()).ok()?;
+        ProviderProfile::new("approval", config.base_url.clone(), config.key_ref.clone())
+        .ok()?
+        .with_dialect(config.dialect);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -1852,31 +1867,208 @@ pub struct TurnConfig {
     pub key_ref: SecretRef,
     /// The model id.
     pub model: String,
+    /// Which request shape this endpoint serves this model in.
+    ///
+    /// One gateway here serves two: its Claude models answer only on the
+    /// Anthropic shape and everything else on the OpenAI one. The shape travels
+    /// with the turn because it is a property of the model and the endpoint
+    /// together, and a turn that guessed wrong would fail on the wire rather
+    /// than in the settings page.
+    pub dialect: core_domain::ApiDialect,
 }
 
 /// The stored provider settings, or `None` when onboarding never wrote them.
 pub fn turn_config(engine: &SetupEngine) -> Result<Option<TurnConfig>, OnboardingError> {
-    let model = engine.setting(SETTING_MODEL)?;
-    let Some(model) = model else {
+    let Some(choice) = model_choice(engine)? else {
         return Ok(None);
     };
 
     let registry = provider_registry(engine)?;
-    let primary = engine
-        .setting(crate::providers::SETTING_PRIMARY)?
-        .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned());
-    let Some(chosen) = crate::providers::resolve(&registry, &primary) else {
+    let Some(chosen) = registry
+        .iter()
+        .find(|provider| provider.id == choice.provider_id)
+        .or_else(|| crate::providers::resolve(&registry, &choice.provider_id))
+    else {
         return Ok(None);
     };
     let Ok(key_ref) = SecretRef::try_from(chosen.key_ref.as_str()) else {
         return Ok(None);
     };
+    let dialect = engine.provider_dialect_for(&chosen.id, &choice.model)?;
 
     Ok(Some(TurnConfig {
         base_url: chosen.base_url.clone(),
         key_ref,
-        model,
+        model: choice.model,
+        dialect,
     }))
+}
+
+/// The provider and the model a turn runs on, which are one decision.
+///
+/// Stored as one row, `provider/model`, because a model id belongs to the
+/// endpoint that published it: `deepseek/deepseek-v4-flash` is served by the
+/// native gateway and by nothing else, and a model chosen on one provider must
+/// keep its provider when the primary moves. A stored value whose first segment
+/// is not a provider id is read whole, which is what keeps every value written
+/// before this form existed working: `cmc/deepseek/deepseek-v4-flash` is one
+/// model id on the primary, not the model `deepseek-v4-flash` on `cmc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelChoice {
+    /// The registry id of the provider that serves the model.
+    pub provider_id: String,
+    /// The model id, as that provider spells it.
+    pub model: String,
+}
+
+/// Split a stored or submitted model value into a provider and a model.
+///
+/// The left half is a provider only when the registry actually holds that id.
+/// Refusing to treat an unknown prefix as a provider is deliberate: 9router
+/// spells its ids with slashes, and reading those as providers would silently
+/// re-point every existing install at nothing.
+#[must_use]
+pub fn split_model_value(
+    value: &str,
+    registry: &[crate::providers::Provider],
+    primary: &str,
+) -> ModelChoice {
+    let value = value.trim();
+    if let Some((head, rest)) = value.split_once('/')
+        && registry.iter().any(|provider| provider.id == head)
+        && !rest.trim().is_empty()
+    {
+        return ModelChoice {
+            provider_id: head.to_owned(),
+            model: rest.to_owned(),
+        };
+    }
+    ModelChoice {
+        provider_id: crate::providers::resolve(registry, primary)
+            .map(|provider| provider.id.clone())
+            .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned()),
+        model: value.to_owned(),
+    }
+}
+
+/// The stored model choice, or `None` when no model is configured.
+pub fn model_choice(engine: &SetupEngine) -> Result<Option<ModelChoice>, OnboardingError> {
+    let Some(stored) = engine.setting(SETTING_MODEL)? else {
+        return Ok(None);
+    };
+    if stored.trim().is_empty() {
+        return Ok(None);
+    }
+    let registry = provider_registry(engine)?;
+    let primary = engine
+        .setting(crate::providers::SETTING_PRIMARY)?
+        .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned());
+    Ok(Some(split_model_value(&stored, &registry, &primary)))
+}
+
+/// Every `provider/model` pair this daemon could run on, as
+/// `(option value, label)`.
+///
+/// One list over every configured provider, in registry order, taken from the
+/// catalogue that provider's own probe published. A provider with no probe yet
+/// contributes nothing: an option that names a model nobody has confirmed would
+/// make the picker promise more than the endpoint can answer.
+#[must_use]
+pub fn model_options(engine: &SetupEngine) -> Vec<(String, String)> {
+    let Ok(registry) = provider_registry(engine) else {
+        return Vec::new();
+    };
+    let mut options = Vec::new();
+    for provider in &registry {
+        let catalog = engine.provider_catalog(&provider.id).unwrap_or_default();
+        for model in catalog {
+            options.push((
+                format!("{}/{}", provider.id, model),
+                format!("{} - {}", provider.name, model),
+            ));
+        }
+    }
+    options
+}
+
+/// The stored choice as an option value, qualified with its provider.
+///
+/// A stored value that names no provider is qualified with the primary, because
+/// that is the provider a turn would resolve it to. The value is returned as it
+/// is when the primary does not serve it either, so the page can show what is
+/// stored rather than silently replacing it with the nearest match.
+#[must_use]
+pub fn model_value(engine: &SetupEngine) -> String {
+    let Ok(Some(choice)) = model_choice(engine) else {
+        return String::new();
+    };
+    format!("{}/{}", choice.provider_id, choice.model)
+}
+
+/// Render a stored model value as the picker's own option value.
+///
+/// A pin written before this picker existed is a bare model id, and the option
+/// values are provider-qualified, so the two would never compare equal and the
+/// select would show nothing selected on a working install. Qualifying the stored
+/// value with the provider the role actually runs on is what keeps the page
+/// showing what a turn would really do. A value that already names a provider,
+/// and the inherit sentinel, are returned unchanged.
+#[must_use]
+pub fn qualify_model(
+    value: &str,
+    registry: &[crate::providers::Provider],
+    provider_id: &str,
+) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == crate::aux::INHERIT {
+        return trimmed.to_owned();
+    }
+    if let Some((head, rest)) = trimmed.split_once('/')
+        && registry.iter().any(|provider| provider.id == head)
+        && !rest.trim().is_empty()
+    {
+        return trimmed.to_owned();
+    }
+    format!("{provider_id}/{trimmed}")
+}
+
+/// Point a turn at the provider and the request shape a model choice names.
+///
+/// A model id typed from the composer that carries no provider keeps the turn's
+/// provider: the composer means "this model, on the endpoint I am already
+/// talking to", and only an explicit `provider/model` moves the endpoint.
+pub fn apply_model(
+    config: &mut TurnConfig,
+    engine: &SetupEngine,
+    value: &str,
+) -> Result<(), OnboardingError> {
+    let registry = provider_registry(engine)?;
+    let primary = engine
+        .setting(crate::providers::SETTING_PRIMARY)?
+        .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned());
+    // A bare id keeps the turn's own endpoint; a qualified one moves it.
+    let (provider_id, model) = if value.trim().split_once('/').is_some_and(|(head, _)| {
+        registry.iter().any(|provider| provider.id == head)
+    }) {
+        let choice = split_model_value(value, &registry, &primary);
+        (choice.provider_id, choice.model)
+    } else {
+        let current = registry
+            .iter()
+            .find(|provider| provider.base_url == config.base_url)
+            .or_else(|| crate::providers::resolve(&registry, &primary));
+        (current.map(|p| p.id.clone()).unwrap_or_default(), value.trim().to_owned())
+    };
+    if let Some(chosen) = registry.iter().find(|provider| provider.id == provider_id)
+        && let Ok(key_ref) = SecretRef::try_from(chosen.key_ref.as_str())
+    {
+        config.base_url = chosen.base_url.clone();
+        config.key_ref = key_ref;
+    }
+    let dialect = engine.provider_dialect_for(&provider_id, &model)?;
+    config.dialect = dialect;
+    config.model = model;
+    Ok(())
 }
 
 /// The configured providers, seeded from the legacy rows when the registry has
@@ -2559,7 +2751,8 @@ pub fn run_turn_with_key(
 ) -> Result<TurnOutcome, TurnFailure> {
     let profile =
         ProviderProfile::new("chat-turn", config.base_url.clone(), config.key_ref.clone())
-            .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
+            .map_err(|error| (error.kind().to_owned(), error.to_string()))?
+            .with_dialect(config.dialect);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -3868,6 +4061,89 @@ mod tests {
         assert_eq!(lost[0].body, "message 0", "oldest first");
     }
 
+    fn registry() -> Vec<crate::providers::Provider> {
+        crate::providers::parse(
+            r#"[{"id":"default","name":"9router","base_url":"http://127.0.0.1:20128/v1",
+                 "key_ref":"env:NINEROUTER_API_KEY"},
+                {"id":"commandcode","name":"Command Code",
+                 "base_url":"https://api.commandcode.ai/provider/v1",
+                 "key_ref":"env:COMMANDCODE_API_KEY"}]"#,
+        )
+        .expect("the fixture registry validates")
+    }
+
+    #[test]
+    fn a_model_whose_first_segment_is_not_a_provider_stays_whole() {
+        let registry = registry();
+        // 9router spells its ids with slashes. Reading `cmc` as a provider would
+        // re-point the install at nothing, so only a registry id counts.
+        let choice = split_model_value("cmc/deepseek/deepseek-v4-flash", &registry, "default");
+        assert_eq!(choice.provider_id, "default");
+        assert_eq!(choice.model, "cmc/deepseek/deepseek-v4-flash");
+
+        let chosen = split_model_value("commandcode/deepseek/deepseek-v4-flash", &registry, "default");
+        assert_eq!(chosen.provider_id, "commandcode");
+        assert_eq!(chosen.model, "deepseek/deepseek-v4-flash");
+    }
+
+    #[test]
+    fn a_qualified_value_round_trips_through_the_picker_rendering() {
+        let registry = registry();
+        for value in [
+            "default/cmc/deepseek/deepseek-v4-flash",
+            "commandcode/claude-opus-5-5",
+        ] {
+            assert_eq!(
+                qualify_model(value, &registry, "default"),
+                value,
+                "a value that already names a provider is left alone"
+            );
+        }
+        assert_eq!(
+            qualify_model("cmc/deepseek-v4-flash", &registry, "default"),
+            "default/cmc/deepseek-v4-flash",
+            "a bare pin is qualified with the provider the role runs on"
+        );
+        assert_eq!(qualify_model("primary", &registry, "default"), "primary");
+        assert_eq!(qualify_model("", &registry, "default"), "");
+    }
+
+    #[test]
+    fn a_qualified_choice_moves_the_turn_to_that_provider() {
+        let (_dir, engine) = crate::onboarding::tests::fixture_for_chat();
+        let mut config = TurnConfig {
+            base_url: "http://127.0.0.1:20128/v1".to_owned(),
+            key_ref: SecretRef::Env("NINEROUTER_API_KEY".to_owned()),
+            model: "cmc/deepseek/deepseek-v4-flash".to_owned(),
+            dialect: core_domain::ApiDialect::ChatCompletions,
+        };
+        apply_model(&mut config, &engine, "commandcode/claude-opus-5-5")
+            .expect("the engine is readable");
+        assert_eq!(config.base_url, "https://api.commandcode.ai/provider/v1");
+        assert_eq!(config.model, "claude-opus-5-5");
+        assert_eq!(
+            config.key_ref,
+            SecretRef::Env("COMMANDCODE_API_KEY".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_bare_choice_keeps_the_turns_own_endpoint() {
+        let (_dir, engine) = crate::onboarding::tests::fixture_for_chat();
+        let mut config = TurnConfig {
+            base_url: "https://api.commandcode.ai/provider/v1".to_owned(),
+            key_ref: SecretRef::Env("COMMANDCODE_API_KEY".to_owned()),
+            model: "deepseek/deepseek-v4-flash".to_owned(),
+            dialect: core_domain::ApiDialect::ChatCompletions,
+        };
+        apply_model(&mut config, &engine, "other/model").expect("readable");
+        assert_eq!(
+            config.base_url, "https://api.commandcode.ai/provider/v1",
+            "the composer means this model on the endpoint it is already talking to"
+        );
+        assert_eq!(config.model, "other/model");
+    }
+
     #[test]
     fn a_short_conversation_drops_nothing_and_summarises_nothing() {
         let db = db();
@@ -3881,6 +4157,7 @@ mod tests {
             base_url: "http://127.0.0.1:1/v1".to_owned(),
             key_ref: SecretRef::Env("KALLISTI_TEST_KEY".to_owned()),
             model: "m/one".to_owned(),
+            dialect: core_domain::ApiDialect::ChatCompletions,
         };
         assert!(
             summarise(&config, &[]).is_none(),

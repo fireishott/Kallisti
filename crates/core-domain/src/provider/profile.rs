@@ -9,6 +9,49 @@ use serde::{Deserialize, Serialize};
 use super::error::LlmError;
 use super::secret::SecretRef;
 
+/// The request shape one endpoint speaks.
+///
+/// Two dialogs cover every provider 1.0 talks to. The OpenAI shape is
+/// `POST {base}/chat/completions` with `choices[].delta` frames; the Anthropic
+/// shape is `POST {base}/messages` with `content_block_delta` frames. Both are
+/// streaming-first and both are parsed by the same [`core_runtime`] parser, so
+/// the dialect decides the request we build and the events we accept, nothing
+/// else.
+///
+/// This is a property of the endpoint, not of a vendor name: a field on the
+/// profile rather than an `if` on a label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiDialect {
+    /// OpenAI chat completions: `{base}/chat/completions`.
+    #[default]
+    ChatCompletions,
+    /// Anthropic Messages: `{base}/messages`. Claude models are served this way
+    /// only, on every gateway that carries them.
+    Messages,
+}
+
+impl ApiDialect {
+    /// Stable wire name, also the value stored in the settings row.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat_completions",
+            Self::Messages => "messages",
+        }
+    }
+
+    /// Read a stored value. Anything unrecognised is the OpenAI shape, which is
+    /// what every deployment used before this field existed.
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim() {
+            "messages" => Self::Messages,
+            _ => Self::ChatCompletions,
+        }
+    }
+}
+
 /// One configured provider endpoint.
 ///
 /// Deliberately free of anything vendor-specific: a label for humans, the base
@@ -23,6 +66,12 @@ pub struct ProviderProfile {
     pub base_url: String,
     /// Where the bearer token comes from. A name, never a value.
     pub api_key_ref: SecretRef,
+    /// Which request shape this endpoint speaks.
+    ///
+    /// Defaulted rather than required so a profile written before this field
+    /// existed still parses, and so the OpenAI shape stays the default.
+    #[serde(default)]
+    pub dialect: ApiDialect,
 }
 
 impl ProviderProfile {
@@ -56,7 +105,18 @@ impl ProviderProfile {
             label: label.into(),
             base_url: trimmed.to_owned(),
             api_key_ref,
+            dialect: ApiDialect::ChatCompletions,
         })
+    }
+
+    /// The same profile, speaking another shape.
+    ///
+    /// A separate step rather than a constructor argument so every existing
+    /// caller keeps building the OpenAI shape without changing a line.
+    #[must_use]
+    pub fn with_dialect(mut self, dialect: ApiDialect) -> Self {
+        self.dialect = dialect;
+        self
     }
 }
 
@@ -213,6 +273,40 @@ mod tests {
             ProviderProfile::new("x", "http://exa mple.test/v1", key()),
             Err(LlmError::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn a_profile_speaks_the_openai_shape_unless_it_is_told_otherwise() {
+        let profile = ProviderProfile::new("9router", "http://127.0.0.1:20128/v1", key())
+            .expect("profile should build");
+        assert_eq!(profile.dialect, ApiDialect::ChatCompletions);
+
+        let messages = profile.clone().with_dialect(ApiDialect::Messages);
+        assert_eq!(messages.dialect, ApiDialect::Messages);
+        // The rest of the profile is untouched by the dialect.
+        assert_eq!(messages.base_url, profile.base_url);
+        assert_eq!(messages.api_key_ref, profile.api_key_ref);
+    }
+
+    #[test]
+    fn a_dialect_round_trips_through_its_wire_name() {
+        for dialect in [ApiDialect::ChatCompletions, ApiDialect::Messages] {
+            assert_eq!(ApiDialect::parse(dialect.as_str()), dialect);
+        }
+        // A row nobody recognises is the shape every install already used.
+        assert_eq!(ApiDialect::parse(""), ApiDialect::ChatCompletions);
+        assert_eq!(ApiDialect::parse("ywimc"), ApiDialect::ChatCompletions);
+        assert_eq!(ApiDialect::parse("  messages "), ApiDialect::Messages);
+    }
+
+    #[test]
+    fn a_profile_written_before_the_dialect_existed_still_parses() {
+        // The wire form of a key reference is the string `env:NAME`, which is
+        // also what the config file carries.
+        let json = r#"{"label":"9router","base_url":"http://127.0.0.1:20128/v1",
+                       "api_key_ref":"env:NINEROUTER_API_KEY"}"#;
+        let profile: ProviderProfile = serde_json::from_str(json).expect("parses");
+        assert_eq!(profile.dialect, ApiDialect::ChatCompletions);
     }
 
     #[test]

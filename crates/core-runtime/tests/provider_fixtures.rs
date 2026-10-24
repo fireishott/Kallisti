@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use core_domain::{CacheReadReporting, Capabilities, LlmError, Usage};
+use core_domain::ApiDialect;
 use core_runtime::provider::{ChatStreamParser, Completion, ProviderEvent};
 use eventsource_stream::Eventsource;
 use tokio_stream::StreamExt;
@@ -360,4 +361,192 @@ fn usage_constructors_agree_on_the_folded_contract() {
     );
     assert_eq!(absent.input_tokens(), Some(1200));
     assert!(absent.cache_read().is_unavailable());
+}
+
+// ---------------------------------------------------------------------------
+// The Anthropic Messages dialect, end to end
+// ---------------------------------------------------------------------------
+
+/// The recorded `/messages` stream was captured from the live gateway on
+/// 2026-10-23 with a tool offered. It is replayed here through the parser built
+/// for that dialect, which is how the whole Messages path is proved without a
+/// socket: the frames below are the gateway's own bytes, not a shape invented
+/// for the test.
+#[test]
+fn the_recorded_messages_stream_fills_a_completion_when_the_dialect_is_named() {
+    let body = fixture("anthropic-input-json-delta-stream.sse");
+    let text = std::str::from_utf8(&body).expect("utf8");
+
+    let mut parser =
+        ChatStreamParser::for_dialect(Capabilities::openai_compatible(), ApiDialect::Messages);
+    let mut streamed = Vec::new();
+    for line in text.lines() {
+        let Some(payload) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let payload = payload.trim();
+        if payload.is_empty() {
+            continue;
+        }
+        for event in parser.push(payload).expect("frame must parse") {
+            streamed.push(event);
+        }
+    }
+    let completion = parser.finish().expect("the recorded stream must finish");
+
+    assert!(
+        completion.usage.input_tokens().is_some(),
+        "a Messages stream reports usage on message_delta, and a missing one would be \
+         the difference between a parser that read the frames and one that ignored them"
+    );
+    assert!(
+        completion.usage.output_tokens().is_some(),
+        "the output count arrives on message_delta too"
+    );
+    assert!(
+        !completion.tool_calls.is_empty() || !completion.text.is_empty(),
+        "the recorded stream carried an answer or a call; a frame the dialect cannot read \
+         would leave an empty completion"
+    );
+    for call in &completion.tool_calls {
+        assert!(
+            call.arguments.is_object(),
+            "a call is only ever emitted with complete, object-shaped arguments"
+        );
+    }
+}
+
+#[test]
+fn the_default_dialect_is_the_openai_one() {
+    // The permissive constructor and the named one agree on the default, so an
+    // adapter that never learned about dialects parses exactly what it did.
+    let frame = r#"{"type":"message_start","message":{"usage":{"input_tokens":12}}}"#;
+    let mut permissive = ChatStreamParser::new(Capabilities::openai_compatible());
+    let mut named = ChatStreamParser::for_dialect(
+        Capabilities::openai_compatible(),
+        ApiDialect::ChatCompletions,
+    );
+    assert_eq!(
+        permissive.push(frame).expect("parses").len(),
+        named.push(frame).expect("parses").len(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The reachability pass, against a real socket
+// ---------------------------------------------------------------------------
+
+/// A stand-in gateway: `GET /models` lists three models, and only two of them
+/// answer. The third is the case this pass exists for - listed, and dead.
+///
+/// It is a real TCP socket rather than a mock, because the question being asked
+/// is whether the pass interprets an HTTP status correctly, and a mock would
+/// only prove the test agrees with itself.
+#[tokio::test]
+async fn a_listed_model_that_does_not_answer_is_recorded_not_hidden() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+
+    let server = tokio::spawn(async move {
+        let mut served = 0usize;
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            // One request per connection is enough: the pass does not reuse a
+            // stream it never reads.
+            let mut buffer = vec![0u8; 8192];
+            let Ok(read) = socket.read(&mut buffer).await else {
+                continue;
+            };
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            served += 1;
+
+            if request.starts_with("GET /v1/models") {
+                let body = r#"{"data":[
+                    {"id":"a/model","supported_endpoints":["/chat/completions"]},
+                    {"id":"b/model","supported_endpoints":["/chat/completions"]},
+                    {"id":"dead/model","supported_endpoints":["/chat/completions"]}
+                ]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                continue;
+            }
+
+            // A completion request. The dead model is refused the way the live
+            // gateway refused its stale catalogue entries.
+            if request.contains("dead/model") {
+                let body = r#"{"error":{"message":"Model 'dead/model' not found","code":"not_found"}}"#;
+                let response = format!(
+                    "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                continue;
+            }
+
+            let body = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        }
+        served
+    });
+
+    let base = format!("http://{addr}/v1");
+    let profile = core_domain::ProviderProfile::new(
+        "stub",
+        base,
+        core_domain::SecretRef::Env("KALLISTI_TEST_KEY".to_owned()),
+    )
+    .expect("profile");
+    let provider = core_runtime::provider::OpenAiCompatProvider::new(
+        profile,
+        core_domain::ModelProfile::new("a/model"),
+        core_domain::Capabilities::openai_compatible(),
+    )
+    .expect("provider");
+    let key = core_runtime::provider::SecretKey::new("not-a-real-key").expect("key");
+
+    let catalog = provider
+        .probe_models(&key, core_runtime::provider::Reachability::Probe)
+        .await
+        .expect("the pass must complete");
+
+    assert_eq!(
+        catalog.models,
+        vec!["a/model", "b/model", "dead/model"],
+        "a model being unreachable is not a reason to stop listing it"
+    );
+    assert_eq!(
+        catalog.unreachable_ids(),
+        vec!["dead/model"],
+        "the one model the endpoint refused is recorded, and only that one"
+    );
+    assert!(
+        catalog.unreachable[0].contains("404"),
+        "the reason states what the endpoint said: {}",
+        catalog.unreachable[0]
+    );
+
+    // A pass that skipped reachability still lists everything and records
+    // nothing, which is what keeps the cheap path cheap.
+    let listed = provider
+        .probe_models(&key, core_runtime::provider::Reachability::Skip)
+        .await
+        .expect("the cheap pass must complete");
+    assert_eq!(listed.models.len(), 3);
+    assert!(listed.unreachable.is_empty());
+
+    drop(provider);
+    server.abort();
 }

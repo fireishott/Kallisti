@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 101;
+pub const BUILD: u32 = 102;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -174,6 +174,12 @@ pub const ROUTE_SETTINGS_TOOLS: &str = "/dashboard/settings/tools";
 
 /// `POST /dashboard/settings/providers` - the provider registry and its primary.
 pub const ROUTE_SETTINGS_PROVIDERS: &str = "/dashboard/settings/providers";
+
+/// `POST /dashboard/settings/providers/probe` - re-probe every configured provider now.
+pub const ROUTE_SETTINGS_PROVIDERS_PROBE: &str = "/dashboard/settings/providers/probe";
+
+/// `POST /dashboard/settings/restart` - restart the daemon from settings.
+pub const ROUTE_SETTINGS_RESTART: &str = "/dashboard/settings/restart";
 
 /// `POST /dashboard/settings/aux` - the auxiliary model roles.
 pub const ROUTE_SETTINGS_AUX: &str = "/dashboard/settings/aux";
@@ -305,6 +311,8 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_TIMEZONE,
     ROUTE_SETTINGS_TOOLS,
     ROUTE_SETTINGS_PROVIDERS,
+    ROUTE_SETTINGS_PROVIDERS_PROBE,
+    ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_MCP,
     ROUTE_SETTINGS_GREETING,

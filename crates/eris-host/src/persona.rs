@@ -268,12 +268,11 @@ the sentence that explains it.";
     /// from it. Saying that in the prompt is what makes an ask a normal move
     /// rather than a failure, which is why a turn used to guess or stall instead.
     pub const ASKING: &'static str = "\
-When an answer depends on a decision that is the operator's to make, or on a fact \
-no tool can supply, ask instead of guessing. One question, at the end of your answer, \
-naming the options you would accept. The turn ends there: the operator replies in \
-the transcript and the next turn continues from it, so a question costs one round \
-trip. Never guess a credential, and never pick between real alternatives, on \
-something you could have asked.";
+Do the work; do not stall on needless questions. Ask only when the answer depends on \
+a decision only the operator can make, or on a fact no tool can supply and you would \
+otherwise have to guess a value. When you must ask: one question, at the very end of \
+your answer, naming the options you would accept. Never guess a credential, and never \
+invent a number or a fact you could have read or asked for.";
 
     /// `text` with the capability notes appended, or the notes alone.
     #[must_use]
