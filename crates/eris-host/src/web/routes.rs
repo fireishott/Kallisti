@@ -6089,7 +6089,19 @@ fn set_model(
                 .to_owned(),
         ));
     }
-    let known = match state.engine.primary_provider_catalog() {
+    // A picker submits `provider/model`, so the prefix is split off before the
+    // list is consulted: comparing the whole value against a catalogue keyed by
+    // bare ids refused every correctly qualified pin from a provider other than
+    // the one whose probe wrote the legacy list.
+    let registry = chat::provider_registry(&state.engine).unwrap_or_default();
+    let primary = state
+        .engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let choice = chat::split_model_value(id, &registry, &primary);
+    let known = match state.engine.provider_catalog(&choice.provider_id) {
         Ok(known) => known,
         Err(error) => {
             return Err(FormError::new(
@@ -6099,22 +6111,15 @@ fn set_model(
             ));
         }
     };
-    if known.is_empty() {
+    // An unprobed provider publishes nothing, and an empty list means no check
+    // rather than a refusal: the endpoint is the authority until it has spoken.
+    if !known.is_empty() && !known.iter().any(|known| known == &choice.model) {
         return Ok((
             current.to_owned(),
             format!(
-                "No model list has been stored yet, so {id} cannot be checked against one and \
-                 the stored default was not changed. Run the probe on the settings page, then \
-                 ask again."
-            ),
-        ));
-    }
-    if !known.iter().any(|known| known == id) {
-        return Ok((
-            current.to_owned(),
-            format!(
-                "{id} is not in the model list this endpoint returned, so the stored default was \
-                 not changed. /model takes an id from that list."
+                "{id} is not in the model list {} returned, so the stored default was not \
+                 changed. /model takes an id from that list.",
+                choice.provider_id
             ),
         ));
     }

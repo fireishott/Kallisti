@@ -1091,11 +1091,19 @@ pre.code {
    shell below keeps a cap of its own; the wrap just stops holding it back. */
 .app > .wrap:has(> .chat-shell) {
   max-width: none;
-  /* Only the horizontal gutter moves. The vertical padding belongs to the base
-     rule and to the phone breakpoint below, which still owes the composer its
-     safe-area inset. */
+  /* The conversation fills the column it was given: the shell below is the
+     page, so it takes the room left over rather than a height guessed from
+     the chrome above it. */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   padding-left: 18px;
   padding-right: 18px;
+  /* No tail. The prose rule's 72px bottom padding sat under a shell that
+     already ends at the viewport edge, so it could only ever paint a band of
+     nothing below the composer - the dead space under a reply. The composer
+     carries its own safe-area padding, so nothing here owes the phone one. */
+  padding-bottom: 0;
 }
 
 .chat-shell {
@@ -1103,9 +1111,10 @@ pre.code {
   flex-direction: column;
   min-height: 0;
   /* The composer lives at the bottom of the screen, not wherever the transcript
-     happens to end. dvh follows the mobile viewport without the jump vh brings. */
-  height: calc(100vh - 150px);
-  height: calc(100dvh - 150px);
+     happens to end. It gets there by taking the room the shell has left: a
+     measured constant for the chrome above it was the thing that left a band
+     under the composer once the chrome did not match the guess. */
+  flex: 1 1 auto;
   /* Wide enough to use the window, capped so a very wide display does not turn
      every paragraph into one 200-character line. */
   max-width: min(100%, 1180px);
@@ -2078,9 +2087,11 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
   .kv dd { padding-top: 2px; }
   .stats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
   .auth { margin-top: 4vh; }
-  /* The composer still belongs at the bottom on a phone: the drawer is fixed, so
-     the shell measures what is left of the viewport. */
-  .chat-shell { height: calc(100dvh - 132px); }
+  /* The composer still belongs at the bottom on a phone. The drawer is fixed and
+     the app is a block here, so the chat column states its own height and the
+     shell takes what is left of it. */
+  .app > .wrap:has(> .chat-shell) { height: 100vh; height: 100dvh; padding-bottom: 0; }
+  .chat-shell { flex: 1 1 auto; min-height: 0; }
   .thread { max-height: none; }
   /* Two selects, an attach control and a button do not fit on one row of a
      phone. The row wraps rather than pushing Send off the edge, and the pick

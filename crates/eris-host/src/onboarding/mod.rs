@@ -1087,11 +1087,29 @@ impl SetupEngine {
     }
 
     /// Store the default model, which must be in the probe's list.
+    ///
+    /// The legacy probe's list, which is the right authority for the wizard: the
+    /// step that writes this pin is the one that ran that probe. A caller that
+    /// validates against something else - the primary provider's own catalogue,
+    /// or a `provider/model` value a picker submitted - validates first and then
+    /// calls [`Self::store_model`], so a value cannot be refused on the way in
+    /// and then refused again by a check against a different list on the way out.
     pub fn set_model(&self, model: &str) -> Result<(), OnboardingError> {
         let model = self.check_model(model)?;
-        self.set_setting(SETTING_MODEL, &model)?;
-        self.complete_step(Step::Models)?;
+        self.store_model(&model)?;
         self.auth().audit("loopback", "setup.model", Some(&model))?;
+        Ok(())
+    }
+
+    /// Store the default model verbatim, for a caller that has already checked it.
+    ///
+    /// No validation and no audit row: the value has been judged against the
+    /// catalogue the caller holds, and that caller writes its own audit entry
+    /// naming the surface the change came from. What stays here is the part every
+    /// path shares - the write, and the fact that the models step is now done.
+    pub fn store_model(&self, model: &str) -> Result<(), OnboardingError> {
+        self.set_setting(SETTING_MODEL, model)?;
+        self.complete_step(Step::Models)?;
         Ok(())
     }
 

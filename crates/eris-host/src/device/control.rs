@@ -42,7 +42,8 @@ use crate::skills;
 use crate::web::{chat, store};
 
 use super::handlers::{
-    authenticate, read_fields, refuse_value, require_admin, settings_unavailable, shown_value,
+    authenticate, model_write_refusal, read_fields, refuse_value, require_admin,
+    resolve_model_value, settings_unavailable,
 };
 
 // ---------------------------------------------------------------------------
@@ -230,28 +231,17 @@ pub async fn set_model(
         .into_response();
     };
     let engine = service.engine();
-    let known = engine.primary_provider_catalog().unwrap_or_default();
-    let model = match engine.check_primary_model(raw) {
+    // The value is checked against the catalogue of the provider that would
+    // serve it, and only then stored. Storing through `set_model` re-checked it
+    // against the legacy probe's list, which on an install whose primary has
+    // moved is a different provider's catalogue: a correct pin was refused
+    // there, and the refusal was reported as a database outage.
+    let model = match resolve_model_value(engine, raw) {
         Ok(model) => model,
-        Err(_) => {
-            let allowed = if known.is_empty() {
-                "none yet, because no provider probe has published a list".to_owned()
-            } else {
-                known.join(", ")
-            };
-            return DeviceError::bad_request(
-                "model_invalid",
-                format!(
-                    "model does not accept {}: the allowed values are the ids the last provider \
-                     probe published ({allowed})",
-                    shown_value(raw)
-                ),
-            )
-            .into_response();
-        }
+        Err(error) => return error.into_response(),
     };
-    if let Err(error) = engine.set_model(&model) {
-        return settings_unavailable(error).into_response();
+    if let Err(error) = engine.store_model(&model) {
+        return model_write_refusal(error).into_response();
     }
     if let Err(error) = audit(
         &service,

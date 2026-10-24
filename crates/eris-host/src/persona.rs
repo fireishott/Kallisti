@@ -398,8 +398,15 @@ mod tests {
     #[test]
     fn every_turn_is_told_that_it_may_ask_and_how_the_answer_arrives() {
         let notes = PersonaConfig::with_capabilities(None).expect("notes");
-        assert!(notes.contains("ask instead of guessing"), "{notes}");
-        assert!(notes.contains("next turn continues"), "{notes}");
+        assert!(
+            notes.contains("do not stall on needless questions"),
+            "{notes}"
+        );
+        assert!(notes.contains("When you must ask"), "{notes}");
+        assert!(
+            notes.contains("naming the options you would accept"),
+            "{notes}"
+        );
         assert!(
             notes.contains("![caption]"),
             "the file note is kept: {notes}"
@@ -412,7 +419,7 @@ mod tests {
             "{with_persona}"
         );
         assert!(
-            with_persona.contains("ask instead of guessing"),
+            with_persona.contains("at the very end of your answer"),
             "{with_persona}"
         );
 
@@ -420,7 +427,7 @@ mod tests {
         // paragraph where the operator's text would have been.
         let blank = PersonaConfig::with_capabilities(Some("   ".to_owned())).expect("notes");
         assert!(!blank.starts_with('\n'), "{blank}");
-        assert!(blank.contains("ask instead of guessing"), "{blank}");
+        assert!(blank.contains("When you must ask"), "{blank}");
     }
 
     #[test]

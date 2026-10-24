@@ -392,14 +392,23 @@ impl OpenAiCompatProvider {
 
         let mut body = serde_json::json!({
             "model": self.model.id,
-            "messages": messages,
             "stream": true,
             "max_tokens": request
                 .max_output_tokens
                 .unwrap_or(Self::DEFAULT_MESSAGES_MAX_TOKENS),
         });
         if let Some(system) = preamble {
-            body["system"] = serde_json::Value::String(system);
+            // As a block array rather than a bare string, because a string has
+            // nowhere to hang `cache_control` - and this preamble is the most
+            // repeated text on the wire: the persona, the tools and the working
+            // rules change once a week and are re-sent on every turn of every
+            // conversation. A breakpoint here is what turns that into a cache
+            // read instead of full prompt price.
+            body["system"] = serde_json::json!([{
+                "type": "text",
+                "text": system,
+                "cache_control": ephemeral_breakpoint(),
+            }]);
         }
 
         if !request.tools.is_empty() {
@@ -417,7 +426,20 @@ impl OpenAiCompatProvider {
                 })
                 .collect();
             body["tools"] = serde_json::Value::Array(tools);
+            // Tools sit at the very top of the prompt, ahead of the preamble, so
+            // a breakpoint on the last one caches the whole static head: schemas,
+            // descriptions and the system block behind them.
+            if let Some(serde_json::Value::Object(last)) = body["tools"]
+                .as_array_mut()
+                .and_then(|tools| tools.last_mut())
+            {
+                last.insert("cache_control".to_owned(), ephemeral_breakpoint());
+            }
         }
+
+        // --- 3. the conversation itself -------------------------------------
+        mark_cache_breakpoint(&mut messages);
+        body["messages"] = serde_json::Value::Array(messages);
 
         body
     }
@@ -661,6 +683,57 @@ impl Provider for OpenAiCompatProvider {
     fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
+}
+
+/// The one cache-control value the Messages dialect defines.
+///
+/// A single member, and deliberately not configurable: `ephemeral` is the only
+/// type the dialect accepts, and a knob that could name a second one would be a
+/// knob that could only ever be wrong.
+fn ephemeral_breakpoint() -> serde_json::Value {
+    serde_json::json!({ "type": "ephemeral" })
+}
+
+/// Hang a cache breakpoint on the newest message of a Messages transcript.
+///
+/// The prompt is cached by prefix, so the useful breakpoint is always the end of
+/// what has already been said: the next turn re-sends this conversation plus one
+/// more message, and everything up to the mark is read rather than re-charged.
+/// This is the breakpoint that pays off inside a single turn as well, because a
+/// tool round re-sends the assistant's call and the result before it asks again.
+///
+/// Content that is a plain string becomes a one-block array, because a bare
+/// string has nowhere to hang the field; content that is already a block array
+/// takes the mark on its last block. An empty message is left alone: a
+/// breakpoint on nothing is a request the endpoint rejects, and there is nothing
+/// behind it worth caching.
+fn mark_cache_breakpoint(messages: &mut [serde_json::Value]) {
+    let Some(message) = messages.last_mut().and_then(|value| value.as_object_mut()) else {
+        return;
+    };
+    let Some(content) = message.get("content").cloned() else {
+        return;
+    };
+    let marked = match content {
+        serde_json::Value::String(text) if !text.trim().is_empty() => serde_json::json!([{
+            "type": "text",
+            "text": text,
+            "cache_control": ephemeral_breakpoint(),
+        }]),
+        serde_json::Value::Array(mut blocks) => {
+            match blocks.last_mut() {
+                Some(serde_json::Value::Object(last)) => {
+                    last.insert("cache_control".to_owned(), ephemeral_breakpoint());
+                }
+                // A block that is not an object is not a block this dialect
+                // produced, so it is left unmarked rather than reinterpreted.
+                _ => return,
+            }
+            serde_json::Value::Array(blocks)
+        }
+        _ => return,
+    };
+    message.insert("content".to_owned(), marked);
 }
 
 /// Split a `data:<media>;base64,<payload>` URL into its two halves.
@@ -945,7 +1018,10 @@ mod tests {
     fn the_messages_body_puts_the_preamble_at_the_top_level_not_in_messages() {
         let body = messages_provider()
             .build_messages_body(&ChatRequest::with_system(Some("Be brief.".to_owned()), "hi"));
-        assert_eq!(body["system"], "Be brief.");
+        // A block array, not a bare string: the preamble carries a cache
+        // breakpoint and a string has nowhere to put one. The text is unchanged.
+        assert_eq!(body["system"][0]["type"], "text");
+        assert_eq!(body["system"][0]["text"], "Be brief.");
         assert_eq!(body["messages"].as_array().map(Vec::len), Some(1));
         assert_eq!(body["messages"][0]["role"], "user");
         assert!(

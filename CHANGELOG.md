@@ -6,6 +6,30 @@ observe; commit history carries the detail.
 
 ## 1.4.6
 
+- **A Messages-dialect turn asks the provider to cache its own prompt.** The preamble,
+  the tool schemas and the newest message now carry an `ephemeral` cache breakpoint on
+  the Messages dialect, which is the only dialect that defines one. The persona and the
+  working rules change about once a week and were being re-sent at full prompt price on
+  every turn of every conversation; a breakpoint on the static head turns that into a
+  cache read. The Chat Completions body is byte-identical to before, and the usage
+  accounting already reported cache reads both ways, so a hit now shows up honestly
+  instead of never being asked for. `build 103`.
+- **Picking a model in the Hub is not an outage any more.** A picker that sends a
+  provider-qualified pin - `commandcode/deepseek/deepseek-v4.1-flash` - was checked
+  against a catalogue keyed by bare model ids, so a correct pin could never match; the
+  device `set_model` path then re-checked the same value against the legacy
+  `provider.models` row, and a validation refusal was reported as `503 db_unavailable`,
+  which is why a working model looked like a down database. The value is now split with
+  `chat::split_model_value` and checked against that provider's own catalogue, an
+  unprobed provider takes the value at face value, and a refusal is a `400
+  model_invalid` with the reason attached. The `/model` slash command splits the same
+  way. `build 103`.
+- **No dead band under a reply.** The conversation column is the page: the stylesheet
+  gave the chat shell a height guessed from the chrome above it and left the prose
+  rule's 72px bottom padding underneath, so a band of nothing sat below the composer.
+  The shell now takes the room the column has left, the tail padding is gone on desktop
+  and phone, and the phone breakpoint states its own viewport height instead of
+  subtracting a constant. `build 103`.
 - **An older client stops reading a 404 as a failure to read.** The retired relay had
   many hosts and a connector process to watch; Eris is one daemon on one box. So a
   shipped client that still asks for `/v1/health`, `/v1/config`, `/v1/gw/status`,

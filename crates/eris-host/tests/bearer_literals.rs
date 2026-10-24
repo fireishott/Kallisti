@@ -45,6 +45,28 @@ fn is_secret_alphabet(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'_' | b'-')
 }
 
+/// Whether a run is a path or an identifier rather than a secret.
+///
+/// A bearer is drawn from the whole base64 or hex alphabet, so it is almost
+/// always mixed case. A route (`/dashboard/settings/providers/probe`) and a model
+/// pin (`commandcode/deepseek/deepseek-v4-flash`) are lowercase words joined by
+/// separators, and at 35 characters they are long enough to trip a rule that only
+/// counts length. Exempting them cannot hide a real token: the chance of a
+/// 43-character base64url secret containing no uppercase at all is nil, and a
+/// lowercase-only secret with no separator - a hex digest - is still caught,
+/// which `the_scanner_flags_a_secret_shaped_literal` keeps honest.
+fn is_path_or_identifier(run: &str) -> bool {
+    let mut separators = 0usize;
+    for character in run.chars() {
+        match character {
+            '/' | '-' => separators += 1,
+            _ if character.is_ascii_lowercase() || character.is_ascii_digit() => {}
+            _ => return false,
+        }
+    }
+    separators > 0
+}
+
 /// The longest secret-alphabet run in one line, with its length.
 fn longest_run(line: &str) -> (usize, String) {
     let mut best = (0usize, String::new());
@@ -135,7 +157,7 @@ fn no_bearer_literals_in_src() {
             }
             for literal in string_literals(line) {
                 let (length, run) = longest_run(&literal);
-                if length >= MIN_SECRET_RUN {
+                if length >= MIN_SECRET_RUN && !is_path_or_identifier(&run) {
                     violations.push(format!(
                         "{}:{}: {length}-character literal beginning {:?}",
                         file.display(),

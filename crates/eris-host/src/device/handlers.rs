@@ -36,7 +36,7 @@ use crate::notes::{
     BlobDownloadOutcome, BlobUploadOutcome, NotesStore, PatchOutcome, RecognitionOutcome,
     RunCreateOutcome,
 };
-use crate::onboarding::{PermissionError, Permissions, SetupEngine};
+use crate::onboarding::{OnboardingError, PermissionError, Permissions, SetupEngine};
 use crate::push::{PushRegisterRequest, PushStore};
 use crate::sensors::{Delivered, HealthLatest, HealthUpload, LocationUpload};
 use crate::web::chat;
@@ -1675,24 +1675,9 @@ fn parse_settings(
 
     if let Some(raw) = fields.get("model") {
         write.named = true;
-        let known = engine
-            .primary_provider_catalog()
-            .map_err(settings_unavailable)?;
-        let model = engine.check_primary_model(raw).map_err(|_| {
-            let allowed = if known.is_empty() {
-                "none yet, because no provider probe has published a list".to_owned()
-            } else {
-                known.join(", ")
-            };
-            DeviceError::bad_request(
-                "model_invalid",
-                format!(
-                    "model does not accept {}: the allowed values are the ids the last provider \
-                     probe published ({allowed})",
-                    shown_value(raw)
-                ),
-            )
-        })?;
+        // Split first, then check per provider: a picker sends `provider/model`
+        // and the catalogue it has to satisfy is that provider's own.
+        let model = resolve_model_value(engine, raw)?;
         let current = engine
             .model()
             .map_err(settings_unavailable)?
@@ -1897,6 +1882,70 @@ pub(crate) fn shown_value(raw: &str) -> String {
 /// A settings read or write that the state store refused.
 pub(crate) fn settings_unavailable(error: impl std::fmt::Display) -> DeviceError {
     DeviceError::db_unavailable(format!("cannot reach the settings: {error}"))
+}
+
+/// A model write that failed, said as the thing that actually went wrong.
+///
+/// A pin is refused for one of two reasons, and they are not the same event: the
+/// state store would not take the write, which is an outage, or the value is not
+/// a model this endpoint published, which is the caller's mistake. Reporting the
+/// second as the first is what turned "that model is not in the catalogue" into a
+/// `503 db_unavailable`, and sent the operator looking at a database that was
+/// answering fine.
+pub(crate) fn model_write_refusal(error: OnboardingError) -> DeviceError {
+    match error {
+        OnboardingError::Db(error) => settings_unavailable(error),
+        other => DeviceError::bad_request("model_invalid", other.to_string()),
+    }
+}
+
+/// The value to store for a submitted model, checked against the list that would
+/// actually serve it.
+///
+/// A picker submits `provider/model`, because a model id belongs to the endpoint
+/// that published it. The list it has to be checked against is therefore that
+/// provider's, and the split has to happen first: the old check compared the
+/// whole `provider/model` string against a catalogue keyed by bare ids, so a
+/// correct pin for a provider other than the legacy probe's owner could never
+/// match and was refused as though the endpoint had never offered it.
+///
+/// A provider that has never been probed has an empty list, and an empty list
+/// means no check rather than a refusal: the endpoint is the authority until it
+/// has said otherwise.
+pub(crate) fn resolve_model_value(
+    engine: &SetupEngine,
+    raw: &str,
+) -> Result<String, DeviceError> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(DeviceError::bad_request(
+            "model_missing",
+            "a pin needs a model id: the body named an empty `model`".to_owned(),
+        ));
+    }
+    let registry = chat::provider_registry(engine).map_err(settings_unavailable)?;
+    let primary = engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .map_err(settings_unavailable)?
+        .unwrap_or_default();
+    let choice = chat::split_model_value(value, &registry, &primary);
+    let known = engine
+        .provider_catalog(&choice.provider_id)
+        .map_err(settings_unavailable)?;
+    if !known.is_empty() && !known.iter().any(|candidate| candidate == &choice.model) {
+        return Err(DeviceError::bad_request(
+            "model_invalid",
+            format!(
+                "model does not accept {}: {} publishes {} models and that id is not one of \
+                 them ({}), so no turn would answer",
+                shown_value(value),
+                choice.provider_id,
+                known.len(),
+                known.join(", ")
+            ),
+        ));
+    }
+    Ok(value.to_owned())
 }
 
 // ---------------------------------------------------------------------------
