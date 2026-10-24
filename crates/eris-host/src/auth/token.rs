@@ -118,6 +118,14 @@ pub struct TokenPolicy {
     pub access_ttl: Duration,
     /// Refresh token lifetime.
     pub refresh_ttl: Duration,
+    /// Whether a successful verification pushes the expiry forward.
+    ///
+    /// On (the default), a token is renewed the first time it is presented with
+    /// less than half its lifetime left, so a device that is used at all keeps
+    /// working indefinitely and never has to be re-paired. A device that goes
+    /// away still expires: the window slides on use, it does not vanish. Off is
+    /// the pre-1.4.6 behaviour, where the clock only ever ran down.
+    pub sliding: bool,
 }
 
 impl Default for TokenPolicy {
@@ -125,6 +133,7 @@ impl Default for TokenPolicy {
         Self {
             access_ttl: ACCESS_TTL,
             refresh_ttl: REFRESH_TTL,
+            sliding: true,
         }
     }
 }
@@ -136,6 +145,16 @@ impl TokenPolicy {
         Self {
             access_ttl,
             refresh_ttl: REFRESH_TTL,
+            sliding: true,
+        }
+    }
+
+    /// The lifetime of one kind under this policy.
+    #[must_use]
+    const fn ttl_of(&self, kind: TokenKind) -> Duration {
+        match kind {
+            TokenKind::Access => self.access_ttl,
+            TokenKind::Refresh => self.refresh_ttl,
         }
     }
 }
@@ -435,6 +454,35 @@ impl TokenService {
         })
     }
 
+    /// The expiry to report for a token that just verified: the stored one, or a
+    /// fresh full lifetime when the sliding policy says the window is half gone.
+    ///
+    /// A failed write is not a failed verification. The token did verify, so the
+    /// caller is told the old expiry rather than being refused over a bookkeeping
+    /// update; the next presentation tries again.
+    fn renewed(
+        &self,
+        token_id: &str,
+        kind: TokenKind,
+        expires_at: OffsetDateTime,
+    ) -> Result<OffsetDateTime, AuthError> {
+        if !self.policy.sliding {
+            return Ok(expires_at);
+        }
+        let ttl = self.policy.ttl_of(kind);
+        let at = now();
+        // Half the lifetime is the renewal point. For an access token that is
+        // thirty minutes; for a refresh token fifteen days.
+        if expires_at - at > ttl / 2 {
+            return Ok(expires_at);
+        }
+        let renewed = at + ttl;
+        if self.store.slide_token_expiry(token_id, renewed)? {
+            return Ok(renewed);
+        }
+        Ok(expires_at)
+    }
+
     /// Match the presented value against every stored verifier and then apply
     /// the status checks, in an order that keeps a retired token retired.
     fn verify(&self, presented: &str, expected: TokenKind) -> Result<VerifiedToken, AuthError> {
@@ -462,6 +510,12 @@ impl TokenService {
                 return Err(AuthError::TokenWrongKind { expected });
             }
             let scope = ScopeSet::from_storage(&row.scope)?;
+            // Sliding expiry, after every status check has passed: a token that
+            // is presented while it still works is pushed back to a full
+            // lifetime, but only once it is more than half spent. Renewing on
+            // every request would be a write per request for no gain, and
+            // renewing before the checks would let a revoked row stay alive.
+            let expires_at = self.renewed(&row.id, kind, expires_at)?;
             return Ok(VerifiedToken {
                 token_id: row.id,
                 device_id: row.device_id,
@@ -622,5 +676,137 @@ fn revoked_is_rejected_immediately() {
             .expect_err("a revoked device cannot mint")
             .code(),
         "device_revoked"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn a_token_more_than_half_spent_is_renewed_on_use() {
+    use crate::auth::ScopeSet;
+    use crate::auth::store::AuthStore;
+    use crate::db::Db;
+
+    use super::{TokenOrigin, TokenService, format_timestamp};
+
+    let db = Db::open_in_memory().expect("db");
+    let service = TokenService::new(db.clone());
+    let device = service.register_device("phone", "ios").expect("device");
+    let minted = service
+        .mint_access(&device, ScopeSet::device_default(), TokenOrigin::Device)
+        .expect("mint");
+    let original = minted.expires_at();
+
+    // Twenty minutes left of a one-hour lifetime: past the halfway point, so the
+    // next presentation is the one that renews it.
+    let soon = crate::auth::now() + Duration::from_secs(20 * 60);
+    AuthStore::new(db.clone())
+        .db()
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE auth_tokens SET expires_at = ?2 WHERE id = ?1",
+                rusqlite::params![minted.token_id(), format_timestamp(soon)],
+            )
+        })
+        .expect("age the row");
+
+    let verified = service.verify_access(minted.token()).expect("verify");
+    assert!(
+        verified.expires_at() > original,
+        "a used token is pushed back to a full lifetime: {} vs {}",
+        verified.expires_at(),
+        original
+    );
+
+    // The renewal is a write, not a claim about the returned value: reading the
+    // row again shows the same later expiry.
+    let stored = AuthStore::new(db)
+        .token_rows()
+        .expect("rows")
+        .into_iter()
+        .find(|row| row.id == minted.token_id())
+        .expect("the row");
+    assert_eq!(
+        stored.expires_at,
+        format_timestamp(verified.expires_at()),
+        "the row carries the renewed expiry"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn a_freshly_minted_token_is_not_rewritten_on_every_use() {
+    use crate::auth::ScopeSet;
+    use crate::db::Db;
+
+    use super::{TokenOrigin, TokenService};
+
+    let service = TokenService::new(Db::open_in_memory().expect("db"));
+    let device = service.register_device("phone", "ios").expect("device");
+    let minted = service
+        .mint_access(&device, ScopeSet::device_default(), TokenOrigin::Device)
+        .expect("mint");
+
+    // A token with most of its life left reports exactly the expiry it was
+    // minted with, and goes on doing so. Renewing here would be a write per
+    // request for nothing.
+    for _ in 0..3 {
+        let verified = service.verify_access(minted.token()).expect("verify");
+        assert_eq!(
+            verified.expires_at(),
+            minted.expires_at(),
+            "a young token keeps its window"
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn sliding_can_be_turned_off_and_a_retired_token_is_never_resurrected() {
+    use crate::auth::ScopeSet;
+    use crate::auth::store::AuthStore;
+    use crate::db::Db;
+
+    use super::{TokenOrigin, TokenPolicy, TokenService, format_timestamp};
+
+    let db = Db::open_in_memory().expect("db");
+    let pinned = TokenService::with_policy(
+        db.clone(),
+        TokenPolicy {
+            sliding: false,
+            ..TokenPolicy::default()
+        },
+    );
+    let device = pinned.register_device("phone", "ios").expect("device");
+    let minted = pinned
+        .mint_access(&device, ScopeSet::device_default(), TokenOrigin::Device)
+        .expect("mint");
+    let soon = crate::auth::now() + Duration::from_secs(20 * 60);
+    AuthStore::new(db.clone())
+        .db()
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE auth_tokens SET expires_at = ?2 WHERE id = ?1",
+                rusqlite::params![minted.token_id(), format_timestamp(soon)],
+            )
+        })
+        .expect("age the row");
+
+    let verified = pinned.verify_access(minted.token()).expect("verify");
+    assert_eq!(
+        verified.expires_at(),
+        soon,
+        "with sliding off the clock only runs down"
+    );
+
+    // A revoked row is refused before the renewal point is ever considered, so
+    // aging it cannot be used to bring it back.
+    let sliding = TokenService::new(db);
+    sliding.revoke_token(minted.token_id()).expect("revoke");
+    assert_eq!(
+        sliding
+            .verify_access(minted.token())
+            .expect_err("revoked stays revoked")
+            .code(),
+        "token_revoked"
     );
 }

@@ -35,10 +35,9 @@ use crate::admin::{
     ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
     ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
     ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_QUOTA,
-    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
-    ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
-    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
-    VERSION, session_path,
+    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
+    ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -2785,9 +2784,11 @@ async fn rotate_provider(
             {
                 return refusal(form_error(&error));
             }
-            let _ = state
-                .engine
-                .set_provider_probe_detail(&owner, &catalog.dialects, &catalog.unreachable);
+            let _ = state.engine.set_provider_probe_detail(
+                &owner,
+                &catalog.dialects,
+                &catalog.unreachable,
+            );
             if as_html {
                 render_dashboard_ok(&state, format!("probe ok: {} models", catalog.models.len()))
             } else {
@@ -4150,7 +4151,11 @@ async fn probe_providers(
 
     if failed.is_empty() {
         if as_html {
-            render_settings_ok(&state, SettingsGroup::Provider, format!("probed {probed} provider(s)"))
+            render_settings_ok(
+                &state,
+                SettingsGroup::Provider,
+                format!("probed {probed} provider(s)"),
+            )
         } else {
             ok_json(serde_json::json!({ "ok": true, "probed": probed }))
         }

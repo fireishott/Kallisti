@@ -155,7 +155,7 @@ pub async fn models(State(service): State<DeviceService>, headers: HeaderMap) ->
     if let Err(error) = require_admin(&token) {
         return error.into_response();
     }
-    match read_models(&service.engine()) {
+    match read_models(service.engine()) {
         Ok(body) => axum::Json(body).into_response(),
         Err(error) => error.into_response(),
     }
@@ -677,7 +677,7 @@ pub async fn aux_roles(State(service): State<DeviceService>, headers: HeaderMap)
     if let Err(error) = require_admin(&token) {
         return error.into_response();
     }
-    match read_aux(&service.engine()) {
+    match read_aux(service.engine()) {
         Ok(body) => axum::Json(body).into_response(),
         Err(error) => error.into_response(),
     }

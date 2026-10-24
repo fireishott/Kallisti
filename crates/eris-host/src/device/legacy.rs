@@ -1843,7 +1843,17 @@ mod tests {
         );
         assert_eq!(
             regrouped,
-            concat!("bc480a6d", "-", "1670", "-", "46c3", "-", "bd93", "-", "d12cb1e9c4a7")
+            concat!(
+                "bc480a6d",
+                "-",
+                "1670",
+                "-",
+                "46c3",
+                "-",
+                "bd93",
+                "-",
+                "d12cb1e9c4a7"
+            )
         );
         assert_eq!(regrouped.len(), 36);
         // And it parses as a UUID, which is the requirement: `RelayHost.id` is a

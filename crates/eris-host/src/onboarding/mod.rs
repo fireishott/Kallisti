@@ -774,7 +774,9 @@ impl SetupEngine {
             written.push(owner.clone());
         }
         if let Some(contexts) = self.setting(SETTING_PROVIDER_CONTEXTS)?
-            && self.setting(&Self::provider_contexts_key(&owner))?.is_none()
+            && self
+                .setting(&Self::provider_contexts_key(&owner))?
+                .is_none()
         {
             self.set_setting(&Self::provider_contexts_key(&owner), &contexts)?;
         }
@@ -994,10 +996,7 @@ impl SetupEngine {
     }
 
     /// The models one provider listed and refused, as `id\treason` lines.
-    pub fn provider_unreachable(
-        &self,
-        provider_id: &str,
-    ) -> Result<Vec<String>, OnboardingError> {
+    pub fn provider_unreachable(&self, provider_id: &str) -> Result<Vec<String>, OnboardingError> {
         let Some(json) = self.setting(&Self::provider_unreachable_key(provider_id))? else {
             return Ok(Vec::new());
         };
@@ -1756,7 +1755,9 @@ pub(crate) mod tests {
 
         two_providers(&engine, "commandcode");
         assert_eq!(
-            engine.check_primary_model("cc/model-one").expect("accepted"),
+            engine
+                .check_primary_model("cc/model-one")
+                .expect("accepted"),
             "cc/model-one"
         );
         assert!(
@@ -1778,7 +1779,10 @@ pub(crate) mod tests {
             vec!["ds/deepseek-v4-flash".to_owned()]
         );
         assert!(
-            engine.provider_catalog("commandcode").expect("read").is_empty(),
+            engine
+                .provider_catalog("commandcode")
+                .expect("read")
+                .is_empty(),
             "a provider with no probe of its own is empty, not borrowed"
         );
         assert!(

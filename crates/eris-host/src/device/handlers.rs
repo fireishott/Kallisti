@@ -1912,10 +1912,7 @@ pub(crate) fn model_write_refusal(error: OnboardingError) -> DeviceError {
 /// A provider that has never been probed has an empty list, and an empty list
 /// means no check rather than a refusal: the endpoint is the authority until it
 /// has said otherwise.
-pub(crate) fn resolve_model_value(
-    engine: &SetupEngine,
-    raw: &str,
-) -> Result<String, DeviceError> {
+pub(crate) fn resolve_model_value(engine: &SetupEngine, raw: &str) -> Result<String, DeviceError> {
     let value = raw.trim();
     if value.is_empty() {
         return Err(DeviceError::bad_request(

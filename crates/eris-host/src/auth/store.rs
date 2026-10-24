@@ -228,6 +228,30 @@ impl AuthStore {
         Ok(changed > 0)
     }
 
+    /// Push one live token's expiry forward. `false` when the row is already
+    /// retired, which is the case a sliding verification must not resurrect.
+    ///
+    /// The update only touches a row that is still live and only moves the
+    /// expiry later, so two verifications racing each other cannot shorten a
+    /// window: the second write either matches the same value or loses to a
+    /// later one.
+    pub fn slide_token_expiry(
+        &self,
+        token_id: &str,
+        expires_at: OffsetDateTime,
+    ) -> Result<bool, AuthError> {
+        let stamp = format_timestamp(expires_at);
+        let changed = self.db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE auth_tokens SET expires_at = ?2 \
+                 WHERE id = ?1 AND revoked_at IS NULL AND rotated_at IS NULL \
+                 AND expires_at < ?2",
+                params![token_id, stamp],
+            )
+        })?;
+        Ok(changed > 0)
+    }
+
     /// Revoke every live token of one device. Returns how many rows changed.
     pub fn revoke_tokens_for_device(
         &self,

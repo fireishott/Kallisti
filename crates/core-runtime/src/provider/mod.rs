@@ -32,9 +32,7 @@ use std::fmt;
 use core_domain::LlmError;
 
 pub use core_domain::{API_KEY_REF_ENV_PREFIX, SecretRef, SecretRefError};
-pub use models::{
-    ModelCatalog, declared_dialect, list_models, parse_model_list, unreachable_line,
-};
+pub use models::{ModelCatalog, declared_dialect, list_models, parse_model_list, unreachable_line};
 pub use openai_compat::OpenAiCompatProvider;
 pub use stream::ChatStreamParser;
 

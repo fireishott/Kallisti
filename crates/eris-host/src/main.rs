@@ -622,8 +622,7 @@ fn run_serve(
             if missing.is_empty() {
                 return;
             }
-            let (probed, failed) =
-                eris_host::web::routes::probe_registry(&engine, &missing).await;
+            let (probed, failed) = eris_host::web::routes::probe_registry(&engine, &missing).await;
             tracing::info!(
                 probed,
                 failed = failed.len(),

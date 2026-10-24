@@ -1097,13 +1097,23 @@ pre.code {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* The column is the window, not the transcript. `min-height` was a floor,
+     so a short viewport let the column grow past the screen with its content
+     and the only thing a browser could do with the composer was put it under
+     the fold, out of reach. A height pins the column to the window at every
+     size; the transcript scrolls inside it and the composer sits on the
+     bottom edge. */
+  height: 100vh;
+  height: 100dvh;
   padding-left: 18px;
   padding-right: 18px;
-  /* No tail. The prose rule's 72px bottom padding sat under a shell that
-     already ends at the viewport edge, so it could only ever paint a band of
-     nothing below the composer - the dead space under a reply. The composer
-     carries its own safe-area padding, so nothing here owes the phone one. */
-  padding-bottom: 0;
+  /* A gutter, not a tail. The prose rule's 72px bottom padding sat under a
+     shell that already ends at the viewport edge, so it could only ever paint
+     a band of nothing below the composer - the dead space under a reply. What
+     is left is 14px: enough that the composer is not welded to the frame, far
+     too little to read as missing content. The phone breakpoint zeroes it,
+     because there the composer already carries the safe-area inset. */
+  padding-bottom: 14px;
 }
 
 .chat-shell {
@@ -2311,6 +2321,48 @@ mod tests {
         assert!(
             rule(".msg .bubble").contains("max-width: 100%"),
             "a bubble cannot widen the column it sits in"
+        );
+    }
+
+    /// The composer sits on the bottom of the window, at every window size.
+    ///
+    /// A floor (`min-height`) let the column grow past a short viewport with its
+    /// own content, and the composer went under the fold where it could not be
+    /// reached - measured at 137px below the fold on a 1280x800 window. The
+    /// column now states a height, so the transcript scrolls inside the window
+    /// instead of pushing the composer out of it, and the only gap under the
+    /// composer is the 14px gutter this rule declares.
+    #[test]
+    fn the_composer_is_pinned_to_the_bottom_of_the_window() {
+        let wrap = rule(".app > .wrap:has(> .chat-shell)");
+        assert!(
+            wrap.contains("height: 100vh;"),
+            "the chat column states a height, so it cannot outgrow the window: {wrap}"
+        );
+        assert!(
+            wrap.contains("height: 100dvh;"),
+            "the dynamic viewport unit follows a mobile URL bar: {wrap}"
+        );
+        assert!(
+            !wrap.contains("min-height: 100dvh"),
+            "a floor is what let the composer fall below the fold: {wrap}"
+        );
+        assert!(
+            wrap.contains("padding-bottom: 14px;"),
+            "the tail is a gutter, not a band: {wrap}"
+        );
+        assert!(
+            rule(".chat-shell").contains("flex: 1 1 auto"),
+            "the shell takes the room the column has left"
+        );
+        assert!(
+            rule(".thread").contains("overflow-y: auto"),
+            "the transcript scrolls inside the window rather than growing it"
+        );
+        assert!(
+            phone_block().contains(".app > .wrap:has(> .chat-shell) { height: 100vh; height: 100dvh; padding-bottom: 0; }"),
+            "a phone keeps the pin and drops the gutter, because its composer \
+             already carries the safe-area inset"
         );
     }
 

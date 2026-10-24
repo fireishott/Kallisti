@@ -324,7 +324,10 @@ mod tests {
                        "key_ref":"env:NINEROUTER_API_KEY"}]"#;
         let parsed = parse(raw).expect("parses");
         assert_eq!(parsed[0].dialect, None);
-        assert_eq!(dialect_of(&parsed[0]), core_domain::ApiDialect::ChatCompletions);
+        assert_eq!(
+            dialect_of(&parsed[0]),
+            core_domain::ApiDialect::ChatCompletions
+        );
 
         let named = parse(
             r#"[{"id":"cc","name":"Command Code",
@@ -341,7 +344,11 @@ mod tests {
         provider.dialect = Some("responses".to_owned());
         let error = validate(&[provider]).unwrap_err();
         assert!(error.message.contains("alpha"), "{}", error.message);
-        assert!(error.message.contains("chat_completions"), "{}", error.message);
+        assert!(
+            error.message.contains("chat_completions"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
@@ -350,7 +357,10 @@ mod tests {
         // Both seeded entries carry the same reference, so the first wins: the
         // rule is stated rather than left to whichever order a loop happened to
         // take.
-        assert_eq!(legacy_provider_id(&registry, "env:NINEROUTER_API_KEY"), "alpha");
+        assert_eq!(
+            legacy_provider_id(&registry, "env:NINEROUTER_API_KEY"),
+            "alpha"
+        );
 
         let mut beta = one("beta");
         beta.key_ref = "env:BETA_KEY".to_owned();

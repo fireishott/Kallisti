@@ -493,22 +493,18 @@ impl OpenAiCompatProvider {
                 ..ChatRequest::user_text("hi")
             };
             let body = match dialect {
-                ApiDialect::ChatCompletions => {
-                    OpenAiCompatProvider::new(
-                        self.profile.clone(),
-                        ModelProfile::new(model.clone()),
-                        capabilities,
-                    )?
-                    .build_body(&request)
-                }
-                ApiDialect::Messages => {
-                    OpenAiCompatProvider::new(
-                        self.profile.clone(),
-                        ModelProfile::new(model.clone()),
-                        capabilities,
-                    )?
-                    .build_messages_body(&request)
-                }
+                ApiDialect::ChatCompletions => OpenAiCompatProvider::new(
+                    self.profile.clone(),
+                    ModelProfile::new(model.clone()),
+                    capabilities,
+                )?
+                .build_body(&request),
+                ApiDialect::Messages => OpenAiCompatProvider::new(
+                    self.profile.clone(),
+                    ModelProfile::new(model.clone()),
+                    capabilities,
+                )?
+                .build_messages_body(&request),
             };
             match http
                 .post(&url)
@@ -1016,8 +1012,10 @@ mod tests {
 
     #[test]
     fn the_messages_body_puts_the_preamble_at_the_top_level_not_in_messages() {
-        let body = messages_provider()
-            .build_messages_body(&ChatRequest::with_system(Some("Be brief.".to_owned()), "hi"));
+        let body = messages_provider().build_messages_body(&ChatRequest::with_system(
+            Some("Be brief.".to_owned()),
+            "hi",
+        ));
         // A block array, not a bare string: the preamble carries a cache
         // breakpoint and a string has nowhere to put one. The text is unchanged.
         assert_eq!(body["system"][0]["type"], "text");
@@ -1047,18 +1045,24 @@ mod tests {
             max_output_tokens: Some(64),
             ..ChatRequest::user_text("hi")
         });
-        assert_eq!(capped["max_tokens"], 64, "an explicit cap is not overridden");
+        assert_eq!(
+            capped["max_tokens"], 64,
+            "an explicit cap is not overridden"
+        );
     }
 
     #[test]
     fn a_messages_tool_result_is_a_user_block_addressed_by_tool_use_id() {
-        let request = ChatRequest::user_text("weather?")
-            .with_tool_result("toolu_01", r#"{"temp_c":21}"#);
+        let request =
+            ChatRequest::user_text("weather?").with_tool_result("toolu_01", r#"{"temp_c":21}"#);
         let body = messages_provider().build_messages_body(&request);
         assert_eq!(body["messages"][1]["role"], "user");
         assert_eq!(body["messages"][1]["content"][0]["type"], "tool_result");
         assert_eq!(body["messages"][1]["content"][0]["tool_use_id"], "toolu_01");
-        assert_eq!(body["messages"][1]["content"][0]["content"], r#"{"temp_c":21}"#);
+        assert_eq!(
+            body["messages"][1]["content"][0]["content"],
+            r#"{"temp_c":21}"#
+        );
         assert!(
             body["messages"]
                 .as_array()
@@ -1093,7 +1097,10 @@ mod tests {
 
         // A call-only assistant turn has no text block to send: an empty one is
         // not a block this dialect wants.
-        assert_eq!(body["messages"][1]["content"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            body["messages"][1]["content"].as_array().map(Vec::len),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1155,4 +1162,3 @@ mod tests {
         assert!(body.get("max_tokens").is_none());
     }
 }
-

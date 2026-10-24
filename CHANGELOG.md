@@ -6,6 +6,30 @@ observe; commit history carries the detail.
 
 ## 1.4.6
 
+- **A paired phone stops expiring while it is in use.** Token lifetime was a clock
+  that only ran down: an hour for an access token, thirty days for a refresh token,
+  and a device that went quiet for longer than that had to be paired again from the
+  Hub. Verification now slides the window. The first time a token is presented with
+  less than half its lifetime left, the row is pushed back to a full lifetime, so a
+  device that is used at all keeps working indefinitely, while a device that goes
+  away still lapses on the old schedule. A retired row is refused before the renewal
+  is ever considered, so revocation cannot be aged into a resurrection, and a young
+  token is left alone rather than rewritten on every request. `TokenPolicy` carries
+  the switch, default on. `build 104`.
+- **MiniMax is a provider in its own right.** `api.minimax.io` speaks Chat
+  Completions, so it is a registry row rather than an adapter: an OpenAI-compatible
+  base URL, an `env:` key reference, and the existing probe populates its catalogue.
+  Its streamed deltas carry `reasoning_content`, which the reader already accepts, so
+  the thinking bubble fills the same as on any other provider. `build 104`.
+- **The composer sits on the bottom of the window, at every window size.** The
+  previous fix removed the dead band but left the column with a floor, so on a
+  laptop viewport the column grew past the screen with its own content and the
+  composer went under the fold - measured at 137px out of reach at 1280x800 and
+  193px at 1024x768, while a tall window lined up by luck. The chat column now
+  states its height against the window, the transcript scrolls inside it, and the
+  only space under the composer is a 14px gutter; the phone breakpoint keeps the pin
+  and zeroes the gutter because its composer already carries the safe-area inset.
+  Returned as `height: 100vh; height: 100dvh` in place of the floor. `build 104`.
 - **A Messages-dialect turn asks the provider to cache its own prompt.** The preamble,
   the tool schemas and the newest message now carry an `ephemeral` cache breakpoint on
   the Messages dialect, which is the only dialect that defines one. The persona and the

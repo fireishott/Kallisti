@@ -19,8 +19,8 @@
 
 use std::path::{Path, PathBuf};
 
-use core_domain::{CacheReadReporting, Capabilities, LlmError, Usage};
 use core_domain::ApiDialect;
+use core_domain::{CacheReadReporting, Capabilities, LlmError, Usage};
 use core_runtime::provider::{ChatStreamParser, Completion, ProviderEvent};
 use eventsource_stream::Eventsource;
 use tokio_stream::StreamExt;
@@ -483,7 +483,8 @@ async fn a_listed_model_that_does_not_answer_is_recorded_not_hidden() {
             // A completion request. The dead model is refused the way the live
             // gateway refused its stale catalogue entries.
             if request.contains("dead/model") {
-                let body = r#"{"error":{"message":"Model 'dead/model' not found","code":"not_found"}}"#;
+                let body =
+                    r#"{"error":{"message":"Model 'dead/model' not found","code":"not_found"}}"#;
                 let response = format!(
                     "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
                     body.len()

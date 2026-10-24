@@ -960,6 +960,11 @@ impl NotesStore {
     }
 
     /// Store one enriched revision for a note and return its id.
+    ///
+    /// Seven columns arrive from one enrichment run and the row is one shape, so
+    /// the arguments stay positional rather than being bundled into a struct
+    /// that exists only to be destructured at the next line.
+    #[allow(clippy::too_many_arguments)]
     pub fn store_enrichment(
         &self,
         note_id: &str,

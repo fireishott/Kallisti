@@ -304,7 +304,10 @@ mod tests {
                ]}"#,
         )
         .expect("parses");
-        assert_eq!(catalog.dialect("claude-sonnet-5-5"), Some(ApiDialect::Messages));
+        assert_eq!(
+            catalog.dialect("claude-sonnet-5-5"),
+            Some(ApiDialect::Messages)
+        );
         assert_eq!(
             catalog.dialect("deepseek/deepseek-v4-flash"),
             Some(ApiDialect::ChatCompletions)
@@ -324,19 +327,16 @@ mod tests {
 
     #[test]
     fn an_entry_naming_only_a_shape_we_cannot_speak_declares_nothing() {
-        let catalog = parse_model_list(
-            r#"{"data":[{"id":"m/one","supported_endpoints":["/responses"]}]}"#,
-        )
-        .expect("parses");
+        let catalog =
+            parse_model_list(r#"{"data":[{"id":"m/one","supported_endpoints":["/responses"]}]}"#)
+                .expect("parses");
         assert_eq!(catalog.dialect("m/one"), None);
     }
 
     #[test]
     fn unreachable_models_are_recorded_without_leaving_the_catalogue() {
-        let mut catalog = parse_model_list(
-            r#"{"data":[{"id":"a/model"},{"id":"b/model"}]}"#,
-        )
-        .expect("parses");
+        let mut catalog =
+            parse_model_list(r#"{"data":[{"id":"a/model"},{"id":"b/model"}]}"#).expect("parses");
         assert!(catalog.unreachable_ids().is_empty());
         catalog.mark_unreachable(vec![unreachable_line("b/model", "404 not found")]);
         assert_eq!(catalog.models.len(), 2, "a listed model stays listed");

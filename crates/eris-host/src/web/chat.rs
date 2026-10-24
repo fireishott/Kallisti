@@ -598,8 +598,7 @@ pub fn aux_pinned_config(
     // An unpinned role follows the chat model, which carries its own provider in
     // front of it. Reading the bare half here rather than the whole value is
     // what keeps a role on the endpoint its own provider row names.
-    let inherited =
-        crate::web::chat::split_model_value(&primary_model, &registry, &primary).model;
+    let inherited = crate::web::chat::split_model_value(&primary_model, &registry, &primary).model;
     let model = crate::aux::effective(stored_model.as_deref(), &inherited);
     let dialect = engine.provider_dialect_for(&provider.id, &model)?;
     Ok(Some(TurnConfig {
@@ -1058,7 +1057,12 @@ pub fn question_id(db: &Db, conversation: &str) -> Result<Option<String>, DbErro
 /// a turn.
 ///
 /// Rows that already carry a job id are left alone: a turn is stamped once.
-pub fn stamp_turn(db: &Db, question_id: &str, answer_id: &str, job_id: &str) -> Result<(), DbError> {
+pub fn stamp_turn(
+    db: &Db,
+    question_id: &str,
+    answer_id: &str,
+    job_id: &str,
+) -> Result<(), DbError> {
     db.with_conn(|conn| {
         conn.execute(
             "UPDATE chat_messages
@@ -1534,8 +1538,7 @@ pub fn describe_images(config: &TurnConfig, files: &[Attachment]) -> Option<Stri
         return None;
     }
 
-    let profile =
-        ProviderProfile::new("vision", config.base_url.clone(), config.key_ref.clone())
+    let profile = ProviderProfile::new("vision", config.base_url.clone(), config.key_ref.clone())
         .ok()?
         .with_dialect(config.dialect);
     let provider = OpenAiCompatProvider::new(
@@ -1635,8 +1638,7 @@ pub fn advise_approval(
     arguments: &str,
     sandbox_mode: &str,
 ) -> Option<String> {
-    let profile =
-        ProviderProfile::new("approval", config.base_url.clone(), config.key_ref.clone())
+    let profile = ProviderProfile::new("approval", config.base_url.clone(), config.key_ref.clone())
         .ok()?
         .with_dialect(config.dialect);
     let provider = OpenAiCompatProvider::new(
@@ -2047,9 +2049,11 @@ pub fn apply_model(
         .setting(crate::providers::SETTING_PRIMARY)?
         .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned());
     // A bare id keeps the turn's own endpoint; a qualified one moves it.
-    let (provider_id, model) = if value.trim().split_once('/').is_some_and(|(head, _)| {
-        registry.iter().any(|provider| provider.id == head)
-    }) {
+    let (provider_id, model) = if value
+        .trim()
+        .split_once('/')
+        .is_some_and(|(head, _)| registry.iter().any(|provider| provider.id == head))
+    {
         let choice = split_model_value(value, &registry, &primary);
         (choice.provider_id, choice.model)
     } else {
@@ -2057,7 +2061,10 @@ pub fn apply_model(
             .iter()
             .find(|provider| provider.base_url == config.base_url)
             .or_else(|| crate::providers::resolve(&registry, &primary));
-        (current.map(|p| p.id.clone()).unwrap_or_default(), value.trim().to_owned())
+        (
+            current.map(|p| p.id.clone()).unwrap_or_default(),
+            value.trim().to_owned(),
+        )
     };
     if let Some(chosen) = registry.iter().find(|provider| provider.id == provider_id)
         && let Ok(key_ref) = SecretRef::try_from(chosen.key_ref.as_str())
@@ -4081,7 +4088,11 @@ mod tests {
         assert_eq!(choice.provider_id, "default");
         assert_eq!(choice.model, "cmc/deepseek/deepseek-v4-flash");
 
-        let chosen = split_model_value("commandcode/deepseek/deepseek-v4-flash", &registry, "default");
+        let chosen = split_model_value(
+            "commandcode/deepseek/deepseek-v4-flash",
+            &registry,
+            "default",
+        );
         assert_eq!(chosen.provider_id, "commandcode");
         assert_eq!(chosen.model, "deepseek/deepseek-v4-flash");
     }
