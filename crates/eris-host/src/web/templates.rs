@@ -4938,7 +4938,6 @@ pub fn chat_page(view: &ChatView) -> Markup {
                 @if let Some(line) = &view.line {
                     p .line { (line) }
                 }
-                p .hint { (view.hint) }
             }
         }
         @if !view.provider_ready {
@@ -6025,32 +6024,6 @@ const CHAT_JS: &str = r##"(function () {
       metaLive.hidden = true;
       metaLive.textContent = "";
     }
-    thread.appendChild(article);
-    return {
-      article: article,
-      bubble: bubble,
-      text: text,
-      meta: meta,
-      think: think,
-      thinkBody: thinkBody,
-      streamChunk: streamChunk,
-      addTool: addTool,
-      setTurn: setTurn,
-      metaLive: metaLive,
-      setLive: setLive,
-      askCard: askCard
-    };
-  }
-
-  // The operator's own line, in the shape the server renders, so a live turn and
-  // a reloaded transcript put the message in the same place. Used by a send and by
-  // a steer, because both are a message the operator typed.
-  function appendUser(text, files) {
-    var article = document.createElement("article");
-    article.className = "msg user";
-    var who = document.createElement("div");
-    who.className = "who";
-    who.textContent = "You";
     // A question the turn is waiting on. Built inside the answer's own article so
     // it scrolls with the reply it belongs to. The answer is posted to the route
     // the turn is blocked on, and a card that failed to land stays on screen with
@@ -6178,6 +6151,32 @@ const CHAT_JS: &str = r##"(function () {
       }
     }
 
+    thread.appendChild(article);
+    return {
+      article: article,
+      bubble: bubble,
+      text: text,
+      meta: meta,
+      think: think,
+      thinkBody: thinkBody,
+      streamChunk: streamChunk,
+      addTool: addTool,
+      setTurn: setTurn,
+      metaLive: metaLive,
+      setLive: setLive,
+      askCard: askCard
+    };
+  }
+
+  // The operator's own line, in the shape the server renders, so a live turn and
+  // a reloaded transcript put the message in the same place. Used by a send and by
+  // a steer, because both are a message the operator typed.
+  function appendUser(text, files) {
+    var article = document.createElement("article");
+    article.className = "msg user";
+    var who = document.createElement("div");
+    who.className = "who";
+    who.textContent = "You";
     var bubble = document.createElement("div");
     bubble.className = "bubble";
     var body = document.createElement("p");

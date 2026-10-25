@@ -20,6 +20,11 @@
 //!   is reported to the operator comes from a provider's own usage, never from
 //!   this.
 //!
+//! - the cooldown in [`cooling_down`] and [`record_failure`] is what keeps a
+//!   dead summary model from being paid for on every single turn. Without it a
+//!   provider outage turns every turn into two failed calls and a marker row,
+//!   forever, and the operator cannot tell that from the daemon being slow.
+//!
 //! What is not here is in-turn trimming. A turn that calls twelve tools and grows
 //! its own prompt past the window is handled at the round boundary inside
 //! [`super::chat::drive_tool_loop`], because that is the only place that can see
@@ -60,6 +65,27 @@ pub const MIN_KEEP: usize = 4;
 /// turn being protected. The newest [`COMPRESS_SLICE`] are read instead, and the
 /// previous summary stands for everything older.
 pub const COMPRESS_SLICE: usize = 40;
+
+/// The shortest a compression failure backs off for, in seconds.
+///
+/// A minute is long enough that a provider hiccup does not cost two calls on the
+/// next turn, and short enough that a recovered provider is used again while the
+/// operator is still in the conversation.
+pub const COOLDOWN_BASE_SECS: i64 = 60;
+
+/// The longest a compression failure backs off for, in seconds.
+///
+/// Fifteen minutes. Past that the daemon is not failing, it is unconfigured, and
+/// waiting longer only means the window quietly overflows instead.
+pub const COOLDOWN_MAX_SECS: i64 = 900;
+
+/// How many ineffective compressions in a row trip the breaker.
+///
+/// Two. One compaction that did not help is noise - the estimate was wrong, or
+/// the provider answered with something useless. Two in a row means a summary is
+/// not doing the work the window needs, and paying a third time is throwing
+/// tokens at a problem summarising cannot solve.
+pub const THRASH_LIMIT: u32 = 2;
 
 /// How many characters of the operator's own words ride into a compaction
 /// verbatim, across all of them.
@@ -371,6 +397,145 @@ pub fn clear(db: &Db, conversation: &str) -> Result<(), DbError> {
     })
 }
 
+/// The `settings` row that holds when the breaker next allows a compaction,
+/// as an RFC 3339 stamp.
+pub const SETTING_COOLDOWN_UNTIL: &str = "context.compress_cooldown_until";
+
+/// The `settings` row that holds how many failures in a row the breaker has seen.
+pub const SETTING_FAILURES: &str = "context.compress_failures";
+
+/// The `settings` row that holds how many compactions in a row did not help.
+pub const SETTING_THRASH: &str = "context.compress_thrash";
+
+/// Why compression is (or is not) allowed right now.
+///
+/// Returned rather than a bare bool so the reason reaches the audit log and the
+/// operator can tell "the summary model is refusing" from "the summary is not
+/// helping". Those want opposite fixes and a boolean cannot say which.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Health {
+    /// Go ahead.
+    Clear,
+    /// A failure put the breaker in cooldown. Carries the operator-facing reason.
+    Cooling(String),
+    /// Too many compactions in a row that did not free anything.
+    Thrashing,
+}
+
+impl Health {
+    /// Whether a compaction may run.
+    #[must_use]
+    pub fn allowed(&self) -> bool {
+        matches!(self, Self::Clear)
+    }
+
+    /// The audit detail, for the row this decision writes.
+    #[must_use]
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Clear => "clear",
+            Self::Cooling(_) => "cooling_down",
+            Self::Thrashing => "thrashing",
+        }
+    }
+}
+
+/// Read the breaker.
+///
+/// Failures are counted, and the cooldown is exponential in them: one failure
+/// backs off for [`COOLDOWN_BASE_SECS`], two for twice that, and so on up to
+/// [`COOLDOWN_MAX_SECS`]. A cooldown that has run out is not a cooldown, so an
+/// expired stamp reads as clear without needing a write.
+///
+/// A settings row that will not parse is treated as clear. The alternative is a
+/// typo silently disabling compression for the rest of the deployment's life,
+/// and compression failing to run is the worse failure of the two.
+#[must_use]
+pub fn health(db: &Db, now: time::OffsetDateTime) -> Health {
+    let read = |key: &str| -> Option<String> { super::store::settings_get(db, key).ok().flatten() };
+    let thrash: u32 = read(SETTING_THRASH)
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    if thrash >= THRASH_LIMIT {
+        return Health::Thrashing;
+    }
+    let Some(until) = read(SETTING_COOLDOWN_UNTIL) else {
+        return Health::Clear;
+    };
+    let Ok(until) =
+        time::OffsetDateTime::parse(until.trim(), &time::format_description::well_known::Rfc3339)
+    else {
+        return Health::Clear;
+    };
+    if until <= now {
+        return Health::Clear;
+    }
+    let wait = (until - now).whole_seconds().max(0);
+    Health::Cooling(format!(
+        "the summary model failed recently; compression resumes in {wait}s"
+    ))
+}
+
+/// Count one failure and set the cooldown it earns.
+///
+/// Returns the seconds of cooldown, so the caller can say how long in one audit
+/// row instead of making the operator read two.
+pub fn record_failure(db: &Db, now: time::OffsetDateTime) -> i64 {
+    let failures: u32 = super::store::settings_get(db, SETTING_FAILURES)
+        .ok()
+        .flatten()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+        .saturating_add(1);
+    // Exponential, capped, and computed in i64 with the cap applied before any
+    // multiply that could overflow on a truly broken counter.
+    let exponent = failures.saturating_sub(1).min(8);
+    let seconds = COOLDOWN_BASE_SECS
+        .saturating_mul(1_i64 << exponent.min(4))
+        .clamp(COOLDOWN_BASE_SECS, COOLDOWN_MAX_SECS);
+    let until = now + time::Duration::seconds(seconds);
+    let stamp = until
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let _ = super::store::settings_put(db, SETTING_FAILURES, &failures.to_string());
+    let _ = super::store::settings_put(db, SETTING_COOLDOWN_UNTIL, &stamp);
+    seconds
+}
+
+/// A compaction ran and worked: clear the failure count and its cooldown.
+pub fn record_success(db: &Db) {
+    let _ = super::store::settings_put(db, SETTING_FAILURES, "0");
+    let _ = super::store::settings_put(db, SETTING_COOLDOWN_UNTIL, "");
+}
+
+/// A compaction ran and did not make the window any smaller.
+///
+/// Counted separately from a failure because the fix is different: a summary
+/// that comes back empty or useless means the aux model is wrong for the job,
+/// while a failed call means it is unreachable. Returns the new count so the
+/// caller can say whether this one tripped the breaker.
+pub fn record_ineffective(db: &Db) -> u32 {
+    let thrash: u32 = super::store::settings_get(db, SETTING_THRASH)
+        .ok()
+        .flatten()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+        .saturating_add(1);
+    let _ = super::store::settings_put(db, SETTING_THRASH, &thrash.to_string());
+    thrash
+}
+
+/// Forget the breaker entirely, failure count and thrash count both.
+///
+/// Called when the operator changes the compression role or its model: a
+/// different model is a different question, and inheriting a cooldown earned by
+/// the previous one would make the new pin look broken on its first turn.
+pub fn reset_health(db: &Db) {
+    let _ = super::store::settings_put(db, SETTING_FAILURES, "0");
+    let _ = super::store::settings_put(db, SETTING_COOLDOWN_UNTIL, "");
+    let _ = super::store::settings_put(db, SETTING_THRASH, "0");
+}
+
 /// The prompt line that opens a carried summary.
 ///
 /// Fixed, and aggressive on purpose, for the reason a stale summary is worse than
@@ -430,6 +595,22 @@ pub fn carry(summary: &Summary) -> String {
     format!("{SUMMARY_PREAMBLE}{}", summary.text.trim())
 }
 
+/// What one compaction came to.
+///
+/// Three answers, not an `Option`, because the caller has to act differently on
+/// each: pay for nothing, carry the new summary, or back off. Folding failure
+/// into `None` is what made a dead aux model indistinguishable from a healthy
+/// conversation with no news.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// The previous summary already covered every row outside the window.
+    NothingNew,
+    /// A summary to carry, built or updated just now.
+    Fresh(Summary),
+    /// The aux call failed, or answered with nothing usable.
+    Failed,
+}
+
 /// Turn the rows outside the window into a summary, updating one that already
 /// exists.
 ///
@@ -439,17 +620,19 @@ pub fn carry(summary: &Summary) -> String {
 /// all of them this returns `None`, because there is nothing new to say and paying
 /// for an aux call to say it again is the bug this parameter exists to fix.
 ///
-/// A return of `None` also covers the best-effort failure case: a provider that
-/// is down must leave the turn exactly as it would have been, never fail it.
-#[must_use]
+/// [`Outcome::Failed`] is the best-effort failure case, kept distinct from
+/// [`Outcome::NothingNew`] because the two want opposite handling: a provider
+/// that is down must leave the turn exactly as it would have been and start a
+/// cooldown, while having nothing new to say is the healthy steady state and
+/// must not.
 pub fn compress(
     config: &super::chat::TurnConfig,
     turns: &[Message],
     previous: Option<&Summary>,
-) -> Option<Summary> {
+) -> Outcome {
     let covered = previous.map(|summary| summary.rows).unwrap_or(0);
     if turns.is_empty() || covered >= turns.len() {
-        return None;
+        return Outcome::NothingNew;
     }
     // Only the newest slice of what is new. A thousand-row tail is not a bigger
     // prompt than a provider can take, but it is a bigger one than is worth
@@ -498,16 +681,20 @@ pub fn compress(
         ),
     };
 
-    let text = super::chat::aux_completion(config, &system, &user)?;
+    let Some(text) = super::chat::aux_completion(config, &system, &user) else {
+        return Outcome::Failed;
+    };
     let text = text.trim().to_owned();
+    // An empty summary is a failure, not a success: carrying nothing forward
+    // would silently drop the very turns this call existed to preserve.
     if text.is_empty() {
-        return None;
+        return Outcome::Failed;
     }
     // The summary says what happened; the operator's own words say what was
     // asked. Carried together so a later turn cannot read a paraphrase of an
     // instruction and act on that instead.
     let verbatim = verbatim_user_section(turns);
-    Some(Summary {
+    Outcome::Fresh(Summary {
         text: format!("{text}{verbatim}"),
         rows: turns.len(),
     })
@@ -653,7 +840,97 @@ mod tests {
         // Nothing listens on that port, so a call would return None anyway; what
         // is asserted is that the covered comparison decides it, before any
         // request is built.
-        assert!(compress(&config, &rows, Some(&previous)).is_none());
+        assert_eq!(
+            compress(&config, &rows, Some(&previous)),
+            Outcome::NothingNew
+        );
+    }
+
+    #[test]
+    fn a_fresh_breaker_allows_compression() {
+        let db = Db::open_in_memory().expect("in-memory database");
+        let now = time::OffsetDateTime::now_utc();
+        let state = health(&db, now);
+        assert!(state.allowed());
+        assert_eq!(state.reason(), "clear");
+    }
+
+    #[test]
+    fn one_failure_cools_down_and_the_cooldown_runs_out() {
+        let db = Db::open_in_memory().expect("in-memory database");
+        let now = time::OffsetDateTime::now_utc();
+        let waited = record_failure(&db, now);
+        assert_eq!(waited, COOLDOWN_BASE_SECS);
+
+        // Still inside the window: held, and the reason says how long is left.
+        let held = health(&db, now + time::Duration::seconds(1));
+        assert!(!held.allowed());
+        assert_eq!(held.reason(), "cooling_down");
+
+        // Past it: clear again, without anything having to write the row back.
+        assert!(
+            health(&db, now + time::Duration::seconds(waited + 1)).allowed(),
+            "an expired cooldown is not a cooldown"
+        );
+    }
+
+    #[test]
+    fn repeated_failures_back_off_further_but_never_forever() {
+        let db = Db::open_in_memory().expect("in-memory database");
+        let now = time::OffsetDateTime::now_utc();
+        assert_eq!(record_failure(&db, now), 60);
+        assert_eq!(record_failure(&db, now), 120);
+        assert_eq!(record_failure(&db, now), 240);
+        assert_eq!(record_failure(&db, now), 480);
+        // The cap, and it stays there however many more arrive.
+        assert_eq!(record_failure(&db, now), COOLDOWN_MAX_SECS);
+        assert_eq!(record_failure(&db, now), COOLDOWN_MAX_SECS);
+    }
+
+    #[test]
+    fn a_success_clears_the_cooldown_it_earned() {
+        let db = Db::open_in_memory().expect("in-memory database");
+        let now = time::OffsetDateTime::now_utc();
+        record_failure(&db, now);
+        assert!(!health(&db, now).allowed());
+        record_success(&db);
+        assert!(
+            health(&db, now).allowed(),
+            "a provider that answered is not a provider that is down"
+        );
+    }
+
+    #[test]
+    fn compactions_that_do_not_help_trip_the_breaker() {
+        let db = Db::open_in_memory().expect("in-memory database");
+        let now = time::OffsetDateTime::now_utc();
+        assert_eq!(record_ineffective(&db), 1);
+        assert!(
+            health(&db, now).allowed(),
+            "one useless summary is noise, not a breaker"
+        );
+        assert_eq!(record_ineffective(&db), THRASH_LIMIT);
+        let state = health(&db, now);
+        assert!(!state.allowed());
+        assert_eq!(state.reason(), "thrashing");
+        // A cooldown does not clear a thrash count; only a reset does.
+        record_success(&db);
+        assert!(!health(&db, now).allowed());
+        reset_health(&db);
+        assert!(health(&db, now).allowed());
+    }
+
+    #[test]
+    fn a_breaker_row_that_will_not_parse_is_ignored() {
+        let db = Db::open_in_memory().expect("in-memory database");
+        let now = time::OffsetDateTime::now_utc();
+        super::super::store::settings_put(&db, SETTING_COOLDOWN_UNTIL, "not a stamp")
+            .expect("written");
+        super::super::store::settings_put(&db, SETTING_THRASH, "lots").expect("written");
+        assert!(
+            health(&db, now).allowed(),
+            "a typo must not disable compression for good"
+        );
     }
 
     #[test]

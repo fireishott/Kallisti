@@ -5603,7 +5603,12 @@ async fn chat_new(
         return no_dashboard_session(&headers, &request_id.0);
     }
     match chat::create_conversation(state.engine.db()) {
-        Ok(id) => see_other_owned(conversation_path(&id)),
+        Ok(id) => {
+            // A new conversation is a new empty page, so the line under the
+            // salutation is written again rather than carried over.
+            let _ = crate::greeting::forget(state.engine.db());
+            see_other_owned(conversation_path(&id))
+        }
         Err(error) => refusal(FormError::new(None, "chat_write_failed", error.to_string())),
     }
 }
@@ -6001,12 +6006,15 @@ fn command_effect(
         // lands in it, so the operator is looking at the empty transcript the
         // command promised.
         "new" => match chat::create_conversation(state.engine.db()) {
-            Ok(id) => Ok((
-                id,
-                "Started a new conversation, and this is it. The last one is untouched and \
+            Ok(id) => {
+                let _ = crate::greeting::forget(state.engine.db());
+                Ok((
+                    id,
+                    "Started a new conversation, and this is it. The last one is untouched and \
                  still in the session list."
-                    .to_owned(),
-            )),
+                        .to_owned(),
+                ))
+            }
             Err(error) => Err(FormError::new(None, "chat_write_failed", error.to_string())),
         },
         // The same clear the clear button runs, so there is one behaviour and not
@@ -7479,19 +7487,50 @@ fn spawn_turn(
         // a summary that already covers the whole tail costs nothing. That is the
         // bug this path exists to fix - every turn used to re-summarise the same
         // window and throw the result away.
-        let summary = compression
-            .as_ref()
-            .and_then(|config| crate::web::context::compress(config, &dropped, carried.as_ref()));
-        // Recorded either way: a role that never lands must not look wired.
+        //
+        // The breaker runs first. A summary model that is down used to be paid
+        // for on every single turn: two failed calls and a "no summary" audit
+        // row each time, forever, with nothing telling the operator that the
+        // window was quietly overflowing. A cooldown makes the failure cost one
+        // turn instead of every turn, and the reason is written down.
+        let health = crate::web::context::health(&db, crate::auth::now());
+        let summary = match (&compression, health.allowed()) {
+            (Some(config), true) => {
+                match crate::web::context::compress(config, &dropped, carried.as_ref()) {
+                    crate::web::context::Outcome::Fresh(summary) => {
+                        // A compaction that ran at all clears the failure side:
+                        // the provider answered, whatever the summary is worth.
+                        crate::web::context::record_success(&db);
+                        Some(summary)
+                    }
+                    crate::web::context::Outcome::NothingNew => None,
+                    crate::web::context::Outcome::Failed => {
+                        let waited = crate::web::context::record_failure(&db, crate::auth::now());
+                        let detail = format!(
+                            "dropped={}; summary failed; cooling down {waited}s",
+                            dropped.len()
+                        );
+                        let _ =
+                            title_audit.audit("loopback", "chat.compression_failed", Some(&detail));
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        // Recorded either way: a role that never lands must not look wired, and
+        // a breaker that is holding must say so rather than look like a
+        // conversation that happened to need no summary.
         if compression.is_some() {
-            let detail = match &summary {
-                Some(summary) => format!(
+            let detail = match (&summary, health.allowed()) {
+                (Some(summary), _) => format!(
                     "dropped={}; covered={}; summary_chars={}",
                     dropped.len(),
                     summary.rows,
                     summary.text.len()
                 ),
-                None => format!("dropped={}; no summary", dropped.len()),
+                (None, false) => format!("dropped={}; held: {}", dropped.len(), health.reason()),
+                (None, true) => format!("dropped={}; no summary", dropped.len()),
             };
             let _ = title_audit.audit("loopback", "chat.compression", Some(&detail));
         }

@@ -1012,6 +1012,14 @@ pub struct TurnHub {
     /// answered from either surface. `None` means this hub cannot ask, and a turn
     /// here is told so rather than parking a question no route can reach.
     clarify: Mutex<Option<Arc<crate::web::clarify::Registry>>>,
+    /// The APNs sender, when this host is configured to deliver push.
+    ///
+    /// Held here rather than read at the end of a turn so a finished reply costs
+    /// one lock acquisition, not an environment read per turn.
+    apns: Mutex<Option<Arc<crate::apns::ApnsSender>>>,
+    /// The push store, when it opened. Used to find the registrations of the
+    /// device that asked for the turn that just finished.
+    push: Mutex<Option<crate::push::PushStore>>,
     /// Which key each job's question is parked under.
     ///
     /// A device turn asks under the conversation it is writing into, because that
@@ -1040,6 +1048,8 @@ impl TurnHub {
             persona: Mutex::new(None),
             live: Mutex::new(None),
             clarify: Mutex::new(None),
+            apns: Mutex::new(None),
+            push: Mutex::new(None),
             ask_keys: Mutex::new(HashMap::new()),
         }
     }
@@ -1071,6 +1081,20 @@ impl TurnHub {
     pub fn set_clarify(&self, clarify: Arc<crate::web::clarify::Registry>) {
         if let Ok(mut slot) = self.clarify.lock() {
             *slot = Some(clarify);
+        }
+    }
+
+    /// Attach the APNs sender, so a finished device turn is announced.
+    pub fn set_apns(&self, apns: Arc<crate::apns::ApnsSender>) {
+        if let Ok(mut slot) = self.apns.lock() {
+            *slot = Some(apns);
+        }
+    }
+
+    /// Attach the push store, so a finished device turn can find its phone.
+    pub fn set_push(&self, push: crate::push::PushStore) {
+        if let Ok(mut slot) = self.push.lock() {
+            *slot = Some(push);
         }
     }
 
@@ -1538,7 +1562,9 @@ impl TurnHub {
 
         // The prompt: what the client asked, from the row rather than from the
         // request, so a claim after a restart carries the same text.
-        let prompt = job.request_text.unwrap_or_default();
+        // Cloned rather than moved: the row is needed again at the end of the
+        // turn, where its device is what a finished reply is announced to.
+        let prompt = job.request_text.clone().unwrap_or_default();
 
         // The key, resolved through the hub's own lookup so a test can inject one.
         // A key that cannot be resolved is a configuration failure and fails the
@@ -1847,7 +1873,80 @@ impl TurnHub {
             };
             let _ = crate::web::chat::fail(store.db(), &write.answer_id, code, body);
         }
+
+        // Then the phone. A turn that finished is the one thing this daemon does
+        // that the operator is not watching for, and a reply nobody is told
+        // about is a reply he finds on the next launch. Announced only on
+        // `succeeded`: a cancelled or failed turn already says so on the stream a
+        // live client is reading, and a banner for it would be noise.
+        self.announce_finished(&job, conversation.as_ref()).await;
+
         self.retire(&job_id);
+    }
+
+    /// Tell the device that asked for this turn that its reply is ready.
+    ///
+    /// Every failure here is a log line. The reply is already written and the
+    /// phone can read it, so a push that does not land must never turn a good
+    /// turn into a failed one.
+    async fn announce_finished(&self, job: &JobRow, conversation: Option<&ConversationTurn>) {
+        let Some(device_id) = job.device_id.clone() else {
+            return;
+        };
+        let status = self
+            .store
+            .status(&job.id)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if !crate::device::notify::worth_announcing(&status) {
+            return;
+        }
+        let text = match self.store.reply_text(&job.id) {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::warn!(%error, "cannot read a finished reply back for the push body");
+                return;
+            }
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        let sender = self.apns.lock().ok().and_then(|slot| slot.clone());
+        let push = self.push.lock().ok().and_then(|slot| slot.clone());
+        let enabled = crate::push::notify_on_reply_enabled(
+            crate::web::store::settings_get(self.store.db(), crate::push::SETTING_NOTIFY_ON_REPLY)
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        let announcement = crate::device::notify::Announcement {
+            device_id,
+            job_id: job.id.clone(),
+            text,
+            conversation: conversation.map(|write| write.conversation.clone()),
+            message_id: conversation.map(|write| write.answer_id.clone()),
+        };
+        let outcome =
+            crate::device::notify::announce(sender, push.as_ref(), &announcement, enabled).await;
+        match &outcome {
+            crate::device::notify::Announced::Delivered(count) => {
+                tracing::info!(
+                    job = %job.id,
+                    delivered = count,
+                    "announced the finished reply on the phone that asked for it"
+                );
+            }
+            crate::device::notify::Announced::Failed(reason) => {
+                tracing::warn!(
+                    job = %job.id,
+                    "could not announce the finished reply: {reason}"
+                );
+            }
+            // A device with no registration, or a host with no sender, is not an
+            // error: it is a phone that has not registered yet.
+            _ => {}
+        }
     }
 
     /// Write a terminal frame for a job that never reached the provider, and

@@ -4,6 +4,48 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.8
+
+- **A finished reply reaches the phone that asked for it.** Delivery existed and
+  nothing called it: a turn settled, the transcript was written, and the phone
+  learned about the answer on its next launch or not at all. A turn that ends
+  `succeeded` now announces itself through APNs to every active registration of
+  the device that owns it, with `HERALD_MESSAGE_READY` so the phone settles a
+  streaming bubble that died and offers Reply from the banner, and with
+  `conversationId` and `jobId` so a tap lands on the turn. Only a device turn is
+  announced, only a successful one, and a push that does not land is a log line
+  rather than a failed turn: the reply is already written. `build 107`.
+- **APNs is a real sender, and it says which key is wrong.** The relay's key
+  `LH5GM8356P` has never been accepted by Apple: it answers
+  `403 InvalidProviderToken` under every topic, and so do `32NT26772F` and
+  `UQWH2GWTLU`. `M375486F3F`, team `58U7UPFS53`, is the only one on this host
+  that signs a token Apple accepts, and it is the team the app is signed under.
+  An ES256 provider token is minted with `ring`, cached for forty-five minutes,
+  and sent over HTTP/2 with the topic per registration. `build 107`.
+- **A misconfigured host says so instead of claiming there is no feature.** All
+  APNs variables unset still answers `503 apns_not_configured`, which is honest.
+  Half-set, an unreadable key, or an environment that is not `development` or
+  `production` is reported at start-up and carried on the service, so the send
+  route answers `apns_misconfigured` with the reason. That distinction is the
+  reason ten phones spent a week reporting `Registered` and delivering nothing.
+  `build 107`.
+- **The environment a token belongs to is learned, not assumed.** The app's
+  entitlements say `production` and it reports `development` anyway, because it
+  guesses from an App Store receipt a device-installed build does not have. A send
+  that Apple rejects for an unknown token is retried once against the other host,
+  and when that delivers, the proved environment is written back to `push.db` so
+  every later send goes straight there. `build 107`.
+- **One phone, one registration.** Every reinstall minted a new device id and
+  recorded the same APNs token again, so one phone held ten active rows. A
+  registration now retires the same token under any older device id, and a token
+  Apple has genuinely retired is marked inactive instead of being retried on every
+  send. `build 107`.
+- **Compression stops retrying a summary model that is down.** A failed summary
+  was indistinguishable from a conversation that needed none, so every turn paid
+  for two failed calls and wrote a "no summary" audit row. Failures now count,
+  with an exponential cooldown from a minute to fifteen, a thrash breaker, and an
+  audit row that names the reason or says `held: cooling_down`. `build 107`.
+
 ## 1.4.7
 
 - **The thought is not the answer, and it is not the title.** MiniMax inlines its

@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.4.7"
+version = "1.4.8"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -41,6 +41,7 @@ time = "0.3.55"
 # `rustls`, and the rest of the pin is unchanged.
 qrcode = { version = "0.14", default-features = false }
 reqwest = { version = "0.13.5", default-features = false, features = [
+    "http2",
     "json",
     "rustls",
     "stream",

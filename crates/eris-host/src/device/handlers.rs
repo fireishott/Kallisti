@@ -40,6 +40,7 @@ use crate::onboarding::{OnboardingError, PermissionError, Permissions, SetupEngi
 use crate::push::{PushRegisterRequest, PushStore};
 use crate::sensors::{Delivered, HealthLatest, HealthUpload, LocationUpload};
 use crate::web::chat;
+use serde::Deserialize;
 
 /// The upload ceiling for one device body. A prompt is text, and text is not
 /// unbounded.
@@ -4287,9 +4288,80 @@ pub async fn deactivate_push(State(service): State<DeviceService>, headers: Head
     }
 }
 
-/// `POST /v1/push/send` - stub. There is no APNs key on this host, so this is
-/// the legacy route's own 503 (`apns_client is None`), behind the `admin` scope.
-pub async fn send_push(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+/// The body `POST /v1/push/send` accepts. The legacy relay's shape plus the two
+/// addressing fields this daemon needs, because Eris has no `user_id` to fan out
+/// from: a token belongs to a device.
+#[derive(Debug, Default, Deserialize)]
+struct PushSendRequest {
+    /// Deliver to one device. Omitted with `all`, it is the caller's own device.
+    #[serde(rename = "deviceId", default)]
+    device_id: Option<String>,
+    /// Deliver to every active registration. Requires `admin`, which this route
+    /// already demands, so one compromised phone cannot spam every other phone.
+    #[serde(default)]
+    all: bool,
+    /// `silent` (default) or `alert`.
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(rename = "userInfo", default)]
+    user_info: Option<serde_json::Value>,
+}
+
+/// One delivered-or-not answer, so a caller sees which device failed and why.
+fn push_report(
+    device_id: &str,
+    token_suffix: &str,
+    outcome: &crate::apns::Outcome,
+) -> serde_json::Value {
+    let (state, reason) = match outcome {
+        crate::apns::Outcome::Sent => ("sent", None),
+        crate::apns::Outcome::TokenInvalid => ("token_invalid", None),
+        crate::apns::Outcome::Rejected { status, reason } => {
+            ("rejected", Some(format!("{status} {reason}")))
+        }
+        crate::apns::Outcome::Transient { detail } => ("transient", Some(detail.clone())),
+    };
+    let mut value = serde_json::json!({
+        "deviceId": device_id,
+        "tokenSuffix": token_suffix,
+        "state": state,
+    });
+    if let Some(reason) = reason
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("reason".to_owned(), serde_json::json!(reason));
+    }
+    value
+}
+
+/// The last four characters of a token. A log or a response names the token
+/// without carrying it: eight characters of a push token is enough to address a
+/// phone, and a report is not a place to keep one.
+fn token_suffix(token: &str) -> String {
+    let trimmed = token.trim();
+    let start = trimmed.len().saturating_sub(4);
+    trimmed[start..].to_owned()
+}
+
+/// `POST /v1/push/send` - deliver a push through APNs.
+///
+/// `admin` scope, because a push can wake every phone the operator owns. A host
+/// with no APNs key answers `503 apns_not_configured` exactly as it did before,
+/// which is honest: nothing was sent. A host with a key but a token APNs has
+/// retired answers `sent: 0` and a per-device report saying
+/// `token_invalid`, and the registration is deactivated so the next send does
+/// not repeat the round trip.
+pub async fn send_push(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
         Err(error) => return error.into_response(),
@@ -4297,15 +4369,215 @@ pub async fn send_push(State(service): State<DeviceService>, headers: HeaderMap)
     if let Err(error) = require_admin(&token) {
         return error.into_response();
     }
-    tracing::info!(
-        device_id = token.device_id(),
-        "push send requested but APNs is not configured"
+    let Some(sender) = service.apns().cloned() else {
+        if let Some(fault) = service.apns_fault() {
+            // Somebody configured APNs and got a variable wrong. Saying "not
+            // configured" here would send them looking for a setting they
+            // already set, which is exactly how this stayed broken for a week.
+            return DeviceError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "apns_misconfigured",
+                format!("APNs is configured but unusable: {fault}"),
+            )
+            .into_response();
+        }
+        tracing::info!(
+            device_id = token.device_id(),
+            "push send requested but APNs is not configured"
+        );
+        return DeviceError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "apns_not_configured",
+            "APNs not configured. Set APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID.",
+        )
+        .into_response();
+    };
+    let request: PushSendRequest = match parse_json(body).await {
+        Ok(request) => request,
+        Err(error) => return error.into_response(),
+    };
+    let store = match push_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+
+    let alert = request.kind.as_deref().unwrap_or("silent") == "alert";
+    if alert && request.title.as_deref().unwrap_or("").trim().is_empty() {
+        return DeviceError::bad_request(
+            "invalid_request",
+            "an alert push needs a title; a silent one does not.",
+        )
+        .into_response();
+    }
+
+    // Which registrations to reach: every active one, or one device's. A
+    // request that names neither reaches the caller's own device, which is what
+    // makes the route usable from a phone without handing it a device id.
+    let targets: Vec<crate::push::PushTarget> = if request.all {
+        match store.all_active() {
+            Ok(rows) => rows,
+            Err(error) => {
+                return DeviceError::db_unavailable(format!(
+                    "cannot read the push registrations: {error}"
+                ))
+                .into_response();
+            }
+        }
+    } else {
+        let device = request.device_id.as_deref().unwrap_or(token.device_id());
+        match store.active_registrations(device) {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(apns_token, environment, bundle)| {
+                    (device.to_owned(), apns_token, environment, bundle)
+                })
+                .collect(),
+            Err(error) => {
+                return DeviceError::db_unavailable(format!(
+                    "cannot read the push registrations: {error}"
+                ))
+                .into_response();
+            }
+        }
+    };
+
+    if targets.is_empty() {
+        return DeviceError::new(
+            StatusCode::CONFLICT,
+            "no_registration",
+            "this device has no active push registration, so there is nothing to send to",
+        )
+        .into_response();
+    }
+
+    let mut reports = Vec::with_capacity(targets.len());
+    for (device_id, apns_token, environment, bundle) in targets {
+        let Some(apns_token) = apns_token.filter(|value| !value.trim().is_empty()) else {
+            // A `relay` transport registration has no token this host can use.
+            // Reported rather than skipped silently.
+            reports.push(serde_json::json!({
+                "deviceId": device_id,
+                "tokenSuffix": serde_json::Value::Null,
+                "state": "no_token",
+                "reason": "the registration carries no APNs token",
+            }));
+            continue;
+        };
+        let outcome = if alert {
+            sender
+                .send_alert(
+                    &apns_token,
+                    bundle.as_deref(),
+                    Some(environment.as_str()),
+                    request.title.as_deref().unwrap_or_default(),
+                    request.body.as_deref().unwrap_or_default(),
+                    request.category.as_deref(),
+                    request.user_info.as_ref(),
+                )
+                .await
+        } else {
+            sender
+                .send_silent(&apns_token, bundle.as_deref(), Some(environment.as_str()))
+                .await
+        };
+
+        // A token that Apple does not recognise on the recorded host may still
+        // be a good token on the other one: which host a token belongs to is a
+        // property of the entitlement it was minted under, and an app can report
+        // the wrong environment. This one does exactly that: its entitlements
+        // say `production`, it is a development build, and it guesses from an
+        // App Store receipt that is absent on a device-installed build. One
+        // retry against the other host turns that into a delivered push instead
+        // of a registration retired in error.
+        let recorded_host = sender.host_for(Some(environment.as_str()));
+        let (outcome, delivered_host) = if outcome.retires_token() {
+            let other = sender.other_host(recorded_host);
+            tracing::info!(
+                device_id = %device_id,
+                recorded = %environment,
+                retrying_against = %other,
+                "the recorded APNs host did not recognise this token; trying the other one"
+            );
+            let retried = if alert {
+                sender
+                    .send_alert_to(
+                        other,
+                        &apns_token,
+                        bundle.as_deref(),
+                        request.title.as_deref().unwrap_or_default(),
+                        request.body.as_deref().unwrap_or_default(),
+                        request.category.as_deref(),
+                        request.user_info.as_ref(),
+                    )
+                    .await
+            } else {
+                sender
+                    .send_silent_to(other, &apns_token, bundle.as_deref())
+                    .await
+            };
+            (retried, other)
+        } else {
+            (outcome, recorded_host)
+        };
+
+        // Write the proved host down so every later send goes straight there. A
+        // token is valid against one host only, and paying for a rejected
+        // request each time is the kind of quiet waste that hides for a week.
+        if outcome == crate::apns::Outcome::Sent {
+            let proved = if delivered_host == crate::apns::PRODUCTION_HOST {
+                "production"
+            } else {
+                "development"
+            };
+            if proved != environment {
+                let _ = store.set_environment(&device_id, &apns_token, proved);
+                tracing::info!(
+                    device_id = %device_id,
+                    environment = %proved,
+                    "corrected the recorded APNs environment from a delivered retry"
+                );
+            }
+        }
+
+        if outcome.retires_token() {
+            // The token is dead. Retire the row so the count of live
+            // registrations means something and the next send is cheaper.
+            let _ = store.deactivate_token(&device_id, &apns_token);
+            tracing::info!(
+                device_id = %device_id,
+                "APNs retired a push token; the registration is now inactive"
+            );
+        }
+        reports.push(push_report(
+            &device_id,
+            &token_suffix(&apns_token),
+            &outcome,
+        ));
+    }
+
+    let sent = reports
+        .iter()
+        .filter(|report| report["state"] == "sent")
+        .count();
+    let detail = format!(
+        "type={}; targets={}; sent={}",
+        if alert { "alert" } else { "silent" },
+        reports.len(),
+        sent
     );
-    DeviceError::new(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "apns_not_configured",
-        "APNs not configured. Set APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID.",
-    )
+    if let Err(error) = service
+        .engine()
+        .auth()
+        .audit(token.device_id(), "push.sent", Some(&detail))
+    {
+        tracing::warn!(%error, "could not audit the push send");
+    }
+
+    axum::Json(success(serde_json::json!({
+        "sent": sent,
+        "attempted": reports.len(),
+        "results": reports,
+    })))
     .into_response()
 }
 
@@ -4570,11 +4842,124 @@ mod tests {
         assert_eq!(body["data"]["deactivated"], serde_json::json!(true));
         assert_eq!(body["data"]["count"], serde_json::json!(1));
 
-        // Send is admin-only, and with admin it is the 503 APNs stub.
+        // Send is admin-only, and with admin on an unconfigured host it is the
+        // honest 503: nothing was sent, and it says so.
         let (status, _) = send(&fx.service, "POST", "/v1/push/send", &fx.chat, "{}").await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        let (status, _) = send(&fx.service, "POST", "/v1/push/send", &fx.admin, "{}").await;
+        let (status, body) = send(&fx.service, "POST", "/v1/push/send", &fx.admin, "{}").await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["code"], "apns_not_configured");
+    }
+
+    /// A throwaway ES256 key in PEM form. Not a real APNs key.
+    fn test_pem() -> String {
+        use base64::Engine as _;
+        let rng = ring::rand::SystemRandom::new();
+        let document = ring::signature::EcdsaKeyPair::generate_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &rng,
+        )
+        .expect("generate");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(document.as_ref());
+        format!("-----BEGIN PRIVATE KEY-----\n{encoded}\n-----END PRIVATE KEY-----\n")
+    }
+
+    #[tokio::test]
+    async fn a_misconfigured_host_says_so_rather_than_claiming_nothing_is_set() {
+        let mut fx = fixture();
+        fx.service = fx
+            .service
+            .with_apns_fault("APNS_KEY_ID is set but APNS_TEAM_ID is not".to_owned());
+        let (status, body) = send(&fx.service, "POST", "/v1/push/send", &fx.admin, "{}").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        // The distinction that matters: this is not `apns_not_configured`, so a
+        // reader is not sent looking for a setting they already set.
+        assert_eq!(body["code"], "apns_misconfigured");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("APNS_TEAM_ID")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_configured_host_with_no_registration_says_there_is_nowhere_to_send() {
+        let mut fx = fixture();
+        let sender = crate::apns::ApnsSender::new(
+            &test_pem(),
+            "LH5GM8356P",
+            "58U7UPFS53",
+            Some("net.fihonline.kallisti".to_owned()),
+            "development",
+        )
+        .expect("the generated key builds a sender");
+        fx.service = fx.service.with_apns(std::sync::Arc::new(sender));
+
+        let (status, body) = send(&fx.service, "POST", "/v1/push/send", &fx.admin, "{}").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "no_registration");
+    }
+
+    #[tokio::test]
+    async fn an_alert_push_without_a_title_is_refused_before_any_send() {
+        let mut fx = fixture();
+        let sender = crate::apns::ApnsSender::new(
+            &test_pem(),
+            "LH5GM8356P",
+            "58U7UPFS53",
+            Some("net.fihonline.kallisti".to_owned()),
+            "development",
+        )
+        .expect("the generated key builds a sender");
+        fx.service = fx.service.with_apns(std::sync::Arc::new(sender));
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/push/send",
+            &fx.admin,
+            r#"{"type":"alert","body":"no title here"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_request");
+    }
+
+    #[test]
+    fn a_token_is_named_by_its_last_four_only() {
+        assert_eq!(token_suffix("0123456789abcdef"), "cdef");
+        assert_eq!(token_suffix("ab"), "ab");
+        assert_eq!(token_suffix(""), "");
+        // Never the whole token, and never longer than four.
+        assert!(!token_suffix("0123456789abcdef").contains("0123"));
+    }
+
+    #[test]
+    fn a_report_states_the_outcome_without_carrying_the_token() {
+        let report = push_report(
+            "device-1",
+            "cdef",
+            &crate::apns::Outcome::Transient {
+                detail: "could not connect to APNs".to_owned(),
+            },
+        );
+        assert_eq!(report["deviceId"], "device-1");
+        assert_eq!(report["tokenSuffix"], "cdef");
+        assert_eq!(report["state"], "transient");
+        assert!(
+            report["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("connect")
+        );
+
+        let sent = push_report("device-2", "1234", &crate::apns::Outcome::Sent);
+        assert_eq!(sent["state"], "sent");
+        assert!(sent.get("reason").is_none());
+
+        let dead = push_report("device-3", "abcd", &crate::apns::Outcome::TokenInvalid);
+        assert_eq!(dead["state"], "token_invalid");
     }
 
     #[tokio::test]

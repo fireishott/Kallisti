@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 106;
+pub const BUILD: u32 = 107;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -432,10 +432,28 @@ impl AppState {
         // a `clarify` asked by a device turn is answerable from the dashboard and
         // the other way round, because both routes settle the one row the parked
         // thread is waiting on.
-        let device = DeviceService::new(engine.clone(), TurnStore::buffer_from_env())
+        // APNs: resolved once, from the environment. A host with no key keeps the
+        // send route's honest 503, and a half-configured host refuses to start
+        // rather than answering 503 to a request somebody did configure. Getting
+        // this wrong is how ten phones spent a week believing they were reachable.
+        let mut device = DeviceService::new(engine.clone(), TurnStore::buffer_from_env())
             .with_mcp(Arc::clone(&mcp))
             .with_live(live.clone())
             .with_clarify(std::sync::Arc::clone(&clarify));
+        match crate::apns::ApnsSender::from_env() {
+            Ok(Some(sender)) => {
+                device = device.with_apns(std::sync::Arc::new(sender));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                // Loud on purpose, and carried: a half-configured host is a
+                // mistake, not an absent feature, and it must not be
+                // discoverable only by a phone that never buzzes. The send route
+                // reports this reason instead of pretending nothing is set.
+                eprintln!("eris: APNs is misconfigured: {error}");
+                device = device.with_apns_fault(error.to_string());
+            }
+        }
         Self {
             engine,
             mcp,
@@ -985,7 +1003,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.4.7");
+        assert_eq!(VERSION, "1.4.8");
     }
 
     #[test]

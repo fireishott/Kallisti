@@ -31,6 +31,7 @@
 //! caps that bound it, and the rows the top bar renders.
 
 pub mod admin;
+pub mod apns;
 pub mod approvals;
 pub mod auth;
 pub mod aux;

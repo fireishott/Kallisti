@@ -46,6 +46,7 @@ pub mod control;
 pub mod gateway;
 pub mod handlers;
 pub mod legacy;
+pub mod notify;
 pub mod turns;
 
 use std::sync::Arc;
@@ -660,6 +661,19 @@ pub struct DeviceService {
     /// purpose, which is what makes a device turn refuse to ask rather than park a
     /// question no route can reach.
     clarify: Option<Arc<crate::web::clarify::Registry>>,
+    /// The APNs sender, when this host is configured to deliver push.
+    ///
+    /// `None` is a real answer, not a missing wiring: no key in the environment
+    /// means the send route keeps its honest 503. Half-configured is refused at
+    /// start-up by [`crate::apns::ApnsSender::from_env`] and never reaches here.
+    apns: Option<Arc<crate::apns::ApnsSender>>,
+    /// Why APNs is not usable, when somebody configured it wrongly.
+    ///
+    /// Distinct from absent: `None` here and `None` above means nobody asked for
+    /// push, which the send route answers with 503 `apns_not_configured`. A
+    /// reason here means somebody did ask and got a variable wrong, and the
+    /// route says so instead of pretending the feature was never configured.
+    apns_fault: Option<String>,
 }
 
 impl DeviceService {
@@ -675,6 +689,11 @@ impl DeviceService {
         let inbox = open_inbox(&engine);
         let notes = open_notes(&engine);
         let push = open_push(&engine);
+        if let Some(store) = &push {
+            // The worker needs the same store the routes use: a finished turn
+            // looks up its own device's registration to announce the reply.
+            hub.set_push(store.clone());
+        }
         Self {
             engine,
             hub,
@@ -691,6 +710,8 @@ impl DeviceService {
             notes,
             push,
             clarify: None,
+            apns: None,
+            apns_fault: None,
         }
     }
 
@@ -726,6 +747,36 @@ impl DeviceService {
     #[must_use]
     pub fn clarify(&self) -> Option<&Arc<crate::web::clarify::Registry>> {
         self.clarify.as_ref()
+    }
+
+    /// Attach the APNs sender, so `/v1/push/send` delivers instead of answering
+    /// 503. Called once by [`crate::admin`] after it resolved the environment.
+    #[must_use]
+    pub fn with_apns(mut self, apns: Arc<crate::apns::ApnsSender>) -> Self {
+        // The hub holds the same sender: a finished turn announces itself from
+        // the worker, not from a route, so the sender has to be reachable there.
+        self.hub.set_apns(Arc::clone(&apns));
+        self.apns = Some(apns);
+        self
+    }
+
+    /// The APNs sender, when this host is configured to deliver push.
+    #[must_use]
+    pub fn apns(&self) -> Option<&Arc<crate::apns::ApnsSender>> {
+        self.apns.as_ref()
+    }
+
+    /// Record why APNs could not be built, so the send route can say so.
+    #[must_use]
+    pub fn with_apns_fault(mut self, reason: String) -> Self {
+        self.apns_fault = Some(reason);
+        self
+    }
+
+    /// The reason APNs is unusable, when it was configured wrongly.
+    #[must_use]
+    pub fn apns_fault(&self) -> Option<&str> {
+        self.apns_fault.as_deref()
     }
 
     /// The MCP pool this service was handed, if any.
@@ -784,6 +835,8 @@ impl DeviceService {
             notes,
             push,
             clarify: None,
+            apns: None,
+            apns_fault: None,
         }
     }
 

@@ -207,6 +207,16 @@ pub fn stored(db: &Db) -> Option<Cached> {
     Some(Cached { text, made_at })
 }
 
+/// Forget the cached line so the next render writes a new one.
+///
+/// Called when a conversation is started. The line belongs to the empty page, and
+/// a new conversation is a new empty page, so it should not open with the words
+/// that were written for the last one.
+pub fn forget(db: &Db) -> Result<(), DbError> {
+    store::settings_put(db, SETTING_TEXT, "")?;
+    store::settings_put(db, SETTING_MADE_AT, "0")
+}
+
 /// Whether a line written at `made_at` is old enough to rewrite at `now`.
 ///
 /// A stamp from the future (a clock that moved backwards) is not due, so a host
