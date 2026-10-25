@@ -233,6 +233,7 @@ fn a_tool_call_renders_as_a_closed_window_that_can_be_opened() {
             arguments: r#"{"command":"psql -c 'select 1'"}"#.to_owned(),
             output: "one column\n---\n 1".to_owned(),
             is_error: false,
+            asked: None,
         }],
         None,
         chat::Accounting::default(),
@@ -288,6 +289,7 @@ fn one_call() -> chat::ToolRecord {
         arguments: r#"{"command":"ls"}"#.to_owned(),
         output: "a b c".to_owned(),
         is_error: false,
+        asked: None,
     }
 }
 
@@ -423,6 +425,7 @@ fn the_rendered_run_log_starts_with_every_call_collapsed() {
                 arguments: r#"{"command":"nope"}"#.to_owned(),
                 output: "exit 127".to_owned(),
                 is_error: true,
+                asked: None,
             },
         ],
     );
@@ -477,6 +480,7 @@ fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
             arguments: r#"{"command":"echo hi"}"#.to_owned(),
             output: "hi".to_owned(),
             is_error: false,
+            asked: None,
         }],
         None,
         chat::Accounting::default(),
@@ -737,6 +741,7 @@ fn a_calls_output_renders_as_a_window_with_lights_and_a_line_count() {
             })
             .to_string(),
             is_error: false,
+            asked: None,
         }],
         None,
         chat::Accounting::default(),
@@ -790,6 +795,7 @@ fn a_commands_stdout_is_lines_not_escaped_json() {
             })
             .to_string(),
             is_error: false,
+            asked: None,
         }],
         None,
         chat::Accounting::default(),
@@ -857,6 +863,7 @@ fn a_failed_call_paints_stderr_and_states_the_exit_status() {
             })
             .to_string(),
             is_error: true,
+            asked: None,
         }],
         None,
         chat::Accounting::default(),
@@ -890,6 +897,7 @@ fn summary_mode_collapses_the_whole_turn_to_one_line_naming_the_last_call() {
         arguments: args.to_owned(),
         output: out.to_owned(),
         is_error: false,
+        asked: None,
     };
     chat::settle(
         db,
@@ -975,6 +983,7 @@ fn the_page_shows_the_usage_the_transcript_carries() {
             duration_ms: Some(900),
             rounds: None,
             context_tokens: Some(1_200),
+            capped: None,
         },
     )
     .unwrap();
@@ -1016,7 +1025,10 @@ fn the_page_shows_the_usage_the_transcript_carries() {
         body.matches("cache hit").count() == 1,
         "the cache share is stated once, not once per line: {body}"
     );
-    assert!(body.contains("1 turn"), "a single turn is singular: {body}");
+    assert!(
+        body.contains("1 question"),
+        "the session line counts questions, and says so: {body}"
+    );
 }
 
 #[test]
@@ -2927,6 +2939,7 @@ fn a_running_turn_snapshots_its_partial_answer_and_run_log() {
             arguments: r#"{"command":"echo hi"}"#.to_owned(),
             output: "hi".to_owned(),
             is_error: false,
+            asked: None,
         }],
         7,
     )

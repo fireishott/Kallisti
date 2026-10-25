@@ -913,6 +913,7 @@ mod tests {
             base_url: "http://127.0.0.1:20128/v1".to_owned(),
             key_ref: "env:NINEROUTER_API_KEY".to_owned(),
             dialect: None,
+            reasoning_split: None,
         }];
         let rendered = providers_json(&registry, Some("alpha")).to_string();
         assert!(rendered.contains("\"id\":\"alpha\""), "{rendered}");
@@ -931,6 +932,7 @@ mod tests {
                 base_url: "http://a/v1".to_owned(),
                 key_ref: "env:A".to_owned(),
                 dialect: None,
+                reasoning_split: None,
             },
             Provider {
                 id: "beta".to_owned(),
@@ -938,6 +940,7 @@ mod tests {
                 base_url: "http://b/v1".to_owned(),
                 key_ref: "env:B".to_owned(),
                 dialect: None,
+                reasoning_split: None,
             },
         ];
         let rows = providers_json(&registry, Some("beta"));

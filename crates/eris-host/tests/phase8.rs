@@ -111,6 +111,8 @@ impl Harness {
             buffer,
             Arc::new(|name: &str| (name == "KALLISTI_P8_TEST_KEY").then(|| TEST_KEY.to_owned())),
         );
+        let clarify = Arc::new(eris_host::web::clarify::Registry::new());
+        let service = service.with_clarify(Arc::clone(&clarify));
         let service = match mcp {
             Some(pool) => service.with_mcp(pool),
             None => service,
@@ -1398,6 +1400,228 @@ async fn a_turn_that_calls_a_tool_streams_the_frame_the_browser_sends() {
             .any(|frame| frame.event == "delta"),
         "the second round's text streams after the call: {frames:?}"
     );
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// A phone turn that asks a question and resumes with the answer
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_turn_that_asks_parks_and_resumes_with_the_answer_over_v1() {
+    // Round one reaches for `clarify`; round two answers with what came back. The
+    // whole point is that the second round sees the operator's words, so the
+    // assertion is on the model's own reply, not just on the frames.
+    let provider = ScriptedProvider::start(vec![
+        vec![
+            serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_ask",
+                            "function": {
+                                "name": "clarify",
+                                "arguments": "{\"title\":\"Which lane?\",\"questions\":[{\"question\":\"Which lane should this land on?\",\"choices\":[\"Web first\",\"All three\"]}]}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            closing_chunk("tool_calls"),
+        ],
+        vec![text_chunk("landing on Web first"), closing_chunk("stop")],
+    ])
+    .await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(r#"{"text":"ship the compression work"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+
+    // Read the stream until the question appears. The turn is parked at that
+    // moment, so the stream does not end - which is the behaviour under test.
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let mut asked: Option<Frame> = None;
+    while let Some(frame) = stream.next_frame(Duration::from_secs(20)).await {
+        if frame.event == "asked" {
+            asked = Some(frame);
+            break;
+        }
+    }
+    let asked = asked.unwrap_or_else(|| panic!("the turn asks and says so on the stream"));
+    assert_eq!(
+        asked.data["request"]["questions"][0]["question"], "Which lane should this land on?",
+        "the frame carries what the model asked: {}",
+        asked.data
+    );
+    assert_eq!(
+        asked.data["answer"],
+        serde_json::Value::Null,
+        "the card goes out unanswered, before the turn blocks: {}",
+        asked.data
+    );
+    assert_eq!(
+        provider.hits(),
+        1,
+        "the turn is parked before the second provider call"
+    );
+
+    // A client that was not watching reads the same question from the route.
+    let reply = harness
+        .request("GET", &format!("/v1/turns/{job_id}/asked"), &auth, None)
+        .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(reply.json()["waiting"], true, "{}", reply.body);
+
+    // Answer it. This is the resume path: the parked thread wakes with the
+    // operator's words as the tool result and the turn runs its second round.
+    let reply = harness
+        .request(
+            "POST",
+            &format!("/v1/turns/{job_id}/answer"),
+            &auth,
+            Some(r#"{"labels":"Web first","question":"Which lane should this land on?"}"#),
+        )
+        .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(reply.json()["ok"], true, "{}", reply.body);
+
+    let frames = stream.frames_until_end(Duration::from_secs(20)).await;
+    let last = frames.last().expect("a terminal frame");
+    assert_eq!(
+        last.event, "done",
+        "the turn finishes after the answer: {frames:?}"
+    );
+    assert_eq!(last.data["text"], "landing on Web first");
+    assert_eq!(
+        provider.hits(),
+        2,
+        "the answer resumed the turn into a second provider round"
+    );
+
+    // The answer is written to the job log under the same kind, so a client that
+    // reconnects reads the question and the decision from the last `asked` frame.
+    let replay = harness
+        .request("GET", &format!("/v1/turns/{job_id}/events"), &auth, None)
+        .await;
+    assert!(
+        replay.body.contains("landing on Web first") || replay.body.contains("\"Web first\""),
+        "the job log keeps the answer the turn resumed with: {}",
+        replay.body
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_stops_waiting_on_its_question() {
+    // Parked on a question nobody answers, then cancelled. Without the cancel
+    // being heard through the turn's poll, this would hold the job for the hour
+    // and finish as a success on the model's own judgement.
+    let provider = ScriptedProvider::start(vec![
+        vec![
+            serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_ask",
+                            "function": {
+                                "name": "clarify",
+                                "arguments": "{\"question\":\"Which lane?\",\"choices\":[\"Web first\"]}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            closing_chunk("tool_calls"),
+        ],
+        vec![text_chunk("carrying on alone"), closing_chunk("stop")],
+    ])
+    .await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"which lane"}"#))
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+
+    // Wait for the question to be parked before cancelling, so this proves the
+    // cancel interrupts a wait rather than racing the turn's start.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let reply = harness
+            .request("GET", &format!("/v1/turns/{job_id}/asked"), &auth, None)
+            .await;
+        if reply.json()["waiting"] == true {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the turn never parked on its question"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let reply = harness
+        .request("POST", &format!("/v1/turns/{job_id}/cancel"), &auth, None)
+        .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+
+    // The job ends cancelled rather than holding the lease until the hour is up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let reply = harness
+            .request("GET", &format!("/v1/turns/{job_id}/events"), &auth, None)
+            .await;
+        if reply.body.contains("event: cancelled") || reply.body.contains("event: error") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a cancelled turn parked on a question never ended: {}",
+            reply.body
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        provider.hits(),
+        1,
+        "the turn stopped instead of taking a second round on its own judgement"
+    );
+    // The parked question is gone: nothing may answer a turn that already ended.
+    let reply = harness
+        .request("GET", &format!("/v1/turns/{job_id}/asked"), &auth, None)
+        .await;
+    assert_eq!(reply.json()["waiting"], false, "{}", reply.body);
 
     harness.stop();
 }
@@ -4453,10 +4677,16 @@ async fn the_daemon_says_what_it_is_without_a_credential() {
     assert_eq!(body["version"], eris_host::admin::VERSION);
     assert_eq!(body["build"], eris_host::admin::BUILD);
     let frames = body["frames"].as_array().expect("the frame vocabulary");
-    assert_eq!(frames.len(), 6, "every frame kind is named: {body}");
+    assert_eq!(frames.len(), 7, "every frame kind is named: {body}");
     assert!(
         frames.iter().any(|f| f == "reasoning") && frames.iter().any(|f| f == "tool"),
         "a client can learn that reasoning and tools exist: {body}"
+    );
+    // A phone has to know a turn can stop and wait for it, or a client that only
+    // handles deltas will render a parked question as a turn that hung.
+    assert!(
+        frames.iter().any(|f| f == "asked"),
+        "a client can learn that a turn may ask and wait: {body}"
     );
     // Nothing here is a secret: no token, no key, no address of anything internal.
     let text = reply.body.to_ascii_lowercase();

@@ -1,0 +1,20 @@
+data: {"id":"chatcmpl-mm1","object":"chat.completion.chunk","created":1792600000,"model":"MiniMax-M3","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-mm1","object":"chat.completion.chunk","created":1792600000,"model":"MiniMax-M3","choices":[{"index":0,"delta":{"content":"<think>The user wants a product.\n"},"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-mm1","object":"chat.completion.chunk","created":1792600000,"model":"MiniMax-M3","choices":[{"index":0,"delta":{"content":"17 * 23 = 17 * 20 + 17 * 3"},"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-mm1","object":"chat.completion.chunk","created":1792600000,"model":"MiniMax-M3","choices":[{"index":0,"delta":{"content":" = 340 + 51 = 391.\n"},"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-mm1","object":"chat.completion.chunk","created":1792600000,"model":"MiniMax-M3","choices":[{"index":0,"delta":{"content":"</thi"},"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-mm1","object":"chat.completion.chunk","created":1792600000,"model":"MiniMax-M3","choices":[{"index":0,"delta":{"content":"nk>\n\n"},"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-mm1","object":"chat.completion.chunk","created":1792600000,"model":"MiniMax-M3","choices":[{"index":0,"delta":{"content":"17 \u00d7 23 = **391**"},"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-mm1","object":"chat.completion.chunk","created":1792600000,"model":"MiniMax-M3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}
+
+data: {"id":"chatcmpl-mm1","object":"chat.completion.chunk","created":1792600000,"model":"MiniMax-M3","choices":[],"usage":{"prompt_tokens":412,"completion_tokens":96,"total_tokens":508}}
+
+data: [DONE]
+

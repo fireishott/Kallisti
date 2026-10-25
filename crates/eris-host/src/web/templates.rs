@@ -2511,7 +2511,10 @@ fn providers_group(view: &SettingsView) -> Markup {
                     "A JSON array of {\"id\", \"name\", \"base_url\", \"key_ref\"}. The id is "
                     "what auxiliary roles point at. A key reference like env:NAME, never a key. "
                     "An optional \"dialect\" of messages makes this endpoint's requests use the "
-                    "Anthropic shape; a probe that measures a model's own shape overrides it."
+                    "Anthropic shape; a probe that measures a model's own shape overrides it. "
+                    "An optional \"reasoning_split\" of true asks an endpoint that inlines its "
+                    "chain of thought - MiniMax does - to send it separately, so the thinking "
+                    "lands in the reasoning view instead of the reply."
                 }
             }
             div .field {
@@ -4131,6 +4134,15 @@ pub struct ChatLine {
     pub turn: Option<u64>,
     /// Tool rounds the turn ran, when it recorded that.
     pub rounds: Option<u64>,
+    /// Whether the tool budget, rather than the model, ended this reply.
+    ///
+    /// The footer already prints the round count, which is how much work the
+    /// turn did, not whether it finished. The two were being read as one fact:
+    /// a reply that spent a hundred rounds and was then forced to answer looked
+    /// exactly like a reply that spent a hundred rounds and was done. This says
+    /// which. False on every row written before migration 0022, which had no way
+    /// to record it, so the badge is only ever an addition.
+    pub capped: bool,
     /// The gateway's quota line, when the setting is on and one was read.
     pub quota: Option<String>,
     /// The model's own reasoning for this reply, when it streamed any.
@@ -4216,10 +4228,18 @@ impl ChatLine {
     pub fn usage_line(&self) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
         if let Some(rounds) = self.rounds.filter(|rounds| *rounds > 0) {
-            parts.push(if rounds == 1 {
+            let ran = if rounds == 1 {
                 "1 round".to_owned()
             } else {
                 format!("{rounds} rounds")
+            };
+            // The count says how much it did; this says whether it finished.
+            // Only a capped turn carries the second half, because a round count
+            // on its own was being read as the answer to both questions.
+            parts.push(if self.capped {
+                format!("{ran}, then forced")
+            } else {
+                ran
             });
         }
         if let Some(prompt) = self.prompt_tokens {
@@ -4561,9 +4581,14 @@ pub fn blocks(text: &str) -> Markup {
 /// percent keeps a decimal instead of rounding to nothing.
 fn session_line(view: &ChatView) -> Markup {
     let stats = &view.stats;
+    // "Questions", not "turns". This counts the operator's own messages, and the
+    // run log's pill counts replies, and an answer that failed or was stopped is
+    // a row without being a turn. The two were both printed as "turn", so a
+    // conversation with six questions and nine answer rows read as a transcript
+    // that disagreed with itself about how many turns it had.
     let turns = match stats.turns {
-        1 => "1 turn".to_owned(),
-        count => format!("{count} turns"),
+        1 => "1 question".to_owned(),
+        count => format!("{count} questions"),
     };
     let rate = match stats.tokens_per_second {
         Some(rate) => format!("{rate} tok/s"),
@@ -4698,13 +4723,58 @@ fn run_log_controls() -> Markup {
 fn run_log_calls(tools: &[crate::web::chat::ToolRecord]) -> Markup {
     html! {
         @for tool in tools {
-            details .exec-call .failed[tool.is_error] {
-                summary .exec-head {
-                    span .exec-name { (tool.name) }
-                    span .exec-args { (tool.arguments) }
+            @if let Some(asked) = tool.asked.as_ref() {
+                // A question is not a receipt. Rendering it inside the run log's
+                // own window would hide the one thing the operator has to act on
+                // behind a disclosure they have to open first, so the card sits
+                // above the call it belongs to and the call is not drawn at all.
+                (asked_card(asked, tool))
+            } @else {
+                details .exec-call .failed[tool.is_error] {
+                    summary .exec-head {
+                        span .exec-name { (tool.name) }
+                        span .exec-args { (tool.arguments) }
+                    }
+                    (tool_window(tool))
                 }
-                (tool_window(tool))
             }
+        }
+    }
+}
+
+/// One settled question: what was asked, and what was answered.
+///
+/// Drawn from the transcript rather than from the live registry, because a page
+/// reloaded an hour later has to show the same card without a turn to ask. The
+/// buttons are absent once it is settled: a second answer to a question the model
+/// has already been given changes nothing and would look like it did.
+fn asked_card(asked: &crate::web::chat::Asked, tool: &crate::web::chat::ToolRecord) -> Markup {
+    html! {
+        div .asked .settled[asked.answer.is_some()] {
+            @if let Some(title) = asked.request.title.as_ref().filter(|t| !t.trim().is_empty()) {
+                div .asked-title { (title) }
+            }
+            @for question in &asked.request.questions {
+                div .asked-question { (question.question) }
+                @if let Some(answer) = asked.answer.as_ref() {
+                    div .asked-answer { (answer.render()) }
+                } @else {
+                    div .asked-choices {
+                        @for choice in &question.choices {
+                            span .asked-choice {
+                                span .asked-label { (choice.label) }
+                                @if let Some(detail) = choice.detail.as_ref().filter(|d| !d.trim().is_empty()) {
+                                    span .asked-detail { (detail) }
+                                }
+                            }
+                        }
+                    }
+                    div .asked-waiting { "Waiting for an answer." }
+                }
+            }
+            // What the model actually said, kept for the record. It is the same
+            // string the transcript stores, so the card cannot drift from it.
+            div .asked-raw { (tool.arguments) }
         }
     }
 }
@@ -4748,7 +4818,7 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                     summary {
                                         span .exec-label { "Run log" }
                                         @if let Some(turn) = line.turn {
-                                            span .exec-turn { "turn " (turn) }
+                                            span .exec-turn { "reply " (turn) }
                                         }
                                         span .exec-count {
                                             (line.tools.len())
@@ -4771,7 +4841,7 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                     summary {
                                         span .exec-label { "Run log" }
                                         @if let Some(turn) = line.turn {
-                                            span .exec-turn { "turn " (turn) }
+                                            span .exec-turn { "reply " (turn) }
                                         }
                                         span .exec-count {
                                             (line.tools.len())
@@ -4845,6 +4915,15 @@ pub fn chat_page(view: &ChatView) -> Markup {
                         }
                         @if let Some(code) = &line.error_code {
                             span .tag { (code) }
+                        }
+                        @if line.capped {
+                            // Said in the transcript, not only in the live
+                            // notice: a reload has to be able to tell a reply
+                            // that finished from one the budget forced.
+                            span .tag .capped
+                                title="the tool budget ended this turn, so the answer was forced rather than finished" {
+                                "capped"
+                            }
                         }
                     }
                     @if Some(index) == last_answer && !line.pending && view.provider_ready {
@@ -5490,6 +5569,17 @@ const CHAT_JS: &str = r##"(function () {
       if (offMode === false) { toBottom(); }
     });
 
+    source.addEventListener("asked", function (event) {
+      var frame = {};
+      try { frame = JSON.parse(event.data); } catch (error) { return; }
+      // A turn waiting on an answer is not a turn that hung. The card goes into
+      // the bubble it belongs to, and the status line says what is happening
+      // while the model is stopped.
+      if (typeof target.askCard === "function") { target.askCard(frame); }
+      if (status) { status.textContent = "waiting for your answer"; }
+      toBottom();
+    });
+
     source.addEventListener("notice", function (event) {
       var notice = {};
       try { notice = JSON.parse(event.data); } catch (error) { return; }
@@ -5513,7 +5603,14 @@ const CHAT_JS: &str = r##"(function () {
         target.thinkBody.textContent = final.reasoning;
         target.think.hidden = false;
       }
-      if (status) { status.textContent = ""; }
+      if (status) {
+        // A capped turn does not get to look finished. The notice frame said so
+        // before this one arrived, and the plain clear that followed it was the
+        // reason the sentence vanished a second after it appeared.
+        status.textContent = final.capped === true
+          ? "the tool budget ended this turn, so the answer above was forced. send it again to continue"
+          : "";
+      }
       target.setLive("");
       finishLive(target, null);
     });
@@ -5760,7 +5857,7 @@ const CHAT_JS: &str = r##"(function () {
     // that never hears the number leaves the pill hidden.
     function setTurn(turn) {
       if (typeof turn === "number" && turn >= 1) {
-        execTurn.textContent = "turn " + turn;
+        execTurn.textContent = "reply " + turn;
         execTurn.hidden = false;
         return;
       }
@@ -5940,7 +6037,8 @@ const CHAT_JS: &str = r##"(function () {
       addTool: addTool,
       setTurn: setTurn,
       metaLive: metaLive,
-      setLive: setLive
+      setLive: setLive,
+      askCard: askCard
     };
   }
 
@@ -5953,6 +6051,133 @@ const CHAT_JS: &str = r##"(function () {
     var who = document.createElement("div");
     who.className = "who";
     who.textContent = "You";
+    // A question the turn is waiting on. Built inside the answer's own article so
+    // it scrolls with the reply it belongs to. The answer is posted to the route
+    // the turn is blocked on, and a card that failed to land stays on screen with
+    // the reason rather than disappearing.
+    function askCard(frame) {
+      var slot = article.querySelector(".asked");
+      if (slot === null) {
+        slot = document.createElement("div");
+        slot.className = "asked";
+        // Above the run log when there is one, and above the bubble otherwise:
+        // the question is what the operator has to act on, so it does not sit
+        // under the answer that is still being written. `bubble` is declared
+        // below and hoisted, so it is already assigned by the time a frame
+        // arrives.
+        var log = article.querySelector(".exec");
+        article.insertBefore(slot, log === null ? bubble : log);
+      }
+      var request = (frame && frame.request) || {};
+      var conversation = (frame && frame.conversation) || "";
+      while (slot.firstChild) { slot.removeChild(slot.firstChild); }
+      if (typeof request.title === "string" && request.title.length > 0) {
+        var title = document.createElement("div");
+        title.className = "asked-title";
+        title.textContent = request.title;
+        slot.appendChild(title);
+      }
+      var questions = Array.isArray(request.questions) ? request.questions : [];
+      questions.forEach(function (question) {
+        var ask = document.createElement("div");
+        ask.className = "asked-question";
+        ask.textContent = question.question || "";
+        slot.appendChild(ask);
+        var choices = document.createElement("div");
+        choices.className = "asked-choices";
+        var picked = [];
+        var multi = question.multi === true;
+        (Array.isArray(question.choices) ? question.choices : []).forEach(function (choice) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "asked-choice";
+          var label = document.createElement("span");
+          label.className = "asked-label";
+          label.textContent = choice.label || "";
+          button.appendChild(label);
+          if (typeof choice.detail === "string" && choice.detail.length > 0) {
+            var detail = document.createElement("span");
+            detail.className = "asked-detail";
+            detail.textContent = choice.detail;
+            button.appendChild(detail);
+          }
+          button.addEventListener("click", function () {
+            if (multi) {
+              var at = picked.indexOf(choice.label);
+              if (at === -1) { picked.push(choice.label); } else { picked.splice(at, 1); }
+              button.classList.toggle("picked");
+              return;
+            }
+            sendAnswer(conversation, question.question || "", [choice.label || ""], "");
+          });
+          choices.appendChild(button);
+        });
+        slot.appendChild(choices);
+        // Free text is always offered, after the buttons: a card of choices with
+        // no way to say something else is the one shape an operator cannot work
+        // around when none of the choices is right.
+        var row = document.createElement("div");
+        row.className = "asked-free";
+        var field = document.createElement("input");
+        field.type = "text";
+        field.className = "asked-input";
+        field.placeholder = "Or type an answer";
+        var send = document.createElement("button");
+        send.type = "button";
+        send.className = "asked-send";
+        send.textContent = "Send";
+        send.addEventListener("click", function () {
+          var words = field.value.trim();
+          if (picked.length === 0 && words.length === 0) { return; }
+          sendAnswer(conversation, question.question || "", picked, words);
+        });
+        row.appendChild(field);
+        row.appendChild(send);
+        slot.appendChild(row);
+        if (multi && picked.length > 0) {
+          var commit = document.createElement("button");
+          commit.type = "button";
+          commit.className = "asked-commit";
+          commit.textContent = "Answer with these";
+          commit.addEventListener("click", function () {
+            sendAnswer(conversation, question.question || "", picked, field.value.trim());
+          });
+          slot.appendChild(commit);
+        }
+      });
+      return slot;
+    }
+
+    // One answer, posted to the route the blocked turn is waiting on. Nothing is
+    // assumed about it landing: a refusal leaves the card where it is, with the
+    // daemon's own words in the status line.
+    async function sendAnswer(conversation, question, labels, note) {
+      var body = new URLSearchParams();
+      body.append("conversation", conversation);
+      body.append("question", question);
+      body.append("labels", labels.join("\u001f"));
+      body.append("text", note);
+      try {
+        var response = await fetch("/dashboard/chat/answer", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-url" + "-urlencoded" },
+          body: body
+        });
+        if (response.ok === false) {
+          var reason = "that answer did not reach the turn";
+          try {
+            var refused = JSON.parse(await response.text());
+            if (refused && refused.message) { reason = refused.message; }
+          } catch (error) {}
+          if (status) { status.textContent = reason; }
+          return;
+        }
+        if (status) { status.textContent = "answered - the turn is carrying on"; }
+      } catch (error) {
+        if (status) { status.textContent = "that answer did not reach the turn"; }
+      }
+    }
+
     var bubble = document.createElement("div");
     bubble.className = "bubble";
     var body = document.createElement("p");
@@ -5997,7 +6222,11 @@ const CHAT_JS: &str = r##"(function () {
     var parts = [];
     if (payload.model) { parts.push(payload.model); }
     if (typeof payload.rounds === "number" && payload.rounds > 0) {
-      parts.push(payload.rounds === 1 ? "1 round" : payload.rounds + " rounds");
+      // Same words as the server's usage line. A round count alone was being
+      // read as "how many turns this session has", which is a different number
+      // in a different place, and the two were three digits apart.
+      var ran = payload.rounds === 1 ? "1 round" : payload.rounds + " rounds";
+      parts.push(payload.capped === true ? ran + ", then forced" : ran);
     }
     if (typeof payload.prompt_tokens === "number") {
       parts.push(human(payload.prompt_tokens) + " in");
@@ -6656,6 +6885,11 @@ const CHAT_JS: &str = r##"(function () {
             target.setLive("");
             toBottom();
           }
+          if (parsed.event === "asked") {
+            target.askCard(JSON.parse(parsed.data));
+            if (status) { status.textContent = "waiting for your answer"; }
+            toBottom();
+          }
           if (parsed.event === "reasoning") {
             thinking += JSON.parse(parsed.data).text;
             target.thinkBody.textContent = thinking;
@@ -6999,6 +7233,54 @@ const CHAT_JS: &str = r##"(function () {
 
 #[cfg(test)]
 mod tests {
+    /// A round count and a "was it forced" flag are two facts. The footer used
+    /// to print only the first, so a reply cut off at a hundred rounds read
+    /// exactly like a reply that chose to stop at a hundred rounds.
+    #[test]
+    fn a_forced_reply_says_so_beside_its_round_count() {
+        use super::ChatLine;
+        let line = |rounds: Option<u64>, capped: bool| ChatLine {
+            user: false,
+            who: "Ignyte".to_owned(),
+            body: "done".to_owned(),
+            stamp: "20:04".to_owned(),
+            failed: false,
+            error_code: None,
+            pending: false,
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+            duration_ms: None,
+            context_window: None,
+            turn: Some(1),
+            rounds,
+            capped,
+            quota: None,
+            reasoning: None,
+            tools: Vec::new(),
+            files: Vec::new(),
+        };
+        assert_eq!(
+            line(Some(100), false).usage_line().as_deref(),
+            Some("100 rounds")
+        );
+        assert_eq!(
+            line(Some(100), true).usage_line().as_deref(),
+            Some("100 rounds, then forced"),
+            "the same count, and the thing the operator cannot otherwise see"
+        );
+        assert_eq!(
+            line(Some(1), true).usage_line().as_deref(),
+            Some("1 round, then forced")
+        );
+        assert_eq!(
+            line(None, true).usage_line(),
+            None,
+            "no round count and no line: a bare \"forced\" with nothing to attach to is noise"
+        );
+    }
+
     #[test]
     fn a_tiny_context_share_keeps_enough_precision_to_not_read_as_zero() {
         // 2.2k of a 1M window is a fifth of a percent.

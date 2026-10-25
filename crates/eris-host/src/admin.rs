@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 105;
+pub const BUILD: u32 = 106;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -98,6 +98,14 @@ pub const ROUTE_CHAT_SEND: &str = "/dashboard/chat/send";
 /// `POST /dashboard/chat/mode` - the composer's sandbox-mode picker. One field,
 /// so the quick switch does not have to submit the whole permissions form.
 pub const ROUTE_CHAT_MODE: &str = "/dashboard/chat/mode";
+
+/// `POST /dashboard/chat/answer` - answer a question a turn is waiting on.
+///
+/// The turn is parked on the daemon with the transcript untouched, so this is the
+/// only thing that can unpark it. A conversation with nothing waiting gets a
+/// refusal rather than a silent success: an answer nobody received is worse than
+/// an error saying so.
+pub const ROUTE_CHAT_ANSWER: &str = "/dashboard/chat/answer";
 
 /// `POST /dashboard/chat/clear` - empty the transcript.
 pub const ROUTE_CHAT_CLEAR: &str = "/dashboard/chat/clear";
@@ -366,6 +374,12 @@ pub struct AppState {
     /// what tells a reloaded page that a turn is still running - and what tells a
     /// row that claims to be streaming that nothing is writing it any more.
     pub live: crate::web::live::LiveHub,
+    /// The questions turns are currently waiting on, by conversation.
+    ///
+    /// In process for the same reason as `live`: a `clarify` call parks a blocking
+    /// thread on this struct, and a route that answers it is answering a thread in
+    /// this process. A restart ends the turn, and with it the question.
+    pub clarify: std::sync::Arc<crate::web::clarify::Registry>,
     /// The device listener's service. It binds nothing until `start` is called:
     /// at boot when the flag or the setting asks for it, and from the dashboard
     /// toggle afterwards.
@@ -413,9 +427,15 @@ impl AppState {
         // The device surface answers `GET /v1/mcp` from the same pool the turns
         // use, so a phone sees the health this process observed rather than a
         // guess. Same process, same pool: one daemon, one answer.
+        let clarify = std::sync::Arc::new(crate::web::clarify::Registry::new());
+        // The phone and the browser answer the same question on the same registry:
+        // a `clarify` asked by a device turn is answerable from the dashboard and
+        // the other way round, because both routes settle the one row the parked
+        // thread is waiting on.
         let device = DeviceService::new(engine.clone(), TurnStore::buffer_from_env())
             .with_mcp(Arc::clone(&mcp))
-            .with_live(live.clone());
+            .with_live(live.clone())
+            .with_clarify(std::sync::Arc::clone(&clarify));
         Self {
             engine,
             mcp,
@@ -424,6 +444,7 @@ impl AppState {
             allow_full,
             steering: crate::web::chat::Steering::new(),
             live,
+            clarify,
             device,
             access: Arc::new(AdminAccess::loopback_only()),
             persona,
@@ -964,7 +985,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.4.6");
+        assert_eq!(VERSION, "1.4.7");
     }
 
     #[test]

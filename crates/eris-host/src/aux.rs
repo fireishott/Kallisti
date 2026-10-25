@@ -204,6 +204,7 @@ mod tests {
                 base_url: "http://a/v1".to_owned(),
                 key_ref: "env:A".to_owned(),
                 dialect: None,
+                reasoning_split: None,
             },
             Provider {
                 id: "beta".to_owned(),
@@ -211,6 +212,7 @@ mod tests {
                 base_url: "http://b/v1".to_owned(),
                 key_ref: "env:B".to_owned(),
                 dialect: None,
+                reasoning_split: None,
             },
         ];
 

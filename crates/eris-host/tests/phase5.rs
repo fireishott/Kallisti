@@ -16,7 +16,7 @@ use eris_host::db::{Db, TABLES};
 use eris_host::error::REQUEST_ID_HEADER;
 use tower::ServiceExt;
 
-const HEALTHZ_EXACT: &str = r#"{"status":"ok","version":"1.4.6","state":"setup","db":"ok"}"#;
+const HEALTHZ_EXACT: &str = r#"{"status":"ok","version":"1.4.7","state":"setup","db":"ok"}"#;
 
 /// Send one request through the router and return status, body text and headers.
 async fn send(
@@ -59,11 +59,12 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // and no table at all, 1.0.1 added 0005 and `chat_messages`, 0013 added
     // `projects` and the conversation column that files one, 0014 added
     // `subagents`, 0015 added the `admin` flag on `pairing_codes`, 0017 added
-    // `schedules` and `schedule_runs`, and 0018 added `context_tokens`, so the
+    // `schedules` and `schedule_runs`, and 0018 added `context_tokens`, 0021 added the compression summary, and 0022
+    // added the capped flag on an answer, so the
     // version and count below are the current ones and `TABLES` is the list.)
     let first = Db::open(&path).expect("first open");
-    assert_eq!(first.schema_version().expect("version"), 20);
-    assert_eq!(first.applied_migration_count().expect("count"), 20);
+    assert_eq!(first.schema_version().expect("version"), 22);
+    assert_eq!(first.applied_migration_count().expect("count"), 22);
 
     let mut names = first.table_names().expect("table names");
     for expected in TABLES {
@@ -89,10 +90,10 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // Second open of the same file: no error, no duplicate version row, no
     // duplicate app_state row.
     let second = Db::open(&path).expect("second open must not fail");
-    assert_eq!(second.schema_version().expect("version"), 20);
+    assert_eq!(second.schema_version().expect("version"), 22);
     assert_eq!(
         second.applied_migration_count().expect("count"),
-        20,
+        22,
         "re-running migrations must not add a version row"
     );
     assert_eq!(
@@ -219,8 +220,8 @@ async fn healthz_returns_exactly_the_documented_body() {
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("healthz is json");
     assert_eq!(parsed["state"], "setup");
     assert_eq!(parsed["db"], "ok");
-    assert_eq!(parsed["version"], "1.4.6");
-    assert_eq!(VERSION, "1.4.6");
+    assert_eq!(parsed["version"], "1.4.7");
+    assert_eq!(VERSION, "1.4.7");
 }
 
 #[tokio::test]

@@ -251,6 +251,15 @@ impl OpenAiCompatProvider {
             body["max_tokens"] = serde_json::Value::from(max);
         }
 
+        // Only when the deployment declares it. An endpoint that splits its
+        // reasoning sends it on `reasoning_content` and keeps `content` for the
+        // answer, which is the shape the parser already reads. An endpoint that
+        // does not offer the field can refuse it, so this is never sent on a
+        // guess: the registry entry decides.
+        if self.profile.reasoning_split {
+            body["reasoning_split"] = serde_json::Value::Bool(true);
+        }
+
         if !request.tools.is_empty() {
             let tools: Vec<serde_json::Value> = request
                 .tools
@@ -812,6 +821,63 @@ mod tests {
         assert_eq!(body["messages"][0]["content"], "hi");
         assert!(body.get("max_tokens").is_none());
         assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn a_profile_that_did_not_ask_for_the_split_sends_no_such_field() {
+        let body = provider().build_body(&ChatRequest::user_text("hi"));
+        assert!(
+            body.get("reasoning_split").is_none(),
+            "a deployment that never asked must see the bytes it always saw"
+        );
+    }
+
+    #[test]
+    fn a_profile_that_asked_for_the_split_says_so_on_the_wire() {
+        let profile = ProviderProfile::new(
+            "minimax",
+            "https://api.minimax.io/v1",
+            SecretRef::Env("MINIMAX_API_KEY".to_owned()),
+        )
+        .expect("profile should build")
+        .with_reasoning_split(true);
+        let provider = OpenAiCompatProvider::new(
+            profile,
+            ModelProfile::new("MiniMax-M3"),
+            Capabilities::openai_compatible(),
+        )
+        .expect("provider should build");
+        let body = provider.build_body(&ChatRequest::user_text("hi"));
+        assert_eq!(body["reasoning_split"], true);
+        // The rest of the body is unchanged by the flag.
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["messages"][0]["content"], "hi");
+    }
+
+    #[test]
+    fn the_split_flag_never_reaches_the_anthropic_shape() {
+        // The Messages body has no such field: it separates thinking into
+        // `thinking` blocks natively, so sending the OpenAI compatibility flag
+        // there would be an unknown field on a strict endpoint.
+        let profile = ProviderProfile::new(
+            "commandcode",
+            "https://api.commandcode.ai/provider/v1",
+            SecretRef::Env("COMMANDCODE_API_KEY".to_owned()),
+        )
+        .expect("profile should build")
+        .with_dialect(ApiDialect::Messages)
+        .with_reasoning_split(true);
+        let provider = OpenAiCompatProvider::new(
+            profile,
+            ModelProfile::new("claude-sonnet-5-5"),
+            Capabilities::openai_compatible(),
+        )
+        .expect("provider should build");
+        let body = provider.build_messages_body(&ChatRequest::user_text("hi"));
+        assert!(
+            body.get("reasoning_split").is_none(),
+            "the flag is a chat-completions compatibility field and only that"
+        );
     }
 
     #[test]

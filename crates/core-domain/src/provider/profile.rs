@@ -72,6 +72,20 @@ pub struct ProviderProfile {
     /// existed still parses, and so the OpenAI shape stays the default.
     #[serde(default)]
     pub dialect: ApiDialect,
+    /// Whether this endpoint splits reasoning out of the answer when asked.
+    ///
+    /// Not every OpenAI-compatible endpoint separates a chain of thought from
+    /// the reply, and the two ways it fails are opposite. An endpoint that
+    /// supports the split and is not asked for it inlines the reasoning into
+    /// `delta.content` wrapped in `<think>` tags, which lands in the answer. An
+    /// endpoint that does not support it can refuse the field outright. So this
+    /// is a property of the deployment, declared on its registry entry, rather
+    /// than something the adapter sends to everybody on a guess.
+    ///
+    /// Defaulted for the same reason as [`Self::dialect`]: every profile that
+    /// existed before this field sent exactly the bytes it sends now.
+    #[serde(default)]
+    pub reasoning_split: bool,
 }
 
 impl ProviderProfile {
@@ -106,6 +120,7 @@ impl ProviderProfile {
             base_url: trimmed.to_owned(),
             api_key_ref,
             dialect: ApiDialect::ChatCompletions,
+            reasoning_split: false,
         })
     }
 
@@ -116,6 +131,16 @@ impl ProviderProfile {
     #[must_use]
     pub fn with_dialect(mut self, dialect: ApiDialect) -> Self {
         self.dialect = dialect;
+        self
+    }
+
+    /// The same profile, asking the endpoint to split reasoning from the answer.
+    ///
+    /// A separate step for the same reason as [`Self::with_dialect`]: a caller
+    /// that never heard of the field keeps sending the bytes it always sent.
+    #[must_use]
+    pub fn with_reasoning_split(mut self, split: bool) -> Self {
+        self.reasoning_split = split;
         self
     }
 }
@@ -286,6 +311,27 @@ mod tests {
         // The rest of the profile is untouched by the dialect.
         assert_eq!(messages.base_url, profile.base_url);
         assert_eq!(messages.api_key_ref, profile.api_key_ref);
+    }
+
+    #[test]
+    fn a_profile_does_not_ask_for_a_reasoning_split_unless_it_is_told_to() {
+        let profile = ProviderProfile::new("9router", "http://127.0.0.1:20128/v1", key())
+            .expect("profile should build");
+        assert!(!profile.reasoning_split, "the default asks for nothing new");
+
+        let split = profile.clone().with_reasoning_split(true);
+        assert!(split.reasoning_split);
+        assert_eq!(split.base_url, profile.base_url);
+        assert_eq!(split.dialect, profile.dialect);
+    }
+
+    #[test]
+    fn a_stored_profile_without_the_split_field_still_parses() {
+        // The registry row written before this field existed.
+        let raw = r#"{"label":"minimax","base_url":"https://api.minimax.io/v1","api_key_ref":"env:MINIMAX_API_KEY"}"#;
+        let parsed: ProviderProfile = serde_json::from_str(raw).expect("an old profile parses");
+        assert!(!parsed.reasoning_split);
+        assert_eq!(parsed.dialect, ApiDialect::ChatCompletions);
     }
 
     #[test]

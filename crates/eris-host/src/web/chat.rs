@@ -643,6 +643,7 @@ pub fn aux_pinned_config(
         key_ref,
         model,
         dialect,
+        reasoning_split: crate::providers::reasoning_split_of(provider),
     }))
 }
 
@@ -736,7 +737,8 @@ pub fn suggest_title(config: &TurnConfig, question: &str, answer: &str) -> Optio
         config.key_ref.clone(),
     )
     .ok()?
-    .with_dialect(config.dialect);
+    .with_dialect(config.dialect)
+    .with_reasoning_split(config.reasoning_split);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -749,19 +751,33 @@ pub fn suggest_title(config: &TurnConfig, question: &str, answer: &str) -> Optio
         .build()
         .ok()?;
 
-    let excerpt = |text: &str| -> String { text.chars().take(600).collect() };
+    // The question decides the name, not the answer.
+    //
+    // A title names the subject of the conversation, and the subject is what the
+    // operator asked about. Sending an answer excerpt beside it let a long reply
+    // outvote the question: the model named whatever the last paragraph was
+    // about, so a thread that began "why is the trigger failing" came back as
+    // "Rowid Collation Settings". The answer is still sent, because two lines
+    // can disambiguate a one-word question, but it is trimmed hard and the
+    // instruction says which one wins.
+    let excerpt = |text: &str, cap: usize| -> String { text.chars().take(cap).collect() };
+    let question = strip_think(question);
+    let answer = strip_think(answer);
     let request = ChatRequest {
         system: Some(
-            "You name conversations. Reply with only a title of at most six words. \
-             No quotes, no trailing punctuation, no explanation."
+            "You name a conversation after its subject. Reply with only a title of at \
+             most six words. No quotes, no trailing punctuation, no explanation, and no \
+             thinking: if you reason at all, close it before the title."
                 .to_owned(),
         ),
         messages: vec![ChatMessage::text(
             ChatRole::User,
             format!(
-                "Question:\n{}\n\nAnswer:\n{}",
-                excerpt(question),
-                excerpt(answer)
+                "The subject of this conversation, taken from what the operator asked. \
+                 Name it, not the answer:\n{}\n\nThe reply, for context only, not the \
+                 subject:\n{}",
+                excerpt(&question, 600),
+                excerpt(&answer, 240)
             ),
         )],
         // No cap: a short cap is spent on a thinking model's reasoning before it
@@ -778,17 +794,71 @@ pub fn suggest_title(config: &TurnConfig, question: &str, answer: &str) -> Optio
     (!title.is_empty()).then_some(title)
 }
 
+/// Drop a chain of thought that a provider inlined into its content.
+///
+/// Not every endpoint separates reasoning from the answer: MiniMax inlines it
+/// unless the request asks otherwise, and a gateway in front of a thinking model
+/// passes the tags straight through. The tags are markup, never words the
+/// operator asked for, so the block between them is removed here rather than
+/// stored as a title.
+///
+/// An opening tag with no closing one is a truncated thought, and it runs to the
+/// end of the text: half a chain of thought is still not a title. A closing tag
+/// with no opening one - a stream that began mid-thought - drops everything in
+/// front of it, which is the rest of that same truncated thought.
+#[must_use]
+pub fn strip_think(raw: &str) -> String {
+    const CLOSES: [&str; 2] = ["</think>", "</thinking>"];
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(open) = rest.find("<think").or_else(|| rest.find("<thinking")) {
+        out.push_str(&rest[..open]);
+        let after = &rest[open..];
+        // The end of the tag itself, so `<thinking>` does not leave `ing>` behind.
+        let Some(tag_end) = after.find('>') else {
+            // A `<think` with no `>` is a truncated tag, so nothing after it is
+            // trustworthy text either.
+            return out;
+        };
+        let body = &after[tag_end + 1..];
+        match CLOSES
+            .iter()
+            .filter_map(|close| body.find(close).map(|at| (at, close.len())))
+            .min()
+        {
+            Some((at, len)) => rest = &body[at + len..],
+            // Unclosed: the thought never ended, so the answer never started.
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    for close in CLOSES {
+        if let Some(at) = out.find(close) {
+            out = out[at + close.len()..].to_owned();
+        }
+    }
+    out
+}
+
 /// Make a model's suggestion usable as a title.
 ///
-/// Models like to answer with a quoted line, a trailing period, or two lines. A
-/// title is one line of plain words, so quotes and trailing punctuation are
-/// dropped and the whole thing is bounded.
+/// Models like to answer with a quoted line, a trailing period, two lines, or -
+/// on an endpoint that inlines its reasoning - the whole chain of thought before
+/// the title. A title is one line of plain words, so a think block is dropped
+/// first, then quotes and trailing punctuation, and the result is bounded.
+///
+/// A suggestion that is empty after that is refused rather than stored: a
+/// conversation named `<think>` is worse than a conversation named after its
+/// first question.
 #[must_use]
 pub fn scrub_title(raw: &str) -> String {
-    let line = raw
+    let cleaned = strip_think(raw);
+    let line = cleaned
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())
+        // A line that still opens with markup is a tag this build does not know,
+        // not a name: it is skipped rather than stored.
+        .find(|line| !line.is_empty() && !line.starts_with('<'))
         .unwrap_or_default();
     // Punctuation first, then quotes: a model that writes `"A title".` puts the
     // stop outside the quote, so trimming quotes first would leave the `"` behind.
@@ -896,6 +966,25 @@ pub struct ToolRecord {
     pub output: String,
     /// Whether the tool reported a failure.
     pub is_error: bool,
+    /// What a `clarify` call asked and what the answer was, when the tool was
+    /// `clarify`.
+    ///
+    /// Kept beside the arguments rather than inside them because the arguments are
+    /// what the model wrote and this is what the operator saw and said. A page
+    /// redrawing the card after a reload reads the question from here, and its
+    /// answer is the same value the model was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<Asked>,
+}
+
+/// One parked question and its answer, as the transcript keeps them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Asked {
+    /// What the model asked.
+    pub request: crate::web::clarify::Request,
+    /// What the operator decided, once they did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<crate::web::clarify::Answer>,
 }
 
 /// One transcript row.
@@ -957,6 +1046,13 @@ pub struct Message {
     pub job_id: Option<String>,
     /// How many tool rounds the turn ran, when it recorded that.
     pub rounds: Option<u64>,
+    /// Whether the tool budget, rather than the model, ended this reply.
+    ///
+    /// Recorded, not inferred. The turn loop always knew; only the live page was
+    /// ever told, so the fact died with the page. `None` on a row written before
+    /// migration 0022, which is why it is not a `bool`: a page must be able to
+    /// say nothing rather than print a confident "not capped".
+    pub capped: Option<bool>,
     /// The gateway's limit state for the answering model, read at settle.
     pub quota: Option<crate::web::quota::Quota>,
 }
@@ -1004,7 +1100,7 @@ fn collect(
     const SELECT: &str = "SELECT id, role, body, state, error_code, created_at, model,
                 prompt_tokens, completion_tokens, cached_tokens, context_window,
                 duration_ms, reasoning, tools, rounds, quota_json, context_tokens,
-                client_message_id, job_id
+                client_message_id, job_id, capped
            FROM chat_messages
           WHERE conversation_id = ?1
           ORDER BY created_at ASC, rowid ASC";
@@ -1054,6 +1150,7 @@ fn row_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         context_tokens: tokens(row.get(16)?),
         client_message_id: row.get(17)?,
         job_id: row.get(18)?,
+        capped: row.get::<_, Option<i64>>(19)?.map(|flag| flag != 0),
     })
 }
 
@@ -1197,6 +1294,11 @@ pub struct Accounting {
     pub rounds: Option<u64>,
     /// The last round trip's own prompt size, which is the live context size.
     pub context_tokens: Option<u64>,
+    /// Whether the tool budget ended the turn. `None` when the caller did not
+    /// measure it, which is every path that is not a real turn: a fixture, a
+    /// slash command, a test. Only `Some(true)` is written, so a column full of
+    /// zeros cannot pretend a model finished on its own.
+    pub capped: Option<bool>,
 }
 
 /// Record what a running turn has produced so far, without settling it.
@@ -1260,6 +1362,7 @@ pub fn settle(
         duration_ms,
         rounds,
         context_tokens,
+        capped,
     } = accounting;
     let reasoning = reasoning.filter(|text| !text.trim().is_empty());
     // Null rather than "[]" for a turn that called nothing: absent and empty are
@@ -1273,7 +1376,7 @@ pub fn settle(
                 SET body = ?2, state = 'complete', usage_json = ?3, error_code = NULL,
                     prompt_tokens = ?4, completion_tokens = ?5, cached_tokens = ?6,
                     duration_ms = ?7, reasoning = ?8, tools = ?9, rounds = ?10,
-                    context_tokens = ?11
+                    context_tokens = ?11, capped = ?12
               WHERE id = ?1",
             params![
                 id,
@@ -1287,6 +1390,10 @@ pub fn settle(
                 tools_json,
                 rounds.map(|count| count as i64),
                 context_tokens.map(|count| count as i64),
+                // Written only when the budget really ended the turn. A row that
+                // finished on its own keeps NULL, so "not capped" and "never
+                // measured" stay different facts in the table.
+                capped.filter(|flag| *flag).map(|_| 1i64),
             ],
         )?;
         Ok(())
@@ -1486,6 +1593,48 @@ pub fn history(transcript: &[Message], answering: &str) -> Vec<ChatMessage> {
         .collect()
 }
 
+/// The same window, sized by a number of messages rather than by
+/// [`HISTORY_MESSAGES`].
+///
+/// [`crate::web::context::plan`] decides how many settled messages fit the window
+/// the model actually declared, and that number is what a turn carries. The fixed
+/// window above stays as the floor a turn falls back to when nobody could resolve
+/// a context length.
+#[must_use]
+pub fn history_keeping(transcript: &[Message], answering: &str, keep: usize) -> Vec<ChatMessage> {
+    let settled: Vec<&Message> = transcript
+        .iter()
+        .filter(|message| message.id != answering)
+        .filter(|message| message.state == State::Complete)
+        .filter(|message| !message.body.trim().is_empty())
+        .collect();
+    let start = settled.len().saturating_sub(keep);
+    settled[start..]
+        .iter()
+        .map(|message| as_chat_message(message))
+        .collect()
+}
+
+/// The same tail, sized by a number of messages.
+///
+/// The pair of [`history_keeping`]: whatever a plan sized the window to is
+/// exactly what falls outside it, so the summary and the prompt cannot disagree
+/// about where the boundary was.
+#[must_use]
+pub fn dropped_keeping(transcript: &[Message], answering: &str, keep: usize) -> Vec<Message> {
+    let settled: Vec<&Message> = transcript
+        .iter()
+        .filter(|message| message.id != answering)
+        .filter(|message| message.state == State::Complete)
+        .filter(|message| !message.body.trim().is_empty())
+        .collect();
+    let start = settled.len().saturating_sub(keep);
+    settled[..start]
+        .iter()
+        .map(|message| (*message).clone())
+        .collect()
+}
+
 /// The turns the window leaves behind, oldest first.
 ///
 /// `history` keeps the newest [`HISTORY_MESSAGES`] and drops the rest. Dropping
@@ -1507,23 +1656,22 @@ pub fn dropped(transcript: &[Message], answering: &str) -> Vec<Message> {
         .collect()
 }
 
-/// Summarise turns that fell out of the window.
+/// One auxiliary completion: a system line, a user line, and the text back.
 ///
-/// Best effort, like every auxiliary role: a provider that is down leaves the
-/// turn exactly as it would have been without this feature, which is the old
-/// behaviour and not a broken conversation.
+/// Every role in this module is the same three steps: build a provider from the
+/// resolved [`TurnConfig`], resolve the key, run one round trip and read the
+/// reply. Each of them used to spell it out again. Naming it once is what lets a
+/// new role be a prompt rather than a copy of fifty lines of client setup, and it
+/// is the only place that decides an auxiliary call is best effort: a provider
+/// that is down returns `None` and the caller carries on as if the role were
+/// unpinned.
 #[must_use]
-pub fn summarise(config: &TurnConfig, dropped: &[Message]) -> Option<String> {
-    if dropped.is_empty() {
-        return None;
-    }
-    let profile = ProviderProfile::new(
-        "compression",
-        config.base_url.clone(),
-        config.key_ref.clone(),
-    )
-    .ok()?
-    .with_dialect(config.dialect);
+pub fn aux_completion(config: &TurnConfig, system: &str, user: &str) -> Option<String> {
+    let profile =
+        ProviderProfile::new("auxiliary", config.base_url.clone(), config.key_ref.clone())
+            .ok()?
+            .with_dialect(config.dialect)
+            .with_reasoning_split(config.reasoning_split);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -1536,6 +1684,38 @@ pub fn summarise(config: &TurnConfig, dropped: &[Message]) -> Option<String> {
         .build()
         .ok()?;
 
+    let request = ChatRequest {
+        system: Some(system.to_owned()),
+        messages: vec![ChatMessage::text(ChatRole::User, user)],
+        ..ChatRequest::default()
+    };
+    let mut sink = |_event: ProviderEvent| {};
+    let completion = runtime
+        .block_on(provider.stream_chat(&request, &key, &mut sink))
+        .ok()?;
+    // A role that asked for no thinking can still be answered by a model that
+    // thinks anyway, and its thought is not the summary.
+    let text = strip_think(&completion.text);
+    let text = text.trim().to_owned();
+    (!text.is_empty()).then_some(text)
+}
+
+/// Summarise turns that fell out of the window.
+///
+/// Best effort, like every auxiliary role: a provider that is down leaves the
+/// turn exactly as it would have been without this feature, which is the old
+/// behaviour and not a broken conversation.
+///
+/// Superseded by [`crate::web::context::compress`], which carries a summary
+/// forward between turns instead of rebuilding it every time. Kept because it is
+/// the whole no-state path in one call, and because a caller that has no
+/// conversation row to write to - a subagent, a scheduled run - has nowhere to
+/// put a stored summary.
+#[must_use]
+pub fn summarise(config: &TurnConfig, dropped: &[Message]) -> Option<String> {
+    if dropped.is_empty() {
+        return None;
+    }
     let mut lines = String::new();
     for message in dropped.iter().take(40) {
         let who = match message.role {
@@ -1545,24 +1725,13 @@ pub fn summarise(config: &TurnConfig, dropped: &[Message]) -> Option<String> {
         let body: String = message.body.chars().take(400).collect();
         lines.push_str(&format!("{who}: {body}\n"));
     }
-
-    let request = ChatRequest {
-        system: Some(
-            "Summarise the earlier part of a conversation so it can be carried as context. \
-             Keep decisions, names, paths and open questions. Reply with the summary only, \
-             under 150 words, no preamble."
-                .to_owned(),
-        ),
-        messages: vec![ChatMessage::text(ChatRole::User, lines)],
-        ..ChatRequest::default()
-    };
-
-    let mut sink = |_event: ProviderEvent| {};
-    let completion = runtime
-        .block_on(provider.stream_chat(&request, &key, &mut sink))
-        .ok()?;
-    let summary = completion.text.trim().to_owned();
-    (!summary.is_empty()).then_some(summary)
+    aux_completion(
+        config,
+        "Summarise the earlier part of a conversation so it can be carried as context. \
+         Keep decisions, names, paths and open questions. Reply with the summary only, \
+         under 150 words, no preamble.",
+        &lines,
+    )
 }
 
 /// Whether an attachment is an image a vision model could read.
@@ -1619,7 +1788,8 @@ pub fn describe_images(config: &TurnConfig, files: &[Attachment]) -> Option<Stri
 
     let profile = ProviderProfile::new("vision", config.base_url.clone(), config.key_ref.clone())
         .ok()?
-        .with_dialect(config.dialect);
+        .with_dialect(config.dialect)
+        .with_reasoning_split(config.reasoning_split);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -1670,7 +1840,8 @@ pub fn extract_readable(config: &TurnConfig, page: &str) -> Option<String> {
         config.key_ref.clone(),
     )
     .ok()?
-    .with_dialect(config.dialect);
+    .with_dialect(config.dialect)
+    .with_reasoning_split(config.reasoning_split);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -1719,7 +1890,8 @@ pub fn advise_approval(
 ) -> Option<String> {
     let profile = ProviderProfile::new("approval", config.base_url.clone(), config.key_ref.clone())
         .ok()?
-        .with_dialect(config.dialect);
+        .with_dialect(config.dialect)
+        .with_reasoning_split(config.reasoning_split);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -1956,6 +2128,12 @@ pub struct TurnConfig {
     /// together, and a turn that guessed wrong would fail on the wire rather
     /// than in the settings page.
     pub dialect: core_domain::ApiDialect,
+    /// Whether this endpoint must be asked to split reasoning from the answer.
+    ///
+    /// Travels with the turn for the same reason the dialect does: it is a
+    /// property of the deployment the registry entry declares, and a turn that
+    /// dropped it would put the chain of thought back into the reply.
+    pub reasoning_split: bool,
 }
 
 /// The stored provider settings, or `None` when onboarding never wrote them.
@@ -1982,6 +2160,7 @@ pub fn turn_config(engine: &SetupEngine) -> Result<Option<TurnConfig>, Onboardin
         key_ref,
         model: choice.model,
         dialect,
+        reasoning_split: crate::providers::reasoning_split_of(chosen),
     }))
 }
 
@@ -2150,6 +2329,7 @@ pub fn apply_model(
     {
         config.base_url = chosen.base_url.clone();
         config.key_ref = key_ref;
+        config.reasoning_split = crate::providers::reasoning_split_of(chosen);
     }
     let dialect = engine.provider_dialect_for(&provider_id, &model)?;
     config.dialect = dialect;
@@ -2188,6 +2368,31 @@ pub fn provider_registry(
 /// Why a turn could not be sent, in the two halves the page shows: a stable code
 /// and a sentence.
 pub type TurnFailure = (String, String);
+
+/// The `settings` row that holds how full a window may get before a turn
+/// compresses what it cannot carry.
+///
+/// Named here rather than only in [`crate::web::context`] because two surfaces
+/// resolve it: the composer sizes its window from it and a device turn does too,
+/// and a phone turn must protect the same window the browser does.
+pub const SETTING_CONTEXT_SHARE: &str = crate::web::context::SETTING_SHARE;
+
+/// The token budget a turn's prompt may occupy, from the model it runs on.
+///
+/// The window is the one the provider serving that model declared, times the
+/// configured share. `None` when no model is pinned or no window was probed: a
+/// budget invented from nothing would cut tool results for no reason a reader
+/// could see, which is worse than letting the provider report the overflow.
+#[must_use]
+pub fn context_budget_for(engine: &SetupEngine, share: Option<&str>) -> Option<u64> {
+    let choice = model_choice(engine).ok().flatten()?;
+    let window = engine
+        .provider_contexts_for(&choice.provider_id)
+        .ok()
+        .and_then(|contexts| contexts.get(&choice.model).copied())
+        .filter(|window| *window > 0)?;
+    Some(window * u64::from(crate::web::context::share(share)) / 100)
+}
 
 /// The `settings` row that remembers whether the thinking bubble is shown.
 ///
@@ -2289,6 +2494,15 @@ pub struct TurnSettings {
     /// child turn be built with both switches off, which is the whole guarantee
     /// that a subagent can neither use a tool nor dispatch another subagent.
     pub agents: bool,
+    /// How many tokens this turn's prompt may occupy before the loop cuts tool
+    /// results to fit, from the window the model declared at the configured
+    /// share. `None` when nobody could resolve a window, which leaves the loop
+    /// exactly as it was rather than inventing a budget.
+    ///
+    /// Carried on the settings rather than computed in the loop because the
+    /// window is a property of the model the caller resolved, and the loop serves
+    /// the browser, the phone, a subagent and a note worker from one body.
+    pub context_budget: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2553,6 +2767,14 @@ pub enum StreamPart<'a> {
         output: &'a str,
         /// Whether it reported a failure.
         is_error: bool,
+        /// What a `clarify` call asked and what was answered, when the tool was
+        /// `clarify`.
+        ///
+        /// Carried on the finished call rather than only in the transcript so a
+        /// surface that stores its own copy - the device hub does - keeps the same
+        /// card the browser draws, instead of a run-log row with a question-shaped
+        /// string in it.
+        asked: Option<&'a Asked>,
     },
     /// A tool call that is about to run, before it has produced anything.
     ///
@@ -2580,6 +2802,24 @@ pub enum StreamPart<'a> {
         name: &'a str,
         /// What it wrote, this chunk.
         chunk: &'a str,
+    },
+    /// A `clarify` call is waiting for an answer.
+    ///
+    /// Sent before the turn blocks, because a page that learns about the question
+    /// after it is answered has nothing to draw: the card is only useful while
+    /// somebody can still click it.
+    Asked {
+        /// What the model asked.
+        request: &'a crate::web::clarify::Request,
+    },
+    /// A tool result was cut down to fit the context window.
+    ///
+    /// Said out loud because the model's next round is answering with less than
+    /// the tool actually returned. A turn that quietly answers from a truncated
+    /// output reads as a wrong answer rather than as a window that filled up.
+    Elided {
+        /// How many results were cut this round.
+        results: usize,
     },
     /// A round is starting, before the model has said anything.
     ///
@@ -2633,6 +2873,7 @@ pub fn run_turn(
     agents: Option<&crate::subagents::Desk>,
     skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
+    ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> Result<TurnOutcome, TurnFailure> {
@@ -2651,6 +2892,7 @@ pub fn run_turn(
         agents,
         skills,
         settings,
+        ask,
         poll,
         sink,
     )
@@ -2694,6 +2936,7 @@ pub fn run_turn_resilient(
     agents: Option<&crate::subagents::Desk>,
     skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
+    ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> (Result<TurnOutcome, TurnFailure>, ResilientNote) {
@@ -2726,6 +2969,7 @@ pub fn run_turn_resilient(
         agents,
         skills,
         settings,
+        ask,
         poll,
         sink,
     )
@@ -2749,6 +2993,7 @@ pub fn run_turn_resilient_with_keys(
     agents: Option<&crate::subagents::Desk>,
     skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
+    ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> (Result<TurnOutcome, TurnFailure>, ResilientNote) {
@@ -2769,6 +3014,7 @@ pub fn run_turn_resilient_with_keys(
         agents,
         skills,
         settings,
+        ask,
         poll,
         sink,
     ) {
@@ -2807,6 +3053,7 @@ pub fn run_turn_resilient_with_keys(
                 agents,
                 skills,
                 settings,
+                ask,
                 poll,
                 sink,
             );
@@ -2847,13 +3094,15 @@ pub fn run_turn_with_key(
     agents: Option<&crate::subagents::Desk>,
     skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
+    ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> Result<TurnOutcome, TurnFailure> {
     let profile =
         ProviderProfile::new("chat-turn", config.base_url.clone(), config.key_ref.clone())
             .map_err(|error| (error.kind().to_owned(), error.to_string()))?
-            .with_dialect(config.dialect);
+            .with_dialect(config.dialect)
+            .with_reasoning_split(config.reasoning_split);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -2877,8 +3126,55 @@ pub fn run_turn_with_key(
     // The split is by shape, not by a lookup, so a server that failed to start
     // still reports "that tool is MCP" rather than "unknown tool".
     let mut execute = |call: &core_domain::ToolCall,
-                       chunks: &mut dyn FnMut(&str)|
+                       chunks: &mut dyn FnMut(&str),
+                       asked: &mut dyn FnMut(Asked),
+                       poll: &mut TurnPoll<'_>|
      -> crate::tools::ToolResult {
+        // A question. Parked here rather than in the gate, because the gate is
+        // consulted for every call and this one is not a permission decision:
+        // for a clarify the gate always says run, and landing here is the only
+        // signal that the model asked rather than acted.
+        //
+        // Parked before it is waited on, and the wait reports the answer back
+        // through `asked` so the transcript can redraw the card with what was
+        // decided instead of asking again on every reload.
+        if call.name == crate::web::clarify::TOOL {
+            let Ok(request) = crate::web::clarify::Request::parse(&call.arguments) else {
+                return crate::tools::ToolResult::refused(
+                    "that question could not be read: each question needs a question and at \
+                     least one choice, and one call asks at most five questions of at most \
+                     four choices each",
+                );
+            };
+            // No registry means no surface can answer, so asking would block the
+            // turn for an hour and then tell the model nobody was there. Say so
+            // immediately instead, which is a tool result the model can act on.
+            let Some(ask) = ask.as_ref() else {
+                return crate::tools::ToolResult::refused(
+                    "this turn has no way to ask the operator a question, so nothing was \
+                     asked. Ask in your answer instead and end the turn.",
+                );
+            };
+            let gate = ask.registry.park_for(&ask.conversation, request.clone());
+            let stopped = gate.wait(crate::web::clarify::DEFAULT_TIMEOUT, || match poll() {
+                TurnSignal::Stop => crate::web::clarify::WaitPoll::Stop,
+                _ => crate::web::clarify::WaitPoll::Continue,
+            });
+            let Some(answer) = stopped else {
+                return crate::tools::ToolResult::refused(
+                    "the operator stopped the turn while the question was open, so it was \
+                     never answered and nothing was done with it",
+                );
+            };
+            asked(Asked {
+                request,
+                answer: Some(answer.clone()),
+            });
+            return crate::tools::ToolResult {
+                content: answer.render(),
+                is_error: false,
+            };
+        }
         if crate::mcp::protocol::split_qualified(&call.name).is_some() {
             let Some(pool) = mcp else {
                 return crate::tools::ToolResult::refused(
@@ -3011,6 +3307,7 @@ pub fn run_turn_with_key(
         messages,
         gate,
         settings.max_rounds,
+        settings.context_budget,
         sink,
         poll,
         |round, tools_allowed, emit| {
@@ -3039,6 +3336,13 @@ pub fn run_turn_with_key(
                     // the model's list.
                     if skills.is_some() {
                         offered.push(crate::skills::spec());
+                    }
+                    // Offered only when a surface can answer it: a turn with no
+                    // registry has no way to hear back, and the tool refuses
+                    // itself anyway, so listing it would cost a round trip to
+                    // learn what the list could have said.
+                    if ask.is_some() {
+                        offered.push(crate::web::clarify::spec());
                     }
                     // Only offered when the role is pinned: a tool the daemon
                     // will refuse must never reach the model's list.
@@ -3236,8 +3540,13 @@ pub enum GateDecision {
 /// Named rather than spelled inline because the closure takes a closure, which
 /// is exactly the nested type a reader needs a name for - and a signature clippy
 /// rightly calls complex.
-pub type ToolExecute<'a> =
-    dyn FnMut(&core_domain::ToolCall, &mut dyn FnMut(&str)) -> crate::tools::ToolResult + 'a;
+pub type ToolExecute<'a> = dyn FnMut(
+        &core_domain::ToolCall,
+        &mut dyn FnMut(&str),
+        &mut dyn FnMut(Asked),
+        &mut TurnPoll<'_>,
+    ) -> crate::tools::ToolResult
+    + 'a;
 
 /// Drive one turn: stream, run whatever the model asked for, stream again.
 ///
@@ -3261,11 +3570,18 @@ pub type ToolExecute<'a> =
 /// it - so a stop takes effect when the current call returns: no further round
 /// trip, no tool calls after the one that is running, and no answer written. No
 /// socket is closed, and this function does not claim one is.
+// Eight arguments, and every one of them is a distinct thing the loop cannot
+// infer: what to run, what it has said so far, what may run, how many rounds, how
+// big the window is, where to report, how to be stopped, and how to ask for the
+// next completion. Bundling them into a struct would move the same eight fields
+// one line up and make the call sites read worse.
+#[allow(clippy::too_many_arguments)]
 pub fn drive_tool_loop(
     execute: &mut ToolExecute<'_>,
     mut messages: Vec<ChatMessage>,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     max_rounds: usize,
+    budget: Option<u64>,
     sink: &mut dyn FnMut(StreamPart<'_>),
     poll: &mut TurnPoll<'_>,
     mut stream: impl FnMut(
@@ -3320,6 +3636,22 @@ pub fn drive_tool_loop(
         // tell work from death. The count is the round about to run, and whether
         // it may still use tools, so the closing round reads as what it is rather
         // than as the budget being spent twice.
+        // The window is checked here, before every round trip, and not only at
+        // the start of the turn. A turn that calls twelve tools accumulates twelve
+        // results, and the size that matters is the one about to be sent rather
+        // than the one that was sent first. Cutting a result is the only lever
+        // available mid-turn: an aux call here would be a second silence the
+        // operator did not ask for, on top of the one they are already waiting in.
+        //
+        // The cut is announced. A model answering from a truncated result and an
+        // operator who does not know it is truncated is how a wrong answer looks
+        // like a working one.
+        if let Some(budget) = budget {
+            let elided = crate::web::context::elide(&mut messages, budget);
+            if elided > 0 {
+                sink(StreamPart::Elided { results: elided });
+            }
+        }
         sink(StreamPart::Round {
             round: (rounds + 1).min(max_rounds),
             max_rounds,
@@ -3411,6 +3743,19 @@ pub fn drive_tool_loop(
                 name: &call.name,
                 arguments: &arguments,
             });
+            // The card goes out before the turn blocks on it, and before `live`
+            // borrows the sink: a question nobody can see is a turn that appears
+            // to hang.
+            let mut asked: Option<Asked> = None;
+            if call.name == crate::web::clarify::TOOL
+                && let Ok(request) = crate::web::clarify::Request::parse(&call.arguments)
+            {
+                sink(StreamPart::Asked { request: &request });
+                asked = Some(Asked {
+                    request,
+                    answer: None,
+                });
+            }
             // A running call may write while it runs. The chunk goes out ahead of
             // the result, on the same sink, so a live turn and a reloaded
             // transcript tell the same story in the same order.
@@ -3421,7 +3766,11 @@ pub fn drive_tool_loop(
                 });
             };
             let result = match gate(call) {
-                GateDecision::Run => execute(call, &mut live),
+                // The executor hands back what was answered, which is what makes
+                // the transcript able to redraw a settled card.
+                GateDecision::Run => {
+                    execute(call, &mut live, &mut |payload| asked = Some(payload), poll)
+                }
                 GateDecision::Park { approval_id } => {
                     crate::tools::ToolResult::parked(&approval_id, &call.name)
                 }
@@ -3433,6 +3782,7 @@ pub fn drive_tool_loop(
                 arguments,
                 output: result.content.clone(),
                 is_error: result.is_error,
+                asked,
             };
             // Shown as it happens: a turn that runs a command should not look
             // like a turn that is thinking very hard about nothing.
@@ -3441,6 +3791,7 @@ pub fn drive_tool_loop(
                 arguments: &record.arguments,
                 output: &record.output,
                 is_error: record.is_error,
+                asked: record.asked.as_ref(),
             });
             records.push(record);
             messages.push(ChatMessage::tool_result(call.id.clone(), result.content));
@@ -3640,6 +3991,7 @@ mod tests {
             arguments: r#"{"command":"echo hi"}"#.to_owned(),
             output: "hi".to_owned(),
             is_error: false,
+            asked: None,
         }];
 
         progress(&db, &answer, "half", &tools, 3).unwrap();
@@ -3839,13 +4191,14 @@ mod tests {
         let mut offered = 0usize;
         let mut executed: Vec<String> = Vec::new();
         let outcome = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str)| {
+            &mut |call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str), _asked: &mut dyn FnMut(Asked), _poll: &mut TurnPoll<'_>| {
                 executed.push(call.name.clone());
                 crate::tools::ToolResult::ok(serde_json::json!({ "rows": 3 }))
             },
             vec![ChatMessage::text(ChatRole::User, "check the warehouse")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
+            None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
             |_messages, tools, _emit| {
@@ -3963,12 +4316,16 @@ mod tests {
         let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
         let mut calls = 0usize;
         let outcome = drive_tool_loop(
-            &mut |_call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str)| {
+            &mut |_call: &core_domain::ToolCall,
+                  _chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
                 crate::tools::ToolResult::ok(serde_json::json!({}))
             },
             vec![ChatMessage::text(ChatRole::User, "start")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
+            None,
             &mut |_part| {},
             &mut || lease.signal(),
             |messages, _tools, _emit| {
@@ -4010,13 +4367,17 @@ mod tests {
         let mut second_round: Vec<ChatMessage> = Vec::new();
         let mut calls = 0usize;
         let outcome = drive_tool_loop(
-            &mut |_call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str)| {
+            &mut |_call: &core_domain::ToolCall,
+                  _chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
                 steering.queue("c", "actually read b.txt");
                 crate::tools::ToolResult::ok(serde_json::json!({ "rows": 1 }))
             },
             vec![ChatMessage::text(ChatRole::User, "read a.txt")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
+            None,
             &mut |_part| {},
             &mut || lease.signal(),
             |messages, _tools, _emit| {
@@ -4044,12 +4405,16 @@ mod tests {
         let lease = claimed(&steering);
         let mut calls = 0usize;
         let stopped = drive_tool_loop(
-            &mut |_call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str)| {
+            &mut |_call: &core_domain::ToolCall,
+                  _chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
                 crate::tools::ToolResult::ok(serde_json::json!({}))
             },
             vec![ChatMessage::text(ChatRole::User, "count to a billion")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
+            None,
             &mut |_part| {},
             &mut || lease.signal(),
             |_messages, _tools, _emit| {
@@ -4082,7 +4447,10 @@ mod tests {
             .expect("a call");
         let mut executed: Vec<String> = Vec::new();
         let stopped = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str)| {
+            &mut |call: &core_domain::ToolCall,
+                  _chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
                 executed.push(call.name.clone());
                 // The operator stops the turn while the first call is running.
                 steering.stop("c");
@@ -4091,6 +4459,7 @@ mod tests {
             vec![ChatMessage::text(ChatRole::User, "look at two things")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
+            None,
             &mut |_part| {},
             &mut || lease.signal(),
             |_messages, _tools, _emit| {
@@ -4139,6 +4508,55 @@ mod tests {
             "cut plus its ellipsis"
         );
         assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn a_chain_of_thought_never_becomes_a_title() {
+        // The shape MiniMax actually produced, inlined into `content` because the
+        // registry entry never asked for the split. The thought was cut off by the
+        // rail's own limit, so there is no closing tag and no title either.
+        let inlined = "<think>We need answer only title max six words. Need infer \
+                       likely subject from the question";
+        assert_eq!(
+            scrub_title(inlined),
+            "",
+            "half a thought is not a name: the truncation of the question stands"
+        );
+        assert!(!scrub_title(inlined).contains('<'));
+    }
+
+    #[test]
+    fn a_closed_thought_is_dropped_and_the_title_after_it_kept() {
+        assert_eq!(
+            scrub_title(
+                "<think>The user asked about the rail. Name it.</think>Warehouse data health"
+            ),
+            "Warehouse data health"
+        );
+        // A `thinking` tag and a leading blank line behave the same way.
+        assert_eq!(
+            scrub_title("<thinking>reason\n</thinking>\n\nKill the rail."),
+            "Kill the rail"
+        );
+        // Only the thought, nothing after it: still no title rather than the thought.
+        assert_eq!(scrub_title("<think>only a thought</think>"), "");
+    }
+
+    #[test]
+    fn strip_think_keeps_the_text_around_the_thought() {
+        assert_eq!(
+            strip_think("before <think>hidden</think> after"),
+            "before  after"
+        );
+        assert_eq!(strip_think("no tags here"), "no tags here");
+        // A stray closing tag drops what came before it, which is the rest of a
+        // thought whose opening frame was lost.
+        assert_eq!(
+            strip_think("half a thought</think>The answer"),
+            "The answer"
+        );
+        // An unclosed tag swallows the rest: the answer never started.
+        assert_eq!(strip_think("before <think>never ends"), "before ");
     }
 
     #[test]
@@ -4234,6 +4652,7 @@ mod tests {
             key_ref: SecretRef::Env("NINEROUTER_API_KEY".to_owned()),
             model: "cmc/deepseek/deepseek-v4-flash".to_owned(),
             dialect: core_domain::ApiDialect::ChatCompletions,
+            reasoning_split: false,
         };
         apply_model(&mut config, &engine, "commandcode/claude-opus-5-5")
             .expect("the engine is readable");
@@ -4253,6 +4672,7 @@ mod tests {
             key_ref: SecretRef::Env("COMMANDCODE_API_KEY".to_owned()),
             model: "deepseek/deepseek-v4-flash".to_owned(),
             dialect: core_domain::ApiDialect::ChatCompletions,
+            reasoning_split: false,
         };
         apply_model(&mut config, &engine, "other/model").expect("readable");
         assert_eq!(
@@ -4276,6 +4696,7 @@ mod tests {
             key_ref: SecretRef::Env("KALLISTI_TEST_KEY".to_owned()),
             model: "m/one".to_owned(),
             dialect: core_domain::ApiDialect::ChatCompletions,
+            reasoning_split: false,
         };
         assert!(
             summarise(&config, &[]).is_none(),
@@ -4454,12 +4875,14 @@ mod tests {
             })
             .to_string(),
             is_error: false,
+            asked: None,
         };
         let other = ToolRecord {
             name: "list_dir".to_owned(),
             arguments: "{}".to_owned(),
             output: r#"{"entries":[]}"#.to_owned(),
             is_error: false,
+            asked: None,
         };
         settle(
             &db,
@@ -4514,6 +4937,7 @@ mod tests {
                 arguments: "{}".to_owned(),
                 output: r#"{"entries":[]}"#.to_owned(),
                 is_error: false,
+                asked: None,
             }],
             None,
             Accounting::default(),
@@ -4576,6 +5000,7 @@ mod tests {
                 duration_ms: Some(900),
                 rounds: None,
                 context_tokens: Some(1_900),
+                capped: None,
             },
         )
         .unwrap();
@@ -4756,6 +5181,7 @@ mod tests {
                 rounds: None,
                 client_message_id: None,
                 job_id: None,
+                capped: None,
                 quota: None,
             },
             Message {
@@ -4777,6 +5203,7 @@ mod tests {
                 rounds: None,
                 client_message_id: None,
                 job_id: None,
+                capped: None,
                 quota: None,
             },
             Message {
@@ -4798,6 +5225,7 @@ mod tests {
                 rounds: None,
                 client_message_id: None,
                 job_id: None,
+                capped: None,
                 quota: None,
             },
             Message {
@@ -4819,6 +5247,7 @@ mod tests {
                 rounds: None,
                 client_message_id: None,
                 job_id: None,
+                capped: None,
                 quota: None,
             },
         ];
@@ -4865,6 +5294,7 @@ mod tests {
             rounds: Some(100),
             client_message_id: None,
             job_id: None,
+            capped: None,
             quota: None,
         }];
         let stats = stats(&transcript);
@@ -4903,6 +5333,7 @@ mod tests {
             rounds: Some(100),
             client_message_id: None,
             job_id: None,
+            capped: None,
             quota: None,
         }];
         let stats = stats(&transcript);
@@ -4917,6 +5348,86 @@ mod tests {
         assert_eq!(stats.cache_hit_pct, None);
         assert_eq!(stats.context_pct, None);
         assert_eq!(stats.tokens_per_second, None);
+    }
+
+    /// The bug the operator reported: a forced answer looked finished the
+    /// moment the page was reloaded.
+    #[test]
+    fn a_capped_answer_is_stored_as_capped_and_a_finished_one_is_not() {
+        let db = db();
+
+        let capped = append(&db, CONVERSATION_ID, Role::Assistant, "", State::Streaming).unwrap();
+        settle(
+            &db,
+            &capped,
+            "the forced answer",
+            None,
+            &[],
+            None,
+            Accounting {
+                rounds: Some(100),
+                capped: Some(true),
+                ..Accounting::default()
+            },
+        )
+        .unwrap();
+
+        let finished = append(&db, CONVERSATION_ID, Role::Assistant, "", State::Streaming).unwrap();
+        settle(
+            &db,
+            &finished,
+            "the whole job",
+            None,
+            &[],
+            None,
+            Accounting {
+                rounds: Some(6),
+                capped: Some(false),
+                ..Accounting::default()
+            },
+        )
+        .unwrap();
+
+        // A row nobody measured: the phone's settle path, a slash command.
+        let unmeasured =
+            append(&db, CONVERSATION_ID, Role::Assistant, "", State::Streaming).unwrap();
+        settle(
+            &db,
+            &unmeasured,
+            "no numbers either way",
+            None,
+            &[],
+            None,
+            Accounting::default(),
+        )
+        .unwrap();
+
+        let transcript = load(&db, CONVERSATION_ID).unwrap();
+        let capped = transcript
+            .iter()
+            .find(|row| row.id == capped)
+            .expect("capped row");
+        assert_eq!(
+            capped.capped,
+            Some(true),
+            "the budget ended it, and the row says so"
+        );
+        let finished = transcript
+            .iter()
+            .find(|row| row.id == finished)
+            .expect("finished row");
+        assert_eq!(
+            finished.capped, None,
+            "a turn that finished on its own records nothing: only a forced answer sets the flag"
+        );
+        let unmeasured = transcript
+            .iter()
+            .find(|row| row.id == unmeasured)
+            .expect("unmeasured row");
+        assert_eq!(
+            unmeasured.capped, None,
+            "not measured and not capped are the same column value, and neither is a zero"
+        );
     }
 
     #[test]
@@ -5077,12 +5588,16 @@ mod tests {
         let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
         let mut round = 0usize;
         let outcome = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall, chunks: &mut dyn FnMut(&str)| {
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
                 crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
             },
             vec![ChatMessage::text(ChatRole::User, "read a.txt")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
+            None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
             |messages, _tools, _emit| {
@@ -5143,12 +5658,16 @@ mod tests {
         let mut round = 0usize;
         let mut tools_offered: Vec<bool> = Vec::new();
         let outcome = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall, chunks: &mut dyn FnMut(&str)| {
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
                 crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
             },
             vec![ChatMessage::text(ChatRole::User, "loop forever")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
+            None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
             |_messages, tools, _emit| {
@@ -5225,12 +5744,16 @@ mod tests {
 
         let mut attempt = 0usize;
         let outcome = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall, chunks: &mut dyn FnMut(&str)| {
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
                 crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
             },
             vec![ChatMessage::text(ChatRole::User, "loop forever")],
             &mut |_call| GateDecision::Run,
             1,
+            None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
             |_messages, tools, _emit| {
@@ -5275,12 +5798,16 @@ mod tests {
 
         let mut offered: Vec<String> = Vec::new();
         let _ = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall, chunks: &mut dyn FnMut(&str)| {
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
                 crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
             },
             vec![ChatMessage::text(ChatRole::User, "hi")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
+            None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
             |_messages, _tools, _emit| Ok(completion_with_calls(Vec::new(), "ok")),
@@ -5318,7 +5845,10 @@ mod tests {
         let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
         let mut round = 0usize;
         let outcome = drive_tool_loop(
-            &mut |call: &core_domain::ToolCall, chunks: &mut dyn FnMut(&str)| {
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
                 crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
             },
             vec![ChatMessage::text(ChatRole::User, "write x")],
@@ -5326,6 +5856,7 @@ mod tests {
                 approval_id: "ap_1".to_owned(),
             },
             MAX_TOOL_ROUNDS,
+            None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
             |messages, _tools, _emit| {

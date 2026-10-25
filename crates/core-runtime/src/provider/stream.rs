@@ -107,6 +107,118 @@ impl ToolAccumulator {
     }
 }
 
+/// The two things an inlined chain of thought can be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThinkState {
+    /// Text landing in the answer.
+    Answer,
+    /// Text landing in the reasoning.
+    Thinking,
+}
+
+/// Splits `<think>`-tagged content back into an answer and a reasoning.
+///
+/// Several OpenAI-compatible endpoints do not separate a chain of thought from
+/// the reply. MiniMax inlines it into `delta.content` wrapped in `<think>` tags
+/// by default, and a Qwen behind a gateway does the same. Read as plain content
+/// those bytes land in the answer bubble and the reasoning column stays empty,
+/// which is the whole bug this type exists to fix.
+///
+/// It is a per-fragment state machine rather than a whole-buffer scan because a
+/// tag is routinely cut in half by the transport: `<thi` arrives on one frame and
+/// `nk>` on the next. Any suffix that is a so-far-matching prefix of the tag is
+/// therefore held and re-examined with the next fragment, so a split tag is
+/// recognised and a `<` in ordinary prose (`a < b`) is released as soon as the
+/// next character rules it out.
+///
+/// A held suffix is flushed when a frame says the message is finished, and again
+/// at end of stream, so nothing is ever swallowed.
+#[derive(Debug)]
+struct ThinkDemux {
+    state: ThinkState,
+    /// Bytes held back: a strict, so-far-matching prefix of the tag that would
+    /// change state.
+    held: String,
+}
+
+/// Tag that opens reasoning.
+const THINK_OPEN: &str = "<think>";
+/// Tag that closes it.
+const THINK_CLOSE: &str = "</think>";
+
+impl ThinkDemux {
+    fn new() -> Self {
+        Self {
+            state: ThinkState::Answer,
+            held: String::new(),
+        }
+    }
+
+    /// Whether the demuxer is holding bytes that have not been emitted.
+    fn is_holding(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// Feed one content fragment, returning `(answer, reasoning)` to emit.
+    ///
+    /// Either returned string may be empty. Concatenating every `answer` in
+    /// order reproduces the reply, and every `reasoning` reproduces the chain of
+    /// thought, whether or not the endpoint separated them.
+    fn feed(&mut self, fragment: &str) -> (String, String) {
+        let mut answer = String::new();
+        let mut reasoning = String::new();
+        if fragment.is_empty() && self.held.is_empty() {
+            return (answer, reasoning);
+        }
+
+        let mut combined = std::mem::take(&mut self.held);
+        combined.push_str(fragment);
+        let tag = match self.state {
+            ThinkState::Answer => THINK_OPEN,
+            ThinkState::Thinking => THINK_CLOSE,
+        };
+
+        let mut index = 0usize;
+        while index < combined.len() {
+            let rest = &combined[index..];
+            if rest.starts_with(tag) {
+                self.state = match self.state {
+                    ThinkState::Answer => ThinkState::Thinking,
+                    ThinkState::Thinking => ThinkState::Answer,
+                };
+                index += tag.len();
+                continue;
+            }
+            // A strict prefix of the tag cannot be decided yet: the next
+            // fragment may complete it, and emitting it now would split a tag.
+            if rest.len() < tag.len() && tag.starts_with(rest) {
+                self.held.push_str(rest);
+                break;
+            }
+            let character = rest
+                .chars()
+                .next()
+                .expect("a non-empty slice has a first character");
+            match self.state {
+                ThinkState::Answer => answer.push(character),
+                ThinkState::Thinking => reasoning.push(character),
+            }
+            index += character.len_utf8();
+        }
+
+        (answer, reasoning)
+    }
+
+    /// Release whatever is held, into the stream it belongs to.
+    fn flush(&mut self) -> (String, String) {
+        let held = std::mem::take(&mut self.held);
+        match self.state {
+            ThinkState::Answer => (held, String::new()),
+            ThinkState::Thinking => (String::new(), held),
+        }
+    }
+}
+
 /// Usage facts collected across frames, before they are reconciled.
 #[derive(Debug, Default, Clone)]
 struct UsageDraft {
@@ -131,6 +243,8 @@ pub struct ChatStreamParser {
     /// matches what the sink saw, in the same order.
     completed: Vec<ToolCall>,
     usage: UsageDraft,
+    /// Splits an inlined chain of thought out of `delta.content`.
+    think: ThinkDemux,
     finish_reason: Option<String>,
     done: bool,
     frames: usize,
@@ -166,6 +280,7 @@ impl ChatStreamParser {
             tools: Vec::new(),
             completed: Vec::new(),
             usage: UsageDraft::default(),
+            think: ThinkDemux::new(),
             finish_reason: None,
             done: false,
             frames: 0,
@@ -227,6 +342,12 @@ impl ChatStreamParser {
             }
         }
         let tool_calls = std::mem::take(&mut self.completed);
+        // A tag cut off by the end of the stream must not be lost: whatever is
+        // held belongs to the answer or to the reasoning, never to neither. The
+        // events are dropped because the sink has already been served; the
+        // accumulated strings are what this call is assembling.
+        let mut unserved = Vec::new();
+        self.flush_held(&mut unserved);
 
         let usage = if self.usage.seen {
             Usage::reconcile(
@@ -303,10 +424,22 @@ impl ChatStreamParser {
         events.push(ProviderEvent::Reasoning(fragment.to_owned()));
     }
 
+    /// Release any content the demuxer is holding, as events.
+    fn flush_held(&mut self, events: &mut Vec<ProviderEvent>) {
+        let (answer, reasoning) = self.think.flush();
+        self.push_reasoning(&reasoning, events);
+        self.push_text(&answer, events);
+    }
+
     // ---- OpenAI chat.completion.chunk -------------------------------------
 
     fn push_openai(&mut self, frame: &serde_json::Value) -> Result<Vec<ProviderEvent>, LlmError> {
         let mut events = Vec::new();
+        // Whether this frame carried content for any choice. A frame that did
+        // not is a boundary - a usage-only frame, a keep-alive, the last frame
+        // before the sentinel - so a held tag prefix cannot be completed by a
+        // later one and is safe to release.
+        let mut carried_content = false;
 
         if let Some(choices) = frame.get("choices").and_then(serde_json::Value::as_array) {
             for choice in choices {
@@ -314,7 +447,10 @@ impl ChatStreamParser {
                 if let Some(delta) = delta {
                     if let Some(content) = delta.get("content").and_then(serde_json::Value::as_str)
                     {
-                        self.push_text(content, &mut events);
+                        carried_content = true;
+                        let (answer, reasoning) = self.think.feed(content);
+                        self.push_reasoning(&reasoning, &mut events);
+                        self.push_text(&answer, &mut events);
                     }
                     for key in ["reasoning_content", "reasoning"] {
                         if let Some(reasoning) = delta.get(key).and_then(serde_json::Value::as_str)
@@ -351,6 +487,10 @@ impl ChatStreamParser {
 
         if let Some(usage) = frame.get("usage").filter(|usage| !usage.is_null()) {
             self.observe_openai_usage(usage);
+        }
+
+        if !carried_content && self.think.is_holding() {
+            self.flush_held(&mut events);
         }
 
         Ok(events)

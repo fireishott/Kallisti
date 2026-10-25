@@ -317,6 +317,7 @@ fn both_dialect_fixtures_are_checked_in() {
         "anthropic-input-json-delta-stream.sse",
         "usage-folded-cache.sse",
         "usage-cache-absent.sse",
+        "minimax-inline-think.sse",
     ] {
         let path = fixtures_dir().join(name);
         let bytes = fixture(name);
@@ -550,4 +551,80 @@ async fn a_listed_model_that_does_not_answer_is_recorded_not_hidden() {
 
     drop(provider);
     server.abort();
+}
+
+// The inline chain of thought
+// ---------------------------------------------------------------------------
+//
+// MiniMax does not separate its reasoning from its answer unless the request
+// asks it to. It inlines the chain of thought into `delta.content` inside
+// `<think>` tags, which the parser used to read as ordinary answer text: the
+// thinking rendered in the reply bubble and the reasoning channel stayed empty,
+// so the thinking view had nothing to show. The recorded transcript below is
+// that shape, and it deliberately cuts one tag in half between two frames - an
+// `</thi` frame followed by `nk>` - because that is what the transport does to
+// a tag at a frame boundary.
+
+#[tokio::test]
+async fn an_inlined_chain_of_thought_lands_in_reasoning_not_in_the_answer() {
+    let replay = replay_fixture("minimax-inline-think.sse").await;
+    let completion = &replay.completion;
+
+    assert!(
+        !completion.text.contains("<think>") && !completion.text.contains("</think>"),
+        "a tag must never survive into the answer: {:?}",
+        completion.text
+    );
+    assert_eq!(
+        completion.text.trim(),
+        "17 \u{d7} 23 = **391**",
+        "the answer is the reply and only the reply, nothing else"
+    );
+    assert!(
+        completion.reasoning.contains("340 + 51 = 391"),
+        "the chain of thought must be kept: {:?}",
+        completion.reasoning
+    );
+    assert!(
+        !completion.reasoning.contains("<think>"),
+        "the reasoning carries no tag either: {:?}",
+        completion.reasoning
+    );
+
+    // The split survives the frame boundary: the tag that was cut across two
+    // frames changed channel exactly once, so no half-tag text leaked into the
+    // answer on either side of it.
+    assert!(
+        !completion.text.contains("thi") || completion.text.contains("thinking"),
+        "a half tag must not be emitted as answer text: {:?}",
+        completion.text
+    );
+}
+
+#[tokio::test]
+async fn the_reasoning_channel_is_what_the_sink_sees_not_only_the_result() {
+    // The bubble fills from streamed events, not from the assembled completion,
+    // so a fix that only corrected `finish()` would leave the live view wrong.
+    let replay = replay_fixture("minimax-inline-think.sse").await;
+    let mut streamed_reasoning = String::new();
+    let mut streamed_text = String::new();
+    for frame in &replay.frames {
+        for event in &frame.produced {
+            match event {
+                ProviderEvent::Reasoning(fragment) => streamed_reasoning.push_str(fragment),
+                ProviderEvent::Text(fragment) => streamed_text.push_str(fragment),
+                ProviderEvent::ToolCall(_) => {}
+            }
+        }
+    }
+    assert_eq!(streamed_reasoning, replay.completion.reasoning);
+    assert_eq!(streamed_text, replay.completion.text);
+    assert!(
+        !streamed_text.contains("think"),
+        "no tag fragment reaches the answer stream: {streamed_text:?}"
+    );
+    assert!(
+        streamed_reasoning.contains("17 * 23"),
+        "the thinking reaches the reasoning stream as it arrives: {streamed_reasoning:?}"
+    );
 }

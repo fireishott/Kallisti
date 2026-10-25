@@ -27,17 +27,18 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
-    ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_FILE, ROUTE_CHAT_ID,
-    ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS,
-    ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD, ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL,
-    ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY,
-    ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE,
-    ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
-    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
-    ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_QUOTA,
-    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
-    ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
+    ROUTE_CHAT, ROUTE_CHAT_ANSWER, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_FILE,
+    ROUTE_CHAT_ID, ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND,
+    ROUTE_CHAT_SESSIONS, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD, ROUTE_DEVICE_REMOVE, ROUTE_DEVICES,
+    ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN,
+    ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
+    ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP,
+    ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_PROBE,
+    ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
+    ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
+    VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -146,6 +147,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
             post(chat_send).layer(DefaultBodyLimit::max(CHAT_BODY_BYTES)),
         )
         .route(ROUTE_CHAT_CLEAR, post(chat_clear))
+        .route(ROUTE_CHAT_ANSWER, post(chat_answer))
         .route(ROUTE_CHAT_MODE, post(chat_mode))
         .route(ROUTE_CHAT_NEW, post(chat_new))
         .route(ROUTE_CHAT_SESSIONS, get(chat_sessions))
@@ -4955,6 +4957,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                 tools: message.tools.clone(),
                 turn,
                 rounds: message.rounds,
+                capped: message.capped.unwrap_or(false),
                 quota: show_quota
                     .then(|| message.quota.as_ref().map(crate::web::quota::Quota::line))
                     .flatten(),
@@ -6434,10 +6437,36 @@ async fn chat_send(
         Ok(transcript) => transcript,
         Err(error) => return refusal(FormError::new(None, "chat_unreadable", error.to_string())),
     };
-    let mut history = chat::history(&transcript, &answer_id);
+    // The window is sized against the context length the model actually
+    // declared, not against a message count: twenty-four short exchanges leave a
+    // million-token window empty, and twenty-four long ones with command output
+    // in them overflow a 128K window and come back as a provider failure.
+    let share_pct = crate::web::context::share(
+        state
+            .engine
+            .setting(crate::web::context::SETTING_SHARE)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    let plan = crate::web::context::plan(&transcript, &answer_id, context_window, share_pct);
+    let carried = crate::web::context::stored(&db, &conversation)
+        .ok()
+        .flatten();
+    let mut history = chat::history_keeping(&transcript, &answer_id, plan.keep);
     // Turns the window leaves behind. With a compression role pinned they are
     // summarised into the prompt; without one they are dropped exactly as before.
-    let dropped = chat::dropped(&transcript, &answer_id);
+    let dropped = chat::dropped_keeping(&transcript, &answer_id, plan.keep);
+    let mut carried = carried;
+    // A summary that covers rows the transcript no longer has is a claim about
+    // a conversation nobody can read. Forget it and start again.
+    if carried
+        .as_ref()
+        .is_some_and(|summary| summary.rows > dropped.len())
+    {
+        let _ = crate::web::context::clear(&db, &conversation);
+        carried = None;
+    }
     let compression = chat::aux_pinned_config(&state.engine, "compression")
         .ok()
         .flatten();
@@ -6469,7 +6498,9 @@ async fn chat_send(
                 vision,
                 files: files.clone(),
                 dropped,
+                carried,
                 history,
+                context_budget: context_window.map(|window| window * u64::from(share_pct) / 100),
             },
             lease,
             None,
@@ -6490,7 +6521,9 @@ async fn chat_send(
             vision,
             files: files.clone(),
             dropped,
+            carried,
             history,
+            context_budget: context_window.map(|window| window * u64::from(share_pct) / 100),
         },
         lease,
         Some(tx),
@@ -6818,6 +6851,10 @@ async fn chat_clear(
     };
     match chat::clear(db, &conversation) {
         Ok(removed) => {
+            // The summary described rows that no longer exist, so it goes with
+            // them: a carried summary of a transcript nobody can read is a claim
+            // the model would answer from and the operator cannot check.
+            let _ = crate::web::context::clear(db, &conversation);
             if let Err(error) = state.engine.auth().audit(
                 "loopback",
                 "chat.cleared",
@@ -6829,6 +6866,96 @@ async fn chat_clear(
         }
         Err(error) => refusal(FormError::new(None, "chat_clear_failed", error.to_string())),
     }
+}
+
+/// `POST /dashboard/chat/answer`.
+///
+/// A `clarify` call leaves its turn blocked on the daemon, waiting on this. Three
+/// shapes of answer arrive here: picked labels, picked labels plus a note, and
+/// typed words with nothing picked. Anything else is refused by name, because a
+/// settled question the turn never heard would leave it waiting until the hour
+/// runs out.
+async fn chat_answer(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return refusal(error),
+    };
+    let conversation = field(&fields, "conversation").trim().to_owned();
+    if conversation.is_empty() {
+        return refusal(FormError::new(
+            Some("conversation"),
+            "conversation_required",
+            "an answer belongs to a conversation, and this one named none",
+        ));
+    }
+    let question = field(&fields, "question").trim().to_owned();
+    let question = if question.is_empty() {
+        // The card knows which question it is; a client that did not repeat it
+        // still gets a usable sentence rather than an empty quote.
+        "the question".to_owned()
+    } else {
+        question
+    };
+    let note = field(&fields, "note").trim().to_owned();
+    let labels: Vec<String> = field(&fields, "labels")
+        .split('\u{1f}')
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let typed = field(&fields, "text").trim().to_owned();
+
+    let answer = if !labels.is_empty() {
+        crate::web::clarify::Answer::Chosen {
+            question,
+            labels,
+            note: (!note.is_empty()).then_some(note),
+        }
+    } else if !typed.is_empty() {
+        crate::web::clarify::Answer::Typed {
+            question,
+            text: typed,
+        }
+    } else {
+        return refusal(FormError::new(
+            Some("text"),
+            "answer_empty",
+            "an answer needs a picked choice or some words, and this one had neither",
+        ));
+    };
+
+    let landed = state.clarify.answer(&conversation, answer.clone());
+    let detail = format!(
+        "conversation={conversation}; {}",
+        if landed { "settled" } else { "nothing waiting" }
+    );
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "chat.answer", Some(&detail))
+    {
+        return audit_failure(&request_id.0, "chat.answer", error);
+    }
+    if !landed {
+        return refusal(FormError::new(
+            None,
+            "nothing_waiting",
+            "this conversation is not waiting on a question: it was already answered, \
+             timed out, or the turn has ended",
+        ));
+    }
+    ok_json(serde_json::json!({
+        "ok": true,
+        "rendered": answer.render(),
+    }))
 }
 
 /// Everything one turn needs that is already decided before it starts.
@@ -6843,7 +6970,14 @@ struct TurnJob {
     vision: Option<chat::TurnConfig>,
     files: Vec<chat::Attachment>,
     dropped: Vec<chat::Message>,
+    /// The summary this conversation is already carrying, so a turn only pays for
+    /// the rows that arrived since.
+    carried: Option<crate::web::context::Summary>,
     history: Vec<core_runtime::provider::ChatMessage>,
+    /// How many tokens this turn's prompt may occupy before the loop cuts tool
+    /// results to fit, resolved from the window of the model that will answer.
+    /// `None` when nobody probed one, which leaves the loop as it was.
+    context_budget: Option<u64>,
 }
 
 /// Run one chat turn on its own thread, persisting the outcome.
@@ -6931,7 +7065,21 @@ pub(crate) async fn run_scheduled(
             vision: None,
             files: Vec::new(),
             dropped,
+            // A scheduled run starts a conversation of its own, so there is never
+            // a summary to inherit and never a window to size against one.
+            carried: None,
             history,
+            // The schedule's own model, resolved the way the composer resolves
+            // it, so a scheduled turn protects the same window a typed one does.
+            context_budget: chat::context_budget_for(
+                &state.engine,
+                state
+                    .engine
+                    .setting(crate::web::context::SETTING_SHARE)
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+            ),
         },
         lease,
         None,
@@ -7003,7 +7151,9 @@ fn spawn_turn(
         vision,
         files,
         dropped,
+        carried,
         history,
+        context_budget,
     } = job;
     let db = state.engine.db().clone();
     let persona = state.persona.clone();
@@ -7169,6 +7319,9 @@ fn spawn_turn(
     // Registered before the notify hook, because that hook is built to outlive the
     // borrow of the turn and needs a publisher of its own: a subagent that starts
     // while the page is suspended still has to reach the page that comes back.
+    // Cloned before the blocking task starts: the registry is what a `clarify`
+    // parks on, and the task outlives this borrow of the state.
+    let clarify = std::sync::Arc::clone(&state.clarify);
     let live = state.live.begin(&conversation, &answer_id);
     let reporter = live.reporter();
     let notify_sender = sender.clone();
@@ -7321,17 +7474,34 @@ fn spawn_turn(
         let _ = title_audit.audit("loopback", "memory.recall", Some(&detail));
         let recalled = crate::memory::render(&recalls);
 
+        // The summary is an update, not a re-reading: what the conversation
+        // already carries is sent back with only the rows that arrived since, and
+        // a summary that already covers the whole tail costs nothing. That is the
+        // bug this path exists to fix - every turn used to re-summarise the same
+        // window and throw the result away.
         let summary = compression
             .as_ref()
-            .and_then(|config| chat::summarise(config, &dropped));
+            .and_then(|config| crate::web::context::compress(config, &dropped, carried.as_ref()));
         // Recorded either way: a role that never lands must not look wired.
         if compression.is_some() {
             let detail = match &summary {
-                Some(text) => format!("dropped={}; summary_chars={}", dropped.len(), text.len()),
+                Some(summary) => format!(
+                    "dropped={}; covered={}; summary_chars={}",
+                    dropped.len(),
+                    summary.rows,
+                    summary.text.len()
+                ),
                 None => format!("dropped={}; no summary", dropped.len()),
             };
             let _ = title_audit.audit("loopback", "chat.compression", Some(&detail));
         }
+        // Persisted before it is used, so the next turn inherits it. A write that
+        // failed leaves this turn carrying the summary it just built and pays for
+        // it again next time rather than dropping it silently.
+        if let Some(summary) = &summary {
+            let _ = crate::web::context::store(&db, &conversation, summary);
+        }
+        let carried = summary.or(carried);
         let system = match (
             system,
             if recalled.is_empty() {
@@ -7344,13 +7514,12 @@ fn spawn_turn(
             (None, Some(recalled)) => Some(recalled),
             (system, None) => system,
         };
-        let system = match (system, summary) {
+        let system = match (system, carried) {
             (Some(system), Some(summary)) => Some(format!(
-                "{system}\n\nEarlier in this conversation, summarised:\n{summary}"
+                "{system}\n\n{}",
+                crate::web::context::carry(&summary)
             )),
-            (None, Some(summary)) => Some(format!(
-                "Earlier in this conversation, summarised:\n{summary}"
-            )),
+            (None, Some(summary)) => Some(crate::web::context::carry(&summary)),
             (system, None) => system,
         };
 
@@ -7445,6 +7614,7 @@ fn spawn_turn(
                 arguments,
                 output,
                 is_error,
+                asked,
             } => {
                 // The record is kept whether or not the log is shown: a page that
                 // arrives after the turn needs to know what ran even when this
@@ -7454,6 +7624,7 @@ fn spawn_turn(
                     arguments: arguments.to_owned(),
                     output: output.to_owned(),
                     is_error,
+                    asked: asked.cloned(),
                 });
                 flush(true, &streamed, &records, rounds);
                 // Behind its own switch, not the reasoning one. Off means the run
@@ -7507,11 +7678,33 @@ fn spawn_turn(
                     );
                 }
             }
+            chat::StreamPart::Asked { request } => {
+                // Not behind the run log's switch: a question is not a tool
+                // receipt, it is the turn asking the operator for something and
+                // waiting. Hiding it would leave a turn that looks hung.
+                emit(
+                    "asked",
+                    serde_json::json!({
+                        "conversation": conversation,
+                        "request": request,
+                    }),
+                );
+            }
+            chat::StreamPart::Elided { results } => {
+                // Not behind the run log's switch, for the reason the question
+                // is not: this is not a receipt, it is the turn saying its next
+                // answer was produced from less than the tools returned. A
+                // truncated answer nobody was told about reads as a wrong one.
+                emit("elided", serde_json::json!({ "results": results }));
+            }
         };
         // The turn's ear: the same lease that claims the conversation answers
         // what the operator typed while it runs. A `&mut dyn FnMut` closure rather
         // than a second copy of the loop, so the steer lands inside this turn.
         let mut poll = || lease.signal();
+        // A turn asked by a page can ask back. The registry lives on the daemon,
+        // so the route that answers the question is answering this thread.
+        let ask = crate::web::clarify::Ask::new(clarify, conversation.clone());
         let started = std::time::Instant::now();
         let (outcome, note) = chat::run_turn_resilient(
             &config,
@@ -7529,7 +7722,13 @@ fn spawn_turn(
                 tools: tools_enabled,
                 max_rounds: tool_rounds,
                 agents: agents_enabled,
+                // The same window this route already sized the history against,
+                // so the loop cuts results at the boundary the transcript was
+                // built to. Resolved from the model the composer picked, not the
+                // primary, because those are not always the same provider.
+                context_budget,
             },
+            Some(&ask),
             &mut poll,
             &mut sink,
         );
@@ -7605,6 +7804,11 @@ fn spawn_turn(
                     duration_ms: Some(duration_ms),
                     rounds: Some(turn.rounds as u64),
                     context_tokens: turn.context_tokens,
+                    // Recorded, not just announced. The live notice says the
+                    // budget ended this reply; without this the fact dies with
+                    // the page and a reload shows a six thousand word answer
+                    // under "100 rounds" with nothing saying it was cut off.
+                    capped: Some(turn.capped),
                 };
                 let raw = serde_json::to_value(usage).ok();
                 let _ = chat::settle(
@@ -7626,6 +7830,23 @@ fn spawn_turn(
                 if let Some(quota) = &quota {
                     let _ = chat::set_quota(&db, &answer_id, quota);
                 }
+                // A turn the budget ended says so before the done frame. The
+                // notice exists because the flag itself is easy to miss: the reply
+                // is a real reply, and an operator reading one would not otherwise
+                // know that the model was cut off rather than finished.
+                if turn.capped {
+                    emit(
+                        "notice",
+                        serde_json::json!({
+                            "code": "turn_capped",
+                            "message": format!(
+                                "This turn hit its tool budget ({} rounds), so the answer above \
+                                 was forced rather than finished. Send it again to continue.",
+                                accounting.rounds.unwrap_or(0)
+                            ),
+                        }),
+                    );
+                }
                 emit(
                     "done",
                     serde_json::json!({
@@ -7638,6 +7859,7 @@ fn spawn_turn(
                         "cached_tokens": accounting.cached_tokens,
                         "duration_ms": accounting.duration_ms,
                         "rounds": accounting.rounds,
+                        "capped": turn.capped,
                         "quota": quota.as_ref().map(crate::web::quota::Quota::line),
                     }),
                 );

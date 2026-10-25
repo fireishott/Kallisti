@@ -168,6 +168,25 @@ pub const ROUTE_APPROVALS: &str = "/v1/approvals";
 /// `POST /v1/approvals/{id}/decide` - settle one parked call, behind `admin`.
 pub const ROUTE_APPROVAL_DECIDE: &str = "/v1/approvals/{id}/decide";
 
+/// `GET /v1/turns/{id}/asked` - the question a running turn is waiting on,
+/// behind the `chat` scope.
+///
+/// The question also rides the job's own stream as an `asked` frame, which is how
+/// a client watching the turn learns about it. This route exists for the client
+/// that was not watching: a phone that reconnected, or a page that opened the
+/// conversation after the frame went past. Without it the only way to learn the
+/// question was to have been listening at the moment it was asked.
+pub const ROUTE_ASKED: &str = "/v1/turns/{id}/asked";
+
+/// `POST /v1/turns/{id}/answer` - settle the question a turn is waiting on.
+///
+/// The resume half of `/v1/turns`. A `clarify` call parks the turn's blocking
+/// thread until somebody answers, so without this route a phone turn that asked a
+/// question could only wait out the hour and proceed on its own judgement. The
+/// answer lands on the same registry the dashboard's route lands on, so a question
+/// asked by a phone turn can be answered from either surface.
+pub const ROUTE_ANSWER: &str = "/v1/turns/{id}/answer";
+
 /// `GET /v1/mcp` - the configured MCP servers and the health the daemon
 /// observed, behind the `sessions` scope.
 ///
@@ -633,6 +652,14 @@ pub struct DeviceService {
     notes: Option<crate::notes::NotesStore>,
     /// The push store (`push.db`), when it opened.
     push: Option<crate::push::PushStore>,
+    /// The daemon's parked-question registry, when one was handed over.
+    ///
+    /// Shared with the dashboard on purpose: a question asked by a phone turn is
+    /// answerable from the browser and the other way round, because both routes
+    /// settle the same in-process row. `None` in a service a test built for another
+    /// purpose, which is what makes a device turn refuse to ask rather than park a
+    /// question no route can reach.
+    clarify: Option<Arc<crate::web::clarify::Registry>>,
 }
 
 impl DeviceService {
@@ -663,6 +690,7 @@ impl DeviceService {
             inbox,
             notes,
             push,
+            clarify: None,
         }
     }
 
@@ -682,6 +710,22 @@ impl DeviceService {
     pub fn with_live(self, live: crate::web::live::LiveHub) -> Self {
         self.hub.set_live(live);
         self
+    }
+
+    /// Attach the daemon's parked-question registry, so a device turn can ask and
+    /// a `/v1` route can answer. Called once by [`crate::admin`] while it builds
+    /// its state, with the same registry the dashboard holds.
+    #[must_use]
+    pub fn with_clarify(mut self, clarify: Arc<crate::web::clarify::Registry>) -> Self {
+        self.hub.set_clarify(Arc::clone(&clarify));
+        self.clarify = Some(clarify);
+        self
+    }
+
+    /// The parked-question registry, when this service was handed one.
+    #[must_use]
+    pub fn clarify(&self) -> Option<&Arc<crate::web::clarify::Registry>> {
+        self.clarify.as_ref()
     }
 
     /// The MCP pool this service was handed, if any.
@@ -739,6 +783,7 @@ impl DeviceService {
             inbox,
             notes,
             push,
+            clarify: None,
         }
     }
 
@@ -912,6 +957,8 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_TURNS, post(handlers::create_turn))
         .route(ROUTE_EVENTS, get(handlers::events))
         .route(ROUTE_CANCEL, post(handlers::cancel))
+        .route(ROUTE_ASKED, get(handlers::asked))
+        .route(ROUTE_ANSWER, post(handlers::answer_asked))
         .route(ROUTE_SESSION, get(handlers::session))
         .route(ROUTE_VERSION, get(handlers::version))
         .route(

@@ -80,6 +80,7 @@ fn config(url: String, model: &str) -> TurnConfig {
         key_ref: SecretRef::Env("KALLISTI_FALLBACK_TEST_KEY".to_owned()),
         model: model.to_owned(),
         dialect: core_domain::ApiDialect::ChatCompletions,
+        reasoning_split: false,
     }
 }
 
@@ -123,7 +124,13 @@ async fn run(
                 tools: false,
                 max_rounds: 1,
                 agents: false,
+                // No window in this suite: the fallback path is about retries,
+                // and a budget would only make the prompt a moving target.
+                context_budget: None,
             },
+            // No operator to ask: this suite is about the fallback path, and a
+            // parked question would block the turn it is trying to time.
+            None,
             &mut poll,
             &mut sink,
         )

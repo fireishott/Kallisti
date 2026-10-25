@@ -3,7 +3,7 @@
 > **To the Most Beautiful.** The most beautiful way to meet your agent.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.6-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/version-1.4.7-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/Rust-1.99-F74C00?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99"/>
   <img src="https://img.shields.io/badge/tests-857-C8CCD2?style=flat-square&labelColor=0C0C10" alt="857 tests"/>
   <img src="https://img.shields.io/badge/device_api-no_relay-C8CCD2?style=flat-square&labelColor=0C0C10" alt="no relay"/>
@@ -278,7 +278,7 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 
-Shipped and running: Kallisti-Eris 1.4.6 and the web UI, with the cron scheduler and
+Shipped and running: Kallisti-Eris 1.4.7 and the web UI, with the cron scheduler and
 the skills library switched on. A dropped chat stream resumes where it stopped rather
 than silently skipping the frames that arrived while the page was away, and a reply on
 a phone keeps a share of the column instead of running edge to edge. A message sent

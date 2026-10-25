@@ -1202,6 +1202,20 @@ pre.code {
   width: min(100%, clamp(22rem, 78vw, 52rem));
   min-width: 0;
 }
+
+/* A reply with no thinking bubble has nothing to align against, so it takes the
+   width the bubble would have left empty. The cap exists to stop a paragraph
+   becoming one 130-character line; when the column above the answer is absent,
+   that cap was costing the answer a third of its measure for no reason. A reply
+   that does show its thinking keeps the narrower column, because the two blocks
+   have to read as one stack. */
+/* `:not([hidden])` because the live bubble builds its thinking block up front and
+   hides it until the first reasoning fragment arrives. A hidden block is still a
+   child, so asking only whether one exists would leave every streaming answer
+   narrow until it happened to think. */
+.msg.assistant:not(:has(.think:not([hidden]))) {
+  width: min(100%, clamp(22rem, 90vw, 64rem));
+}
 .msg.user { margin-left: auto; align-items: flex-end; }
 .msg.assistant { margin-right: auto; align-items: flex-start; }
 .msg .who {
@@ -1286,6 +1300,93 @@ pre.code {
   overflow: auto;
 }
 .msg .think.max .think-body { max-height: none; font-size: 14.5px; }
+
+/* A question the turn is waiting on. Not monospace and not inside the run log:
+   the operator has to answer this, so it reads like the bubble it lives beside
+   rather than like a command receipt. The waiting state is the loud one; once it
+   is settled the card keeps its own record instead of a live control. */
+.msg .asked {
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+  max-width: 46rem;
+}
+.msg .asked.settled {
+  border-color: var(--line);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--muted);
+}
+.msg .asked-title {
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.msg .asked-question { margin: 0 0 6px; }
+.msg .asked-choices { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.msg .asked-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.24);
+}
+.msg .asked-label { font-weight: 600; }
+.msg .asked-detail { font-size: 11px; color: var(--muted); }
+.msg .asked-waiting {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warn);
+}
+.msg .asked-answer { color: var(--text); }
+.msg .asked-choice.picked {
+  border-color: var(--platinum);
+  background: rgba(106, 169, 255, 0.18);
+}
+.msg .asked-free {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+.msg .asked-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.32);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.msg .asked-input:focus {
+  outline: none;
+  border-color: var(--platinum);
+}
+.msg .asked-send,
+.msg .asked-commit {
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.msg .asked-send:hover,
+.msg .asked-commit:hover { background: rgba(255, 255, 255, 0.12); }
+.msg .asked-raw {
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
 
 /* The run log: what the turn actually executed. Monospace and full-width so a
    command reads like a command and its output reads like output. */
@@ -1524,6 +1625,13 @@ pre.code {
   color: var(--muted);
 }
 .msg .meta .tag { margin-left: 0; }
+/* A forced answer is not a failure, so it does not wear the failure colour: it
+   is a statement about how the reply ended, and it has to be readable a week
+   later on a reload, which is the whole reason it is stored. */
+.msg .meta .tag.capped {
+  color: var(--warn);
+  border-color: currentColor;
+}
 
 .msg.pending .bubble::after {
   content: "";
@@ -2360,6 +2468,18 @@ mod tests {
         assert!(
             rule(".msg").contains("width: min(100%, clamp(22rem, 78vw, 52rem))"),
             "a bubble is sized by the screen, up to a readable cap"
+        );
+        // A reply with no thinking bubble takes the width that bubble was holding
+        // open. The selector is stated here rather than eyeballed: `:has` is what
+        // makes it depend on what the answer actually rendered.
+        assert!(
+            rule(".msg.assistant:not(:has(.think:not([hidden])))")
+                .contains("width: min(100%, clamp(22rem, 90vw, 64rem))"),
+            "an answer with nothing above it is wider than one with a think bubble"
+        );
+        assert!(
+            !rule(".msg.assistant:not(:has(.think:not([hidden])))").contains("52rem"),
+            "the wide rule must not keep the narrow cap"
         );
         assert!(
             rule(".msg .bubble").contains("max-width: 100%"),

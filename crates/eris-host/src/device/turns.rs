@@ -76,18 +76,26 @@ pub enum FrameKind {
     Error,
     /// The turn was cancelled.
     Cancelled,
+    /// The turn asked the operator a question and is waiting on the answer.
+    ///
+    /// Not terminal: the turn is parked, not finished. The payload carries the
+    /// request, and its `answer` is null until somebody settles it, after which the
+    /// same kind is written again with the answer filled in. A client that missed
+    /// the first frame can read the second one and still draw the card.
+    Asked,
 }
 
 impl FrameKind {
     /// Every kind, so a client can learn the vocabulary from `/v1/version`
     /// instead of pinning a build number.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Delta,
         Self::Reasoning,
         Self::Tool,
         Self::Done,
         Self::Error,
         Self::Cancelled,
+        Self::Asked,
     ];
 
     /// The storage and wire spelling.
@@ -100,6 +108,7 @@ impl FrameKind {
             Self::Done => "done",
             Self::Error => "error",
             Self::Cancelled => "cancelled",
+            Self::Asked => "asked",
         }
     }
 
@@ -113,6 +122,7 @@ impl FrameKind {
             "done" => Some(Self::Done),
             "error" => Some(Self::Error),
             "cancelled" => Some(Self::Cancelled),
+            "asked" => Some(Self::Asked),
             _ => None,
         }
     }
@@ -121,13 +131,16 @@ impl FrameKind {
     /// of the three terminal kinds.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        !matches!(self, Self::Delta | Self::Reasoning | Self::Tool)
+        !matches!(
+            self,
+            Self::Delta | Self::Reasoning | Self::Tool | Self::Asked
+        )
     }
 
     /// The job status a terminal frame moves the job to.
     const fn terminal_status(self) -> Option<&'static str> {
         match self {
-            Self::Delta | Self::Reasoning | Self::Tool => None,
+            Self::Delta | Self::Reasoning | Self::Tool | Self::Asked => None,
             Self::Done => Some("succeeded"),
             Self::Error => Some("failed"),
             Self::Cancelled => Some("cancelled"),
@@ -186,6 +199,18 @@ enum Signal {
         output: String,
         /// Whether it reported a failure.
         is_error: bool,
+    },
+    /// The turn asked a question and is now blocked waiting on the answer.
+    Asked {
+        /// What the model asked.
+        request: crate::web::clarify::Request,
+    },
+    /// The question was settled, by this device or by another surface.
+    Answered {
+        /// What the model asked.
+        request: crate::web::clarify::Request,
+        /// What the operator decided.
+        answer: crate::web::clarify::Answer,
     },
     /// The provider finished.
     Done {
@@ -268,6 +293,11 @@ pub struct ProviderConfig {
     /// does not name the shape leaves the OpenAI shape standing, which is what
     /// every provider here spoke before the field existed.
     pub dialect: core_domain::ApiDialect,
+    /// Whether this endpoint must be asked to split reasoning from the answer.
+    ///
+    /// Read off the same registry entry as the dialect, so a phone turn asks the
+    /// endpoint the same question a browser turn does.
+    pub reasoning_split: bool,
 }
 
 /// Everything about a turn that is decided before it starts.
@@ -285,6 +315,10 @@ pub struct TurnPolicy {
     pub tools: bool,
     /// How many tool rounds it may take before the last one must answer.
     pub max_rounds: usize,
+    /// How many tokens a device turn's prompt may occupy before the loop cuts
+    /// tool results to fit. Resolved from the registry the same way the browser
+    /// resolves it, so a phone turn protects the same window.
+    pub context_budget: Option<u64>,
     /// Whether reasoning frames go out.
     pub show_reasoning: bool,
     /// Whether tool frames go out.
@@ -305,6 +339,9 @@ impl Default for TurnPolicy {
             approval_policy: crate::onboarding::permissions::ApprovalPolicy::Ask,
             tools: true,
             max_rounds: crate::tools::DEFAULT_TOOL_ROUNDS,
+            // No engine, no window: the loop runs exactly as it did before the
+            // budget existed rather than cutting a result against a guess.
+            context_budget: None,
             show_reasoning: true,
             show_tool_log: true,
         }
@@ -336,6 +373,13 @@ impl TurnPolicy {
             tools: crate::tools::enabled(setting(crate::tools::SETTING_TOOLS_ENABLED).as_deref()),
             max_rounds: crate::tools::max_rounds(
                 setting(crate::tools::SETTING_TOOL_ROUNDS).as_deref(),
+            ),
+            // The same window the browser sizes against, resolved through the
+            // registry entry the model pin names. A device turn that ignored the
+            // budget would be the one surface where a long tool turn overflows.
+            context_budget: crate::web::chat::context_budget_for(
+                engine,
+                setting(crate::web::chat::SETTING_CONTEXT_SHARE).as_deref(),
             ),
             show_reasoning: crate::web::chat::show_reasoning(
                 setting(crate::web::chat::SETTING_SHOW_REASONING).as_deref(),
@@ -775,6 +819,7 @@ impl TurnStore {
             key_ref,
             model: choice.model,
             dialect,
+            reasoning_split: crate::providers::reasoning_split_of(chosen),
         }))
     }
 
@@ -961,6 +1006,19 @@ pub struct TurnHub {
     /// registers here so a page that asks about that conversation is told the
     /// truth - "a turn is running" - instead of failing the row as orphaned.
     live: Mutex<Option<crate::web::live::LiveHub>>,
+    /// The daemon's parked-question registry, when one was handed over.
+    ///
+    /// Shared with the dashboard, so a question asked by a phone turn can be
+    /// answered from either surface. `None` means this hub cannot ask, and a turn
+    /// here is told so rather than parking a question no route can reach.
+    clarify: Mutex<Option<Arc<crate::web::clarify::Registry>>>,
+    /// Which key each job's question is parked under.
+    ///
+    /// A device turn asks under the conversation it is writing into, because that
+    /// is what the dashboard's answer route knows it by, and falls back to the job
+    /// id for a turn that names no conversation. The route that answers is
+    /// addressed by job, so it needs this to find the question it was asked about.
+    ask_keys: Mutex<HashMap<String, String>>,
 }
 
 impl TurnHub {
@@ -981,6 +1039,8 @@ impl TurnHub {
             key_lookup,
             persona: Mutex::new(None),
             live: Mutex::new(None),
+            clarify: Mutex::new(None),
+            ask_keys: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1004,6 +1064,35 @@ impl TurnHub {
     pub fn set_live(&self, live: crate::web::live::LiveHub) {
         if let Ok(mut slot) = self.live.lock() {
             *slot = Some(live);
+        }
+    }
+
+    /// Attach the daemon's parked-question registry, so a turn here can ask.
+    pub fn set_clarify(&self, clarify: Arc<crate::web::clarify::Registry>) {
+        if let Ok(mut slot) = self.clarify.lock() {
+            *slot = Some(clarify);
+        }
+    }
+
+    /// The parked-question registry, when this hub was handed one.
+    #[must_use]
+    pub fn clarify(&self) -> Option<Arc<crate::web::clarify::Registry>> {
+        self.clarify.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// The key a job's question is parked under, if it is waiting on one.
+    #[must_use]
+    pub fn ask_key(&self, job_id: &str) -> Option<String> {
+        self.ask_keys
+            .lock()
+            .ok()
+            .and_then(|keys| keys.get(job_id).cloned())
+    }
+
+    /// Record which key a job's question is parked under.
+    fn note_ask(&self, job_id: &str, key: &str) {
+        if let Ok(mut keys) = self.ask_keys.lock() {
+            keys.insert(job_id.to_owned(), key.to_owned());
         }
     }
 
@@ -1053,9 +1142,16 @@ impl TurnHub {
     }
 
     /// Drop a job's channel once its worker is done.
+    ///
+    /// The ask key goes with it: a question whose turn has ended cannot be
+    /// answered, and leaving the mapping behind would let a later route look up a
+    /// conversation and settle somebody else's question.
     fn retire(&self, job_id: &str) {
         if let Ok(mut channels) = self.channels.lock() {
             channels.remove(job_id);
+        }
+        if let Ok(mut keys) = self.ask_keys.lock() {
+            keys.remove(job_id);
         }
     }
 
@@ -1305,6 +1401,7 @@ impl TurnHub {
                                 arguments: arguments.clone(),
                                 output: output.clone(),
                                 is_error,
+                                asked: None,
                             });
                             let data = serde_json::json!({
                                 "name": name,
@@ -1315,6 +1412,36 @@ impl TurnHub {
                             if let Ok(Some(seq)) = store.append(&writer_job, FrameKind::Tool, &data)
                             {
                                 publish(&sender, seq, FrameKind::Tool, data);
+                            }
+                        }
+                        // The question, written before the turn blocks on it. A
+                        // client that was not watching when the frame went out can
+                        // read it back from the log, which is the whole reason a
+                        // device question is a stored frame and not a signal.
+                        Signal::Asked { request } => {
+                            let data = serde_json::json!({
+                                "request": &request,
+                                "answer": serde_json::Value::Null,
+                            });
+                            if let Ok(Some(seq)) =
+                                store.append(&writer_job, FrameKind::Asked, &data)
+                            {
+                                publish(&sender, seq, FrameKind::Asked, data);
+                            }
+                        }
+                        // The same kind again, now carrying the decision. Written
+                        // rather than amended: the log is append-only, and a reader
+                        // that takes the last `asked` frame for a job has both the
+                        // question and what was decided about it.
+                        Signal::Answered { request, answer } => {
+                            let data = serde_json::json!({
+                                "request": &request,
+                                "answer": &answer,
+                            });
+                            if let Ok(Some(seq)) =
+                                store.append(&writer_job, FrameKind::Asked, &data)
+                            {
+                                publish(&sender, seq, FrameKind::Asked, data);
                             }
                         }
                         Signal::Done { text, usage } => {
@@ -1434,6 +1561,7 @@ impl TurnHub {
             key_ref: config.key_ref,
             model: config.model,
             dialect: config.dialect,
+            reasoning_split: config.reasoning_split,
         };
 
         // The turn itself: the same `run_turn_with_key` the browser drives, so a
@@ -1449,12 +1577,58 @@ impl TurnHub {
         // The writer task still owns the settle; this only keeps the row current.
         let progress_conversation = conversation.clone();
         let progress_db = store.db().clone();
+        // Which key this turn's question is parked under, decided before the turn
+        // starts so the answer route can find it by job id. A turn that writes into
+        // a conversation asks under that conversation, which is the key the
+        // dashboard's own answer route knows; a turn that names none is a session
+        // of its own and asks under its job id, which nothing else can collide with.
+        let ask_key = conversation
+            .as_ref()
+            .map(|write| write.conversation.clone())
+            .unwrap_or_else(|| job_id.clone());
+        // The registry the turn can ask on, and no other: a service built without
+        // one runs a turn that cannot ask rather than one that parks a question no
+        // route in this process can reach.
+        let ask = self
+            .clarify()
+            .map(|registry| crate::web::clarify::Ask::new(registry, ask_key.clone()));
+        if ask.is_some() {
+            self.note_ask(&job_id, &ask_key);
+        }
+        // How this turn hears a stop. `/v1` has no steering channel, but a cancel
+        // is real: `POST /v1/turns/{id}/cancel` moves the job to `cancelled`, and a
+        // turn that is parked on a question has to notice that instead of waiting
+        // out the hour. Read from the job row rather than from a flag, because the
+        // cancel arrives on a different thread with only the job id in hand.
+        //
+        // Throttled: `poll` is asked at every boundary in the turn loop, and a
+        // synchronous read on each one would put a query between every tool call.
+        // Half a second matches the slice a parked question wakes on, so a stop is
+        // noticed as quickly as a question's own wait would notice it.
+        let poll_store = store.clone();
+        let poll_job = job_id.clone();
+        let mut poll_turn = {
+            let mut last = std::time::Instant::now();
+            move || {
+                // Cheap enough to be worth a clock read on every boundary; the
+                // query behind it is not, so it is asked at most twice a second.
+                if last.elapsed() < std::time::Duration::from_millis(500) {
+                    return crate::web::chat::TurnSignal::Continue;
+                }
+                last = std::time::Instant::now();
+                match poll_store.status(&poll_job) {
+                    Ok(Some(status)) if status == "cancelled" => crate::web::chat::TurnSignal::Stop,
+                    _ => crate::web::chat::TurnSignal::Continue,
+                }
+            }
+        };
         let turn_task = tokio::task::spawn_blocking(move || {
             let TurnPolicy {
                 sandbox,
                 approval_policy,
                 tools,
                 max_rounds,
+                context_budget,
                 show_reasoning,
                 show_tool_log,
             } = policy;
@@ -1490,6 +1664,7 @@ impl TurnHub {
                 // never offered, which is the honest shape: a capability the
                 // surface cannot show is one it should not have.
                 agents: false,
+                context_budget,
             };
             // What the turn has produced so far, for the conversation row. Once a
             // second, not once a token: a body write per fragment would put a
@@ -1542,14 +1717,28 @@ impl TurnHub {
                     arguments,
                     output,
                     is_error,
+                    asked,
                 } => {
                     records.push(crate::web::chat::ToolRecord {
                         name: name.to_owned(),
                         arguments: arguments.to_owned(),
                         output: output.to_owned(),
                         is_error,
+                        asked: asked.cloned(),
                     });
                     flush(true, &streamed, &records, rounds);
+                    // A settled question is written again under the same kind, now
+                    // carrying the decision, so a client reading the job log gets
+                    // the question and the answer from the last `asked` frame
+                    // rather than from a second kind it would have to know about.
+                    if let Some(settled) = asked
+                        && let Some(answer) = settled.answer.clone()
+                    {
+                        let _ = tx.send(Signal::Answered {
+                            request: settled.request.clone(),
+                            answer,
+                        });
+                    }
                     // Behind its own switch, as in the browser: a run log that is
                     // off does not ship command output anyway.
                     if show_tool_log {
@@ -1566,6 +1755,20 @@ impl TurnHub {
                 // so this frame needs no signal of its own, and inventing one
                 // would be a listener with no reader.
                 crate::web::chat::StreamPart::ToolStart { .. } => {}
+                // The question, out before the turn blocks on it, exactly as the
+                // browser sends it. The frame is also written to the job log, so a
+                // client that reconnects reads it back rather than missing the one
+                // moment the turn was waiting on a person.
+                crate::web::chat::StreamPart::Asked { request } => {
+                    let _ = tx.send(Signal::Asked {
+                        request: request.clone(),
+                    });
+                }
+                // A result cut to fit the window. The phone reads its job status
+                // and renders no run log, so there is nowhere to annotate; the arm
+                // is here so the surface states where it goes rather than being
+                // silently wrong about a frame it never expected.
+                crate::web::chat::StreamPart::Elided { .. } => {}
                 // The finished call already carries the whole output. The device
                 // stream does not carry a second frame for the chunks that built
                 // it, because the browser's `tool_output` frames exist to fill a
@@ -1592,12 +1795,18 @@ impl TurnHub {
                 // for, so it is not offered.
                 None,
                 settings,
-                // Nothing hears this turn. Steering belongs to the browser: `/v1`
-                // has no surface for a second message into a running job, so a
-                // device turn polls a queue that is always empty rather than
-                // pretending to a knob it cannot turn. Cancellation is still real
-                // here, through the job's own cancel path and the row it fails.
-                &mut || crate::web::chat::TurnSignal::Continue,
+                // A phone can ask now. The question parks this turn's thread, goes
+                // out as an `asked` frame on the job stream and is written to the
+                // job log, and `POST /v1/turns/{id}/answer` settles it. A service
+                // built without a registry has no route to answer, so the tool is
+                // not offered there at all rather than parking a question nobody
+                // can reach.
+                ask.as_ref(),
+                // Nothing steers this turn. Steering belongs to the browser: `/v1`
+                // has no surface for a second message into a running job. A cancel
+                // is heard, though, and hearing it here is what lets a question
+                // that nobody answers end with the turn instead of outlasting it.
+                &mut poll_turn,
                 &mut sink,
             );
             match outcome {
@@ -1687,6 +1896,10 @@ fn accounting_from(usage: &serde_json::Value) -> crate::web::chat::Accounting {
             // The terminal frame carries the turn's summed usage, not a single
             // round, so the live context size is not something this worker knows.
             context_tokens: None,
+            // Not measured here: this helper reads usage, and the frame that
+            // carries it says nothing about the budget. `None` keeps the row
+            // honest instead of stamping "not capped" on a turn nobody checked.
+            capped: None,
         })
         .unwrap_or_default()
 }

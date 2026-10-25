@@ -639,6 +639,10 @@ pub fn child_settings() -> TurnSettings {
         tools: false,
         max_rounds: 1,
         agents: false,
+        // A child turn carries one prompt and no history, so its prompt cannot
+        // grow past a window by itself. The budget the parent resolved does not
+        // apply here, and inventing one would cut a result for no reason.
+        context_budget: None,
     }
 }
 
@@ -682,6 +686,9 @@ fn run_child_turn(request: &RunRequest) -> Result<RunOutput, (String, String)> {
         // place the operator's library is interpreted.
         None,
         child_settings(),
+        // A child cannot ask: there is no surface holding its question, so
+        // offering the tool would park a turn nobody is watching.
+        None,
         &mut poll,
         &mut sink,
     )?;
@@ -982,6 +989,7 @@ mod tests {
                 .expect("a valid reference"),
             model: "stub/model".to_owned(),
             dialect: core_domain::ApiDialect::ChatCompletions,
+            reasoning_split: false,
         };
         Desk::new(
             db.clone(),
@@ -1014,16 +1022,16 @@ mod tests {
     #[test]
     fn migration_fourteen_creates_the_subagent_row() {
         let db = db();
-        // The pin follows the newest migration, which is 0020. This test owns the
+        // The pin follows the newest migration, which is 0022. This test owns the
         // "the binary and the file agree on the version" claim for the whole
         // database, so it is the one place that number is written down twice.
         assert_eq!(
             crate::db::SCHEMA_VERSION,
-            20,
+            22,
             "the binary declares the version it migrated to"
         );
-        assert_eq!(db.schema_version().expect("version"), 20);
-        assert_eq!(db.applied_migration_count().expect("count"), 20);
+        assert_eq!(db.schema_version().expect("version"), 22);
+        assert_eq!(db.applied_migration_count().expect("count"), 22);
         assert!(
             crate::db::TABLES.contains(&"subagents"),
             "the table is in the documented list"

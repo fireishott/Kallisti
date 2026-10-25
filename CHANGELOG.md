@@ -4,6 +4,89 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.7
+
+- **The thought is not the answer, and it is not the title.** MiniMax inlines its
+  chain of thought into `delta.content` unless the endpoint is asked to split it,
+  and the naming role was neither asking nor expecting it: conversations were
+  renamed `<think>We need answer only title max six words...`, and on several turns
+  the rename wrote zero rows because a suggestion that was a tag matched none of
+  the accepted candidates. A provider profile can now declare `reasoning_split`, so
+  the adapter asks for the split where the deployment supports it rather than
+  everyone being sent a field some endpoints refuse. Independently of that, a
+  suggested title is scrubbed of think blocks before it is considered - an
+  unclosed tag swallows the rest of the text, because half a thought is not a
+  name - and a suggestion that is empty afterwards is discarded so the truncation
+  of the question stands instead of a title made of markup. `build 106`.
+- **A title is named after the question, not the answer.** The naming prompt
+  carried six hundred characters of the answer, so a long reply was named after
+  whatever it happened to end on. The question now carries the subject and the
+  answer is trimmed to a quarter of that and labelled as context only. `build 106`.
+- **A reply that was forced says it was forced.** The tool budget was spent, the
+  loop wrote a final answer, and the footer showed `100 rounds` under a reply that
+  looked exactly like a finished one. The cap was set in memory and sent once as a
+  live notice, then written nowhere, so a reload forgot it and the notice was
+  cleared a second after it appeared. A settled reply now records whether the
+  budget ended it (`chat_messages.capped`, schema 22) and the page says so beside
+  the round count, both live and after a reload. A reply that finished on its own,
+  and one nobody measured, both stay unset: not capped and not measured are the
+  same state, and neither is a confident zero. `build 106`.
+- **The run log counts replies, and the session line counts questions.** The pill
+  under a reply read `turn 6` while the footer read `100 rounds` and the session
+  line read `7 turns`, three counters sharing two words. The pill is the reply's
+  ordinal and now says `reply`; the session line counts the operator's own messages
+  and now says `questions`. `build 106`.
+- **A conversation compresses itself when the window fills.** The only rule was
+  "keep the newest twenty-four messages", which is a count and not a size: short
+  exchanges left a large window almost empty, and long ones with command output in
+  them overflowed a small one and came back as a context-length failure. A turn now
+  sizes its prompt against the context length its model declares, at a configurable
+  share of it (`context.compress_at`, default 80), and the rows that fall outside
+  are summarised by the configured compression model rather than dropped. The
+  summary is updated with the new turns instead of being re-read from scratch, and
+  it is persisted against the conversation (`chat_conversations.summary`, schema
+  21), so a summary already covering the tail is not paid for again. A summary that
+  covers rows the transcript no longer has is cleared. `build 106`.
+- **What the operator asked survives compression word for word.** A summary
+  paraphrases, and paraphrasing "use the existing helper" is how an agent
+  confidently writes a new one six turns later. The operator's own messages from
+  the compacted region ride into the summary verbatim, newest first, under a
+  heading that says they are instructions already given. `build 106`.
+- **A turn that outgrows its window mid-flight trims output, not history.** The
+  check at the start of a turn cannot see the twelve tool results that turn is
+  about to accumulate. Before each round trip the prompt is measured again and, if
+  it no longer fits, oversized tool results are cut to their first and last
+  characters with a line saying how much was removed. The operator's messages are
+  never cut, and the newest result is cut last because that is what the next round
+  is about. The cut is announced rather than silent, so a truncated result is not
+  mistaken for a wrong one. No auxiliary call is made mid-turn: a summary request
+  in the middle of a turn the operator is waiting on is a second silence they did
+  not ask for. `build 106`.
+- **The agent can ask a question and wait for the answer.** Asking was a prompt
+  instruction to end the turn with one question, and the answer arrived as the next
+  message. There is now a `clarify` tool: the model offers up to four labelled
+  choices or a free-text field, the turn parks on a condition variable, and it
+  resumes with the answer as the tool result when the operator replies. The wait is
+  sliced so Stop is still noticed while a question is on screen, times out after an
+  hour, and a timeout tells the model to proceed on its own judgement rather than
+  ask again. Answering an empty question by name is refused, and so is an answer
+  when nothing is waiting. `build 106`.
+- **The phone can answer a question too.** A device turn refused `clarify` outright,
+  because `/v1` had no route that resumes a parked turn: the only thing a phone
+  could do with a question was wait out the hour. A device turn now offers the tool,
+  the question goes out as an `asked` frame on the job stream and is written to the
+  job log, `GET /v1/turns/{id}/asked` reads back a question that was missed, and
+  `POST /v1/turns/{id}/answer` settles it so the parked thread resumes with the
+  answer as the tool result. Both routes land on the same registry the dashboard
+  uses, so either surface can answer a question the other one asked, and a question
+  nobody owns is reported as missing rather than confirmed to a stranger. A cancel
+  now reaches a parked turn as well, so a question nobody answers ends with the
+  turn instead of outliving it. `build 106`.
+- **A reply with no thinking bubble uses the width it has.** A reply was capped at
+  the same column whether or not a thought bubble sat inside it, so a quiet answer
+  left a third of the window empty. A reply with no visible thinking is now wider;
+  one that shows its reasoning keeps the narrower column. `build 106`.
+
 ## 1.4.6
 
 - **A conversation keeps the model it was on when you come back to it.** The rail

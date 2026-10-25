@@ -50,6 +50,18 @@ pub struct Provider {
     /// the fallback for a catalogue that publishes nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialect: Option<String>,
+    /// Whether this endpoint separates its chain of thought from the answer
+    /// when asked to.
+    ///
+    /// `None` means "do not ask", which is what every entry that existed before
+    /// this field did. An entry sets `true` for a deployment that inlines its
+    /// reasoning into the answer unless the request says otherwise - MiniMax
+    /// does this by default - so the daemon asks for the split and the thinking
+    /// lands in the reasoning channel instead of the reply. It is off by default
+    /// because a gateway that does not know the field may refuse the request,
+    /// and one compatibility flag is not worth a 400 on somebody else's server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_split: Option<bool>,
 }
 
 /// Why a registry could not be used.
@@ -174,6 +186,14 @@ pub fn dialect_of(provider: &Provider) -> core_domain::ApiDialect {
         .unwrap_or(core_domain::ApiDialect::ChatCompletions)
 }
 
+/// Whether one registry entry asks its endpoint to split reasoning from the
+/// answer. An absent value asks for nothing, which is what every entry written
+/// before the field existed did.
+#[must_use]
+pub fn reasoning_split_of(provider: &Provider) -> bool {
+    provider.reasoning_split.unwrap_or(false)
+}
+
 /// Whether a string is an `env:NAME` reference.
 ///
 /// The same rule the onboarding step applies: a reference travels, a value does
@@ -212,6 +232,7 @@ pub fn seed(base_url: &str, key_ref: &str) -> Vec<Provider> {
         base_url: base_url.to_owned(),
         key_ref: key_ref.to_owned(),
         dialect: None,
+        reasoning_split: None,
     }]
 }
 
@@ -253,6 +274,7 @@ mod tests {
             base_url: "http://127.0.0.1:20128/v1".to_owned(),
             key_ref: "env:NINEROUTER_API_KEY".to_owned(),
             dialect: None,
+            reasoning_split: None,
         }
     }
 
@@ -336,6 +358,38 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(dialect_of(&named[0]), core_domain::ApiDialect::Messages);
+    }
+
+    #[test]
+    fn an_entry_can_ask_for_a_reasoning_split_and_an_old_one_cannot() {
+        // The row written before the field existed asks for nothing, so the
+        // request bytes an old install sends are unchanged.
+        let old = parse(
+            r#"[{"id":"default","name":"Default",
+                 "base_url":"http://127.0.0.1:20128/v1",
+                 "key_ref":"env:NINEROUTER_API_KEY"}]"#,
+        )
+        .expect("parses");
+        assert_eq!(old[0].reasoning_split, None);
+        assert!(!reasoning_split_of(&old[0]));
+
+        let asked = parse(
+            r#"[{"id":"minimax","name":"MiniMax",
+                 "base_url":"https://api.minimax.io/v1",
+                 "key_ref":"env:MINIMAX_API_KEY","reasoning_split":true}]"#,
+        )
+        .expect("parses");
+        assert!(reasoning_split_of(&asked[0]));
+
+        // Explicitly false is the same wire behaviour as absent, and the
+        // document round trips so the settings editor shows what was stored.
+        let declined = parse(
+            r#"[{"id":"beta","name":"Beta","base_url":"http://b/v1",
+                 "key_ref":"env:B","reasoning_split":false}]"#,
+        )
+        .expect("parses");
+        assert!(!reasoning_split_of(&declined[0]));
+        assert_eq!(parse(&to_json(&asked)).expect("round trip"), asked);
     }
 
     #[test]

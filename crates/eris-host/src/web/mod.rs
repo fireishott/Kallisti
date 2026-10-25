@@ -8,6 +8,8 @@
 
 pub mod backups;
 pub mod chat;
+pub mod clarify;
+pub mod context;
 pub mod css;
 pub mod dsml;
 pub mod live;

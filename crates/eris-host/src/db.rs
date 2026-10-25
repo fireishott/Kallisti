@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 22;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -172,6 +172,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20,
         name: "0020_conversation_model",
         sql: MIGRATION_0020,
+    },
+    Migration {
+        version: 21,
+        name: "0021_context_compression",
+        sql: MIGRATION_0021,
+    },
+    Migration {
+        version: 22,
+        name: "0022_answer_capped",
+        sql: MIGRATION_0022,
     },
 ];
 
@@ -706,6 +716,48 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_job ON chat_messages (job_id);
 /// configured default", exactly as it did before.
 const MIGRATION_0020: &str = r"
 ALTER TABLE chat_conversations ADD COLUMN model TEXT;
+";
+
+/// Migration 0021: context that has been summarised stays summarised.
+///
+/// The compression role had no memory. Every turn re-summarised the same dropped
+/// window from scratch and put the result in a prompt it then threw away, so a
+/// conversation that had outgrown the window paid for one auxiliary call per turn
+/// forever to learn the same thing. Two columns fix that: `summary` is the text,
+/// and `summary_rows` is how many settled transcript rows it already covers.
+///
+/// `summary_rows` is a count rather than a row id because the transcript is
+/// append-only within a conversation and `history` already thinks in positions.
+/// A summary that covers fewer rows than the window now drops is stale and is
+/// rebuilt; one that covers at least as many is current and costs nothing.
+///
+/// `context_summary` is nullable with no default: `NULL` means "this conversation
+/// has never been compressed", which is every row written before this existed and
+/// reads exactly as it did before.
+const MIGRATION_0021: &str = r"
+ALTER TABLE chat_conversations ADD COLUMN summary TEXT;
+ALTER TABLE chat_conversations ADD COLUMN summary_rows INTEGER NOT NULL DEFAULT 0;
+";
+
+/// Migration 0022: an answer that was forced says so, permanently.
+///
+/// The turn loop has always known whether the tool budget, rather than the
+/// model, ended a reply, and it has always told the browser in a live `notice`
+/// frame. Nothing wrote it down. So the sentence "this turn hit its budget" was
+/// true for exactly as long as the page stayed open: a reload showed a reply of
+/// six thousand words with a footer reading `100 rounds` and no way to tell a
+/// finished turn from a cut-off one. An operator reading that page cannot know
+/// whether to send the next message, and the transcript is supposed to be the
+/// record.
+///
+/// Nullable with no default, and only ever written as `1`. `NULL` means "this
+/// row was written before the column existed, or the turn never reported", and
+/// the page says nothing rather than printing a confident zero. Only a capped
+/// turn sets it, so the column is a fact about a minority of rows instead of a
+/// boolean every row has to carry.
+const MIGRATION_0022: &str = r"
+ALTER TABLE chat_messages ADD COLUMN capped INTEGER
+    CHECK (capped IS NULL OR capped IN (0, 1));
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

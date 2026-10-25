@@ -292,7 +292,14 @@ fn synthetic_terminal(kind: FrameKind, text: String) -> serde_json::Value {
             "message": "the turn ended without recording a terminal frame",
         }),
         FrameKind::Cancelled => serde_json::json!({ "reason": "cancel" }),
-        FrameKind::Delta | FrameKind::Reasoning | FrameKind::Tool => serde_json::Value::Null,
+        // None of these ends a turn, so none of them is ever synthesised: a job
+        // with no terminal frame gets one of the three above. `asked` is here
+        // because a parked question is the opposite of an ending - the turn is
+        // alive and waiting on a person, and inventing a question nobody asked
+        // would be worse than leaving the stream short.
+        FrameKind::Delta | FrameKind::Reasoning | FrameKind::Tool | FrameKind::Asked => {
+            serde_json::Value::Null
+        }
     }
 }
 
@@ -1458,6 +1465,205 @@ pub async fn cancel(
             DeviceError::db_unavailable(format!("cannot cancel the turn: {error}")).into_response()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/turns/{id}/asked and POST /v1/turns/{id}/answer
+// ---------------------------------------------------------------------------
+
+/// The job, if it is this device's. A turn belonging to another device is
+/// reported as missing rather than forbidden: the id is not a secret a stranger
+/// should be able to confirm by watching for the difference.
+fn own_job(
+    service: &DeviceService,
+    job_id: &str,
+    device: &str,
+) -> Result<crate::device::turns::JobRow, DeviceError> {
+    match service.hub().store().job(job_id) {
+        Ok(Some(job)) if job.device_id.as_deref() == Some(device) => Ok(job),
+        Ok(_) => Err(DeviceError::job_not_found()),
+        Err(error) => Err(DeviceError::db_unavailable(format!(
+            "cannot read job state: {error}"
+        ))),
+    }
+}
+
+/// `GET /v1/turns/{id}/asked` - the question this turn is waiting on, if any.
+///
+/// The question also rides the job stream as an `asked` frame. This route is for
+/// the client that was not listening at that moment: a phone whose stream dropped,
+/// or one that opened the job after the card had gone out. It reads the live
+/// registry rather than the job log, because the interesting question is whether
+/// somebody can still answer - a settled or abandoned question is not answerable,
+/// and a card that says "waiting" when nothing is would be worse than no card.
+pub async fn asked(
+    State(service): State<DeviceService>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    if let Err(error) = own_job(&service, &job_id, token.device_id()) {
+        return error.into_response();
+    }
+    let mut body = serde_json::json!({
+        "ok": true,
+        "waiting": false,
+        "asked": serde_json::Value::Null,
+    });
+    // A service with no registry cannot have a question parked, and says so as
+    // "nothing waiting" rather than as an error: there is nothing wrong with the
+    // request, there is just nobody asking.
+    if let Some(registry) = service.clarify() {
+        // The key this job's question is parked under. A turn that named no
+        // conversation asks under its own job id; one that named a conversation
+        // asks under that id, so the dashboard's answer route finds it too.
+        let key = service
+            .hub()
+            .ask_key(&job_id)
+            .unwrap_or_else(|| job_id.clone());
+        if let Some((id, request)) = registry.waiting_for(&key) {
+            body["waiting"] = serde_json::Value::Bool(true);
+            body["asked"] = serde_json::json!({
+                "id": id,
+                "request": request,
+            });
+        }
+    }
+    axum::Json(body).into_response()
+}
+
+/// `POST /v1/turns/{id}/answer` - settle the question a turn is waiting on.
+///
+/// This is the resume half of `/v1/turns`. A `clarify` call parks the turn's own
+/// blocking thread, so an answer landing here is what lets that thread continue
+/// with the answer as the tool result. The answer lands on the same registry the
+/// dashboard's `/dashboard/chat/answer` lands on, which is deliberate: a question
+/// asked by a phone turn is answerable from the browser, and one asked by a browser
+/// turn is answerable from the phone.
+///
+/// Two shapes of answer, the two the card can produce: picked labels (optionally
+/// with a note), or typed words with nothing picked. Anything else is refused by
+/// name, because a settle that landed nothing would leave the turn waiting out the
+/// hour for an answer nobody sent.
+pub async fn answer_asked(
+    State(service): State<DeviceService>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    if let Err(error) = own_job(&service, &job_id, token.device_id()) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    // A job that is already terminal has no turn left to wake. Saying "answered"
+    // for a question whose thread is gone would report a decision nobody received.
+    if let Ok(Some(status)) = service.hub().store().status(&job_id)
+        && !matches!(status.as_str(), "queued" | "running")
+    {
+        return DeviceError::new(
+            StatusCode::CONFLICT,
+            "turn_finished",
+            format!("the turn already finished ({status}): there is no question left to answer"),
+        )
+        .into_response();
+    }
+    let question = {
+        let raw = field(&fields, "question").to_owned();
+        if raw.is_empty() {
+            // The card knows which question it is; a client that did not repeat it
+            // still gets a usable sentence rather than an empty quote.
+            "the question".to_owned()
+        } else {
+            raw
+        }
+    };
+    // Labels arrive separated by the unit separator, the same wire shape the
+    // dashboard's answer route takes, so one card's script serves both surfaces.
+    let labels: Vec<String> = field(&fields, "labels")
+        .split('\u{1f}')
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let note = field(&fields, "note").trim().to_owned();
+    let typed = field(&fields, "text").trim().to_owned();
+    let answer = if !labels.is_empty() {
+        crate::web::clarify::Answer::Chosen {
+            question,
+            labels,
+            note: (!note.is_empty()).then_some(note),
+        }
+    } else if !typed.is_empty() {
+        crate::web::clarify::Answer::Typed {
+            question,
+            text: typed,
+        }
+    } else {
+        return DeviceError::bad_request(
+            "answer_empty",
+            "an answer needs a picked choice or some words, and this one had neither",
+        )
+        .into_response();
+    };
+
+    let Some(registry) = service.clarify() else {
+        return DeviceError::new(
+            StatusCode::CONFLICT,
+            "nothing_waiting",
+            "this daemon has no question registry, so no turn is waiting on an answer",
+        )
+        .into_response();
+    };
+    let key = service
+        .hub()
+        .ask_key(&job_id)
+        .unwrap_or_else(|| job_id.clone());
+    let landed = registry.answer(&key, answer.clone());
+    let detail = format!(
+        "job={job_id}; conversation={key}; {}",
+        if landed { "settled" } else { "nothing waiting" }
+    );
+    if let Err(error) =
+        service
+            .engine()
+            .auth()
+            .audit(token.device_id(), "chat.answer", Some(&detail))
+    {
+        return DeviceError::db_unavailable(format!(
+            "the answer was settled but the audit row could not be appended: {error}"
+        ))
+        .into_response();
+    }
+    if !landed {
+        return DeviceError::new(
+            StatusCode::CONFLICT,
+            "nothing_waiting",
+            "this turn is not waiting on a question: it was already answered, timed \
+             out, or the turn has ended",
+        )
+        .into_response();
+    }
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "rendered": answer.render(),
+    }))
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -4491,6 +4697,241 @@ mod tests {
         assert!(
             body.contains("\"code\":\"interrupted\""),
             "the ending names the interruption: {body}"
+        );
+    }
+
+    /// A fixture whose service can ask, plus one running job belonging to the
+    /// paired device. Returns the registry so a test can park a question on it the
+    /// way a turn would.
+    fn asking_fixture() -> (Fixture, std::sync::Arc<crate::web::clarify::Registry>) {
+        let mut fx = fixture();
+        let registry = std::sync::Arc::new(crate::web::clarify::Registry::new());
+        fx.service = fx
+            .service
+            .clone()
+            .with_clarify(std::sync::Arc::clone(&registry));
+        let db = fx.service.engine().db().clone();
+        let device_id: String = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT id FROM devices LIMIT 1", [], |row| row.get(0))
+            })
+            .expect("device id");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO jobs (id, kind, status, device_id) \
+                 VALUES ('job-ask', 'chat', 'running', ?1)",
+                [&device_id],
+            )?;
+            Ok(())
+        })
+        .expect("job row");
+        (fx, registry)
+    }
+
+    /// One question, in the shape the model calls.
+    fn a_question() -> crate::web::clarify::Request {
+        crate::web::clarify::Request::parse(&serde_json::json!({
+            "title": "Which lane?",
+            "questions": [{
+                "question": "Which lane should this land on?",
+                "choices": ["Web first", "All three"]
+            }]
+        }))
+        .expect("a valid question")
+    }
+
+    #[tokio::test]
+    async fn a_turn_with_no_question_says_so_rather_than_an_error() {
+        let fx = fixture();
+        let db = fx.service.engine().db().clone();
+        let device_id: String = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT id FROM devices LIMIT 1", [], |row| row.get(0))
+            })
+            .expect("device id");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO jobs (id, kind, status, device_id) \
+                 VALUES ('job-1', 'chat', 'running', ?1)",
+                [&device_id],
+            )?;
+            Ok(())
+        })
+        .expect("job row");
+
+        let (status, body) = send(&fx.service, "GET", "/v1/turns/job-1/asked", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], serde_json::json!(true));
+        assert_eq!(
+            body["waiting"],
+            serde_json::json!(false),
+            "a turn that asked nothing is not waiting: {body}"
+        );
+        assert_eq!(body["asked"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_parked_question_is_readable_and_answerable_over_v1() {
+        let (fx, registry) = asking_fixture();
+        // Parked under the job id, which is where a turn that names no
+        // conversation parks: the route falls back to the job id for exactly this.
+        let gate = registry.park_for("job-ask", a_question());
+
+        let (status, body) =
+            send(&fx.service, "GET", "/v1/turns/job-ask/asked", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["waiting"],
+            serde_json::json!(true),
+            "the question a turn is blocked on has to be readable: {body}"
+        );
+        assert_eq!(body["asked"]["id"], serde_json::json!(gate.id()));
+        assert_eq!(
+            body["asked"]["request"]["questions"][0]["question"],
+            serde_json::json!("Which lane should this land on?")
+        );
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/turns/job-ask/answer",
+            &fx.chat,
+            &serde_json::json!({
+                "labels": "Web first",
+                "question": "Which lane should this land on?",
+            })
+            .to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], serde_json::json!(true));
+        assert!(
+            body["rendered"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Web first"),
+            "the model is told what was picked: {body}"
+        );
+
+        // One-way, like an approval: the second read finds nothing, because the
+        // turn has already been woken with its answer.
+        let (status, body) =
+            send(&fx.service, "GET", "/v1/turns/job-ask/asked", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["waiting"], serde_json::json!(false));
+
+        // The parked handle saw the answer, which is the whole point of the route:
+        // a settle that landed nowhere would leave a thread waiting out the hour.
+        let answer = gate
+            .wait(std::time::Duration::from_secs(0), || {
+                crate::web::clarify::WaitPoll::Continue
+            })
+            .expect("the wait reports an answer rather than a stop");
+        assert!(matches!(answer, crate::web::clarify::Answer::Chosen { .. }));
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_nothing_waiting_is_refused_by_name() {
+        let (fx, _registry) = asking_fixture();
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/turns/job-ask/answer",
+            &fx.chat,
+            &serde_json::json!({ "labels": "Web first" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(
+            body["code"],
+            serde_json::json!("nothing_waiting"),
+            "a settle nobody received must not read as a decision: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answer_needs_a_choice_or_some_words() {
+        let (fx, registry) = asking_fixture();
+        let _gate = registry.park_for("job-ask", a_question());
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/turns/job-ask/answer",
+            &fx.chat,
+            "{}",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], serde_json::json!("answer_empty"));
+    }
+
+    #[tokio::test]
+    async fn answering_a_finished_turn_says_the_turn_is_over() {
+        let (fx, registry) = asking_fixture();
+        let _gate = registry.park_for("job-ask", a_question());
+        fx.service
+            .engine()
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE jobs SET status = 'succeeded' WHERE id = 'job-ask'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("job update");
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/turns/job-ask/answer",
+            &fx.chat,
+            &serde_json::json!({ "labels": "Web first" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(
+            body["code"],
+            serde_json::json!("turn_finished"),
+            "an answer for a turn that ended has nowhere to land: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_devices_question_is_not_readable() {
+        let (fx, registry) = asking_fixture();
+        let db = fx.service.engine().db().clone();
+        // A job belonging to a second device, with a question parked on it.
+        let other = crate::auth::AuthStore::new(db.clone())
+            .register_device("another", "ios")
+            .expect("second device");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO jobs (id, kind, status, device_id) \
+                 VALUES ('job-other', 'chat', 'running', ?1)",
+                [&other],
+            )?;
+            Ok(())
+        })
+        .expect("the other device's job");
+        let _gate = registry.park_for("job-other", a_question());
+
+        let (status, body) = send(
+            &fx.service,
+            "GET",
+            "/v1/turns/job-other/asked",
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(
+            body["code"],
+            serde_json::json!("job_not_found"),
+            "another device's question is reported as missing, not as visible"
+        );
+        assert!(
+            !body.to_string().contains(&other),
+            "the answer says nothing about the other device: {body}"
         );
     }
 
