@@ -725,6 +725,7 @@ mod tests {
             job_id: None,
             rounds: None,
             capped: None,
+            wrapped_up: None,
             quota: None,
         }
     }

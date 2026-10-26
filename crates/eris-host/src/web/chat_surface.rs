@@ -1021,6 +1021,7 @@ fn the_page_shows_the_usage_the_transcript_carries() {
             rounds: None,
             context_tokens: Some(1_200),
             capped: None,
+            wrapped_up: None,
         },
     )
     .unwrap();

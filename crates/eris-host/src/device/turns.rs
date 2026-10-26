@@ -2026,6 +2026,9 @@ fn accounting_from(usage: &serde_json::Value) -> crate::web::chat::Accounting {
             // carries it says nothing about the budget. `None` keeps the row
             // honest instead of stamping "not capped" on a turn nobody checked.
             capped: None,
+            // Same reason, and the same shape: the frame says nothing about
+            // whether the engine wrapped this turn up early.
+            wrapped_up: None,
         })
         .unwrap_or_default()
 }

@@ -4387,6 +4387,14 @@ pub struct ChatLine {
     /// which. False on every row written before migration 0022, which had no way
     /// to record it, so the badge is only ever an addition.
     pub capped: bool,
+    /// Whether the engine stopped the turn early on purpose and the model wrote
+    /// the answer from what it already had.
+    ///
+    /// The other half of the same question `capped` answers, and a separate tag
+    /// rather than a second word in the same one: a turn that wrapped up finished
+    /// the job, and a turn that was capped did not. False on every row written
+    /// before migration 0023, which had no way to record it.
+    pub wrapped_up: bool,
     /// The gateway's quota line, when the setting is on and one was read.
     pub quota: Option<String>,
     /// The model's own reasoning for this reply, when it streamed any.
@@ -5309,6 +5317,15 @@ pub fn chat_page(view: &ChatView) -> Markup {
                             span .tag .capped
                                 title="the tool budget ended this turn, so the answer was forced rather than finished" {
                                 "capped"
+                            }
+                        }
+                        @if line.wrapped_up {
+                            // The same place, a different fact: this turn saw the
+                            // budget coming and answered instead of reaching for
+                            // one more tool, so the answer is the model's own.
+                            span .tag .wrapped-up
+                                title="the engine stopped this turn two rounds early, so the answer was written rather than forced" {
+                                "wrapped up"
                             }
                         }
                     }
@@ -7943,6 +7960,7 @@ mod tests {
             turn: Some(1),
             rounds,
             capped,
+            wrapped_up: false,
             quota: None,
             reasoning: None,
             tools: Vec::new(),
@@ -8050,6 +8068,7 @@ mod tests {
             turn: None,
             rounds: None,
             capped: false,
+            wrapped_up: false,
             quota: None,
             reasoning: None,
             tools: Vec::new(),

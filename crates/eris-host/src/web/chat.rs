@@ -1103,6 +1103,14 @@ pub struct Message {
     /// migration 0022, which is why it is not a `bool`: a page must be able to
     /// say nothing rather than print a confident "not capped".
     pub capped: Option<bool>,
+    /// Whether the engine stopped the turn early on purpose so the model could
+    /// write the answer with what it already had.
+    ///
+    /// A separate column from `capped` because they are separate facts, and
+    /// `None` on a row written before migration 0023 for the same reason: a page
+    /// must be able to say nothing rather than print a confident "did not wrap
+    /// up".
+    pub wrapped_up: Option<bool>,
     /// The gateway's limit state for the answering model, read at settle.
     pub quota: Option<crate::web::quota::Quota>,
 }
@@ -1150,7 +1158,7 @@ fn collect(
     const SELECT: &str = "SELECT id, role, body, state, error_code, created_at, model,
                 prompt_tokens, completion_tokens, cached_tokens, context_window,
                 duration_ms, reasoning, tools, rounds, quota_json, context_tokens,
-                client_message_id, job_id, capped
+                client_message_id, job_id, capped, wrapped_up
            FROM chat_messages
           WHERE conversation_id = ?1
           ORDER BY created_at ASC, rowid ASC";
@@ -1201,6 +1209,7 @@ fn row_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         client_message_id: row.get(17)?,
         job_id: row.get(18)?,
         capped: row.get::<_, Option<i64>>(19)?.map(|flag| flag != 0),
+        wrapped_up: row.get::<_, Option<i64>>(20)?.map(|flag| flag != 0),
     })
 }
 
@@ -1349,6 +1358,10 @@ pub struct Accounting {
     /// slash command, a test. Only `Some(true)` is written, so a column full of
     /// zeros cannot pretend a model finished on its own.
     pub capped: Option<bool>,
+    /// Whether the engine took the tools away early and the model wrote the
+    /// answer. `None` for the same reason as [`Self::capped`]: not measured is
+    /// not the same fact as measured and false.
+    pub wrapped_up: Option<bool>,
 }
 
 /// Record what a running turn has produced so far, without settling it.
@@ -1413,6 +1426,7 @@ pub fn settle(
         rounds,
         context_tokens,
         capped,
+        wrapped_up,
     } = accounting;
     let reasoning = reasoning.filter(|text| !text.trim().is_empty());
     // Null rather than "[]" for a turn that called nothing: absent and empty are
@@ -1426,7 +1440,7 @@ pub fn settle(
                 SET body = ?2, state = 'complete', usage_json = ?3, error_code = NULL,
                     prompt_tokens = ?4, completion_tokens = ?5, cached_tokens = ?6,
                     duration_ms = ?7, reasoning = ?8, tools = ?9, rounds = ?10,
-                    context_tokens = ?11, capped = ?12
+                    context_tokens = ?11, capped = ?12, wrapped_up = ?13
               WHERE id = ?1",
             params![
                 id,
@@ -1444,6 +1458,9 @@ pub fn settle(
                 // finished on its own keeps NULL, so "not capped" and "never
                 // measured" stay different facts in the table.
                 capped.filter(|flag| *flag).map(|_| 1i64),
+                // The same rule for the other fact: only a turn that really did
+                // wrap up writes a one, so NULL keeps meaning "not this".
+                wrapped_up.filter(|flag| *flag).map(|_| 1i64),
             ],
         )?;
         Ok(())
@@ -3651,6 +3668,16 @@ pub struct TurnOutcome {
     /// from a sentence. A capped turn still carries a usable [`Self::text`]: the
     /// forced answer or a summary of what ran.
     pub capped: bool,
+    /// Whether the engine took the tools away early on purpose and the model
+    /// wrote the answer itself.
+    ///
+    /// A different fact from [`Self::capped`], not a shade of it. `capped` says
+    /// the budget decided when the turn ended; `wrapped_up` says the turn saw the
+    /// budget coming and spent its last rounds answering instead of reaching for
+    /// one more tool. A turn that wrapped up and still produced no prose falls
+    /// back to the forced answer, and *that* turn is capped, because the answer
+    /// was forced rather than written.
+    pub wrapped_up: bool,
 }
 
 /// What happens to a call before it runs.
@@ -3738,11 +3765,19 @@ pub fn drive_tool_loop(
     // Whether the tool-free round has already been introduced. Pushed once, so a
     // steer arrives as the operator's own words rather than behind two notices.
     let mut budget_told = false;
+    // Whether the model has been told the budget is nearly gone. Separate from
+    // `budget_told` because it is a different sentence: the wrap-up is the last
+    // chance to write, and the spent notice is the fact that the tools are gone.
+    let mut wrap_told = false;
     // Whether the turn ended because the budget ran out rather than because the
     // model was finished. Reported, not inferred from the text. Every break below
     // assigns it, which is why it has no default: a third way out would have to
     // say what it means.
-    let capped: bool;
+    let mut capped: bool;
+    // Whether the tools were taken away early on purpose and the model answered
+    // with what it had. Assigned at every break too, for the same reason: a new
+    // way out has to decide which of the two facts it is.
+    let mut wrapped_up: bool;
 
     let mut text = loop {
         // The first boundary: nothing has been sent for this round yet, so a stop
@@ -3765,8 +3800,27 @@ pub fn drive_tool_loop(
         // its tools reaches for them anyway, and the markup it writes in that
         // state is not an answer: it is the tool call it could not make. That is
         // exactly how a long turn used to end on an empty bubble.
-        let tools_allowed = rounds < max_rounds;
-        if !tools_allowed && !budget_told {
+        // The lookahead. Two rounds before the budget ends, the turn stops
+        // exploring: the tools are taken away and the remaining rounds are spent
+        // getting a written answer out of what has already been found. A turn that
+        // only learns the budget is gone *after* it is gone has nothing left but
+        // the forced answer, which is the "max turns hit, I did not finish"
+        // complaint this is for.
+        //
+        // Never fires on a budget of one or two rounds. There is no room to look
+        // ahead in a turn with one round, and two rounds of wrapped-up prose is not
+        // better than one round with the tools the operator gave it. Those budgets
+        // behave exactly as they did before.
+        let wrapping = max_rounds > 2 && rounds >= max_rounds.saturating_sub(2);
+        let tools_allowed = rounds < max_rounds && !wrapping;
+        // One coherent sentence, not two. When the wrap-up fires the model is told
+        // to write; when the hard budget is spent and nothing was said yet it is
+        // told the tools are gone. A turn that was already told to wrap up does not
+        // then get the spent notice as well.
+        if wrapping && !wrap_told {
+            wrap_told = true;
+            messages.push(ChatMessage::text(ChatRole::User, WRAP_UP));
+        } else if !tools_allowed && !budget_told && !wrap_told {
             budget_told = true;
             messages.push(ChatMessage::text(ChatRole::User, BUDGET_SPENT));
         }
@@ -3848,8 +3902,11 @@ pub fn drive_tool_loop(
             }
             // A boundary that produced nothing usable still spent the budget, so
             // the turn is capped even though the model, not a stray call, is what
-            // left it empty.
-            capped = !tools_allowed;
+            // left it empty. A turn that was told to wrap up and did write is not
+            // capped: the answer is the model's own, arrived at early.
+            let said = !completion.text.trim().is_empty();
+            wrapped_up = wrap_told && said;
+            capped = !tools_allowed && !wrapped_up;
             break completion.text;
         }
 
@@ -3857,7 +3914,10 @@ pub fn drive_tool_loop(
         // left to run, so the loop ends with whatever it said. Whatever it said
         // may be nothing, which is why the turn does not end here.
         if !tools_allowed {
+            // Reaching for a tool it was told not to use is not an answer, so this
+            // turn is capped whichever notice it was given.
             capped = true;
+            wrapped_up = false;
             break completion.text;
         }
 
@@ -3974,6 +4034,11 @@ pub fn drive_tool_loop(
     // the last one had got to.
     if text.trim().is_empty() {
         text = capped_notice(&records, rounds, max_rounds);
+        // A summary of what ran is not an answer the model wrote, so a turn that
+        // wrapped up and then fell through here is capped. The tag says what
+        // happened rather than what was hoped for.
+        capped = true;
+        wrapped_up = false;
     }
 
     Ok(TurnOutcome {
@@ -3986,8 +4051,21 @@ pub fn drive_tool_loop(
         tools: records,
         context_tokens,
         capped,
+        wrapped_up,
     })
 }
+
+/// The instruction the lookahead round opens with.
+///
+/// Pushed two rounds before the budget ends, and only once. It has to do three
+/// things in one paragraph: say the budget is nearly gone so this reads as the
+/// last chance rather than a hint, say what to do with what has already been
+/// found, and say what not to do, because a model told only "the tools are gone"
+/// writes the call it could not make and calls that an answer.
+const WRAP_UP: &str = "Your tool budget for this turn is nearly spent and the tools are now \
+     withdrawn. Stop exploring and answer now, in plain prose, with no tool calls: what you \
+     found, what you changed, what is still unfinished, and the exact next step so the work can \
+     be picked up from this message.";
 
 /// The instruction the tool-free round opens with.
 ///
@@ -5274,6 +5352,7 @@ mod tests {
                 rounds: None,
                 context_tokens: Some(1_900),
                 capped: None,
+                wrapped_up: None,
             },
         )
         .unwrap();
@@ -5455,6 +5534,7 @@ mod tests {
                 client_message_id: None,
                 job_id: None,
                 capped: None,
+                wrapped_up: None,
                 quota: None,
             },
             Message {
@@ -5477,6 +5557,7 @@ mod tests {
                 client_message_id: None,
                 job_id: None,
                 capped: None,
+                wrapped_up: None,
                 quota: None,
             },
             Message {
@@ -5499,6 +5580,7 @@ mod tests {
                 client_message_id: None,
                 job_id: None,
                 capped: None,
+                wrapped_up: None,
                 quota: None,
             },
             Message {
@@ -5521,6 +5603,7 @@ mod tests {
                 client_message_id: None,
                 job_id: None,
                 capped: None,
+                wrapped_up: None,
                 quota: None,
             },
         ];
@@ -5568,6 +5651,7 @@ mod tests {
             client_message_id: None,
             job_id: None,
             capped: None,
+            wrapped_up: None,
             quota: None,
         }];
         let stats = stats(&transcript);
@@ -5607,6 +5691,7 @@ mod tests {
             client_message_id: None,
             job_id: None,
             capped: None,
+            wrapped_up: None,
             quota: None,
         }];
         let stats = stats(&transcript);
@@ -5640,6 +5725,7 @@ mod tests {
             Accounting {
                 rounds: Some(100),
                 capped: Some(true),
+                wrapped_up: Some(false),
                 ..Accounting::default()
             },
         )
@@ -5656,6 +5742,7 @@ mod tests {
             Accounting {
                 rounds: Some(6),
                 capped: Some(false),
+                wrapped_up: Some(false),
                 ..Accounting::default()
             },
         )
@@ -5951,14 +6038,21 @@ mod tests {
         )
         .expect("a turn");
 
+        // Two fewer tool rounds than the budget, on purpose. The lookahead takes
+        // the tools away two rounds early, so a turn that would have spent every
+        // round reaching for one spends its last two writing. This assertion used
+        // to read `MAX_TOOL_ROUNDS`, which was the cap in tool rounds before the
+        // lookahead existed; the cap is now the budget, and the tool rounds are
+        // the budget minus the wrap-up window.
         assert_eq!(
-            outcome.rounds, MAX_TOOL_ROUNDS,
-            "exactly the cap in tool rounds"
+            outcome.rounds,
+            MAX_TOOL_ROUNDS - 2,
+            "the wrap-up window is two rounds, so two rounds of tools are given up"
         );
         assert_eq!(
-            round,
-            MAX_TOOL_ROUNDS + 2,
-            "the tool-free round, then one last-resort answer round"
+            round, MAX_TOOL_ROUNDS,
+            "every round of the budget is still used: the two given up on tools are \
+             spent asking for prose instead"
         );
         assert_eq!(
             &tools_offered[round - 2..],
@@ -5966,10 +6060,10 @@ mod tests {
             "neither closing attempt may offer tools, so the turn has to answer"
         );
         assert!(
-            tools_offered[..MAX_TOOL_ROUNDS]
+            tools_offered[..MAX_TOOL_ROUNDS - 2]
                 .iter()
                 .all(|offered| *offered),
-            "every round before the cap offers them"
+            "every round before the wrap-up offers them"
         );
         assert!(outcome.capped, "the budget ended this turn, not the model");
         assert!(
@@ -6169,6 +6263,271 @@ mod tests {
         );
         assert!(outcome.text.contains("approval"), "{}", outcome.text);
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A model that calls a tool every round is what the lookahead exists for.
+    ///
+    /// The turn is given four rounds and asked to wrap up two before the end, so
+    /// the tools have to be gone on the third round and the model has to be told
+    /// why once.
+    #[test]
+    fn the_wrap_up_fires_two_rounds_before_the_budget_and_once_only() {
+        let root = scratch_workspace("wrapup");
+        std::fs::write(root.join("a.txt"), "alpha").expect("file");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::ReadOnly,
+        );
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "read_file",
+            serde_json::json!({"path": "a.txt"}),
+        )
+        .expect("a call");
+
+        let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
+        let mut tools_offered: Vec<bool> = Vec::new();
+        let outcome = drive_tool_loop(
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
+            },
+            vec![ChatMessage::text(ChatRole::User, "keep looking")],
+            &mut |_call| GateDecision::Run,
+            4,
+            None,
+            &mut |_part| {},
+            &mut || TurnSignal::Continue,
+            |messages, tools, _emit| {
+                seen.push(messages.to_vec());
+                tools_offered.push(tools);
+                Ok(completion_with_calls(vec![call.clone()], ""))
+            },
+        )
+        .expect("a turn");
+
+        assert_eq!(
+            &tools_offered[..4],
+            &[true, true, false, false],
+            "a budget of four wraps at round two, so the last two rounds are tool-free"
+        );
+        // The snapshots accumulate, so the last one is the whole history. One
+        // WRAP_UP in it means it was pushed once; a push per round would leave
+        // two, because the wrap-up covers two rounds.
+        let told: usize = seen
+            .last()
+            .expect("the provider was called")
+            .iter()
+            .filter(|message| message.content == WRAP_UP)
+            .count();
+        assert_eq!(told, 1, "the model is told once, not every round");
+        assert!(
+            outcome.capped,
+            "the model never wrote the answer it was asked for"
+        );
+        assert!(
+            !outcome.wrapped_up,
+            "a turn that produced no prose is capped, not wrapped up"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The same turn, but the model does what it was told.
+    #[test]
+    fn a_wrapped_up_turn_writes_its_own_answer_and_is_not_capped() {
+        let root = scratch_workspace("wrapup-answer");
+        std::fs::write(root.join("a.txt"), "alpha").expect("file");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::ReadOnly,
+        );
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "read_file",
+            serde_json::json!({"path": "a.txt"}),
+        )
+        .expect("a call");
+
+        let mut round = 0usize;
+        let outcome = drive_tool_loop(
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
+            },
+            vec![ChatMessage::text(ChatRole::User, "read it and tell me")],
+            &mut |_call| GateDecision::Run,
+            4,
+            None,
+            &mut |_part| {},
+            &mut || TurnSignal::Continue,
+            |_messages, tools, _emit| {
+                round += 1;
+                if tools {
+                    Ok(completion_with_calls(vec![call.clone()], ""))
+                } else {
+                    Ok(completion_with_calls(Vec::new(), "a.txt says alpha"))
+                }
+            },
+        )
+        .expect("a turn");
+
+        assert_eq!(round, 3, "two rounds of tools, then the wrapped-up answer");
+        assert_eq!(outcome.text, "a.txt says alpha");
+        assert!(
+            outcome.wrapped_up,
+            "the engine stopped it early and the model wrote the answer"
+        );
+        assert!(
+            !outcome.capped,
+            "the answer was written by the model, not forced by the budget"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A turn that finishes inside its budget is exactly what it was before.
+    #[test]
+    fn a_short_turn_is_neither_capped_nor_wrapped_up() {
+        let root = scratch_workspace("short-turn");
+        let outcome = drive_tool_loop(
+            &mut |_call: &core_domain::ToolCall,
+                  _chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
+                crate::tools::ToolResult::ok(serde_json::json!("unused"))
+            },
+            vec![ChatMessage::text(ChatRole::User, "say hi")],
+            &mut |_call| GateDecision::Run,
+            MAX_TOOL_ROUNDS,
+            None,
+            &mut |_part| {},
+            &mut || TurnSignal::Continue,
+            |_messages, _tools, _emit| Ok(completion_with_calls(Vec::new(), "hi")),
+        )
+        .expect("a turn");
+        assert_eq!(outcome.text, "hi");
+        assert_eq!(outcome.rounds, 0);
+        assert!(!outcome.capped);
+        assert!(!outcome.wrapped_up);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A turn that was told to wrap up and then wrote nothing is not wrapped up.
+    ///
+    /// The two facts have to stay apart at the last resort too: the engine did
+    /// stop it early, but the answer the operator reads is the summary of what
+    /// ran, not the model's own words, so the tag is `capped`. Marking it
+    /// `wrapped up` would credit the model with an answer it did not write.
+    #[test]
+    fn a_wrapped_up_turn_that_says_nothing_is_capped_with_the_last_resort() {
+        let root = scratch_workspace("wrapup-silent");
+        std::fs::write(root.join("a.txt"), "alpha").expect("file");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::ReadOnly,
+        );
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "read_file",
+            serde_json::json!({"path": "a.txt"}),
+        )
+        .expect("a call");
+
+        let outcome = drive_tool_loop(
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
+            },
+            vec![ChatMessage::text(ChatRole::User, "keep looking")],
+            &mut |_call| GateDecision::Run,
+            4,
+            None,
+            &mut |_part| {},
+            &mut || TurnSignal::Continue,
+            // Never a word of prose, not even when asked plainly: the tool-free
+            // round, the wrap-up round and the last-resort ask all come back as
+            // the call it was told it could not make.
+            |_messages, _tools, _emit| Ok(completion_with_calls(vec![call.clone()], "")),
+        )
+        .expect("a turn");
+
+        assert!(
+            outcome.text.to_lowercase().contains("budget ran out"),
+            "the last resort names what happened: {}",
+            outcome.text
+        );
+        assert!(
+            outcome.text.contains("read_file"),
+            "and names the work that ran, so the next turn knows where it got to: {}",
+            outcome.text
+        );
+        assert!(
+            outcome.capped,
+            "the answer was forced, so this turn is capped"
+        );
+        assert!(
+            !outcome.wrapped_up,
+            "the model wrote none of that answer, so it did not wrap the turn up"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A budget of one has no room to look ahead, so it behaves as it always did.
+    #[test]
+    fn a_one_round_budget_never_wraps_up() {
+        let root = scratch_workspace("one-round");
+        std::fs::write(root.join("a.txt"), "alpha").expect("file");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::ReadOnly,
+        );
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "read_file",
+            serde_json::json!({"path": "a.txt"}),
+        )
+        .expect("a call");
+
+        let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
+        let outcome = drive_tool_loop(
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
+            },
+            vec![ChatMessage::text(ChatRole::User, "one round only")],
+            &mut |_call| GateDecision::Run,
+            1,
+            None,
+            &mut |_part| {},
+            &mut || TurnSignal::Continue,
+            |messages, _tools, _emit| {
+                seen.push(messages.to_vec());
+                Ok(completion_with_calls(vec![call.clone()], ""))
+            },
+        )
+        .expect("a turn");
+        assert!(
+            seen.iter()
+                .all(|messages| messages.iter().all(|message| message.content != WRAP_UP)),
+            "there is nowhere to look ahead to in a one-round budget"
+        );
+        assert!(outcome.capped, "the budget still ends the turn");
+        assert!(!outcome.wrapped_up);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

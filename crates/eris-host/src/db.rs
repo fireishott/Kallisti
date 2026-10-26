@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 23;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -182,6 +182,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 22,
         name: "0022_answer_capped",
         sql: MIGRATION_0022,
+    },
+    Migration {
+        version: 23,
+        name: "0023_wrapped_up",
+        sql: MIGRATION_0023,
     },
 ];
 
@@ -760,6 +765,18 @@ ALTER TABLE chat_messages ADD COLUMN capped INTEGER
     CHECK (capped IS NULL OR capped IN (0, 1));
 ";
 
+/// Migration 0023: whether the engine stopped the turn early on purpose, so the
+/// transcript can say `wrapped up` rather than `capped`.
+///
+/// A separate column from `capped` because they are separate facts: `capped` is
+/// the budget ending the turn and the answer being forced, `wrapped_up` is the
+/// engine taking the tools away two rounds early and the model writing the answer
+/// itself. A row that finished on its own keeps NULL in both.
+const MIGRATION_0023: &str = r"
+ALTER TABLE chat_messages ADD COLUMN wrapped_up INTEGER
+    CHECK (wrapped_up IS NULL OR wrapped_up IN (0, 1));
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 
@@ -1157,6 +1174,63 @@ fn migrate(conn: &mut Connection) -> Result<(), DbError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Migration 0023 adds the other half of the capped flag, and re-running the
+    /// migration set changes nothing.
+    ///
+    /// The column is its own fact rather than a second meaning packed into
+    /// `capped`: a turn the budget ended and a turn the engine stopped early can
+    /// both be true of a conversation, and neither is the other.
+    #[test]
+    fn migration_0023_adds_wrapped_up_and_re_running_it_changes_nothing() {
+        let db = Db::open_in_memory().expect("a database");
+        assert_eq!(db.schema_version().expect("version"), 23);
+        assert!(
+            db.column_names("chat_messages")
+                .expect("columns")
+                .iter()
+                .any(|name| name == "wrapped_up"),
+            "the answer row can record that the engine wrapped the turn up"
+        );
+        assert!(
+            db.column_names("chat_messages")
+                .expect("columns")
+                .iter()
+                .any(|name| name == "capped"),
+            "and the capped flag it sits beside is untouched"
+        );
+        assert_eq!(
+            db.applied_migration_count().expect("count"),
+            23,
+            "one row per migration, and the new one is the last"
+        );
+
+        // The second half of the claim, and the one that matters on a real host:
+        // a file that already has 0023 in it opens again without a second row
+        // and without the ALTER failing on a column that is already there. An
+        // in-memory database cannot answer this, because closing it throws the
+        // schema away, so this is a file in a temporary directory.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("upgrade.db");
+        let first = Db::open(&path).expect("first open");
+        let applied = first.applied_migration_count().expect("count");
+        assert_eq!(applied, 23, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 23);
+        drop(first);
+        let second = Db::open(&path).expect("second open must not fail");
+        assert_eq!(
+            second.applied_migration_count().expect("count"),
+            applied,
+            "re-running migrations must not add a version row"
+        );
+        assert!(
+            second
+                .column_names("chat_messages")
+                .expect("columns")
+                .iter()
+                .any(|name| name == "wrapped_up")
+        );
+    }
 
     #[test]
     fn setup_state_round_trips_and_rejects_junk() {

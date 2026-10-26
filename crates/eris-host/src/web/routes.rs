@@ -5020,6 +5020,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                 turn,
                 rounds: message.rounds,
                 capped: message.capped.unwrap_or(false),
+                wrapped_up: message.wrapped_up.unwrap_or(false),
                 quota: show_quota
                     .then(|| message.quota.as_ref().map(crate::web::quota::Quota::line))
                     .flatten(),
@@ -7955,6 +7956,10 @@ fn spawn_turn(
                     // the page and a reload shows a six thousand word answer
                     // under "100 rounds" with nothing saying it was cut off.
                     capped: Some(turn.capped),
+                    // The other fact, and a different one: the engine stopped
+                    // this turn early and the model wrote the answer. A row can
+                    // carry neither, one, or the other, never both.
+                    wrapped_up: Some(turn.wrapped_up),
                 };
                 let raw = serde_json::to_value(usage).ok();
                 let _ = chat::settle(
