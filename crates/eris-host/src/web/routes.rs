@@ -6660,14 +6660,33 @@ fn multipart_failure(context: &str, error: impl std::fmt::Display) -> FormError 
             Some("file"),
             "upload_too_large",
             format!(
-                "that message is larger than the {} bytes this daemon accepts in one send;                  attach fewer or smaller files",
-                CHAT_BODY_BYTES
+                "that message is larger than the {} this daemon accepts in one send;                    attach fewer or smaller files",
+                chat::human_bytes(CHAT_BODY_BYTES as u64)
             ),
         );
     }
     FormError::new(None, "upload_unreadable", format!("{context}: {text}"))
 }
 
+/// One file part, held in memory until the whole body has been read.
+///
+/// A part is written to the workspace only once every part in the body has
+/// passed its cap. The first version wrote each file as it arrived and refused
+/// the oversized one at the end, which left the files before it on disk and in
+/// `chat_attachments` with no message to belong to - and left the operator
+/// looking at a typed message that was never recorded anywhere. Bytes in memory
+/// cost nothing to discard; a row and a file do.
+struct PendingFile {
+    /// The name it arrived with, before [`chat::safe_file_name`] touches it.
+    original: String,
+    bytes: Vec<u8>,
+}
+
+/// The whole body, read: the text fields and every file part that passed a cap.
+///
+/// Errors here mean nothing was written: no file, no row, no audit line. The
+/// refusal sentences name the file that failed and the size a person reads, so
+/// the operator can act on them.
 async fn read_multipart_chat(
     state: AppState,
     request: axum::extract::Request,
@@ -6683,7 +6702,7 @@ async fn read_multipart_chat(
         .map_err(|error| multipart_failure("the form did not parse as multipart", error))?;
 
     let mut fields = std::collections::BTreeMap::new();
-    let mut files: Vec<chat::Attachment> = Vec::new();
+    let mut pending: Vec<PendingFile> = Vec::new();
     let mut total_bytes = 0usize;
     while let Some(mut field) = multipart
         .next_field()
@@ -6701,7 +6720,7 @@ async fn read_multipart_chat(
         }
         // The cap is checked before the bytes are read, so a ninth file is
         // refused without first being written to memory.
-        if files.len() >= chat::MAX_ATTACHMENTS {
+        if pending.len() >= chat::MAX_ATTACHMENTS {
             return Err(FormError::new(
                 Some("file"),
                 "too_many_attachments",
@@ -6736,8 +6755,9 @@ async fn read_multipart_chat(
                     Some("file"),
                     "upload_too_large",
                     format!(
-                        "an attachment must be under {} bytes",
-                        chat::MAX_ATTACHMENT_BYTES
+                        "{} is larger than the {} one attachment may be; send it in a message of its own or shrink it",
+                        original.trim(),
+                        chat::human_bytes(chat::MAX_ATTACHMENT_BYTES as u64)
                     ),
                 ));
             }
@@ -6746,8 +6766,9 @@ async fn read_multipart_chat(
                     Some("file"),
                     "upload_too_large",
                     format!(
-                        "the attachments on one message must total under {} bytes",
-                        chat::MAX_ATTACHMENT_TOTAL_BYTES
+                        "{} would take this message past the {} all its attachments together may be",
+                        original.trim(),
+                        chat::human_bytes(chat::MAX_ATTACHMENT_TOTAL_BYTES as u64)
                     ),
                 ));
             }
@@ -6757,25 +6778,36 @@ async fn read_multipart_chat(
             continue;
         }
         total_bytes += bytes.len();
-        let safe = chat::safe_file_name(&original);
-        let conversation = chat::resolve_conversation(
-            state.engine.db(),
-            Some(field_value(&fields, "conversation")),
+        pending.push(PendingFile { original, bytes });
+    }
+
+    // Every part passed. Now, and only now, the files land: a turn that is
+    // refused from here on has nothing on disk to clean up, and a file that
+    // cannot be written takes its own row with it.
+    let mut files: Vec<chat::Attachment> = Vec::new();
+    if pending.is_empty() {
+        return Ok((fields, files));
+    }
+    let conversation = chat::resolve_conversation(
+        state.engine.db(),
+        Some(field_value(&fields, "conversation")),
+    )
+    .map_err(|error| FormError::new(None, "chat_unreadable", error.to_string()))?;
+    let directory = state
+        .engine
+        .workspace_path()
+        .map_err(|error| FormError::new(None, "workspace_unreadable", error.to_string()))?
+        .join("uploads")
+        .join(&conversation);
+    std::fs::create_dir_all(&directory).map_err(|error| {
+        FormError::new(
+            None,
+            "upload_write_failed",
+            format!("cannot create {}: {error}", directory.display()),
         )
-        .map_err(|error| FormError::new(None, "chat_unreadable", error.to_string()))?;
-        let directory = state
-            .engine
-            .workspace_path()
-            .map_err(|error| FormError::new(None, "workspace_unreadable", error.to_string()))?
-            .join("uploads")
-            .join(&conversation);
-        std::fs::create_dir_all(&directory).map_err(|error| {
-            FormError::new(
-                None,
-                "upload_write_failed",
-                format!("cannot create {}: {error}", directory.display()),
-            )
-        })?;
+    })?;
+    for PendingFile { original, bytes } in pending {
+        let safe = chat::safe_file_name(&original);
         let id = uuid::Uuid::now_v7().to_string();
         let path = directory.join(format!("{id}-{safe}"));
         write_atomically(&path, &bytes).map_err(|error| {

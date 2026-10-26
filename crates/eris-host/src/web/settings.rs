@@ -175,7 +175,13 @@ fn the_settings_page_renders_current_values() {
 
     // No secret value is rendered, and the key field is a reference, not a
     // masked value: there is nothing to mask, because nothing is stored.
-    assert!(!lowered.contains("sk-"), "no key value is rendered");
+    // Checked as a rendered *value* rather than as the bare fragment `sk-`: the
+    // inlined stylesheet is part of this page, and `mask-image` contains those
+    // three characters without carrying a key of any kind.
+    assert!(
+        !lowered.contains(r#"value="sk-"#),
+        "no key value is rendered"
+    );
     assert!(
         !lowered.contains(r#"type="password""#),
         "the settings page asks for no secret"

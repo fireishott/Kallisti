@@ -1193,13 +1193,19 @@ pre.code {
 
 /* A bubble is sized by the screen, not by its own text: every bubble takes the
    same share of the window, so a three-word answer and a table sit in one column
-   and the conversation reads as a column instead of a ragged stack. The floor
-   keeps a readable measure in a narrow split view; the ceiling stops a paragraph
-   becoming one 130-character line on a desk display. */
+   and the conversation reads as a column instead of a ragged stack. The ceiling
+   stops a paragraph becoming one 130-character line on a desk display.
+   There is no floor. A `clamp` with a `22rem` minimum was a floor on the bubble
+   and therefore on the column: on a 393 CSS px phone `22rem` is 352px, which beat
+   the `78vw` it was supposed to sit between, so every bubble was 90% of the screen
+   wide and the sizing rule the phone breakpoint restates could not take effect.
+   A percentage of the column is already readable at every width; a rem floor is
+   only ever a wider window's opinion. */
 .msg {
   display: flex;
   flex-direction: column;
-  width: min(100%, clamp(22rem, 78vw, 52rem));
+  width: min(100%, 78%);
+  max-width: 52rem;
   min-width: 0;
 }
 
@@ -1214,7 +1220,8 @@ pre.code {
    child, so asking only whether one exists would leave every streaming answer
    narrow until it happened to think. */
 .msg.assistant:not(:has(.think:not([hidden]))) {
-  width: min(100%, clamp(22rem, 90vw, 64rem));
+  width: min(100%, 90%);
+  max-width: 64rem;
 }
 .msg.user { margin-left: auto; align-items: flex-end; }
 .msg.assistant { margin-right: auto; align-items: flex-start; }
@@ -1250,6 +1257,27 @@ pre.code {
   cursor: pointer;
 }
 .msg .reply-cycle:hover { color: var(--text); border-color: var(--line-strong); }
+/* The second control in the same row: the fold cycle and the window. It sits
+   after the cycle, which is the one that carries `margin-left: auto`, so the pair
+   stays flush right and the row still costs the transcript no line. */
+.msg .reply-max {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.msg .reply-max:hover { color: var(--text); border-color: var(--line-strong); }
+.msg .reply-max:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+}
 .msg .reply-cycle:focus-visible {
   outline: 2px solid var(--platinum);
   outline-offset: 2px;
@@ -1278,6 +1306,39 @@ pre.code {
   overflow: hidden;
   mask-image: linear-gradient(to bottom, var(--black) 62%, transparent 100%);
 }
+/* The whole reply in the whole window. Not a fourth fold size: the reply leaves
+   the column and takes the viewport, which is what a table, a long answer or a
+   diff needs before it can be read at all. It is one attribute and one rule, so
+   the answer stays in the document behind the window and a reload forgets it,
+   the same way a reload forgets nothing else the operator has not stored.
+   `dvh` is the unit that follows a mobile URL bar; the `vh` line above it is the
+   fallback for a browser that does not know the newer one. */
+.msg.assistant[data-reply-max] {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  width: auto;
+  max-width: none;
+  max-height: 100vh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 18px 18px calc(18px + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg);
+}
+.msg.assistant[data-reply-max] .bubble {
+  max-height: none;
+  max-width: 92ch;
+  width: 100%;
+  margin: 0 auto;
+  overflow: visible;
+  /* The fade belongs to the collapsed state, and a window is never collapsed. */
+  mask-image: none;
+}
+/* A reply drawn in the window keeps the preview line out of it: minimizing is
+   what the fold control is for, and the two would contradict each other here. */
+.msg.assistant[data-reply-max] .reply-peek { display: none; }
 .msg .bubble {
   padding: 13px 16px;
   border-radius: 14px 14px 14px 5px;
@@ -2350,7 +2411,8 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
      column is narrower, and the gutter it leaves is what makes the turn read as
      a message. The user's own bubbles take the same share, so the two sides of a
      conversation still sit in one column and not a ragged stack. */
-  .msg { width: min(100%, 88%); }
+  .msg { width: min(100%, 88%); max-width: none; }
+  .msg.assistant:not(:has(.think:not([hidden]))) { width: min(100%, 94%); max-width: none; }
   /* A pairing code at desktop scale would need a desktop-width screen. It drops
      to a size that fits a phone and wraps instead of pushing the card wide. */
   .pairing-code { font-size: 17px; letter-spacing: 0.12em; padding: 12px 14px; }
@@ -2542,16 +2604,30 @@ mod tests {
             "the transcript has one track that cannot be widened by its contents"
         );
         assert!(
-            rule(".msg").contains("width: min(100%, clamp(22rem, 78vw, 52rem))"),
-            "a bubble is sized by the screen, up to a readable cap"
+            rule(".msg").contains("width: min(100%, 78%)"),
+            "a bubble is sized by the screen, as a share of the column"
+        );
+        assert!(
+            rule(".msg").contains("max-width: 52rem"),
+            "the readable cap is a ceiling on that share, not a floor under it"
+        );
+        assert!(
+            !rule(".msg").contains("clamp("),
+            "a bubble carries no floor of its own: a rem minimum is wider than a \
+             phone's whole column, so it would win at exactly the size the phone \
+             breakpoint exists for"
         );
         // A reply with no thinking bubble takes the width that bubble was holding
         // open. The selector is stated here rather than eyeballed: `:has` is what
         // makes it depend on what the answer actually rendered.
         assert!(
             rule(".msg.assistant:not(:has(.think:not([hidden])))")
-                .contains("width: min(100%, clamp(22rem, 90vw, 64rem))"),
+                .contains("width: min(100%, 90%)"),
             "an answer with nothing above it is wider than one with a think bubble"
+        );
+        assert!(
+            rule(".msg.assistant:not(:has(.think:not([hidden])))").contains("max-width: 64rem"),
+            "and its cap moves with it, as a ceiling only"
         );
         assert!(
             !rule(".msg.assistant:not(:has(.think:not([hidden])))").contains("52rem"),
@@ -2674,12 +2750,89 @@ mod tests {
     fn a_phone_sizes_a_bubble_below_the_full_column() {
         let phone = phone_block();
         assert!(
-            phone.contains(".msg { width: min(100%, 88%); }"),
+            phone.contains(".msg { width: min(100%, 88%); max-width: none; }"),
             "a phone bubble keeps a share of the column, not all of it"
+        );
+        assert!(
+            phone.contains(
+                ".msg.assistant:not(:has(.think:not([hidden]))) { width: min(100%, 94%); max-width: none; }"
+            ),
+            "and an answer with nothing above it keeps its own, wider share"
         );
         assert!(
             !phone.contains(".msg { width: 100%"),
             "a phone bubble is never handed the whole column"
+        );
+        // The share only decides anything if no ceiling from the desktop rule is
+        // still standing: a `max-width` of 52rem on a 393px screen would clamp
+        // the bubble straight back to the whole column it was measured against.
+        assert!(
+            !phone.contains("max-width: 52rem") && !phone.contains("max-width: 64rem"),
+            "the desktop ceilings are released on a phone"
+        );
+    }
+
+    /// The whole reply in the whole window is a real surface, not a wider bubble.
+    ///
+    /// It is one attribute and one rule: the reply leaves the column and takes
+    /// the viewport, which is the thing the fold cycle was being asked to do.
+    /// `dvh` follows a mobile URL bar, and the `vh` line above it is the fallback
+    /// for a browser that does not know the newer unit.
+    #[test]
+    fn a_reply_can_take_the_whole_window() {
+        let window = rule(".msg.assistant[data-reply-max]");
+        assert!(
+            window.contains("position: fixed") && window.contains("inset: 0"),
+            "the window is the viewport, not the column: {window}"
+        );
+        assert!(
+            window.contains("height") || window.contains("max-height: 100vh"),
+            "the window states a height: {window}"
+        );
+        assert!(
+            window.contains("max-height: 100dvh"),
+            "and the dynamic unit follows a mobile URL bar: {window}"
+        );
+        assert!(
+            window.contains("overflow-y: auto"),
+            "a long answer scrolls inside the window rather than off the screen: {window}"
+        );
+        assert!(
+            window.contains("z-index: 60"),
+            "the window sits above the rail and the composer: {window}"
+        );
+        let bubble = rule(".msg.assistant[data-reply-max] .bubble");
+        assert!(
+            bubble.contains("max-height: none"),
+            "a window is never clipped: {bubble}"
+        );
+        assert!(
+            bubble.contains("mask-image: none"),
+            "the collapsed fade is not drawn in a window: {bubble}"
+        );
+        assert!(
+            bubble.contains("max-width: 92ch"),
+            "the answer keeps a readable measure inside the window: {bubble}"
+        );
+    }
+
+    /// The window control is a peer of the fold control, in the row that already
+    /// exists, and it is a toggle rather than a fourth state in the cycle.
+    #[test]
+    fn the_window_control_sits_beside_the_fold_control() {
+        let max = rule(".msg .reply-max");
+        assert!(
+            max.contains("border-radius: 6px") && max.contains("font-size: 10px"),
+            "the two controls speak one language: {max}"
+        );
+        assert!(
+            rule(".msg .reply-max:focus-visible").contains("outline: 2px solid var(--platinum)"),
+            "the window control keeps a visible focus ring"
+        );
+        // One `margin-left: auto` in the row, on the control that comes first.
+        assert!(
+            !max.contains("margin-left"),
+            "the cycle control already pushes the pair to the end: {max}"
         );
     }
 

@@ -4818,13 +4818,20 @@ const REPLY_PEEK_CHARS: usize = 60;
 /// The preview is the answer's own text, cut. It is never a summary and never a
 /// model's paraphrase: a folded reply that says something the answer does not say
 /// would be worse than no preview at all, because the operator would trust it.
-/// Fence markers are skipped, since a line of backticks describes nothing.
+/// A fenced block is skipped whole, not just its markers: the contents of one are
+/// not what the answer says, so quoting them in a one-line preview would describe
+/// the formatting instead of the reply. The closing fence turns the skipping off.
 #[must_use]
 pub fn reply_peek(body: &str) -> String {
     let mut flat = String::new();
+    let mut in_fence = false;
     for line in body.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with("```") {
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || line.is_empty() {
             continue;
         }
         if !flat.is_empty() {
@@ -4896,7 +4903,9 @@ pub fn chat_page(view: &ChatView) -> Markup {
             data-assistant=(view.assistant_name.clone())
             data-stream=(if view.streaming { "on" } else { "off" })
             data-tool-log=(if view.show_tool_log { view.tool_log_mode.clone() } else { "off".to_owned() })
-            data-reply=(view.reply_state.clone()) {
+            data-reply=(view.reply_state.clone())
+            data-file-max=(crate::web::chat::MAX_ATTACHMENT_BYTES)
+            data-file-total=(crate::web::chat::MAX_ATTACHMENT_TOTAL_BYTES) {
         (alert_region(view.error.as_ref(), None))
         @if !view.messages.is_empty() {
             div .replyctl hidden role="group" aria-label="Reply size controls" {
@@ -4929,6 +4938,17 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                 aria-label=(reply_next_label(reply))
                                 aria-expanded=(if reply == "minimized" { "false" } else { "true" }) {
                                 (reply_next_word(reply))
+                            }
+                            // The second control is not a fourth fold size: it
+                            // is the whole reply in the whole window, which is
+                            // what "expand this" meant to ask for. It is a
+                            // toggle, so it says the state it is in and the
+                            // press takes it back out.
+                            button type="button" .reply-max
+                                data-reply-max
+                                aria-label="Show this reply in the whole window"
+                                aria-expanded="false" {
+                                "Maximize"
                             }
                         }
                     }
@@ -5441,6 +5461,43 @@ const CHAT_JS: &str = r##"(function () {
     return "Expand";
   }
 
+  // The page carries no exclamation mark outside its doctype, and that rule runs
+  // through the one inline script as well: a strict inequality was thirteen
+  // marks in a page whose house style forbids one. `present` answers the same
+  // question a null comparison did, without the mark, and it also covers
+  // `undefined` from a query that found nothing.
+  function present(value) {
+    return (value === null || value === undefined) === false;
+  }
+
+  // The window control, which is the other thing "expand" can mean: not more of
+  // the answer drawn in the column, but the answer drawn in the whole window.
+  // It is one attribute on the reply and the stylesheet does the rest, so a
+  // find in the page still finds the words and the transcript behind the window
+  // keeps its place.
+  function paintReplyMax(article, on) {
+    if (present(article) === false) { return; }
+    if (on) {
+      article.setAttribute("data-reply-max", "on");
+    } else {
+      article.removeAttribute("data-reply-max");
+    }
+    var button = article.querySelector("[data-reply-max]");
+    if (present(button)) {
+      button.textContent = on ? "Restore" : "Maximize";
+      button.setAttribute(
+        "aria-label",
+        on ? "Put this reply back in the conversation" : "Show this reply in the whole window"
+      );
+      button.setAttribute("aria-expanded", on ? "true" : "false");
+    }
+    if (on) { article.scrollTop = 0; }
+  }
+
+  function replyMaxOpen() {
+    return document.querySelector(".msg.assistant[data-reply-max]");
+  }
+
   function replyLabel(state) {
     if (state === "expanded") { return "Collapse this reply to its first few lines"; }
     if (state === "collapsed") { return "Minimize this reply to one summary line"; }
@@ -5458,17 +5515,17 @@ const CHAT_JS: &str = r##"(function () {
   }
 
   function paintReply(article, state) {
-    if (article === null) { return state; }
+    if (present(article) === false) { return state; }
     article.setAttribute("data-reply-state", state);
     var button = article.querySelector("[data-reply-cycle]");
-    if (button !== null) {
+    if (present(button)) {
       button.textContent = replyWord(state);
       button.setAttribute("aria-label", replyLabel(state));
       button.setAttribute("aria-expanded", state === "minimized" ? "false" : "true");
     }
     if (state === "minimized") {
       var peek = article.querySelector(".reply-peek");
-      if (peek !== null) { peek.textContent = replyPeekText(article); }
+      if (present(peek)) { peek.textContent = replyPeekText(article); }
     }
     return state;
   }
@@ -5477,10 +5534,10 @@ const CHAT_JS: &str = r##"(function () {
   // the Settings default. Called from the one place a reply becomes settled, so a
   // live turn and a reloaded transcript agree about how much to draw.
   function settleReply(article) {
-    if (article === null) { return; }
+    if (present(article) === false) { return; }
     if (article.classList.contains("pending")) { return; }
-    if (article.querySelector(".asked:not(.settled)") !== null) { return; }
-    if (article.querySelector(".bubble.failed") !== null) { return; }
+    if (present(article.querySelector(".asked:not(.settled)"))) { return; }
+    if (present(article.querySelector(".bubble.failed"))) { return; }
     paintReply(article, rememberedReply(article) || replyDefault());
   }
 
@@ -5488,13 +5545,13 @@ const CHAT_JS: &str = r##"(function () {
     var settledReplies = thread.querySelectorAll(".msg.assistant");
     for (var replyIndex = 0; replyIndex < settledReplies.length; replyIndex += 1) {
       var remembered = rememberedReply(settledReplies[replyIndex]);
-      if (remembered !== null) { paintReply(settledReplies[replyIndex], remembered); }
+      if (present(remembered)) { paintReply(settledReplies[replyIndex], remembered); }
     }
     // The conversation's own controls, revealed only where a script can act on
     // them. A transcript outlives the provider that wrote it, so this sits above
     // the composer guard below with the run log's controls.
     var replyBar = document.querySelector(".replyctl");
-    if (replyBar !== null) { replyBar.hidden = false; }
+    if (present(replyBar)) { replyBar.hidden = false; }
 
     thread.addEventListener("click", function (event) {
       var cycle = event.target.closest("[data-reply-cycle]");
@@ -5507,6 +5564,34 @@ const CHAT_JS: &str = r##"(function () {
       var next = nextReply(article.getAttribute("data-reply-state") || "expanded");
       paintReply(article, next);
       rememberReply(article, next);
+    });
+
+    thread.addEventListener("click", function (event) {
+      var control = event.target.closest("[data-reply-max]");
+      if (control === null) { return; }
+      event.preventDefault();
+      event.stopPropagation();
+      var article = control.closest(".msg.assistant");
+      if (article === null) { return; }
+      // One window at a time: a second Maximize takes the first one back out
+      // rather than stacking a second full-window reply under the first.
+      var open = replyMaxOpen();
+      if (present(open) && (open === article) === false) { paintReplyMax(open, false); }
+      paintReplyMax(article, article.hasAttribute("data-reply-max") === false);
+    });
+
+    // Escape closes the window, which is the one control every full-window
+    // surface owes the operator.
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        var open = replyMaxOpen();
+        if (present(open)) {
+          event.preventDefault();
+          paintReplyMax(open, false);
+          var control = open.querySelector("[data-reply-max]");
+          if (present(control)) { control.focus(); }
+        }
+      }
     });
   }
 
@@ -6055,6 +6140,14 @@ const CHAT_JS: &str = r##"(function () {
       replyButton.setAttribute("aria-label", "Collapse this reply to its first few lines");
       replyButton.setAttribute("aria-expanded", "true");
       label.appendChild(replyButton);
+      var maxButton = document.createElement("button");
+      maxButton.type = "button";
+      maxButton.className = "reply-max";
+      maxButton.setAttribute("data-reply-max", "");
+      maxButton.textContent = "Maximize";
+      maxButton.setAttribute("aria-label", "Show this reply in the whole window");
+      maxButton.setAttribute("aria-expanded", "false");
+      label.appendChild(maxButton);
       replyPeek = document.createElement("p");
       replyPeek.className = "reply-peek";
     }
@@ -6316,7 +6409,7 @@ const CHAT_JS: &str = r##"(function () {
     var meta = document.createElement("div");
     meta.className = "meta";
     article.appendChild(label);
-    if (replyPeek !== null) { article.appendChild(replyPeek); }
+    if (present(replyPeek)) { article.appendChild(replyPeek); }
     article.appendChild(think);
     article.appendChild(exec);
     article.appendChild(bubble);
@@ -6627,6 +6720,18 @@ const CHAT_JS: &str = r##"(function () {
   // mis-picked file is one click to remove rather than a reload.
   var queue = [];
   var LIMIT = 8;
+  // The daemon's own caps, read off the shell rather than guessed: a file it
+  // will refuse should be refused here, where the operator still has the words
+  // and the picker in front of them, and where nothing has been sent at all.
+  function shellCap(name, fallback) {
+    var shell = document.querySelector(".chat-shell");
+    if (shell === null) { return fallback; }
+    var raw = shell.getAttribute(name);
+    var value = raw === null ? NaN : parseInt(raw, 10);
+    return isNaN(value) || value <= 0 ? fallback : value;
+  }
+  var FILE_MAX = shellCap("data-file-max", 26214400);
+  var FILE_TOTAL = shellCap("data-file-total", 67108864);
   var queueBox = document.getElementById("attach-queue");
   // One object URL per picture, reused across renders and revoked when the chip
   // goes, so a preview costs a decoded thumbnail rather than a second copy of
@@ -6875,8 +6980,19 @@ const CHAT_JS: &str = r##"(function () {
     paintSend();
   }
 
+  function queueBytes() {
+    var total = 0;
+    queue.forEach(function (file) { total += file.size; });
+    return total;
+  }
+
+  // A file the daemon would refuse is refused here instead, by name and by the
+  // size a person reads. The alternative is a send that fails after the operator
+  // has typed a message around it.
   function addFiles(list) {
     var refused = 0;
+    var tooBig = "";
+    var overTotal = "";
     for (var index = 0; index < list.length; index += 1) {
       var file = list[index];
       if (queue.length >= LIMIT) { refused += 1; continue; }
@@ -6884,13 +7000,29 @@ const CHAT_JS: &str = r##"(function () {
         return existing.name === file.name && existing.size === file.size;
       });
       if (duplicate) { continue; }
+      if (file.size > FILE_MAX) {
+        tooBig = file.name + " is " + humanSize(file.size) + ", and one file may be "
+          + humanSize(FILE_MAX);
+        continue;
+      }
+      if (queueBytes() + file.size > FILE_TOTAL) {
+        overTotal = "that would take the message past " + humanSize(FILE_TOTAL)
+          + ", which is all the files in one message together";
+        continue;
+      }
       queue.push(file);
     }
     renderQueue();
     if (status) {
-      status.textContent = refused > 0
-        ? "at most " + LIMIT + " files per message"
-        : "";
+      if (tooBig) {
+        status.textContent = tooBig;
+      } else if (overTotal) {
+        status.textContent = overTotal;
+      } else if (refused > 0) {
+        status.textContent = "at most " + LIMIT + " files per message";
+      } else {
+        status.textContent = "";
+      }
     }
   }
 
@@ -7139,11 +7271,17 @@ const CHAT_JS: &str = r##"(function () {
           if (parsed && parsed.message) { problem = parsed.message; }
         } catch (parseError) {
           if (response.status === 413) {
-            problem = "that message is too large for the daemon; attach smaller files";
+            problem = "that message is larger than the daemon accepts in one send; attach smaller files";
           }
         }
         var refusalError = new Error(problem);
         refusalError.fromServer = true;
+        // The words are the operator's, not the daemon's: a refused send hands
+        // them back rather than leaving a bubble on the page for a message that
+        // was never recorded. The files need no handling - the queue is only
+        // emptied once the daemon has accepted the body, so it is still exactly
+        // as the operator left it.
+        refusalError.keepWords = text;
         throw refusalError;
       }
       queue = [];
@@ -7249,9 +7387,19 @@ const CHAT_JS: &str = r##"(function () {
       if (controller && controller.signal.aborted) {
         target.text.textContent = answer + " [stopped]";
       } else if (error && error.fromServer) {
-        // The daemon answered and refused. Its sentence is the useful one.
-        target.bubble.className = "bubble failed";
-        target.text.textContent = error.message;
+        // The daemon answered and refused. Its sentence is the useful one, and
+        // it goes where the operator is already looking rather than into a
+        // reply bubble that claims a turn happened.
+        controller = null;
+        target.article.remove();
+        userLine.remove();
+        if (typeof error.keepWords === "string") { box.value = error.keepWords; }
+        setBusy(false);
+        if (status) { status.textContent = error.message; }
+        renderQueue();
+        paintSend();
+        box.focus();
+        return;
       } else {
         // A dropped stream is not a failed turn. The daemon keeps working after
         // the browser lets go, so the answer is very likely on its way to the

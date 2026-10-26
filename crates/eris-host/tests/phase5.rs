@@ -16,7 +16,17 @@ use eris_host::db::{Db, TABLES};
 use eris_host::error::REQUEST_ID_HEADER;
 use tower::ServiceExt;
 
-const HEALTHZ_EXACT: &str = r#"{"status":"ok","version":"1.4.8","state":"setup","db":"ok"}"#;
+/// The exact body `/healthz` answers, built from the version the crate reports.
+///
+/// This was a literal, and it said `1.4.8` while `Cargo.toml` said `1.4.9`, so
+/// the test that exists to pin the wire order failed on a version that had
+/// already shipped. What the test is for is the shape: exact keys, wire order,
+/// no trailing prose. The version is checked by being the thing that fills it.
+fn healthz_exact() -> String {
+    format!(
+        r#"{{"status":"ok","version":"{VERSION}","state":"setup","db":"ok"}}"#
+    )
+}
 
 /// Send one request through the router and return status, body text and headers.
 async fn send(
@@ -203,7 +213,8 @@ async fn healthz_returns_exactly_the_documented_body() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        body, HEALTHZ_EXACT,
+        body,
+        healthz_exact(),
         "the health body is exact: no trailing prose, keys in wire order"
     );
     assert_eq!(
@@ -220,8 +231,8 @@ async fn healthz_returns_exactly_the_documented_body() {
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("healthz is json");
     assert_eq!(parsed["state"], "setup");
     assert_eq!(parsed["db"], "ok");
-    assert_eq!(parsed["version"], "1.4.8");
-    assert_eq!(VERSION, "1.4.8");
+    assert_eq!(parsed["version"], VERSION);
+    assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
 }
 
 #[tokio::test]
@@ -394,6 +405,6 @@ async fn the_served_socket_answers_healthz_with_the_exact_body() {
     let (status, body) = http_get_once(addr, ROUTE_HEALTHZ).await;
 
     assert_eq!(status, 200);
-    assert_eq!(body, HEALTHZ_EXACT);
+    assert_eq!(body, healthz_exact());
     server.abort();
 }

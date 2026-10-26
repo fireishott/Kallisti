@@ -482,6 +482,19 @@ fn run_serve(
         Err(error) => eprintln!("eris serve: could not settle interrupted scheduled runs: {error}"),
     }
 
+    // A refused send used to leave the files it had already written, and their
+    // `chat_attachments` rows, with no message to belong to. The request path no
+    // longer writes anything it might have to take back, so what is left here is
+    // the litter an earlier build made: swept once at boot, by its own age.
+    match eris_host::web::chat::sweep_orphan_attachments(
+        &db,
+        eris_host::web::chat::ORPHAN_ATTACHMENT_GRACE_SECS,
+    ) {
+        Ok(0) => {}
+        Ok(count) => eprintln!("eris serve: swept {count} unclaimed attachment(s)"),
+        Err(error) => eprintln!("eris serve: could not sweep unclaimed attachments: {error}"),
+    }
+
     let engine = SetupEngine::new(db, paths.clone());
 
     // The per-provider catalogues exist from this build on. An install that

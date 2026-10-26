@@ -6,6 +6,58 @@ observe; commit history carries the detail.
 
 ## 1.4.9
 
+- **A reply can take the whole window.** The fold control answers "how much of
+  this answer do I want in the column", and the operator kept asking a different
+  question: show me this one thing and nothing else. `Maximize` sits beside the
+  fold cycle in the reply's own header and puts that reply in the viewport - the
+  whole width, the whole height, scrolling inside itself, above the rail and the
+  composer. It is a toggle that reads `Restore` when it is open, not a fourth
+  state in the cycle, and Escape closes it. `dvh` means a phone's URL bar does
+  not cut off the last line. The reply is still in the document behind the window,
+  so find in page still finds it. `build 109`.
+- **A refused send gives the message back.** The words were the operator's and
+  the daemon threw them away: an oversized attachment was refused after the send,
+  the refusal was printed into a reply bubble that claimed a turn had happened,
+  and the typed message stayed on a page that was never written to the database.
+  A reload showed it had never existed. A refused send now removes the reply
+  bubble and the optimistic user line, puts the text back in the composer with
+  the cursor in it, and states the daemon's sentence in the status line. The
+  attachment queue is untouched, because it is only emptied once the daemon has
+  accepted the body. `build 109`.
+- **A refused send writes nothing.** The reader wrote each file as its part
+  arrived and refused the part that broke a cap at the end, so the files before
+  it were already on disk and already in `chat_attachments` with no message to
+  belong to. Twenty such rows existed on this host. Every part is now held until
+  the whole body has passed, and only then written; a refusal leaves no file, no
+  row and no audit line. The refusal names the file and the size a person reads
+  rather than a byte count. Unclaimed rows an earlier build left are swept by age
+  at start-up, files included. `build 109`.
+- **The composer refuses what the daemon would refuse.** The single-file and
+  whole-message caps existed only on the server, so the browser could add a file
+  the send would reject. The caps ride on the shell as data, from the same
+  constants the reader enforces, and a file over either is refused when it is
+  picked, by name and by size, while the operator still has the picker open.
+  `build 109`.
+- **A bubble is sized by the column, with no floor under it.** The width rule was
+  `clamp(22rem, 78vw, 52rem)`, and on a 393 CSS px phone `22rem` is 352px, which
+  beat the `78vw` it was meant to sit between: every bubble was 90% of the screen
+  and the phone breakpoint's own width restated a rule that could not take
+  effect. The floor is gone, the readable measure is a ceiling, and the phone
+  block releases the desktop ceilings as well as setting its own share. No
+  `clamp` remains in the transcript rules. `build 109`.
+- **A minimized reply quotes the answer, not the code block in it.** The
+  one-line preview skipped fence markers but not what was inside them, so a reply
+  that opened with a command showed the shell command as its summary. The whole
+  fence is skipped now. `build 109`.
+- **Four tests that were red are green, and the version assertions cannot rot.**
+  `1.4.8` was hardcoded in three test files while `Cargo.toml` said `1.4.9`, so
+  the suite that pins the wire format failed on a released version. The status
+  body is built from the version the crate reports, and the remaining assertions
+  compare against the manifest rather than a second copy of it. The Settings test
+  matched the bare fragment `sk-` anywhere in the page, which the inlined
+  stylesheet's `mask-image` satisfies; it now looks for a rendered value. `build
+  109`.
+
 - **A reply has three sizes, and the transcript remembers which.** Every settled
   answer can sit at full height, fold to a clipped preview with a fade, or
   shrink to a single line of its own opening words beside the name. One control

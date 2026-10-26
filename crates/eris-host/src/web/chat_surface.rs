@@ -217,6 +217,43 @@ fn the_send_control_is_the_named_submit_of_the_composer_row() {
     );
 }
 
+/// The composer knows what the daemon will refuse. The caps live in one place, on
+/// the shell as data, so the page refuses an oversized file by name before a send
+/// rather than letting it fail after the operator has typed around it.
+#[test]
+fn the_composer_carries_the_caps_the_daemon_enforces() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+    assert!(
+        body.contains(&format!(
+            r#"data-file-max="{}""#,
+            chat::MAX_ATTACHMENT_BYTES
+        )),
+        "one file's cap is on the shell: {body}"
+    );
+    assert!(
+        body.contains(&format!(
+            r#"data-file-total="{}""#,
+            chat::MAX_ATTACHMENT_TOTAL_BYTES
+        )),
+        "the whole message's cap is on the shell: {body}"
+    );
+    // The same numbers the reader enforces, read from the same constants.
+    assert!(
+        body.contains("function shellCap("),
+        "the script reads the caps off the shell rather than restating them"
+    );
+    assert!(
+        body.contains(r#"shellCap("data-file-max""#),
+        "the single-file cap is read by name"
+    );
+}
+
 #[test]
 fn a_tool_call_renders_as_a_closed_window_that_can_be_opened() {
     let (_dir, engine, app, cookie) = ready_app();
@@ -1378,6 +1415,59 @@ fn a_message_can_carry_a_file_and_the_turn_is_told_about_it() {
     );
     let stored = std::fs::read(entries[0].path()).expect("readable");
     assert_eq!(stored, b"line one\nline two");
+}
+
+/// A refused send writes nothing. This is the shape of the defect that lost a
+/// typed message: the reader wrote each file as its part arrived and only then
+/// found the one that broke a cap, so the parts before it were already on disk
+/// and already in `chat_attachments`, with no message to belong to. Nine files is
+/// the cheapest way to reach a refusal with eight good parts in front of it.
+#[test]
+fn a_refused_send_leaves_no_file_and_no_attachment_row() {
+    let (_dir, engine, app, cookie) = ready_app();
+    crate::web::chat::seed_conversation(engine.db(), crate::web::chat::CONVERSATION_ID).unwrap();
+
+    let boundary = "----kallisti-refused-boundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"message\"\r\n\r\nread these\r\n\r\n"
+    );
+    for index in 0..9 {
+        body.push_str(&format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"note{index}.txt\"\r\nContent-Type: text/plain\r\n\r\nfile {index}\r\n\r\n"
+        ));
+    }
+    body.push_str(&format!("--{boundary}--\r\n"));
+
+    let reply = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_CHAT_SEND, &body)
+            .content_type(concat!(
+                "multipart/form-data; boundary=",
+                "----kallisti-refused-boundary"
+            ))
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert_eq!(reply.json()["code"], "too_many_attachments", "{}", reply.body);
+
+    // Nothing on disk: the eight files that arrived before the refusal are not
+    // there, because none of them was written until every part had passed.
+    let directory = engine
+        .workspace_path()
+        .unwrap()
+        .join("uploads")
+        .join(crate::web::chat::CONVERSATION_ID);
+    let files = std::fs::read_dir(&directory)
+        .map(|entries| entries.filter_map(Result::ok).count())
+        .unwrap_or(0);
+    assert_eq!(files, 0, "a refused send writes no file");
+
+    // And nothing in the database, so no orphan row survives the request.
+    let rows: i64 = engine
+        .db()
+        .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM chat_attachments", [], |row| row.get(0)))
+        .unwrap();
+    assert_eq!(rows, 0, "a refused send records no attachment");
 }
 
 /// The route a transcript link points at answers with the type the bytes are,

@@ -252,6 +252,61 @@ pub fn claim_attachments(
     })
 }
 
+/// How long an unclaimed attachment row may sit before it is treated as litter.
+///
+/// A row is written while its own request is still being read, so a row with no
+/// message is normal for the length of one send. An hour is far past any send
+/// and far short of a row an operator would miss.
+pub const ORPHAN_ATTACHMENT_GRACE_SECS: i64 = 3600;
+
+/// Delete attachment rows no message ever claimed, and the bytes they point at.
+///
+/// A send that is refused after its first file lands used to leave both: rows in
+/// `chat_attachments` with `message_id IS NULL`, and files under
+/// `uploads/<conversation>/` that nothing could ever show. The rows are the
+/// index of the litter, so they go first and the files follow; a file that is
+/// already gone is not an error, because the point is the absence, not the
+/// removal.
+///
+/// Returns how many rows went. Called at boot, where it is a sweep rather than a
+/// rule inside a request: the request path no longer writes anything it might
+/// have to take back.
+pub fn sweep_orphan_attachments(db: &Db, older_than_secs: i64) -> Result<usize, DbError> {
+    let stale: Vec<String> = db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT path
+               FROM chat_attachments
+              WHERE message_id IS NULL
+                AND created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
+        )?;
+        let rows = statement.query_map(params![format!("-{older_than_secs} seconds")], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut paths: Vec<String> = Vec::new();
+        for row in rows {
+            paths.push(row?);
+        }
+        Ok(paths)
+    })?;
+    if stale.is_empty() {
+        return Ok(0);
+    }
+    let removed = db.with_conn(|conn| {
+        Ok(conn.execute(
+            "DELETE FROM chat_attachments
+              WHERE message_id IS NULL
+                AND created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
+            params![format!("-{older_than_secs} seconds")],
+        )?)
+    })?;
+    for path in stale {
+        // A path in the table is where this daemon put the bytes. A file that has
+        // already gone is the outcome wanted, so a failed removal is not an error.
+        let _ = std::fs::remove_file(&path);
+    }
+    Ok(removed)
+}
+
 /// The files each message in a conversation carried, keyed by message id.
 ///
 /// Read once per page rather than once per line: the transcript is one query
@@ -4041,6 +4096,79 @@ mod tests {
         assert_eq!(ids, vec![first.as_str(), second.as_str(), third.as_str()]);
         assert_eq!(transcript[1].role, Role::Assistant);
         assert_eq!(transcript[1].body, "hi");
+    }
+
+    /// An unclaimed attachment row is litter only once it is old. The sweep is
+    /// what clears the litter an earlier build left, and it must not touch a row
+    /// that is merely between being written and being claimed, nor one that a
+    /// message already owns.
+    #[test]
+    fn the_sweep_removes_old_unclaimed_attachments_and_their_files() {
+        let db = db();
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let old_file = dir.path().join("old.txt");
+        let fresh_file = dir.path().join("fresh.txt");
+        let claimed_file = dir.path().join("claimed.txt");
+        for path in [&old_file, &fresh_file, &claimed_file] {
+            std::fs::write(path, b"bytes").expect("a file to sweep");
+        }
+        // One row from an hour and a half ago with no message: the litter a
+        // refused send used to leave.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_attachments
+                     (id, conversation_id, name, path, size, created_at)
+                 VALUES ('old', ?1, 'old.txt', ?2, 5,
+                         strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-5400 seconds'))",
+                params![CONVERSATION_ID, old_file.display().to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        // One written just now, in the middle of its own send.
+        record_attachment(
+            &db,
+            CONVERSATION_ID,
+            &Attachment {
+                id: "fresh".to_owned(),
+                name: "fresh.txt".to_owned(),
+                path: fresh_file.display().to_string(),
+                size: 5,
+                media_type: Some("text/plain".to_owned()),
+            },
+        )
+        .unwrap();
+        // One a message already owns, old enough that only the claim saves it.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_attachments
+                     (id, conversation_id, message_id, name, path, size, created_at)
+                 VALUES ('claimed', ?1, 'some-message', 'claimed.txt', ?2, 5,
+                         strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-5400 seconds'))",
+                params![CONVERSATION_ID, claimed_file.display().to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let removed = sweep_orphan_attachments(&db, ORPHAN_ATTACHMENT_GRACE_SECS).unwrap();
+        assert_eq!(removed, 1, "only the old, unclaimed row is litter");
+        assert!(!old_file.exists(), "the bytes went with the row");
+        assert!(fresh_file.exists(), "a row in its own send is left alone");
+        assert!(claimed_file.exists(), "a claimed row is never swept");
+        let left: Vec<String> = db
+            .with_conn(|conn| {
+                let mut statement =
+                    conn.prepare("SELECT id FROM chat_attachments ORDER BY id")?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                let mut ids = Vec::new();
+                for row in rows {
+                    ids.push(row?);
+                }
+                Ok(ids)
+            })
+            .unwrap();
+        assert_eq!(left, vec!["claimed".to_owned(), "fresh".to_owned()]);
     }
 
     #[test]
