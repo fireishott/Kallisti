@@ -1792,6 +1792,8 @@ pub struct SettingsView {
     pub show_tool_log: bool,
     /// `full`, `summary` or `off`, for the select.
     pub tool_log_mode: String,
+    /// `expanded`, `collapsed` or `minimized`: the default size of a reply.
+    pub reply_state: String,
     /// The device listener's bind addresses, comma separated for the form.
     pub device_listen: String,
     /// The origin a phone should call, as the pairing QR carries it.
@@ -1899,6 +1901,7 @@ impl SettingsView {
             show_quota: false,
             show_tool_log: true,
             tool_log_mode: "full".to_owned(),
+            reply_state: crate::web::chat::ReplyState::Expanded.as_str().to_owned(),
             device_listen: "127.0.0.1:7341".to_owned(),
             device_relay: String::new(),
             memory_backend: crate::memory::DEFAULT_BACKEND.to_owned(),
@@ -2307,6 +2310,23 @@ fn reasoning_group(view: &SettingsView) -> Markup {
                 span .hint {
                     "The bubble is opaque and closed by default, and it is never part of the answer. "
                     "Off means the reasoning is not rendered and not streamed to the browser at all."
+                }
+            }
+            div .field {
+                label for="reply_state" { "Reply bubble" }
+                select id="reply_state" name="reply_state" {
+                    @for state in crate::web::chat::ReplyState::ALL {
+                        option value=(state.as_str()) selected[view.reply_state == state.as_str()] {
+                            (state.label())
+                        }
+                    }
+                }
+                span .hint {
+                    "How much of each settled answer the transcript draws. Expanded is the whole "
+                    "reply, which is what every earlier build did. A reply that is still arriving, "
+                    "one that failed, and one holding a question you have to answer always open in "
+                    "full, whatever this says. The control beside each reply's name overrides this "
+                    "for that one reply, and the choice is remembered."
                 }
             }
             div .actions {
@@ -4323,6 +4343,13 @@ pub struct ChatView {
     pub show_tool_log: bool,
     /// `full` or `summary`, choosing how it renders.
     pub tool_log_mode: String,
+    /// How much of each settled reply to draw before the operator asks for
+    /// more: `expanded`, `collapsed` or `minimized`.
+    ///
+    /// Read off the settings row and written onto the shell as `data-reply` so
+    /// the page script paints new replies the same way a reload draws them. A
+    /// per-message choice in `localStorage` overrides it for that one reply.
+    pub reply_state: String,
     /// The salutation an empty conversation opens with, from the hour.
     pub greeting: String,
     /// The line under the salutation, editable in settings.
@@ -4779,14 +4806,106 @@ fn asked_card(asked: &crate::web::chat::Asked, tool: &crate::web::chat::ToolReco
     }
 }
 
+/// How many characters of an answer a minimized reply keeps.
+///
+/// Sixty is one line at every width the transcript has: enough to tell two
+/// answers apart in a folded thread, short enough that the column of summaries
+/// stays a column.
+const REPLY_PEEK_CHARS: usize = 60;
+
+/// The opening words of an answer, for the one line a minimized reply keeps.
+///
+/// The preview is the answer's own text, cut. It is never a summary and never a
+/// model's paraphrase: a folded reply that says something the answer does not say
+/// would be worse than no preview at all, because the operator would trust it.
+/// Fence markers are skipped, since a line of backticks describes nothing.
+#[must_use]
+pub fn reply_peek(body: &str) -> String {
+    let mut flat = String::new();
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("```") {
+            continue;
+        }
+        if !flat.is_empty() {
+            flat.push(' ');
+        }
+        flat.push_str(line);
+        if flat.chars().count() >= REPLY_PEEK_CHARS {
+            break;
+        }
+    }
+    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= REPLY_PEEK_CHARS {
+        return flat;
+    }
+    let mut cut: String = flat.chars().take(REPLY_PEEK_CHARS).collect();
+    cut.push('\u{2026}');
+    cut
+}
+
+/// How much of one reply the page draws before the operator asks for more.
+///
+/// The Settings row is a default, not a command. A reply that is still arriving,
+/// one that failed, and one holding a question the operator has to answer all
+/// open in full whatever the setting says: folding away the thing they have to
+/// act on is the page making a decision that is not its to make. The operator can
+/// still fold any of them deliberately, one click at a time.
+#[must_use]
+fn reply_state_for(default: crate::web::chat::ReplyState, line: &ChatLine) -> &'static str {
+    use crate::web::chat::ReplyState;
+    if line.pending || line.failed {
+        return ReplyState::Expanded.as_str();
+    }
+    let waiting = line
+        .tools
+        .iter()
+        .any(|tool| tool.asked.as_ref().is_some_and(|asked| asked.answer.is_none()));
+    if waiting {
+        return ReplyState::Expanded.as_str();
+    }
+    default.as_str()
+}
+
+/// The word on the reply's cycle control: what pressing it does next, which is
+/// the same contract the run log's controls follow.
+#[must_use]
+fn reply_next_word(state: &str) -> &'static str {
+    match state {
+        "expanded" => "Collapse",
+        "collapsed" => "Minimize",
+        _ => "Expand",
+    }
+}
+
+/// The control's accessible name. It says what the press does, not what the
+/// reply is currently doing, and it names the state the press lands on.
+#[must_use]
+fn reply_next_label(state: &str) -> &'static str {
+    match state {
+        "expanded" => "Collapse this reply to its first few lines",
+        "collapsed" => "Minimize this reply to one summary line",
+        _ => "Expand this reply to the whole answer",
+    }
+}
+
 pub fn chat_page(view: &ChatView) -> Markup {
     let body = html! {
         div .chat-shell .new-chat[view.messages.is_empty()]
             data-conversation=(view.conversation.clone())
             data-assistant=(view.assistant_name.clone())
             data-stream=(if view.streaming { "on" } else { "off" })
-            data-tool-log=(if view.show_tool_log { view.tool_log_mode.clone() } else { "off".to_owned() }) {
+            data-tool-log=(if view.show_tool_log { view.tool_log_mode.clone() } else { "off".to_owned() })
+            data-reply=(view.reply_state.clone()) {
         (alert_region(view.error.as_ref(), None))
+        @if !view.messages.is_empty() {
+            div .replyctl hidden role="group" aria-label="Reply size controls" {
+                button type="button" .reply-all data-reply-all="expand"
+                    aria-label="Expand every reply in this conversation" { "Expand all" }
+                button type="button" .reply-all data-reply-all="minimize"
+                    aria-label="Minimize every reply in this conversation" { "Minimize all" }
+            }
+        }
         section .thread id="thread" aria-label="Conversation" {
             @let last_answer = view.messages.iter().rposition(|line| !line.user);
             @for (index, line) in view.messages.iter().enumerate() {
@@ -4795,8 +4914,30 @@ pub fn chat_page(view: &ChatView) -> Markup {
                     if line.user { "user" } else { "assistant" },
                     if line.pending { " pending" } else { "" },
                 );
-                article class=(klass) {
-                    div .who { (line.who) }
+                @let reply = reply_state_for(crate::web::chat::reply_state(Some(&view.reply_state)), line);
+                article class=(klass)
+                    data-reply-state=[(!line.user).then_some(reply)] {
+                    div .who {
+                        span .who-name { (line.who) }
+                        @if !line.user {
+                            // One control that cycles, rather than three that can
+                            // disagree: there is one `aria-expanded` to be right
+                            // about instead of three, and the word on the button
+                            // is the press, not the current state.
+                            button type="button" .reply-cycle
+                                data-reply-cycle
+                                aria-label=(reply_next_label(reply))
+                                aria-expanded=(if reply == "minimized" { "false" } else { "true" }) {
+                                (reply_next_word(reply))
+                            }
+                        }
+                    }
+                    @if !line.user {
+                        // What a minimized reply keeps. Rendered always and shown
+                        // by the stylesheet, so a browser with no script, a find in
+                        // the page, and a reload all see the same answer.
+                        p .reply-peek { (reply_peek(&line.body)) }
+                    }
                     @if view.show_reasoning {
                         @if let Some(reasoning) = line.reasoning.as_ref().filter(|text| !text.trim().is_empty()) {
                             details .think open {
@@ -5237,6 +5378,152 @@ const CHAT_JS: &str = r##"(function () {
     });
   }
 
+  // ---- The reply bubble: expanded, collapsed, minimized -------------------
+  // Three sizes for a settled answer, and one rule the page never breaks: a reply
+  // that is still arriving opens in full. An answer being written is never hidden
+  // from the operator, and neither is one that failed or one holding a question
+  // they have to answer. The stylesheet does the clipping, so the answer is
+  // always in the page: a find in the page still finds a word in a reply that is
+  // folded away, and a browser with no script reads the whole answer.
+  var REPLY_KEY = "kallisti.reply";
+  var REPLY_FALLBACK = "expanded";
+
+  // The Settings default, read off the shell rather than guessed, so a page
+  // opened on `minimized` does not stream an expanded column and then turn into
+  // one line after a reload.
+  function replyDefault() {
+    if (shellForMode === null) { return REPLY_FALLBACK; }
+    var state = shellForMode.getAttribute("data-reply");
+    if (state === "expanded" || state === "collapsed" || state === "minimized") { return state; }
+    return REPLY_FALLBACK;
+  }
+
+  // The operator's own choice for one reply, keyed by the conversation and the
+  // reply's ordinal. A reload reads the same two numbers the live page wrote.
+  // Storage can be unavailable, and a browser that refuses to remember is not an
+  // error worth showing, so every read and write is guarded.
+  function replyKey(article) {
+    var conversation = conversationId();
+    var ordinal = answerOrdinal(article);
+    if (conversation === "" || ordinal === 0) { return ""; }
+    return REPLY_KEY + "." + conversation + "." + ordinal;
+  }
+
+  function rememberedReply(article) {
+    var key = replyKey(article);
+    if (key === "") { return null; }
+    try {
+      var stored = window.localStorage.getItem(key);
+      if (stored === "expanded" || stored === "collapsed" || stored === "minimized") {
+        return stored;
+      }
+    } catch (error) {
+      return null;
+    }
+    return null;
+  }
+
+  function rememberReply(article, state) {
+    var key = replyKey(article);
+    if (key === "") { return; }
+    try { window.localStorage.setItem(key, state); } catch (error) { return; }
+  }
+
+  function nextReply(state) {
+    if (state === "expanded") { return "collapsed"; }
+    if (state === "collapsed") { return "minimized"; }
+    return "expanded";
+  }
+
+  function replyWord(state) {
+    if (state === "expanded") { return "Collapse"; }
+    if (state === "collapsed") { return "Minimize"; }
+    return "Expand";
+  }
+
+  function replyLabel(state) {
+    if (state === "expanded") { return "Collapse this reply to its first few lines"; }
+    if (state === "collapsed") { return "Minimize this reply to one summary line"; }
+    return "Expand this reply to the whole answer";
+  }
+
+  // One line of the answer, for the minimized state. The server renders one for a
+  // reloaded reply; a reply that arrives live is given one here, from the text on
+  // screen, so both paths show the same sentence.
+  function replyPeekText(article) {
+    var bubble = article.querySelector(".bubble");
+    var text = bubble === null ? "" : (bubble.textContent || "");
+    text = text.replace(/\s+/g, " ").trim();
+    return text.length > 60 ? text.slice(0, 60) + "\u2026" : text;
+  }
+
+  function paintReply(article, state) {
+    if (article === null) { return state; }
+    article.setAttribute("data-reply-state", state);
+    var button = article.querySelector("[data-reply-cycle]");
+    if (button !== null) {
+      button.textContent = replyWord(state);
+      button.setAttribute("aria-label", replyLabel(state));
+      button.setAttribute("aria-expanded", state === "minimized" ? "false" : "true");
+    }
+    if (state === "minimized") {
+      var peek = article.querySelector(".reply-peek");
+      if (peek !== null) { peek.textContent = replyPeekText(article); }
+    }
+    return state;
+  }
+
+  // A reply that has finished takes the operator's choice for that reply, then
+  // the Settings default. Called from the one place a reply becomes settled, so a
+  // live turn and a reloaded transcript agree about how much to draw.
+  function settleReply(article) {
+    if (article === null) { return; }
+    if (article.classList.contains("pending")) { return; }
+    if (article.querySelector(".asked:not(.settled)") !== null) { return; }
+    if (article.querySelector(".bubble.failed") !== null) { return; }
+    paintReply(article, rememberedReply(article) || replyDefault());
+  }
+
+  if (thread) {
+    var settledReplies = thread.querySelectorAll(".msg.assistant");
+    for (var replyIndex = 0; replyIndex < settledReplies.length; replyIndex += 1) {
+      var remembered = rememberedReply(settledReplies[replyIndex]);
+      if (remembered !== null) { paintReply(settledReplies[replyIndex], remembered); }
+    }
+    // The conversation's own controls, revealed only where a script can act on
+    // them. A transcript outlives the provider that wrote it, so this sits above
+    // the composer guard below with the run log's controls.
+    var replyBar = document.querySelector(".replyctl");
+    if (replyBar !== null) { replyBar.hidden = false; }
+
+    thread.addEventListener("click", function (event) {
+      var cycle = event.target.closest("[data-reply-cycle]");
+      if (cycle === null) { return; }
+      // The reply's own control, so a press here never reaches the bubble.
+      event.preventDefault();
+      event.stopPropagation();
+      var article = cycle.closest(".msg.assistant");
+      if (article === null) { return; }
+      var next = nextReply(article.getAttribute("data-reply-state") || "expanded");
+      paintReply(article, next);
+      rememberReply(article, next);
+    });
+  }
+
+  // Expand all and Minimize all. They live above the transcript rather than in
+  // it, so the listener is on the document: the bar is a sibling of the thread.
+  document.addEventListener("click", function (event) {
+    var all = event.target.closest("[data-reply-all]");
+    if (all === null) { return; }
+    event.preventDefault();
+    var wanted = all.getAttribute("data-reply-all") === "minimize" ? "minimized" : "expanded";
+    var replies = document.querySelectorAll(".thread .msg.assistant");
+    for (var index = 0; index < replies.length; index += 1) {
+      paintReply(replies[index], wanted);
+      rememberReply(replies[index], wanted);
+    }
+  });
+
   if (form === null || box === null || thread === null) { return; }
 
   var busy = false;
@@ -5460,6 +5747,10 @@ const CHAT_JS: &str = r##"(function () {
       });
     }
     renderAnswerFiles(target.text, liveAnswer);
+    // The turn is over, so the reply takes the size the operator chose for it.
+    // A failed answer or one still waiting on a question never folds: those are
+    // the two states the operator has to act on.
+    settleReply(target.article);
     closeLive();
     toBottom();
   }
@@ -5747,7 +6038,26 @@ const CHAT_JS: &str = r##"(function () {
     article.className = "msg " + role;
     var label = document.createElement("div");
     label.className = "who";
-    label.textContent = who;
+    var whoName = document.createElement("span");
+    whoName.className = "who-name";
+    whoName.textContent = who;
+    label.appendChild(whoName);
+    // The same control the server renders, built here so a reply that arrives
+    // live offers the sizes a reloaded one does. Absent on the operator's own
+    // line: a question is theirs to read, not a thing to fold away.
+    var replyPeek = null;
+    if (role === "assistant") {
+      var replyButton = document.createElement("button");
+      replyButton.type = "button";
+      replyButton.className = "reply-cycle";
+      replyButton.setAttribute("data-reply-cycle", "");
+      replyButton.textContent = "Collapse";
+      replyButton.setAttribute("aria-label", "Collapse this reply to its first few lines");
+      replyButton.setAttribute("aria-expanded", "true");
+      label.appendChild(replyButton);
+      replyPeek = document.createElement("p");
+      replyPeek.className = "reply-peek";
+    }
     // Hidden until the first reasoning fragment, so a turn that never thinks
     // does not leave an empty shell above its answer.
     var think = document.createElement("details");
@@ -6006,6 +6316,7 @@ const CHAT_JS: &str = r##"(function () {
     var meta = document.createElement("div");
     meta.className = "meta";
     article.appendChild(label);
+    if (replyPeek !== null) { article.appendChild(replyPeek); }
     article.appendChild(think);
     article.appendChild(exec);
     article.appendChild(bubble);
@@ -6955,6 +7266,10 @@ const CHAT_JS: &str = r##"(function () {
     }
     controller = null;
     target.article.className = "msg assistant";
+    // The same rule the reattached path follows: a finished answer takes the size
+    // the operator chose, and a failed one or one waiting on a question stays
+    // open in full.
+    settleReply(target.article);
     setBusy(false);
     // Said after the composer settles, because settling clears the status line:
     // the point of the sentence is that the page is behind the daemon, and the
@@ -7308,6 +7623,141 @@ mod tests {
 
     use super::*;
     use crate::onboarding::Wizard;
+
+    #[test]
+    fn a_minimized_reply_keeps_one_line_of_its_own_words() {
+        // The preview is the answer cut, never a summary: a folded reply that
+        // says something the answer does not say is worse than no preview.
+        assert_eq!(
+            reply_peek("Sure. The build is green."),
+            "Sure. The build is green."
+        );
+        // Markup lines and blank lines are skipped, so the line describes the
+        // answer rather than its formatting.
+        assert_eq!(
+            reply_peek("```sh\nls -l\n```\n\nAll four files are there."),
+            "All four files are there."
+        );
+        // Flattened: a short two-line answer becomes one line, because the
+        // minimized state is one line.
+        assert_eq!(reply_peek("First line.\nSecond line."), "First line. Second line.");
+        // Bounded, with an ellipsis, counted in characters rather than bytes.
+        let long = reply_peek(&"word ".repeat(40));
+        assert_eq!(long.chars().count(), REPLY_PEEK_CHARS + 1, "{long}");
+        assert!(long.ends_with('\u{2026}'), "{long}");
+        // An empty answer has no preview line, not a fabricated one.
+        assert_eq!(reply_peek(""), "");
+        assert_eq!(reply_peek("   \n\n  "), "");
+    }
+
+    fn line_for(state: &mut ChatLine, body: &str) -> &'static str {
+        state.body = body.to_owned();
+        reply_state_for(crate::web::chat::ReplyState::Minimized, state)
+    }
+
+    #[test]
+    fn a_reply_that_needs_the_operator_never_folds_itself() {
+        let mut line = ChatLine {
+            user: false,
+            who: "Kallisti".to_owned(),
+            body: String::new(),
+            stamp: String::new(),
+            failed: false,
+            error_code: None,
+            pending: false,
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+            duration_ms: None,
+            context_window: None,
+            turn: None,
+            rounds: None,
+            capped: false,
+            quota: None,
+            reasoning: None,
+            tools: Vec::new(),
+            files: Vec::new(),
+        };
+        // The default the operator chose is `minimized`, so anything that comes
+        // back expanded came back expanded for a reason.
+        assert_eq!(line_for(&mut line, "an ordinary answer"), "minimized");
+
+        line.pending = true;
+        assert_eq!(
+            line_for(&mut line, "still arriving"),
+            "expanded",
+            "an answer being written is never hidden"
+        );
+        line.pending = false;
+
+        line.failed = true;
+        assert_eq!(
+            line_for(&mut line, "refused"),
+            "expanded",
+            "a failure is the thing the operator has to read"
+        );
+        line.failed = false;
+
+        // A parked question with no answer yet. The card above the bubble is what
+        // they must act on, and folding the reply would hide it behind a press.
+        let mut tool = crate::web::chat::ToolRecord {
+            name: "clarify".to_owned(),
+            arguments: "{}".to_owned(),
+            output: String::new(),
+            is_error: false,
+            asked: Some(crate::web::chat::Asked {
+                request: crate::web::clarify::Request {
+                    title: None,
+                    questions: Vec::new(),
+                },
+                answer: None,
+            }),
+        };
+        line.tools.push(tool.clone());
+        assert_eq!(
+            line_for(&mut line, "a question is waiting"),
+            "expanded",
+            "a reply holding an unanswered question stays open"
+        );
+
+        // Answered is settled: the card is a record now, so the reply folds like
+        // any other.
+        tool.asked = Some(crate::web::chat::Asked {
+            request: crate::web::clarify::Request {
+                title: None,
+                questions: Vec::new(),
+            },
+            answer: Some(crate::web::clarify::Answer::Typed {
+                question: "which one".to_owned(),
+                text: "the second one".to_owned(),
+            }),
+        });
+        line.tools = vec![tool];
+        assert_eq!(
+            line_for(&mut line, "the question was answered"),
+            "minimized",
+            "a settled question is a record, not a call to act"
+        );
+    }
+
+    #[test]
+    fn the_reply_control_names_the_press_and_not_the_state() {
+        // A control whose word is the current state leaves the operator guessing
+        // whether pressing it means the state or the way out of it.
+        assert_eq!(reply_next_word("expanded"), "Collapse");
+        assert_eq!(reply_next_word("collapsed"), "Minimize");
+        assert_eq!(reply_next_word("minimized"), "Expand");
+        // Every label names what the press does, in a sentence.
+        for state in ["expanded", "collapsed", "minimized"] {
+            let label = reply_next_label(state);
+            assert!(label.len() > 20, "{state}: {label}");
+            assert!(
+                label.starts_with("Collapse") || label.starts_with("Minimize") || label.starts_with("Expand"),
+                "{state}: {label}"
+            );
+        }
+    }
 
     #[test]
     fn a_chip_names_the_type_its_bytes_were_sniffed_to_be() {

@@ -48,6 +48,7 @@ pub mod mcp;
 pub mod memory;
 pub mod notes;
 pub mod notes_worker;
+pub mod oauth;
 pub mod onboarding;
 pub mod persona;
 pub mod probe;

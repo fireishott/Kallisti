@@ -15,6 +15,7 @@ name = "eris"
 path = "src/main.rs"
 
 [dependencies]
+aes-gcm = { workspace = true }
 argon2 = { workspace = true }
 base64 = { workspace = true }
 axum = { workspace = true, features = ["multipart"] }

@@ -4,6 +4,42 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.9
+
+- **A reply has three sizes, and the transcript remembers which.** Every settled
+  answer can sit at full height, fold to a clipped preview with a fade, or
+  shrink to a single line of its own opening words beside the name. One control
+  in the reply's own header cycles the three, and its word is the press rather
+  than the current state, so there is one thing to read instead of three
+  buttons that can disagree. The choice survives a reload and a live stream
+  renders the same way, because the size is an attribute on the reply and the
+  stylesheet does the clipping: a folded answer is still in the page, so find
+  in page finds it and a browser with no script still reads it. The default is
+  Expanded, which is what every earlier build did, and it is set in Settings
+  under the reasoning card. Three things are never folded automatically: a
+  reply still arriving, a reply that failed, and a reply holding a question you
+  have to answer. `build 108`.
+- **A provider token is sealed on disk, and it says when it expires.** The two
+  accounts already on this host were moved out of the settings row into one
+  encrypted file each that the daemon owns, with the provider's own id bound
+  into the ciphertext so a copied file cannot authenticate as a different
+  account, and the old row was read and never written. A token now carries its
+  expiry, a token that cannot say when it expires is not treated as fresh, and
+  the refresh decision is one gate instead of a rule inside each provider.
+  Refreshing is off by default and nothing was refreshed in this build. The
+  providers still read their key the way they did before; pointing them at the
+  store is the next ship. `build 108`.
+- **Seven conversations were renamed.** Their titles were a chain of thought a
+  model wrote before the naming path learned to scrub one, so the transcript
+  showed a paragraph of reasoning where a name belongs. The rows are rewritten
+  to the conversation's own first question, which is what the daemon wrote
+  before a model was asked for a better name. The scrubber had no test for the
+  shape actually stored, a truncated thought ending in an ellipsis, and now it
+  does. `build 108`.
+- **A greeting is spoken in the provider's own dialect.** The welcome turn was
+  built without the profile's dialect, so a provider that speaks a different
+  wire format answered it wrong. `build 108`.
+
 ## 1.4.8
 
 - **A finished reply reaches the phone that asked for it.** Delivery existed and

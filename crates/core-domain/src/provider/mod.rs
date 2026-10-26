@@ -26,6 +26,7 @@
 pub mod error;
 pub mod profile;
 pub mod secret;
+pub mod token;
 pub mod tool_call;
 pub mod usage;
 
@@ -34,5 +35,8 @@ pub use profile::{
     ApiDialect, CacheReadReporting, Capabilities, ModelProfile, Provider, ProviderProfile,
 };
 pub use secret::{API_KEY_REF_ENV_PREFIX, SecretRef, SecretRefError};
+pub use token::{
+    TOKEN_REF_PREFIX, TokenError, TokenOrigin, TokenRecord, TokenRef, TokenStore, refresh_lead_secs,
+};
 pub use tool_call::{ToolCall, ToolCallError};
 pub use usage::{CacheRead, TokenCount, UnavailableReason, Usage};

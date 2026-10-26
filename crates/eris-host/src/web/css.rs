@@ -1219,6 +1219,9 @@ pre.code {
 .msg.user { margin-left: auto; align-items: flex-end; }
 .msg.assistant { margin-right: auto; align-items: flex-start; }
 .msg .who {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.12em;
@@ -1226,6 +1229,54 @@ pre.code {
   color: var(--muted);
   margin: 0 0 6px;
   padding: 0 2px;
+  min-width: 0;
+}
+/* The reply's own size control, in the who row. It sits beside the name rather
+   than above the answer, so the three states cost the transcript nothing: the
+   row already existed, and a control that added a line to every reply would have
+   spent the room it was built to save. */
+.msg .reply-cycle {
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.msg .reply-cycle:hover { color: var(--text); border-color: var(--line-strong); }
+.msg .reply-cycle:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+}
+/* Minimized: one line of the answer, and the line is the whole reply. The body is
+   clipped by the stylesheet rather than removed from the page, so find-in-page
+   still finds a word in a reply the operator has folded away, and a browser with
+   no script still reads the answer. */
+.msg .reply-peek {
+  display: none;
+  margin: 0 0 6px;
+  padding: 0 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.msg[data-reply-state="minimized"] .reply-peek { display: block; }
+.msg[data-reply-state="minimized"] .bubble { display: none; }
+/* Collapsed: the opening lines under a fade that states there is more. The fade
+   is the palette's own ground, so the bubble does not grow a second colour. */
+.msg[data-reply-state="collapsed"] .bubble {
+  max-height: 7.5rem;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, var(--black) 62%, transparent 100%);
 }
 .msg .bubble {
   padding: 13px 16px;
@@ -1444,6 +1495,31 @@ pre.code {
   padding: 0 12px 9px;
 }
 .msg .runctl[hidden] { display: none; }
+/* The conversation's own reply-size controls, above the transcript. Rendered
+   hidden and revealed by the script, the same contract the run log's controls
+   follow: a button that cannot act without a script is not worth showing. */
+.replyctl {
+  display: flex;
+  gap: 6px;
+  padding: 0 2px 8px;
+}
+.replyctl[hidden] { display: none; }
+.replyctl .reply-all {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.replyctl .reply-all:hover { color: var(--text); border-color: var(--line-strong); }
+.replyctl .reply-all:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+}
 .msg .run-btn {
   padding: 2px 6px;
   border: 1px solid var(--line);
@@ -2484,6 +2560,67 @@ mod tests {
         assert!(
             rule(".msg .bubble").contains("max-width: 100%"),
             "a bubble cannot widen the column it sits in"
+        );
+    }
+
+    /// A folded reply is a size, not a deletion: the answer stays in the page and
+    /// the stylesheet clips it. That is what makes find-in-page, a browser with no
+    /// script, and a reload all agree with the live turn.
+    ///
+    /// The contract is stated here rather than left to a screenshot. Minimized is
+    /// one line and no bubble; collapsed is the bubble with a ceiling and a fade;
+    /// expanded adds nothing at all, which is what every earlier build drew.
+    #[test]
+    fn a_folded_reply_is_clipped_rather_than_removed() {
+        assert!(
+            rule(".msg .reply-peek").contains("display: none"),
+            "the preview line is not drawn until a reply is minimized"
+        );
+        assert!(
+            rule(".msg[data-reply-state=\"minimized\"] .reply-peek").contains("display: block"),
+            "minimized is the one state that draws the preview"
+        );
+        assert!(
+            rule(".msg[data-reply-state=\"minimized\"] .bubble").contains("display: none"),
+            "minimized hides the bubble and keeps its text in the document"
+        );
+        let collapsed = rule(".msg[data-reply-state=\"collapsed\"] .bubble");
+        assert!(
+            collapsed.contains("max-height:"),
+            "collapsed is a ceiling on the bubble, not a different bubble: {collapsed}"
+        );
+        assert!(
+            collapsed.contains("mask-image:"),
+            "the fade is what says there is more below: {collapsed}"
+        );
+        assert!(
+            collapsed.contains("var(--black)"),
+            "the fade is the palette's own ground, not a new colour: {collapsed}"
+        );
+        // Expanded is the absence of both rules rather than a rule of its own, so
+        // the shipped look cannot drift by being restated.
+        assert!(
+            !APP_CSS.contains(".msg[data-reply-state=\"expanded\"]"),
+            "expanded has no rule: it is the whole answer, exactly as before"
+        );
+    }
+
+    /// The reply control sits in the row that already existed. A control that
+    /// added a line to every reply would have spent the room it was built to save.
+    #[test]
+    fn the_reply_control_costs_the_transcript_no_line() {
+        let who = rule(".msg .who");
+        assert!(
+            who.contains("display: flex"),
+            "the author row lays the name and the control side by side: {who}"
+        );
+        assert!(
+            rule(".msg .reply-cycle").contains("margin-left: auto"),
+            "the control is pushed to the end of the author row"
+        );
+        assert!(
+            rule(".msg .reply-cycle:focus-visible").contains("outline: 2px solid var(--platinum)"),
+            "the control keeps a visible focus ring"
         );
     }
 

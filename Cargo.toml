@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.4.8"
+version = "1.4.9"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -46,6 +46,7 @@ reqwest = { version = "0.13.5", default-features = false, features = [
     "rustls",
     "stream",
 ] }
+aes-gcm = "0.10.3"
 base64 = "0.23.1"
 hex = "0.4.3"
 subtle = "2.6.1"

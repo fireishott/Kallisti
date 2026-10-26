@@ -17,8 +17,9 @@ pub use events::{EventKind, EventSeq};
 pub use ids::{DeviceId, EventId, IdError, SessionId, TurnId};
 pub use provider::{
     API_KEY_REF_ENV_PREFIX, ApiDialect, CacheRead, CacheReadReporting, Capabilities, LlmError,
-    ModelProfile, Provider, ProviderProfile, SecretRef, SecretRefError, TokenCount, ToolCall,
-    ToolCallError, UnavailableReason, Usage,
+    ModelProfile, Provider, ProviderProfile, SecretRef, SecretRefError, TOKEN_REF_PREFIX,
+    TokenCount, TokenError, TokenOrigin, TokenRecord, TokenRef, TokenStore, ToolCall,
+    ToolCallError, UnavailableReason, Usage, refresh_lead_secs,
 };
 
 /// Crate version, mirrored from `[workspace.package]`.

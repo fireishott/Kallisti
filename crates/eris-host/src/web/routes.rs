@@ -795,6 +795,16 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .ok()
         .flatten()
         .unwrap_or_default();
+    view.reply_state = chat::reply_state(
+        state
+            .engine
+            .setting(chat::SETTING_REPLY_STATE)
+            .ok()
+            .flatten()
+            .as_deref(),
+    )
+    .as_str()
+    .to_owned();
     view.tool_log_mode = {
         let stored = state
             .engine
@@ -3596,6 +3606,25 @@ async fn save_reasoning(
         return audit_failure(&request_id.0, "settings.reasoning", error);
     }
 
+    // S1: the reply bubble's default size, in the same form as the thinking
+    // bubble it sits beside. It is stored from the same post because the two are
+    // one card on the settings page; a select whose value the handler threw away
+    // is the swallowed-setting failure this page exists to avoid. An
+    // unrecognised value stores `expanded`, which is what every earlier build
+    // drew, so a bad post cannot hide an answer.
+    let reply = chat::reply_state(Some(field(&fields, "reply_state"))).as_str();
+    if let Err(error) = store::settings_put(state.engine.db(), chat::SETTING_REPLY_STATE, reply)
+    {
+        return store_failure(&request_id.0, chat::SETTING_REPLY_STATE, error);
+    }
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.reply_state", Some(reply))
+    {
+        return audit_failure(&request_id.0, "settings.reply_state", error);
+    }
+
     see_other(SAVED_REASONING)
 }
 
@@ -5044,6 +5073,19 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                 .flatten()
                 .as_deref(),
         ),
+        // S1: the size a settled reply is drawn at, read off the settings row so
+        // a reload and a live stream paint it the same way. `data-reply` on the
+        // chat shell carries it; a per-message key overrides it for one reply.
+        reply_state: chat::reply_state(
+            state
+                .engine
+                .setting(chat::SETTING_REPLY_STATE)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+        .as_str()
+        .to_owned(),
         show_tool_log: chat::show_tool_log(
             state
                 .engine

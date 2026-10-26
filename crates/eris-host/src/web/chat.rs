@@ -2409,6 +2409,67 @@ pub fn show_reasoning(stored: Option<&str>) -> bool {
     !matches!(stored.map(str::trim), Some("false"))
 }
 
+/// The `settings` row that remembers how a settled reply is drawn.
+///
+/// Default `expanded`: the whole answer, which is what every build before 108
+/// did. The other two states cost the operator a choice before they can lose
+/// anything, and a corrupt row falls back to the full answer rather than hiding
+/// one.
+pub const SETTING_REPLY_STATE: &str = "assistant.reply_state";
+
+/// How much of a settled reply the transcript draws.
+///
+/// This is the reply's own size, not the thinking bubble's. Minimized is the
+/// headline: a thread of twenty answers becomes twenty summary lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyState {
+    /// The whole answer, which is the shape every earlier build shipped.
+    Expanded,
+    /// The first few lines, clipped under a fade. Press it to read the rest.
+    Collapsed,
+    /// One line: who said it and the opening words.
+    Minimized,
+}
+
+impl ReplyState {
+    /// Every state, in the order the Settings select offers them.
+    pub const ALL: [Self; 3] = [Self::Expanded, Self::Collapsed, Self::Minimized];
+
+    /// The stored spelling, which is also the `data-reply-state` wire value the
+    /// page script reads and writes.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Expanded => "expanded",
+            Self::Collapsed => "collapsed",
+            Self::Minimized => "minimized",
+        }
+    }
+
+    /// The line the Settings select shows for this state.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Expanded => "Expanded - the whole answer",
+            Self::Collapsed => "Collapsed - the first few lines",
+            Self::Minimized => "Minimized - one summary line",
+        }
+    }
+}
+
+/// The stored reply size, defaulting to the full answer.
+///
+/// Anything unrecognised, including a missing row, is `Expanded`, so a corrupt
+/// value cannot hide an answer the operator has not read.
+#[must_use]
+pub fn reply_state(stored: Option<&str>) -> ReplyState {
+    match stored.map(str::trim) {
+        Some("collapsed") => ReplyState::Collapsed,
+        Some("minimized") => ReplyState::Minimized,
+        _ => ReplyState::Expanded,
+    }
+}
+
 /// The `settings` row that remembers whether the dashboard streams answers.
 ///
 /// Default on: streaming is what makes a long answer readable while it is being
@@ -4540,6 +4601,62 @@ mod tests {
         );
         // Only the thought, nothing after it: still no title rather than the thought.
         assert_eq!(scrub_title("<think>only a thought</think>"), "");
+    }
+
+    #[test]
+    fn the_titles_the_live_database_held_scrub_to_nothing() {
+        // The exact stored shape from `chat_conversations` on 2026-10-24, all
+        // seven of them: a `<think` opening, no closing tag, and the thought cut
+        // at the title limit with an ellipsis. The truncation is what makes this
+        // shape different from the closed case above - the rail cut the thought
+        // mid-word, so there was never a `</think>` to find.
+        for stored in [
+            "<think>We need output title max six words only. Need infer title for con\u{2026}",
+            "<think>We need respond only title at most six words no punctuation. User\u{2026}",
+            "<think>We need answer must only title max six words no punctuation expla\u{2026}",
+            "<think>We need respond only title max six words no punctuation. Need inf\u{2026}",
+            "<think>We need answer only title max six words. Need respond to user's Q\u{2026}",
+            "<think>We need answer title max six words only. Need infer likely subjec\u{2026}",
+            "<think>We need answer only title max six words, no punctuation. Need inf\u{2026}",
+        ] {
+            assert_eq!(
+                scrub_title(stored),
+                "",
+                "an unclosed thought is not a name, however it was cut"
+            );
+        }
+    }
+
+    #[test]
+    fn a_suggestion_that_scrubs_to_nothing_never_writes_an_empty_title() {
+        let db = db();
+        let question = "Sup homie?";
+        let conversation = create_conversation(&db).unwrap();
+        append(&db, &conversation, Role::User, question, State::Complete).unwrap();
+        name_from_first_message(&db, &conversation, question).unwrap();
+        let before = conversations(&db, 1).unwrap()[0].title.clone();
+        assert_eq!(before, "Sup homie?");
+
+        // A chain of thought that never ended scrubs to empty, so the write is
+        // refused before it reaches SQL: `Ok(0)`, and the truncation of the
+        // question stands. No fallback is invented, because the row already has
+        // one from the turn that created it.
+        for suggestion in [
+            "<think>We need answer only title max six words. Need respond to user's Q\u{2026}",
+            "",
+            "   ",
+        ] {
+            assert_eq!(
+                set_title(&db, &conversation, question, suggestion).unwrap(),
+                0,
+                "a suggestion with no name in it is refused, not stored"
+            );
+            assert_eq!(
+                conversations(&db, 1).unwrap()[0].title,
+                before,
+                "the question's truncation stands instead of an empty title"
+            );
+        }
     }
 
     #[test]

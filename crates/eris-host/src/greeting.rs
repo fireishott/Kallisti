@@ -257,7 +257,13 @@ const INSTRUCTION: &str = "Write the line now.";
 #[must_use]
 pub fn generate(config: &TurnConfig) -> Option<String> {
     let profile =
-        ProviderProfile::new("greeting", config.base_url.clone(), config.key_ref.clone()).ok()?;
+        ProviderProfile::new("greeting", config.base_url.clone(), config.key_ref.clone())
+            .ok()?
+            // Build 106 shipped without these two, so a greeting on a provider that
+            // inlines its reasoning or speaks the Messages dialect was sent the
+            // wrong request and failed silently. Same pair `web/chat.rs` uses.
+            .with_dialect(config.dialect)
+            .with_reasoning_split(config.reasoning_split);
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),

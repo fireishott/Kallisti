@@ -366,6 +366,10 @@ pub struct Paths {
     pub state_dir: PathBuf,
     /// `~/.local/share/kallisti/eris.db`
     pub db_file: PathBuf,
+    /// `~/.config/kallisti/tokens` - encrypted token records, mode `0700`.
+    pub token_dir: PathBuf,
+    /// `~/.config/kallisti/keys/token.key` - the AEAD key, mode `0600`.
+    pub token_key_file: PathBuf,
 }
 
 impl Paths {
@@ -379,6 +383,8 @@ impl Paths {
             toml_file: home.join(".config/kallisti/config.toml"),
             state_dir: home.join(".local/share/kallisti"),
             db_file: home.join(".local/share/kallisti/eris.db"),
+            token_dir: home.join(".config/kallisti/tokens"),
+            token_key_file: home.join(".config/kallisti/keys/token.key"),
         })
     }
 
@@ -411,6 +417,8 @@ impl Paths {
             env_file: config_dir.join("eris.env"),
             toml_file: config_dir.join("config.toml"),
             db_file: state_dir.join("eris.db"),
+            token_dir: config_dir.join("tokens"),
+            token_key_file: config_dir.join("keys/token.key"),
             config_dir,
             state_dir,
         }
@@ -479,6 +487,7 @@ pub struct TomlConfig {
     log_level: Option<LogLevel>,
     admin: AdminConfig,
     persona: PersonaTable,
+    oauth: OAuthTable,
     source: Option<PathBuf>,
 }
 
@@ -491,6 +500,7 @@ struct TomlConfigRaw {
     log_level: Option<String>,
     admin: Option<AdminRaw>,
     persona: Option<PersonaRaw>,
+    oauth: Option<OAuthRaw>,
 }
 
 /// The `[persona]` table, before validation.
@@ -544,6 +554,41 @@ impl PersonaTable {
     #[must_use]
     pub fn text(&self) -> Option<&str> {
         self.text.as_deref()
+    }
+}
+
+/// The `[oauth]` table, before validation.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OAuthRaw {
+    auto_refresh: Option<bool>,
+}
+
+/// The `[oauth]` table: whether a stored token may be refreshed on use.
+///
+/// **Defaults to false, in the parser and not only in the file on disk.** A
+/// missing key means false. While it is false nothing refreshes, ever: a grant
+/// that is inside its refresh lead is reported as needing a login, and a grant
+/// copied out of another program is reported as expired. Build 108 never turns
+/// it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OAuthTable {
+    auto_refresh: bool,
+}
+
+impl Default for OAuthTable {
+    fn default() -> Self {
+        Self {
+            auto_refresh: false,
+        }
+    }
+}
+
+impl OAuthTable {
+    /// `oauth.auto_refresh`, false unless the operator wrote true.
+    #[must_use]
+    pub const fn auto_refresh(&self) -> bool {
+        self.auto_refresh
     }
 }
 
@@ -678,6 +723,12 @@ impl TomlConfig {
                     text: persona.text,
                 },
             },
+            oauth: match raw.oauth {
+                None => OAuthTable::default(),
+                Some(oauth) => OAuthTable {
+                    auto_refresh: oauth.auto_refresh.unwrap_or(false),
+                },
+            },
             source: Some(path.to_path_buf()),
         })
     }
@@ -707,6 +758,12 @@ impl TomlConfig {
     #[must_use]
     pub fn persona(&self) -> &PersonaTable {
         &self.persona
+    }
+
+    /// The `[oauth]` table. Absent means never refresh.
+    #[must_use]
+    pub fn oauth(&self) -> OAuthTable {
+        self.oauth
     }
 
     /// The file this was read from, when there was one.
@@ -962,6 +1019,8 @@ KALLISTI_API_KEY_REF=sk-not-a-reference
             toml_file: dir.path().join("config.toml"),
             state_dir: dir.path().join("state"),
             db_file: dir.path().join("state/eris.db"),
+            token_dir: dir.path().join("config/tokens"),
+            token_key_file: dir.path().join("config/keys/token.key"),
         };
 
         let error = LoadedConfig::load(paths).expect_err("0640 must be refused");
@@ -991,6 +1050,8 @@ KALLISTI_API_KEY_REF=sk-not-a-reference
             toml_file,
             state_dir: dir.path().join("state"),
             db_file: dir.path().join("state/eris.db"),
+            token_dir: dir.path().join("config/tokens"),
+            token_key_file: dir.path().join("config/keys/token.key"),
         })
         .expect("both halves should load");
 
@@ -1178,5 +1239,69 @@ KALLISTI_API_KEY_REF=sk-not-a-reference
         let error = TomlConfig::parse("[persona]\nmood = \"sunny\"\n", &toml_path())
             .expect_err("unknown persona keys are refused");
         assert!(matches!(error, ConfigError::TomlParse { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn auto_refresh_is_false_unless_the_operator_writes_true() {
+        // The parser's default, not the file's: a missing table, a missing key,
+        // and an empty document all mean no refresh.
+        assert!(!TomlConfig::defaults().oauth().auto_refresh());
+        assert!(
+            !TomlConfig::parse("", &toml_path())
+                .expect("empty document")
+                .oauth()
+                .auto_refresh()
+        );
+        assert!(
+            !TomlConfig::parse("log_level = \"debug\"\n", &toml_path())
+                .expect("no oauth table")
+                .oauth()
+                .auto_refresh()
+        );
+        assert!(
+            !TomlConfig::parse("[oauth]\n", &toml_path())
+                .expect("empty oauth table")
+                .oauth()
+                .auto_refresh()
+        );
+
+        // Only the explicit value turns it on, and build 108 writes no such file.
+        assert!(
+            TomlConfig::parse("[oauth]\nauto_refresh = true\n", &toml_path())
+                .expect("explicit")
+                .oauth()
+                .auto_refresh()
+        );
+        assert!(
+            !TomlConfig::parse("[oauth]\nauto_refresh = false\n", &toml_path())
+                .expect("explicit false")
+                .oauth()
+                .auto_refresh()
+        );
+    }
+
+    #[test]
+    fn the_oauth_table_refuses_a_key_nobody_documented() {
+        let error = TomlConfig::parse("[oauth]\nrefresh_everything = true\n", &toml_path())
+            .expect_err("an unknown oauth key is refused");
+        assert!(matches!(error, ConfigError::TomlParse { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn a_secret_in_the_oauth_table_is_refused_by_name() {
+        let error = TomlConfig::parse("[oauth]\nrefresh_token = \"abc\"\n", &toml_path())
+            .expect_err("a secret belongs nowhere near this file");
+        assert!(matches!(error, ConfigError::SecretInToml { .. }), "{error:?}");
+        assert!(error.to_string().contains("oauth.refresh_token"), "{error}");
+    }
+
+    #[test]
+    fn the_token_paths_are_under_the_config_directory_and_nowhere_else() {
+        let paths = Paths::for_root("/tmp/example");
+        assert_eq!(paths.token_dir, PathBuf::from("/tmp/example/config/tokens"));
+        assert_eq!(
+            paths.token_key_file,
+            PathBuf::from("/tmp/example/config/keys/token.key")
+        );
     }
 }

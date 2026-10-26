@@ -794,6 +794,8 @@ mod tests {
             toml_file: config_dir.join("config.toml"),
             state_dir: state_dir.clone(),
             db_file: state_dir.join("eris.db"),
+            token_dir: dir.path().join("config/tokens"),
+            token_key_file: dir.path().join("config/keys/token.key"),
         };
 
         let (verdict, detail) = check_secrets(&paths);
@@ -836,6 +838,8 @@ mod tests {
             toml_file: config_dir.join("config.toml"),
             state_dir: state_dir.clone(),
             db_file: state_dir.join("eris.db"),
+            token_dir: dir.path().join("config/tokens"),
+            token_key_file: dir.path().join("config/keys/token.key"),
         };
 
         let (verdict, detail) = check_secrets(&paths);
