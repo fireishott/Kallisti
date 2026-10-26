@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use crate::apns::{ApnsSender, Outcome};
-use crate::push::PushStore;
+use crate::push::{NotifyScope, PushStore};
 
 /// What a finished turn wants to say.
 #[derive(Debug, Clone)]
@@ -36,6 +36,104 @@ pub struct Announcement {
     pub conversation: Option<String>,
     /// The assistant row, so a deep link lands on the message.
     pub message_id: Option<String>,
+    /// Who this announcement reaches. `Origin` is the device above and is
+    /// today's behaviour; `All` and `Targeted` reach past it.
+    pub scope: NotifyScope,
+    /// The device ids a [`NotifyScope::Targeted`] announcement names. Ignored
+    /// under the other two scopes.
+    pub devices: Vec<String>,
+}
+
+impl Announcement {
+    /// An announcement that reaches only the device that ran the turn.
+    ///
+    /// The shape every caller had before scopes existed, so a call site that
+    /// does not care about routing says so by not mentioning it.
+    #[must_use]
+    pub fn to_origin(device_id: String, job_id: String, text: String) -> Self {
+        Self {
+            device_id,
+            job_id,
+            text,
+            conversation: None,
+            message_id: None,
+            scope: NotifyScope::Origin,
+            devices: Vec::new(),
+        }
+    }
+}
+
+/// One registration an announcement will attempt, with the device it belongs
+/// to.
+///
+/// The device id is carried per target rather than read from the announcement,
+/// because under `all` and `targeted` the device that owns the turn is not
+/// necessarily the device being reached, and a token retired or a corrected
+/// environment has to be written against the row that carries it.
+type Target = (String, Option<String>, String, Option<String>);
+
+/// Who an announcement resolves to, before anything is sent.
+enum Reachable {
+    /// These registrations, in the order they will be attempted.
+    Targets(Vec<Target>),
+    /// Nobody, with the sentence that says why.
+    Nobody(&'static str),
+}
+
+/// Turn a scope and a device list into the registrations to attempt.
+///
+/// Pure routing: no network, no delivery, so the decision can be tested on its
+/// own. An empty result after a non-empty scope is [`Announced::NoRegistration`]
+/// at the call site, which is a phone that has not registered.
+fn reachable(store: &PushStore, announcement: &Announcement) -> Result<Reachable, String> {
+    match announcement.scope {
+        NotifyScope::Origin => {
+            if announcement.device_id.trim().is_empty() {
+                // A browser turn has no owning device, so `origin` has nothing
+                // to resolve to. Said plainly rather than falling through to a
+                // broadcast this scope did not ask for.
+                return Ok(Reachable::Nobody(
+                    "the notify scope is origin and the turn belongs to no device",
+                ));
+            }
+            let rows = store
+                .active_registrations(&announcement.device_id)
+                .map_err(|error| format!("cannot read the registrations: {error}"))?;
+            Ok(Reachable::Targets(
+                rows.into_iter()
+                    .map(|(token, environment, bundle)| {
+                        (announcement.device_id.clone(), token, environment, bundle)
+                    })
+                    .collect(),
+            ))
+        }
+        NotifyScope::All => {
+            let rows = store
+                .all_active()
+                .map_err(|error| format!("cannot read the registrations: {error}"))?;
+            Ok(Reachable::Targets(rows))
+        }
+        NotifyScope::Targeted => {
+            if announcement.devices.is_empty() {
+                // A real answer, not a fallback: "chosen devices" with nothing
+                // chosen means nobody, and saying so beats quietly widening to
+                // every phone.
+                return Ok(Reachable::Nobody(
+                    "the notify scope is targeted and no device is named",
+                ));
+            }
+            let mut targets = Vec::new();
+            for device in &announcement.devices {
+                let rows = store
+                    .active_registrations(device)
+                    .map_err(|error| format!("cannot read the registrations: {error}"))?;
+                targets.extend(rows.into_iter().map(|(token, environment, bundle)| {
+                    (device.clone(), token, environment, bundle)
+                }));
+            }
+            Ok(Reachable::Targets(targets))
+        }
+    }
 }
 
 /// The outcome of one announcement, for the log line and for a test.
@@ -69,10 +167,12 @@ pub fn worth_announcing(status: &str) -> bool {
     status == "succeeded"
 }
 
-/// Tell one device that its turn finished.
+/// Tell the devices an announcement resolves to that a turn finished.
 ///
 /// `enabled` comes from the operator's setting and is passed rather than read
-/// here, so the decision to notify is visible at the call site.
+/// here, so the decision to notify is visible at the call site. The routing comes
+/// from [`Announcement::scope`] and [`Announcement::devices`], and an `origin`
+/// announcement reaches exactly the device it always did.
 pub async fn announce(
     sender: Option<Arc<ApnsSender>>,
     store: Option<&PushStore>,
@@ -88,14 +188,21 @@ pub async fn announce(
     let Some(store) = store else {
         return Announced::Skipped("the push store did not open");
     };
-    if announcement.device_id.trim().is_empty() {
-        return Announced::Skipped("the turn belongs to no device");
-    }
-    let targets = match store.active_registrations(&announcement.device_id) {
-        Ok(targets) => targets,
+    let targets = match reachable(store, announcement) {
+        Ok(Reachable::Targets(targets)) => targets,
+        Ok(Reachable::Nobody(reason)) => {
+            // Logged rather than silent: an operator who chose a scope that
+            // reaches nobody has to be able to find out why the phone was quiet.
+            tracing::info!(
+                job = %announcement.job_id,
+                scope = announcement.scope.as_str(),
+                "no push notification was sent: {reason}"
+            );
+            return Announced::Skipped(reason);
+        }
         Err(error) => {
             tracing::warn!(%error, "cannot read the push registrations for a finished turn");
-            return Announced::Failed(format!("cannot read the registrations: {error}"));
+            return Announced::Failed(error);
         }
     };
     if targets.is_empty() {
@@ -111,7 +218,7 @@ pub async fn announce(
 
     let mut delivered = 0usize;
     let mut last_failure: Option<String> = None;
-    for (apns_token, environment, bundle) in targets {
+    for (device_id, apns_token, environment, bundle) in targets {
         let Some(apns_token) = apns_token.filter(|token| !token.trim().is_empty()) else {
             // A `relay` transport registration carries no token this host can
             // use. Nothing to retry and nothing to retire.
@@ -160,7 +267,7 @@ pub async fn announce(
                     } else {
                         "development"
                     };
-                    let _ = store.set_environment(&announcement.device_id, &apns_token, proved);
+                    let _ = store.set_environment(&device_id, &apns_token, proved);
                     tracing::info!(
                         device_id = %announcement.device_id,
                         environment = %proved,
@@ -171,9 +278,9 @@ pub async fn announce(
             Outcome::TokenInvalid => {
                 // Dead token: retire it so the next turn does not pay for the
                 // same rejection. A phone that reinstalls registers a new one.
-                let _ = store.deactivate_token(&announcement.device_id, &apns_token);
+                let _ = store.deactivate_token(&device_id, &apns_token);
                 tracing::info!(
-                    device_id = %announcement.device_id,
+                    device_id = %device_id,
                     "APNs retired a push token; the registration is now inactive"
                 );
                 last_failure = Some("APNs retired the token".to_owned());
@@ -218,13 +325,33 @@ mod tests {
     }
 
     fn announcement() -> Announcement {
-        Announcement {
-            device_id: "device-1".to_owned(),
-            job_id: "job-1".to_owned(),
-            text: "The answer is 42.".to_owned(),
-            conversation: Some("conv-1".to_owned()),
-            message_id: Some("msg-1".to_owned()),
-        }
+        let mut announcement = Announcement::to_origin(
+            "device-1".to_owned(),
+            "job-1".to_owned(),
+            "The answer is 42.".to_owned(),
+        );
+        announcement.conversation = Some("conv-1".to_owned());
+        announcement.message_id = Some("msg-1".to_owned());
+        announcement
+    }
+
+    /// A registration for an arbitrary device, so a scope test can have more
+    /// than one phone in the store.
+    fn register_for(store: &PushStore, device: &str, token: &str) {
+        store
+            .upsert(
+                device,
+                "direct",
+                Some(token),
+                "production",
+                "net.fihonline.kallisti",
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("register");
     }
 
     fn register(store: &PushStore, token: &str) {
@@ -265,7 +392,10 @@ mod tests {
         let mut announcement = announcement();
         announcement.device_id.clear();
         let outcome = announce(sender().into(), Some(&store), &announcement, true).await;
-        assert_eq!(outcome, Announced::Skipped("the turn belongs to no device"));
+        assert_eq!(
+            outcome,
+            Announced::Skipped("the notify scope is origin and the turn belongs to no device")
+        );
     }
 
     #[tokio::test]
@@ -307,6 +437,147 @@ mod tests {
             outcome,
             Announced::Failed("no registration carried a token".to_owned())
         );
+    }
+
+    /// The routing decision, with no delivery in it.
+    ///
+    /// Eight cases from the card, and each one is a fact about which phones ring
+    /// rather than about how a banner looks. The store holds three devices and a
+    /// retired fourth so `all` and a deactivated row are both covered.
+    fn routing_store() -> PushStore {
+        let store = store();
+        register_for(&store, "device-1", "token-1");
+        register_for(&store, "device-2", "token-2");
+        register_for(&store, "device-3", "token-3");
+        register_for(&store, "device-dead", "token-dead");
+        store.deactivate("device-dead").expect("deactivate");
+        store
+    }
+
+    fn routed(announcement: &Announcement) -> Reachable {
+        reachable(&routing_store(), announcement).expect("the routing reads")
+    }
+
+    fn routed_devices(announcement: &Announcement) -> Vec<String> {
+        match routed(announcement) {
+            Reachable::Targets(targets) => targets.into_iter().map(|row| row.0).collect(),
+            Reachable::Nobody(reason) => panic!("expected targets, got nobody: {reason}"),
+        }
+    }
+
+    #[test]
+    fn origin_reaches_only_the_device_that_ran_the_turn() {
+        assert_eq!(routed_devices(&announcement()), vec!["device-1".to_owned()]);
+    }
+
+    #[test]
+    fn origin_with_no_owning_device_reaches_nobody_and_says_why() {
+        let mut announcement = announcement();
+        announcement.device_id.clear();
+        match routed(&announcement) {
+            Reachable::Nobody(reason) => assert!(
+                reason.contains("origin") && reason.contains("no device"),
+                "the reason names the scope and the cause: {reason}"
+            ),
+            Reachable::Targets(targets) => {
+                panic!("a browser turn must not reach a device: {targets:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn all_reaches_every_active_registration_and_never_a_retired_one() {
+        let mut announcement = announcement();
+        announcement.scope = NotifyScope::All;
+        let devices = routed_devices(&announcement);
+        assert_eq!(devices, vec!["device-1", "device-2", "device-3"]);
+        assert!(
+            !devices.iter().any(|device| device == "device-dead"),
+            "a deactivated registration is never a target"
+        );
+    }
+
+    #[test]
+    fn targeted_reaches_the_named_devices_and_only_those() {
+        let mut announcement = announcement();
+        announcement.scope = NotifyScope::Targeted;
+        announcement.devices = vec!["device-3".to_owned(), "device-2".to_owned()];
+        let devices = routed_devices(&announcement);
+        assert_eq!(devices, vec!["device-3", "device-2"]);
+        assert!(!devices.iter().any(|device| device == "device-1"));
+    }
+
+    #[test]
+    fn targeted_with_no_device_named_reaches_nobody() {
+        let mut announcement = announcement();
+        announcement.scope = NotifyScope::Targeted;
+        match routed(&announcement) {
+            Reachable::Nobody(reason) => assert!(reason.contains("targeted"), "{reason}"),
+            Reachable::Targets(targets) => panic!("an empty list means nobody: {targets:?}"),
+        }
+    }
+
+    #[test]
+    fn a_targeted_device_that_is_not_registered_contributes_nothing() {
+        let mut announcement = announcement();
+        announcement.scope = NotifyScope::Targeted;
+        announcement.devices = vec!["device-2".to_owned(), "device-unknown".to_owned()];
+        assert_eq!(routed_devices(&announcement), vec!["device-2".to_owned()]);
+    }
+
+    #[test]
+    fn a_scope_that_reaches_nobody_is_skipped_with_the_reason_and_not_sent() {
+        let store = routing_store();
+        let mut announcement = announcement();
+        announcement.scope = NotifyScope::Targeted;
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(announce(Some(sender()), Some(&store), &announcement, true));
+        assert!(
+            matches!(&outcome, Announced::Skipped(reason) if reason.contains("targeted")),
+            "nothing is attempted: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_scope_means_origin_rather_than_a_broadcast() {
+        assert_eq!(
+            crate::push::notify_scope(Some("everything")),
+            NotifyScope::Origin,
+            "a corrupt row must not blast every phone"
+        );
+        assert_eq!(crate::push::notify_scope(None), NotifyScope::Origin);
+        assert_eq!(crate::push::notify_scope(Some(" all ")), NotifyScope::All);
+        assert_eq!(
+            crate::push::notify_scope(Some("targeted")),
+            NotifyScope::Targeted
+        );
+        assert_eq!(NotifyScope::All.as_str(), "all");
+    }
+
+    #[test]
+    fn the_device_list_is_trimmed_deduplicated_and_empty_safe() {
+        assert!(crate::push::notify_devices(None).is_empty());
+        assert!(crate::push::notify_devices(Some("  ")).is_empty());
+        assert_eq!(
+            crate::push::notify_devices(Some("a, b,,a ,c")),
+            vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_master_switch_beats_every_scope() {
+        let store = routing_store();
+        let mut announcement = announcement();
+        announcement.scope = NotifyScope::All;
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(announce(Some(sender()), Some(&store), &announcement, false));
+        assert_eq!(outcome, Announced::Skipped("push.notify_on_reply is off"));
     }
 
     #[test]

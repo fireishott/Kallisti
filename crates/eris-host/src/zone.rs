@@ -144,24 +144,105 @@ pub fn offset_minutes(db: &Db, zone: Zone) -> i64 {
     .unwrap_or(0)
 }
 
-/// Rewrite a stored UTC stamp as the operator's clock, `HH:MM`.
+/// The `settings` row that says whether the operator reads a 12 or a 24 hour
+/// clock.
+///
+/// Absent means 24 hour, which is what every surface showed before this setting
+/// existed, so a host that never touches it reads exactly as it did.
+pub const SETTING_CLOCK_FORMAT: &str = "display.clock_format";
+
+/// How a stamp is written: the two shapes an operator actually chooses between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockFormat {
+    /// `8:47 AM`, `12:05 PM`.
+    Twelve,
+    /// `08:47`. The default, and today's behaviour.
+    TwentyFour,
+}
+
+impl ClockFormat {
+    /// Parse a stored value, falling back to the 24 hour clock.
+    ///
+    /// Anything unrecognized means 24 hour, for the same reason an unknown zone
+    /// means the host's: a corrupt row must not silently move every clock in the
+    /// product into a shape the operator did not pick.
+    #[must_use]
+    pub fn parse(stored: Option<&str>) -> Self {
+        match stored.map(str::trim) {
+            Some("12h") | Some("12") | Some("12-hour") => Self::Twelve,
+            _ => Self::TwentyFour,
+        }
+    }
+
+    /// The stored spelling, and the form value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Twelve => "12h",
+            Self::TwentyFour => "24h",
+        }
+    }
+
+    /// The label a person reads, as a refusal quotes it.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Twelve => "12 hour",
+            Self::TwentyFour => "24 hour",
+        }
+    }
+}
+
+/// The hour and minute of a stored UTC stamp on the operator's clock.
+///
+/// One parse, shared by both formats, so the two can never disagree about which
+/// minute a stamp falls in. `None` is a stamp this host cannot read, and the
+/// caller returns it unchanged rather than inventing a time.
+fn clock_parts(stamp: &str, offset_minutes: i64) -> Option<(i64, i64)> {
+    let (_date, time) = stamp.split_once('T')?;
+    if time.len() < 5 {
+        return None;
+    }
+    let hour = time[0..2].parse::<i64>().ok()?;
+    let minute = time[3..5].parse::<i64>().ok()?;
+    let shifted = (hour * 60 + minute + offset_minutes).rem_euclid(24 * 60);
+    Some((shifted / 60, shifted % 60))
+}
+
+/// Rewrite a stored UTC stamp in the operator's clock format.
 ///
 /// No date is shown anywhere in the transcript, so a stamp that crosses midnight
 /// reports the new day's time and nothing pretends otherwise.
 #[must_use]
-pub fn clock_in(stamp: &str, offset_minutes: i64) -> String {
-    let Some((_date, time)) = stamp.split_once('T') else {
+pub fn clock_in_format(stamp: &str, offset_minutes: i64, format: ClockFormat) -> String {
+    let Some((hour, minute)) = clock_parts(stamp, offset_minutes) else {
         return stamp.to_owned();
     };
-    if time.len() < 5 {
-        return stamp.to_owned();
+    match format {
+        ClockFormat::TwentyFour => format!("{hour:02}:{minute:02}"),
+        ClockFormat::Twelve => {
+            // Midnight is 12 AM and noon is 12 PM: the two hours where the
+            // arithmetic and the words part company, so they are named rather
+            // than derived.
+            let (shown, suffix) = match hour {
+                0 => (12, "AM"),
+                1..=11 => (hour, "AM"),
+                12 => (12, "PM"),
+                other => (other - 12, "PM"),
+            };
+            format!("{shown}:{minute:02} {suffix}")
+        }
     }
-    let (Ok(hour), Ok(minute)) = (time[0..2].parse::<i64>(), time[3..5].parse::<i64>()) else {
-        return stamp.to_owned();
-    };
+}
 
-    let shifted = (hour * 60 + minute + offset_minutes).rem_euclid(24 * 60);
-    format!("{:02}:{:02}", shifted / 60, shifted % 60)
+/// Rewrite a stored UTC stamp as the operator's clock, `HH:MM`.
+///
+/// The 24 hour shape, and the signature every existing caller already uses. It
+/// delegates so there is one conversion rather than two: a surface that wants the
+/// other shape calls [`clock_in_format`] with the operator's choice.
+#[must_use]
+pub fn clock_in(stamp: &str, offset_minutes: i64) -> String {
+    clock_in_format(stamp, offset_minutes, ClockFormat::TwentyFour)
 }
 
 /// The hour of the operator's day, for the greeting.
@@ -199,6 +280,63 @@ mod tests {
     fn a_stamp_that_crosses_midnight_wraps_in_both_directions() {
         assert_eq!(clock_in("2026-10-20T02:30:00Z", -240), "22:30");
         assert_eq!(clock_in("2026-10-20T23:30:00Z", 120), "01:30");
+    }
+
+    /// The 12 hour shape, at the four stamps where it is easy to get wrong.
+    ///
+    /// 08:47 is the morning and 20:47 is the evening of the same day, midnight is
+    /// 12 AM rather than 0 AM, and noon is 12 PM rather than 0 PM. Those two are
+    /// the whole reason this is a named function rather than `hour % 12`.
+    #[test]
+    fn the_twelve_hour_clock_names_midnight_and_noon_by_hand() {
+        let twelve = ClockFormat::Twelve;
+        assert_eq!(
+            clock_in_format("2026-10-20T12:47:09Z", -240, twelve),
+            "8:47 AM"
+        );
+        assert_eq!(
+            clock_in_format("2026-10-21T00:47:09Z", -240, twelve),
+            "8:47 PM"
+        );
+        assert_eq!(
+            clock_in_format("2026-10-20T04:00:00Z", -240, twelve),
+            "12:00 AM"
+        );
+        assert_eq!(
+            clock_in_format("2026-10-20T16:05:00Z", -240, twelve),
+            "12:05 PM"
+        );
+    }
+
+    /// The format is a setting, and the default is what every surface already
+    /// showed: a row that was never written reads as 24 hour, and a corrupt one
+    /// does too rather than inventing a third shape.
+    #[test]
+    fn a_clock_format_parses_and_defaults_to_the_twenty_four_hour_one() {
+        assert_eq!(ClockFormat::parse(None), ClockFormat::TwentyFour);
+        assert_eq!(ClockFormat::parse(Some("")), ClockFormat::TwentyFour);
+        assert_eq!(ClockFormat::parse(Some("24h")), ClockFormat::TwentyFour);
+        assert_eq!(ClockFormat::parse(Some("12h")), ClockFormat::Twelve);
+        assert_eq!(ClockFormat::parse(Some(" 12h ")), ClockFormat::Twelve);
+        assert_eq!(
+            ClockFormat::parse(Some("thirteen")),
+            ClockFormat::TwentyFour,
+            "an unknown value must not become a shape nobody chose"
+        );
+        assert_eq!(ClockFormat::Twelve.as_str(), "12h");
+        assert_eq!(ClockFormat::TwentyFour.as_str(), "24h");
+    }
+
+    /// The old helper is the new one with the 24 hour format, so nothing that
+    /// already called it can have moved.
+    #[test]
+    fn clock_in_is_the_twenty_four_hour_format() {
+        let stamp = "2026-10-20T12:47:09.123Z";
+        assert_eq!(
+            clock_in(stamp, -240),
+            clock_in_format(stamp, -240, ClockFormat::TwentyFour)
+        );
+        assert_eq!(clock_in(stamp, -240), "08:47");
     }
 
     #[test]

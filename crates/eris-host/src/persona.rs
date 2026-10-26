@@ -43,6 +43,28 @@ pub const DEFAULT_ASSISTANT_NAME: &str = "Kallisti";
 /// the operator's later decision from the dashboard, and it wins.
 pub const SETTING_PERSONA_ENABLED: &str = "assistant.persona_enabled";
 
+/// The name to call the assistant, from a stored row.
+///
+/// Absent or blank means [`DEFAULT_ASSISTANT_NAME`]: a row somebody cleared is a
+/// name nobody set, not a nameless assistant.
+#[must_use]
+pub fn assistant_name(stored: Option<&str>) -> &str {
+    stored
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(DEFAULT_ASSISTANT_NAME)
+}
+
+/// The persona switch as a stored row reads it.
+///
+/// Only an explicit `false` turns it off, which is the [`PersonaConfig`] default
+/// restated: a persona file that exists is a decision the operator already made.
+/// A row that was never written therefore leaves the file in force.
+#[must_use]
+pub fn enabled_flag(stored: Option<&str>) -> bool {
+    !matches!(stored.map(str::trim), Some("false"))
+}
+
 /// The documented default path, `~/.config/kallisti/persona.md`.
 pub const DEFAULT_PERSONA_PATH: &str = "~/.config/kallisti/persona.md";
 

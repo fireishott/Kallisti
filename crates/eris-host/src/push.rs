@@ -48,6 +48,91 @@ CREATE INDEX IF NOT EXISTS idx_push_registrations_device ON push_registrations (
 /// Stored as a string because every other setting here is.
 pub const SETTING_NOTIFY_ON_REPLY: &str = "push.notify_on_reply";
 
+/// Who a finished reply is announced to.
+///
+/// Separate from [`SETTING_NOTIFY_ON_REPLY`], which is the master switch: this is
+/// the routing, that is the whether-at-all.
+pub const SETTING_NOTIFY_SCOPE: &str = "push.notify_scope";
+
+/// Which devices a `targeted` announcement reaches, comma-separated.
+pub const SETTING_NOTIFY_DEVICES: &str = "push.notify_devices";
+
+/// Who a finished reply is announced to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifyScope {
+    /// Only the device that ran the turn. Today's behaviour, and the default.
+    Origin,
+    /// Every active registration in the store.
+    All,
+    /// Only the device ids named in [`SETTING_NOTIFY_DEVICES`].
+    Targeted,
+}
+
+impl NotifyScope {
+    /// Every value the settings form may submit, in display order.
+    pub const ALL: [Self; 3] = [Self::Origin, Self::All, Self::Targeted];
+
+    /// What an unwritten row means.
+    pub const DEFAULT: Self = Self::Origin;
+
+    /// Parse a stored value, falling back to [`Self::Origin`].
+    ///
+    /// An unknown value means the origin device, not every device: a corrupt row
+    /// must not turn one phone's turn into a banner on all of them.
+    #[must_use]
+    pub fn parse(stored: Option<&str>) -> Self {
+        match stored.map(str::trim) {
+            Some("all") => Self::All,
+            Some("targeted") => Self::Targeted,
+            _ => Self::Origin,
+        }
+    }
+
+    /// The stored spelling, and the form value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Origin => "origin",
+            Self::All => "all",
+            Self::Targeted => "targeted",
+        }
+    }
+
+    /// The label a person reads.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Origin => "The device that asked",
+            Self::All => "Every device",
+            Self::Targeted => "Chosen devices",
+        }
+    }
+}
+
+/// The device ids a `targeted` announcement names.
+///
+/// Comma-separated, trimmed, empty entries dropped, duplicates collapsed. An
+/// empty list is a real answer and means nobody, which is why this returns a
+/// list rather than an `Option`.
+#[must_use]
+pub fn notify_devices(raw: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in raw.unwrap_or_default().split(',') {
+        let id = id.trim();
+        if id.is_empty() || out.iter().any(|seen| seen == id) {
+            continue;
+        }
+        out.push(id.to_owned());
+    }
+    out
+}
+
+/// The scope a stored value means, as the settings record spells it.
+#[must_use]
+pub fn notify_scope(raw: Option<&str>) -> NotifyScope {
+    NotifyScope::parse(raw)
+}
+
 /// The alert body length. A notification is a pointer, not a transcript: long
 /// enough to recognise the answer, short enough that the phone does not scroll
 /// it in the banner.

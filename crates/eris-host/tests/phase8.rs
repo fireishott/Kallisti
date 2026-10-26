@@ -2950,13 +2950,19 @@ async fn settings_require_a_bearer_and_the_admin_scope() {
         .map(String::as_str)
         .collect();
     keys.sort_unstable();
+    // The seven fields a client read before build 111, plus the three the
+    // capability record added. Section 7.5 of the read-first file is this list,
+    // and a field that is not in that section is a wire shape that drifted.
     assert_eq!(
         keys,
         vec![
             "approval",
+            "capabilities",
+            "clock_format",
             "memory",
             "model",
             "ok",
+            "push",
             "sandbox",
             "timezone",
             "tool_rounds",
@@ -2971,19 +2977,115 @@ async fn settings_require_a_bearer_and_the_admin_scope() {
     assert_eq!(body["tools_enabled"], true);
     assert_eq!(body["tool_rounds"], 12);
     assert!(body["timezone"].as_str().is_some());
+    assert_eq!(body["clock_format"], "24h", "the clock default: {body}");
+    assert_eq!(body["push"]["notify_on_reply"], true);
+    assert_eq!(body["push"]["scope"], "origin");
+    assert_eq!(body["push"]["devices"], serde_json::json!([]));
 
-    // Nothing credential shaped is in it. A settings screen that carried a key,
-    // a reference or a path would be the leak it exists to avoid.
+    // The three new fields are not a shape of their own: the record is a list,
+    // every entry carries the seven documented members, and the six groups are
+    // the only groups. A seventh group is a tab neither client can render.
+    let record = body["capabilities"]
+        .as_array()
+        .expect("the capability record is an array");
+    assert!(
+        record.len() >= 20,
+        "the record covers the real settings, not a sample: {} entries",
+        record.len()
+    );
+    for entry in record {
+        let mut members: Vec<&str> = entry
+            .as_object()
+            .expect("a capability object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        members.sort_unstable();
+        assert_eq!(
+            members,
+            vec![
+                "group", "key", "label", "options", "type", "value", "writable"
+            ],
+            "a capability is the documented seven members: {entry}"
+        );
+        let group = entry["group"].as_str().expect("a group");
+        assert!(
+            [
+                "models",
+                "assistant",
+                "memory",
+                "devices",
+                "automation",
+                "system"
+            ]
+            .contains(&group),
+            "the group is one of the six: {entry}"
+        );
+        assert!(
+            entry["key"].as_str().is_some_and(|key| !key.is_empty()),
+            "a capability names a key: {entry}"
+        );
+        assert!(
+            entry["label"]
+                .as_str()
+                .is_some_and(|label| !label.is_empty()),
+            "a capability carries a label: {entry}"
+        );
+        assert!(entry["writable"].is_boolean(), "{entry}");
+        // The options match the type: an enum lists them, anything else is null.
+        match entry["type"].as_str().expect("a type") {
+            "enum" => assert!(
+                entry["options"].as_array().is_some_and(|o| !o.is_empty()),
+                "an enum names its options: {entry}"
+            ),
+            "string" | "bool" | "int" => assert!(
+                entry["options"].is_null(),
+                "only an enum has options: {entry}"
+            ),
+            other => panic!("an undocumented type {other}: {entry}"),
+        }
+    }
+
+    // The wizard's bookkeeping and the derived catalogues are not choices, so
+    // they are not in the record. A passphrase hash in a record a client renders
+    // is a secret in a picture.
+    for entry in record {
+        let key = entry["key"].as_str().expect("a key");
+        for banned in ["setup.", "provider.", "aux.", "memory.vault"] {
+            assert!(
+                !key.starts_with(banned),
+                "the record carries no {banned} entry: {key}"
+            );
+        }
+    }
+
+    // Nothing credential shaped is in it. A settings screen that carried an API
+    // key, a reference or a provider URL would be the leak it exists to avoid.
+    // `key` is not on this list because `key` is now a documented field name in
+    // every capability entry; the values are checked for it below instead.
     let raw = read.body.clone();
     for banned in [
-        "env:", "http", "sk-", "key", "password", "token", "base_url",
+        "env:", "http", "sk-", "password", "token", "base_url", "api_key",
     ] {
         assert!(
             !raw.to_ascii_lowercase().contains(banned),
             "the snapshot carries no {banned}: {raw}"
         );
     }
-    assert!(!raw.contains('/'), "no path is in the snapshot: {raw}");
+    // The only path the record is allowed to carry is the workspace, which is
+    // read-only on this route on purpose.
+    for entry in record {
+        let Some(value) = entry["value"].as_str() else {
+            continue;
+        };
+        if entry["key"] == "workspace_path" {
+            continue;
+        }
+        assert!(
+            !value.contains('/'),
+            "no path is in a capability value but the workspace: {entry}"
+        );
+    }
 
     harness.stop();
 }

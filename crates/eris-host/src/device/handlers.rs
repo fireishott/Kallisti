@@ -1070,15 +1070,42 @@ pub async fn assign_project(
 // Conversations
 // ---------------------------------------------------------------------------
 
-/// `GET /v1/conversations` - the newest conversations, newest first.
+/// The query `GET /v1/conversations` accepts: `sort`, one of the four modes.
+///
+/// A string rather than an enum so an unknown value is [`ConversationSort::parse`]'s
+/// business: it answers `updated` for anything it does not recognize, which keeps
+/// a bad query string from looking like an empty archive.
+#[derive(serde::Deserialize)]
+pub struct ConversationListQuery {
+    sort: Option<String>,
+}
+
+/// One conversation as the device list spells it.
+fn conversation_row(row: &chat::Conversation, message_count: usize) -> serde_json::Value {
+    serde_json::json!({
+        "id": row.id,
+        "title": row.title,
+        "updated_at": row.updated_at,
+        "created_at": row.created_at,
+        "project_id": row.project_id,
+        "message_count": message_count,
+    })
+}
+
+/// `GET /v1/conversations?sort=` - the conversations, in the operator's order.
 ///
 /// A conversation is conversation state, so this is the `sessions` scope, exactly
 /// as `GET /v1/sessions/{id}` is. The page is bounded and says whether it was cut:
 /// a client that has more history than the page is told so rather than left to
 /// believe it has read everything.
+///
+/// The flat `conversations` array is the same shape it always was, plus
+/// `created_at`, and every mode fills it. `day` additionally fills `groups`, whose
+/// headings come from the operator's own clock: `Today`, `Yesterday`, `Mar 14`.
 pub async fn list_conversations(
     State(service): State<DeviceService>,
     headers: HeaderMap,
+    Query(query): Query<ConversationListQuery>,
 ) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
@@ -1087,10 +1114,11 @@ pub async fn list_conversations(
     if let Err(error) = require_scope(&token, Scope::Sessions) {
         return error.into_response();
     }
+    let sort = chat::ConversationSort::parse(query.sort.as_deref());
     let db = service.engine().db();
     // One row beyond the page: "there is more" is then a fact about the store
     // rather than an assumption about the query.
-    let rows = match chat::conversations(db, CONVERSATION_LIST_LIMIT + 1) {
+    let rows = match chat::conversations_sorted(db, CONVERSATION_LIST_LIMIT + 1, sort) {
         Ok(rows) => rows,
         Err(error) => {
             return DeviceError::db_unavailable(format!(
@@ -1108,26 +1136,51 @@ pub async fn list_conversations(
                 .into_response();
         }
     };
+    let counted = |row: &chat::Conversation| counts.get(&row.id).copied().unwrap_or(0);
     let conversations: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|row| {
-            let message_count = counts.get(&row.id).copied().unwrap_or(0);
-            serde_json::json!({
-                "id": row.id,
-                "title": row.title,
-                "updated_at": row.updated_at,
-                "project_id": row.project_id,
-                "message_count": message_count,
-            })
-        })
+        .iter()
+        .map(|row| conversation_row(row, counted(row)))
         .collect();
-    axum::Json(serde_json::json!({
+    let mut body = serde_json::json!({
         "ok": true,
         "count": conversations.len(),
         "truncated": truncated,
+        "sort": sort.as_str(),
         "conversations": conversations,
-    }))
-    .into_response()
+    });
+    if sort == chat::ConversationSort::Day {
+        // The day boundary is the operator's, and SQLite does not know their
+        // zone, so the grouping happens here with the same offset every stamp on
+        // the transcript uses.
+        // A failed read here is a database that cannot answer, which is the
+        // same fault the list above would have hit; it is reported rather than
+        // turned into a silent UTC grouping.
+        let stored_zone = match service.engine().setting(crate::zone::SETTING_TIMEZONE) {
+            Ok(stored) => stored,
+            Err(error) => return settings_unavailable(error).into_response(),
+        };
+        let zone = crate::zone::Zone::parse(stored_zone.as_deref());
+        let offset = crate::zone::offset_minutes(db, zone);
+        let days = chat::group_by_day(rows, offset, chat::today_on(offset));
+        let groups: Vec<serde_json::Value> = days
+            .iter()
+            .map(|day| {
+                serde_json::json!({
+                    "key": day.key,
+                    "label": day.label,
+                    "conversations": day
+                        .conversations
+                        .iter()
+                        .map(|row| conversation_row(row, counted(row)))
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        if let Some(object) = body.as_object_mut() {
+            object.insert("groups".to_owned(), serde_json::Value::Array(groups));
+        }
+    }
+    axum::Json(body).into_response()
 }
 
 /// `POST /v1/conversations` - start an empty conversation, `201` with its id.
@@ -1735,9 +1788,716 @@ pub async fn session(
 // /v1/settings
 // ---------------------------------------------------------------------------
 
-/// The four fields `POST /v1/settings` accepts, in the order the response lists
-/// them. A body that names none of these changes nothing.
+/// The six groups a capability can belong to.
+///
+/// These are the web settings tabs and the iOS settings sections, in the order
+/// both render them. **There is no seventh.** A group that is not here has no tab
+/// on the web page and no section on the phone, so a field in it would be
+/// unreachable on both surfaces while looking present in the record.
+pub const SETTING_GROUPS: [&str; 6] = [
+    "models",
+    "assistant",
+    "memory",
+    "devices",
+    "automation",
+    "system",
+];
+
+/// What kind of value a setting holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingKind {
+    /// Any text, within the field's own length limits.
+    Text,
+    /// One of a closed list.
+    Enum(&'static [&'static str]),
+    /// `true` or `false`.
+    Bool,
+    /// A whole number, inclusive of both bounds.
+    ///
+    /// The bounds are the range the reader itself honours, so a value accepted
+    /// here is a value the record reads back unchanged. An unbounded `int` would
+    /// let a write pin 100000 rounds while every read clamped it back to the
+    /// default, and the record would then disagree with the row it came from.
+    Int(u32, u32),
+    /// A time zone: `host`, `UTC`, or an offset like `-04:00`.
+    ///
+    /// Its own kind rather than [`Self::Text`] because a zone that does not parse
+    /// is silently the host zone, so a settings screen that accepted `Mars` and
+    /// then showed `host` would be lying twice.
+    Zone,
+}
+
+impl SettingKind {
+    /// The `type` the record spells for this kind.
+    ///
+    /// A zone is a string on the wire whose shape a client can check the same
+    /// way, so it is spelled `string`: the record's four types are the four a
+    /// form control is chosen from, and a fifth would break both clients.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text | Self::Zone => "string",
+            Self::Enum(_) => "enum",
+            Self::Bool => "bool",
+            Self::Int(_, _) => "int",
+        }
+    }
+
+    /// The `options` the record spells: the closed list for an enum, `null`
+    /// otherwise.
+    #[must_use]
+    pub fn options(self) -> Option<&'static [&'static str]> {
+        match self {
+            Self::Enum(values) => Some(values),
+            _ => None,
+        }
+    }
+}
+
+/// One operator-facing setting, described once.
+///
+/// The record is built by iterating [`SETTING_SPECS`], and a write looks its key
+/// up in the same table. One table, two uses, so the record cannot offer a field
+/// the write refuses, and the write cannot accept a field the record never
+/// mentions.
+pub struct SettingSpec {
+    /// The field name, which is also the write body's field name.
+    pub key: &'static str,
+    /// What the operator reads beside it.
+    pub label: &'static str,
+    /// One of [`SETTING_GROUPS`].
+    pub group: &'static str,
+    /// The value's kind.
+    pub kind: SettingKind,
+    /// The `settings` row this reads and writes.
+    pub row: &'static str,
+    /// Whether `POST /v1/settings` accepts this key today.
+    pub writable: bool,
+    /// The value as a string, in the spelling a write uses.
+    pub read: fn(&SetupEngine) -> Result<String, DeviceError>,
+    /// How a submitted value is tidied before it is stored, when the row has a
+    /// shape of its own.
+    ///
+    /// `None` means the kind's own rule is the whole rule. A comma-separated
+    /// device list is the case that needs it: trimmed, deduplicated and joined,
+    /// so the row holds exactly what the record reads back, and the audit detail
+    /// quotes the value that was actually written rather than the one that was
+    /// typed.
+    pub normalize: Option<fn(&str) -> String>,
+}
+
+/// A refusal for a value a closed list does not hold.
+fn kind_refusal(spec: &SettingSpec, submitted: &str, allowed: &str) -> DeviceError {
+    if allowed.is_empty() {
+        return DeviceError::bad_request(
+            "settings_value_invalid",
+            format!("{} does not accept {}", spec.key, shown_value(submitted)),
+        );
+    }
+    refuse_value(spec.key, "settings_value_invalid", submitted, allowed)
+}
+
+/// Check one submitted value against the spec's kind, or say what it accepts.
+///
+/// This is the whole validation for every setting except the four with a rule of
+/// their own: a model has to be an id the endpoint publishes, the permission pair
+/// is checked together, and the vault backend needs a directory that exists.
+pub fn validate_setting(spec: &SettingSpec, raw: &str) -> Result<(), DeviceError> {
+    let trimmed = raw.trim();
+    match spec.kind {
+        SettingKind::Text => Ok(()),
+        SettingKind::Enum(values) => {
+            if values
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(trimmed))
+            {
+                Ok(())
+            } else {
+                Err(kind_refusal(spec, trimmed, &values.join(", ")))
+            }
+        }
+        SettingKind::Bool => match trimmed.to_ascii_lowercase().as_str() {
+            "true" | "false" => Ok(()),
+            _ => Err(kind_refusal(spec, trimmed, "true or false")),
+        },
+        SettingKind::Int(min, max) => {
+            let allowed = format!("a whole number from {min} to {max}");
+            match trimmed.parse::<u32>() {
+                Ok(number) if number >= min && number <= max => Ok(()),
+                _ => Err(kind_refusal(spec, trimmed, &allowed)),
+            }
+        }
+        SettingKind::Zone => crate::zone::validate(trimmed)
+            .map(|_| ())
+            .map_err(|reason| DeviceError::bad_request("settings_value_invalid", reason)),
+    }
+}
+
+/// The value of a `settings` row, or the empty string when it is absent.
+fn row_of(engine: &SetupEngine, row: &'static str) -> Result<Option<String>, DeviceError> {
+    engine.setting(row).map_err(settings_unavailable)
+}
+
+fn read_model(engine: &SetupEngine) -> Result<String, DeviceError> {
+    engine
+        .model()
+        .map_err(settings_unavailable)
+        .map(|value| value.unwrap_or_default())
+}
+
+fn read_tools_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(
+        crate::tools::enabled(row_of(engine, crate::tools::SETTING_TOOLS_ENABLED)?.as_deref())
+            .to_string(),
+    )
+}
+
+fn read_tool_rounds(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(
+        crate::tools::max_rounds(row_of(engine, crate::tools::SETTING_TOOL_ROUNDS)?.as_deref())
+            .to_string(),
+    )
+}
+
+fn read_sandbox(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(engine
+        .permissions()
+        .map_err(settings_unavailable)?
+        .sandbox_mode
+        .as_str()
+        .to_owned())
+}
+
+fn read_approval(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(engine
+        .permissions()
+        .map_err(settings_unavailable)?
+        .approval_policy
+        .as_str()
+        .to_owned())
+}
+
+fn read_memory(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(
+        crate::memory::backend(row_of(engine, crate::memory::SETTING_BACKEND)?.as_deref())
+            .as_str()
+            .to_owned(),
+    )
+}
+
+fn read_timezone(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(
+        crate::zone::Zone::parse(row_of(engine, crate::zone::SETTING_TIMEZONE)?.as_deref())
+            .as_str()
+            .to_owned(),
+    )
+}
+
+fn read_clock_format(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::zone::ClockFormat::parse(
+        row_of(engine, crate::zone::SETTING_CLOCK_FORMAT)?.as_deref(),
+    )
+    .as_str()
+    .to_owned())
+}
+
+fn read_conversation_sort(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::web::chat::ConversationSort::parse(
+        row_of(engine, crate::web::chat::SETTING_CONVERSATION_SORT)?.as_deref(),
+    )
+    .as_str()
+    .to_owned())
+}
+
+fn read_notify_on_reply(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::push::notify_on_reply_enabled(
+        row_of(engine, crate::push::SETTING_NOTIFY_ON_REPLY)?.as_deref(),
+    )
+    .to_string())
+}
+
+fn read_notify_scope(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(
+        crate::push::notify_scope(row_of(engine, crate::push::SETTING_NOTIFY_SCOPE)?.as_deref())
+            .as_str()
+            .to_owned(),
+    )
+}
+
+fn read_notify_devices(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(notify_devices_value(
+        row_of(engine, crate::push::SETTING_NOTIFY_DEVICES)?
+            .as_deref()
+            .unwrap_or_default(),
+    ))
+}
+
+/// A submitted device list, in the one spelling the row holds.
+fn normalize_notify_devices(raw: &str) -> String {
+    notify_devices_value(raw)
+}
+
+/// The stored spelling of a device list: trimmed, deduplicated, comma-joined.
+fn notify_devices_value(raw: &str) -> String {
+    crate::push::notify_devices(Some(raw)).join(",")
+}
+
+fn read_assistant_name(engine: &SetupEngine) -> Result<String, DeviceError> {
+    let stored = row_of(engine, crate::persona::SETTING_ASSISTANT_NAME)?;
+    Ok(crate::persona::assistant_name(stored.as_deref()).to_owned())
+}
+
+fn read_persona_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::persona::enabled_flag(
+        row_of(engine, crate::persona::SETTING_PERSONA_ENABLED)?.as_deref(),
+    )
+    .to_string())
+}
+
+fn read_show_reasoning(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::web::chat::show_reasoning(
+        row_of(engine, crate::web::chat::SETTING_SHOW_REASONING)?.as_deref(),
+    )
+    .to_string())
+}
+
+fn read_show_tool_log(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::web::chat::tool_log(
+        row_of(engine, crate::web::chat::SETTING_SHOW_TOOL_LOG)?.as_deref(),
+    )
+    .as_str()
+    .to_owned())
+}
+
+fn read_stream_responses(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::web::chat::streaming_enabled(
+        row_of(engine, crate::web::chat::SETTING_STREAMING)?.as_deref(),
+    )
+    .to_string())
+}
+
+fn read_show_quota(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::web::quota::show_quota(
+        row_of(engine, crate::web::quota::SETTING_SHOW_QUOTA)?.as_deref(),
+    )
+    .to_string())
+}
+
+fn read_reply_state(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::web::chat::reply_state(
+        row_of(engine, crate::web::chat::SETTING_REPLY_STATE)?.as_deref(),
+    )
+    .as_str()
+    .to_owned())
+}
+
+fn read_greeting_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::greeting::enabled(
+        row_of(engine, crate::greeting::SETTING_GREETING_ENABLED)?.as_deref(),
+    )
+    .to_string())
+}
+
+fn read_greeting_refresh(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::greeting::Refresh::parse(
+        row_of(engine, crate::greeting::SETTING_GREETING_REFRESH)?.as_deref(),
+    )
+    .as_str()
+    .to_owned())
+}
+
+fn read_agents_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::subagents::enabled(
+        row_of(engine, crate::subagents::SETTING_AGENTS_ENABLED)?.as_deref(),
+    )
+    .to_string())
+}
+
+fn read_schedules_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(
+        crate::scheduler::enabled(row_of(engine, crate::scheduler::SETTING_ENABLED)?.as_deref())
+            .to_string(),
+    )
+}
+
+fn read_skills_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(
+        crate::skills::enabled(row_of(engine, crate::skills::SETTING_ENABLED)?.as_deref())
+            .to_string(),
+    )
+}
+
+/// The workspace a turn may write in. Read-only here: it is set by the wizard and
+/// moving it from a phone is a different decision with a different card.
+fn read_workspace(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(row_of(engine, crate::onboarding::SETTING_WORKSPACE)?
+        .unwrap_or_default()
+        .trim()
+        .to_owned())
+}
+
+/// The values `sandbox` accepts, from [`crate::onboarding::SandboxMode`] itself.
+const SANDBOX_VALUES: &[&str] = &["read-only", "workspace-write", "full"];
+/// The values `approval` accepts.
+const APPROVAL_VALUES: &[&str] = &["ask", "never"];
+/// The values `memory` accepts.
+const MEMORY_VALUES: &[&str] = &["gbrain", "vault", "off"];
+/// The values `show_tool_log` accepts.
+const TOOL_LOG_VALUES: &[&str] = &["full", "summary", "off"];
+/// The values `reply_state` accepts.
+const REPLY_STATE_VALUES: &[&str] = &["expanded", "collapsed", "minimized"];
+/// The values `greeting.refresh` accepts.
+const GREETING_REFRESH_VALUES: &[&str] = &["hour", "day", "week"];
+/// The values `push.notify_scope` accepts.
+const NOTIFY_SCOPE_VALUES: &[&str] = &["origin", "all", "targeted"];
+/// The values `display.clock_format` accepts.
+const CLOCK_FORMAT_VALUES: &[&str] = &["12h", "24h"];
+/// The values `display.conversation_sort` accepts.
+const CONVERSATION_SORT_VALUES: &[&str] = &["updated", "created", "title", "day"];
+
+/// Every operator-facing setting the daemon serves, described once.
+///
+/// The order is the order the record lists them, grouped by [`SETTING_GROUPS`].
+/// A key here with `writable: true` is accepted by `POST /v1/settings`; one with
+/// `writable: false` is refused by name. Nothing else is accepted, and nothing
+/// here is absent from the record.
+pub const SETTING_SPECS: &[SettingSpec] = &[
+    SettingSpec {
+        key: "model",
+        label: "Model",
+        group: "models",
+        kind: SettingKind::Text,
+        row: crate::onboarding::SETTING_MODEL,
+        writable: true,
+        read: read_model,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "tools_enabled",
+        label: "Tools",
+        group: "models",
+        kind: SettingKind::Bool,
+        row: crate::tools::SETTING_TOOLS_ENABLED,
+        writable: true,
+        read: read_tools_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "tool_rounds",
+        label: "Tool turns",
+        group: "models",
+        // The bounds are the reader's own: one round is the fewest a turn can
+        // take, and the ceiling is what `tools::max_rounds` refuses to read past.
+        kind: SettingKind::Int(1, crate::tools::MAX_TOOL_ROUNDS_CEILING),
+        row: crate::tools::SETTING_TOOL_ROUNDS,
+        writable: true,
+        read: read_tool_rounds,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "agents_enabled",
+        label: "Subagents",
+        group: "models",
+        kind: SettingKind::Bool,
+        row: crate::subagents::SETTING_AGENTS_ENABLED,
+        writable: true,
+        read: read_agents_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "assistant_name",
+        label: "Assistant name",
+        group: "assistant",
+        kind: SettingKind::Text,
+        row: crate::persona::SETTING_ASSISTANT_NAME,
+        writable: true,
+        read: read_assistant_name,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "assistant_persona_enabled",
+        label: "Persona",
+        group: "assistant",
+        kind: SettingKind::Bool,
+        row: crate::persona::SETTING_PERSONA_ENABLED,
+        writable: true,
+        read: read_persona_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "show_reasoning",
+        label: "Thinking bubble",
+        group: "assistant",
+        kind: SettingKind::Bool,
+        row: crate::web::chat::SETTING_SHOW_REASONING,
+        writable: true,
+        read: read_show_reasoning,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "show_tool_log",
+        label: "Run log",
+        group: "assistant",
+        kind: SettingKind::Enum(TOOL_LOG_VALUES),
+        row: crate::web::chat::SETTING_SHOW_TOOL_LOG,
+        writable: true,
+        read: read_show_tool_log,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "stream_responses",
+        label: "Stream answers",
+        group: "assistant",
+        kind: SettingKind::Bool,
+        row: crate::web::chat::SETTING_STREAMING,
+        writable: true,
+        read: read_stream_responses,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "show_quota",
+        label: "Quota line",
+        group: "assistant",
+        kind: SettingKind::Bool,
+        row: crate::web::quota::SETTING_SHOW_QUOTA,
+        writable: true,
+        read: read_show_quota,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "reply_state",
+        label: "Reply bubble",
+        group: "assistant",
+        kind: SettingKind::Enum(REPLY_STATE_VALUES),
+        row: crate::web::chat::SETTING_REPLY_STATE,
+        writable: true,
+        read: read_reply_state,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "greeting_enabled",
+        label: "Greeting",
+        group: "assistant",
+        kind: SettingKind::Bool,
+        row: crate::greeting::SETTING_GREETING_ENABLED,
+        writable: true,
+        read: read_greeting_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "greeting_refresh",
+        label: "Greeting refresh",
+        group: "assistant",
+        kind: SettingKind::Enum(GREETING_REFRESH_VALUES),
+        row: crate::greeting::SETTING_GREETING_REFRESH,
+        writable: true,
+        read: read_greeting_refresh,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "memory",
+        label: "Memory",
+        group: "memory",
+        kind: SettingKind::Enum(MEMORY_VALUES),
+        row: crate::memory::SETTING_BACKEND,
+        writable: true,
+        read: read_memory,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "push_notify_on_reply",
+        label: "Reply notifications",
+        group: "devices",
+        kind: SettingKind::Bool,
+        row: crate::push::SETTING_NOTIFY_ON_REPLY,
+        writable: true,
+        read: read_notify_on_reply,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "push_notify_scope",
+        label: "Notify scope",
+        group: "devices",
+        kind: SettingKind::Enum(NOTIFY_SCOPE_VALUES),
+        row: crate::push::SETTING_NOTIFY_SCOPE,
+        writable: true,
+        read: read_notify_scope,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "push_notify_devices",
+        label: "Notify devices",
+        group: "devices",
+        kind: SettingKind::Text,
+        row: crate::push::SETTING_NOTIFY_DEVICES,
+        writable: true,
+        read: read_notify_devices,
+        normalize: Some(normalize_notify_devices),
+    },
+    SettingSpec {
+        key: "schedules_enabled",
+        label: "Schedules",
+        group: "automation",
+        kind: SettingKind::Bool,
+        row: crate::scheduler::SETTING_ENABLED,
+        writable: true,
+        read: read_schedules_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "skills_enabled",
+        label: "Skills",
+        group: "automation",
+        kind: SettingKind::Bool,
+        row: crate::skills::SETTING_ENABLED,
+        writable: true,
+        read: read_skills_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "sandbox",
+        label: "Sandbox",
+        group: "system",
+        kind: SettingKind::Enum(SANDBOX_VALUES),
+        row: crate::onboarding::SETTING_SANDBOX_MODE,
+        writable: true,
+        read: read_sandbox,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "approval",
+        label: "Approval",
+        group: "system",
+        kind: SettingKind::Enum(APPROVAL_VALUES),
+        row: crate::onboarding::SETTING_APPROVAL_POLICY,
+        writable: true,
+        read: read_approval,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "timezone",
+        label: "Time zone",
+        group: "system",
+        kind: SettingKind::Zone,
+        row: crate::zone::SETTING_TIMEZONE,
+        writable: true,
+        read: read_timezone,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "clock_format",
+        label: "Clock",
+        group: "system",
+        kind: SettingKind::Enum(CLOCK_FORMAT_VALUES),
+        row: crate::zone::SETTING_CLOCK_FORMAT,
+        writable: true,
+        read: read_clock_format,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "conversation_sort",
+        label: "Conversation sort",
+        group: "system",
+        kind: SettingKind::Enum(CONVERSATION_SORT_VALUES),
+        row: crate::web::chat::SETTING_CONVERSATION_SORT,
+        writable: true,
+        read: read_conversation_sort,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "workspace_path",
+        label: "Workspace",
+        group: "system",
+        kind: SettingKind::Text,
+        row: crate::onboarding::SETTING_WORKSPACE,
+        // Read-only here on purpose: the wizard sets it, and moving it from a
+        // phone would move every tool's sandbox in one unconfirmed write.
+        writable: false,
+        read: read_workspace,
+        normalize: None,
+    },
+];
+
+/// The spec for a key, when this route knows it.
+#[must_use]
+pub fn setting_spec(key: &str) -> Option<&'static SettingSpec> {
+    SETTING_SPECS.iter().find(|spec| spec.key == key)
+}
+
+/// The capability record both clients render.
+///
+/// Built by iterating the table, so a field can never be in one and missing from
+/// the other. Entries are in [`SETTING_GROUPS`] order so both clients can render
+/// the tab order without sorting.
+pub fn capability_record(engine: &SetupEngine) -> Result<Vec<serde_json::Value>, DeviceError> {
+    let mut entries = Vec::with_capacity(SETTING_SPECS.len());
+    for group in SETTING_GROUPS {
+        for spec in SETTING_SPECS.iter().filter(|spec| spec.group == group) {
+            let value = (spec.read)(engine)?;
+            entries.push(serde_json::json!({
+                "key": spec.key,
+                "label": spec.label,
+                "group": spec.group,
+                "type": spec.kind.as_str(),
+                "writable": spec.writable,
+                "value": value,
+                "options": spec.kind.options(),
+            }));
+        }
+    }
+    Ok(entries)
+}
+
+/// The four fields this route accepted before the capability record existed.
+///
+/// Kept because a client written against the old shape reads them, and because
+/// the four of them are the only ones with a validation rule of their own: a
+/// model has to be one the endpoint publishes, the permission pair has to be
+/// checked together, and the vault backend needs a directory. Everything else in
+/// [`SETTING_SPECS`] is validated by its kind.
 pub const SETTINGS_FIELDS: [&str; 4] = ["model", "sandbox", "memory", "approval"];
+
+/// Every field `POST /v1/settings` accepts, in record order.
+///
+/// Derived from [`SETTING_SPECS`], so a field the record offers and the write
+/// refuses cannot exist: the two would be the same list read twice.
+#[must_use]
+pub fn accepted_settings() -> Vec<&'static str> {
+    SETTING_SPECS
+        .iter()
+        .filter(|spec| spec.writable)
+        .map(|spec| spec.key)
+        .collect()
+}
+
+/// The value a setting will be stored as, whatever spelling arrived.
+///
+/// Validating a value and then storing it verbatim would let `TRUE` and `True`
+/// both sit in a row whose reader only ever writes `true`, and the record would
+/// read back a spelling the form did not offer. A closed list keeps the option's
+/// own spelling, a flag is lower case, and a number loses its padding.
+fn canonical_value(spec: &SettingSpec, raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(normalize) = spec.normalize {
+        return normalize(trimmed);
+    }
+    match spec.kind {
+        SettingKind::Text => trimmed.to_owned(),
+        SettingKind::Enum(values) => values
+            .iter()
+            .find(|known| known.eq_ignore_ascii_case(trimmed))
+            .map_or_else(|| trimmed.to_owned(), |known| (*known).to_owned()),
+        SettingKind::Bool => trimmed.to_ascii_lowercase(),
+        SettingKind::Int(_, _) => trimmed
+            .parse::<u32>()
+            .map_or_else(|_| trimmed.to_owned(), |number| number.to_string()),
+        // A zone keeps the spelling its own parser accepts and the record reads
+        // back: `UTC` for `utc`, `+00:00` for `+0000`.
+        SettingKind::Zone => {
+            crate::zone::validate(trimmed).map_or_else(|_| trimmed.to_owned(), |zone| zone.as_str())
+        }
+    }
+}
 
 /// The values `approval` accepts, for a refusal that names them.
 const APPROVAL_ALLOWED: &str = "ask or never";
@@ -1769,6 +2529,11 @@ struct SettingsWrite {
     permissions: Option<Permissions>,
     /// The memory backend, when the request named one that differs.
     memory: Option<crate::memory::Backend>,
+    /// Every other setting to write, as its `settings` row and its value.
+    ///
+    /// The row comes from the spec rather than from the key, so a write can only
+    /// ever touch a row the record already reads from.
+    rows: Vec<(&'static str, String)>,
     /// What will change, in the order the body was read.
     changes: Vec<SettingsChange>,
     /// Whether the body named any field this route understands.
@@ -1826,7 +2591,7 @@ pub async fn update_settings(
             "settings_empty",
             format!(
                 "the body named none of {}: nothing was changed",
-                SETTINGS_FIELDS.join(", ")
+                accepted_settings().join(", ")
             ),
         )
         .into_response();
@@ -1874,6 +2639,17 @@ fn read_settings(service: &DeviceService) -> Result<serde_json::Value, DeviceErr
     let tool_rounds =
         crate::tools::max_rounds(stored(crate::tools::SETTING_TOOL_ROUNDS)?.as_deref());
     let timezone = crate::zone::Zone::parse(stored(crate::zone::SETTING_TIMEZONE)?.as_deref());
+    let clock =
+        crate::zone::ClockFormat::parse(stored(crate::zone::SETTING_CLOCK_FORMAT)?.as_deref());
+    let notify_on_reply = crate::push::notify_on_reply_enabled(
+        stored(crate::push::SETTING_NOTIFY_ON_REPLY)?.as_deref(),
+    );
+    let scope = crate::push::notify_scope(stored(crate::push::SETTING_NOTIFY_SCOPE)?.as_deref());
+    let devices =
+        crate::push::notify_devices(stored(crate::push::SETTING_NOTIFY_DEVICES)?.as_deref());
+    // The seven fields a client already reads, unchanged in shape and in order,
+    // plus the three the settings record needs: the clock shape, the push routing,
+    // and the capability list itself.
     Ok(serde_json::json!({
         "ok": true,
         "model": model,
@@ -1883,6 +2659,13 @@ fn read_settings(service: &DeviceService) -> Result<serde_json::Value, DeviceErr
         "tool_rounds": tool_rounds,
         "approval": permissions.approval_policy.as_str(),
         "timezone": timezone.as_str(),
+        "clock_format": clock.as_str(),
+        "push": {
+            "notify_on_reply": notify_on_reply,
+            "scope": scope.as_str(),
+            "devices": devices,
+        },
+        "capabilities": capability_record(engine)?,
     }))
 }
 
@@ -2008,7 +2791,62 @@ fn parse_settings(
         }
     }
 
+    // Everything else the record offers, through the table. The four above are
+    // here because their validation is not a matter of kind: a model id has to be
+    // one an endpoint published, the sandbox and the approval policy are checked
+    // as a pair, and the vault backend needs a directory. Anything the table does
+    // not hold is refused by name, so a typo is a named field rather than a
+    // silently ignored one.
+    for (key, raw) in fields {
+        if SETTINGS_FIELDS.contains(&key.as_str()) {
+            continue;
+        }
+        let Some(spec) = setting_spec(key) else {
+            return Err(unknown_setting(key));
+        };
+        if !spec.writable {
+            return Err(read_only_setting(spec));
+        }
+        write.named = true;
+        validate_setting(spec, raw)?;
+        let value = canonical_value(spec, raw);
+        let current = (spec.read)(engine)?;
+        if value != current {
+            write.changes.push(SettingsChange {
+                field: spec.key,
+                value: value.clone(),
+            });
+            write.rows.push((spec.row, value));
+        }
+    }
+
     Ok(write)
+}
+
+/// A body field the route does not know, refused by name and with the list.
+fn unknown_setting(key: &str) -> DeviceError {
+    DeviceError::bad_request(
+        "settings_unknown_field",
+        format!(
+            "`{key}` is not a setting this route accepts: the accepted fields are {}",
+            accepted_settings().join(", ")
+        ),
+    )
+}
+
+/// A field the record lists as readable but not writable, refused by name.
+///
+/// Refusing the write is the whole point of the flag: the record shows the value
+/// so a client can display it, and saying which surface does own the decision is
+/// more use than a generic refusal.
+fn read_only_setting(spec: &SettingSpec) -> DeviceError {
+    DeviceError::bad_request(
+        "settings_read_only",
+        format!(
+            "{} is read-only here: it is set by the setup wizard, not by this route",
+            spec.key
+        ),
+    )
 }
 
 /// Write what [`parse_settings`] validated. Every value is already checked, so a
@@ -2028,6 +2866,11 @@ fn apply_settings(service: &DeviceService, write: &SettingsWrite) -> Result<(), 
     if let Some(memory) = write.memory {
         engine
             .set_setting(crate::memory::SETTING_BACKEND, memory.as_str())
+            .map_err(settings_unavailable)?;
+    }
+    for (row, value) in &write.rows {
+        engine
+            .set_setting(row, value)
             .map_err(settings_unavailable)?;
     }
     Ok(())
@@ -5318,6 +6161,593 @@ mod tests {
             !body.to_string().contains(&other),
             "the answer says nothing about the other device: {body}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The settings capability record
+    // -----------------------------------------------------------------------
+
+    /// The record, read the way a client reads it.
+    fn record(fx: &Fixture) -> Vec<serde_json::Value> {
+        read_settings(&fx.service).expect("the record")["capabilities"]
+            .as_array()
+            .expect("a capability list")
+            .clone()
+    }
+
+    #[test]
+    fn every_capability_carries_a_group_the_two_clients_can_render() {
+        let fx = fixture();
+        let entries = record(&fx);
+        assert_eq!(
+            entries.len(),
+            SETTING_SPECS.len(),
+            "every spec is in the record: {entries:?}"
+        );
+        for entry in &entries {
+            let key = entry["key"].as_str().expect("a key");
+            assert!(
+                !entry["label"].as_str().unwrap_or_default().is_empty(),
+                "{key} has a label"
+            );
+            let group = entry["group"].as_str().expect("a group");
+            assert!(
+                SETTING_GROUPS.contains(&group),
+                "{key} is in `{group}`, which is not one of the six the clients render"
+            );
+            let kind = entry["type"].as_str().expect("a type");
+            assert!(
+                ["string", "enum", "bool", "int"].contains(&kind),
+                "{key} is typed `{kind}`, which is not one of the four"
+            );
+            assert!(
+                entry["writable"].is_boolean(),
+                "{key} says whether it is writable"
+            );
+            assert!(
+                entry["value"].is_string(),
+                "{key} carries a value as a string"
+            );
+            match kind {
+                "enum" => {
+                    let options = entry["options"].as_array().expect("options for an enum");
+                    assert!(!options.is_empty(), "{key} is an enum with no options");
+                    let value = entry["value"].as_str().expect("a value");
+                    assert!(
+                        options.iter().any(|option| option.as_str() == Some(value)),
+                        "{key} holds `{value}`, which is not one of its options"
+                    );
+                }
+                _ => assert!(
+                    entry["options"].is_null(),
+                    "{key} is a {kind} and carries no options"
+                ),
+            }
+        }
+        // The six groups, and no field outside them.
+        for group in SETTING_GROUPS {
+            assert!(
+                entries.iter().any(|entry| entry["group"] == group),
+                "the `{group}` group has no field, so its tab would be empty"
+            );
+        }
+        // The two the card names, at the group it names: permissions are `system`.
+        for (key, group) in [("sandbox", "system"), ("approval", "system")] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry["key"] == key)
+                .unwrap_or_else(|| panic!("{key} is in the record"));
+            assert_eq!(entry["group"], group, "{key} lives in the system tab");
+        }
+        assert!(
+            entries.iter().all(|entry| entry["group"] != "permissions"),
+            "there is no permissions group"
+        );
+    }
+
+    #[test]
+    fn no_setup_key_and_no_derived_catalogue_reaches_the_record() {
+        let fx = fixture();
+        for entry in record(&fx) {
+            let key = entry["key"].as_str().expect("a key");
+            assert!(!key.starts_with("setup."), "{key} is a setup key");
+            assert!(
+                !key.starts_with("provider."),
+                "{key} is the provider table's"
+            );
+        }
+        assert!(setting_spec("setup.passphrase_hash").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_record_and_the_write_path_are_one_table_read_twice() {
+        let fx = fixture();
+        let entries = record(&fx);
+        let writable: Vec<String> = entries
+            .iter()
+            .filter(|entry| entry["writable"] == serde_json::json!(true))
+            .map(|entry| entry["key"].as_str().expect("a key").to_owned())
+            .collect();
+        let read_only: Vec<String> = entries
+            .iter()
+            .filter(|entry| entry["writable"] == serde_json::json!(false))
+            .map(|entry| entry["key"].as_str().expect("a key").to_owned())
+            .collect();
+        assert!(!read_only.is_empty(), "the workspace path is read-only");
+        assert_eq!(
+            accepted_settings(),
+            writable,
+            "the accepted list is the record's writable entries"
+        );
+
+        // Every writable key reaches the route's own validation rather than being
+        // refused as a field it does not know.
+        for key in &writable {
+            let current = entries
+                .iter()
+                .find(|entry| entry["key"] == key.as_str())
+                .map(|entry| entry["value"].as_str().unwrap_or_default().to_owned())
+                .expect("the entry");
+            let body = serde_json::json!({ key: current }).to_string();
+            let (status, answer) =
+                send(&fx.service, "POST", "/v1/settings", &fx.admin, &body).await;
+            let code = answer["code"].as_str().unwrap_or_default();
+            assert_ne!(
+                code, "settings_unknown_field",
+                "{key} is in the record and the write refuses it as unknown: {answer}"
+            );
+            assert_ne!(
+                code, "settings_read_only",
+                "{key} is writable in the record and read-only on the write: {answer}"
+            );
+            // Sending the value it already holds is a 200 that changes nothing.
+            if status == StatusCode::OK {
+                assert_eq!(
+                    answer["changed"],
+                    serde_json::json!([]),
+                    "{key} was sent its stored value and reported a change: {answer}"
+                );
+            }
+        }
+
+        // Every read-only key is refused, by name, with the code that says why.
+        for key in &read_only {
+            let body = serde_json::json!({ key: "anything" }).to_string();
+            let (status, answer) =
+                send(&fx.service, "POST", "/v1/settings", &fx.admin, &body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{key}: {answer}");
+            assert_eq!(answer["code"], "settings_read_only", "{key}: {answer}");
+            assert!(
+                answer["message"].as_str().unwrap_or_default().contains(key),
+                "the refusal names the field: {answer}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_four_original_fields_behave_exactly_as_they_did() {
+        let fx = fixture();
+        // `sandbox` and `approval` together, the way a permissions form posts them.
+        let (status, changed) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings",
+            &fx.admin,
+            r#"{"sandbox":"workspace-write"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{changed}");
+        assert_eq!(changed["changed"], serde_json::json!(["sandbox"]));
+
+        // A field mentioned with the value it already holds is not a change.
+        let (status, again) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings",
+            &fx.admin,
+            r#"{"sandbox":"workspace-write","approval":"ask"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{again}");
+        assert_eq!(again["changed"], serde_json::json!([]));
+
+        // A refusal still names the field and still writes nothing.
+        let (status, refused) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings",
+            &fx.admin,
+            r#"{"sandbox":"yolo"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert_eq!(refused["code"], "sandbox_invalid");
+        let after = read_settings(&fx.service).expect("the snapshot");
+        assert_eq!(
+            after["sandbox"], "workspace-write",
+            "the refusal wrote nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_setting_is_written_read_back_and_audited() {
+        let fx = fixture();
+        let before = read_settings(&fx.service).expect("the snapshot");
+        assert_eq!(before["clock_format"], "24h", "the default clock");
+        assert_eq!(before["push"]["scope"], "origin", "the default scope");
+
+        let body = serde_json::json!({
+            "clock_format": " 12H ",
+            "conversation_sort": "day",
+            "push_notify_scope": "targeted",
+            "push_notify_devices": " dev-a , dev-b , dev-a ,, ",
+            "tools_enabled": false,
+            "tool_rounds": "0030",
+            "timezone": "-04:00",
+        })
+        .to_string();
+        let (status, changed) = send(&fx.service, "POST", "/v1/settings", &fx.admin, &body).await;
+        assert_eq!(status, StatusCode::OK, "{changed}");
+        let listed = changed["changed"].as_array().expect("a changed list");
+        for field in [
+            "clock_format",
+            "conversation_sort",
+            "push_notify_scope",
+            "push_notify_devices",
+            "tools_enabled",
+            "tool_rounds",
+            "timezone",
+        ] {
+            assert!(
+                listed.iter().any(|value| value == field),
+                "{field} is not in the changed list: {changed}"
+            );
+        }
+
+        // The spellings the form sent are stored as the spellings every reader
+        // uses, so the record reads back what it offered.
+        let after = read_settings(&fx.service).expect("the snapshot");
+        assert_eq!(after["clock_format"], "12h", "the case is normalized");
+        assert_eq!(after["push"]["scope"], "targeted");
+        assert_eq!(
+            after["push"]["devices"],
+            serde_json::json!(["dev-a", "dev-b"]),
+            "the list is trimmed and deduplicated"
+        );
+        assert_eq!(after["tools_enabled"], false);
+        assert_eq!(after["tool_rounds"], 30, "the padding is dropped");
+        assert_eq!(after["timezone"], "-04:00");
+        let record = after["capabilities"].as_array().expect("a record");
+        let entry = |key: &str| {
+            record
+                .iter()
+                .find(|entry| entry["key"] == key)
+                .unwrap_or_else(|| panic!("{key} is in the record"))
+                .clone()
+        };
+        assert_eq!(entry("clock_format")["value"], "12h");
+        assert_eq!(entry("conversation_sort")["value"], "day");
+        assert_eq!(entry("push_notify_devices")["value"], "dev-a,dev-b");
+        assert_eq!(entry("tool_rounds")["value"], "30");
+
+        // One audit row, the device as the actor, every field it changed.
+        let detail: String = fx
+            .service
+            .engine()
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT detail FROM audit_log WHERE action = 'settings.device_update'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .expect("the audit row");
+        for pair in [
+            "clock_format=12h",
+            "push_notify_scope=targeted",
+            "push_notify_devices=dev-a,dev-b",
+            "tool_rounds=30",
+        ] {
+            assert!(
+                detail.contains(pair),
+                "the audit row names {pair}: {detail}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_value_outside_a_setting_own_range_is_refused_by_name() {
+        let fx = fixture();
+        for (field, value, allowed) in [
+            ("tool_rounds", "0", "1"),
+            ("tool_rounds", "100000", "99999"),
+            ("tool_rounds", "twelve", "whole number"),
+            ("clock_format", "13h", "12h"),
+            ("push_notify_scope", "everyone", "origin"),
+            ("conversation_sort", "sideways", "updated"),
+            ("tools_enabled", "yes", "true or false"),
+        ] {
+            let body = serde_json::json!({ field: value }).to_string();
+            let (status, answer) =
+                send(&fx.service, "POST", "/v1/settings", &fx.admin, &body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{field}={value}: {answer}");
+            assert_eq!(
+                answer["code"], "settings_value_invalid",
+                "{field}: {answer}"
+            );
+            assert!(
+                answer["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains(allowed),
+                "the refusal says what {field} accepts: {answer}"
+            );
+        }
+        // A zone is checked by the zone parser, so it is named the same way.
+        let (status, answer) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings",
+            &fx.admin,
+            r#"{"timezone":"Mars/Olympus"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+        assert!(
+            answer["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Mars/Olympus"),
+            "the refusal quotes the value: {answer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_bad_value_leaves_every_row_exactly_as_it_was() {
+        let fx = fixture();
+        let before = read_settings(&fx.service).expect("the snapshot");
+        // A valid clock format beside an invalid scope: the body is refused whole.
+        let (status, refused) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings",
+            &fx.admin,
+            r#"{"clock_format":"12h","push_notify_scope":"everyone","tool_rounds":"40"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert_eq!(refused["code"], "settings_value_invalid");
+        let after = read_settings(&fx.service).expect("the snapshot");
+        assert_eq!(
+            after["clock_format"], before["clock_format"],
+            "nothing was written"
+        );
+        assert_eq!(
+            after["tool_rounds"], before["tool_rounds"],
+            "nothing was written"
+        );
+        let rows: i64 = fx
+            .service
+            .engine()
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM audit_log WHERE action = 'settings.device_update'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .expect("the audit count");
+        assert_eq!(rows, 0, "a refused write appends no audit row");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_field_is_refused_by_name_and_lists_the_accepted_ones() {
+        let fx = fixture();
+        let (status, refused) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings",
+            &fx.admin,
+            r#"{"sandbox":"read-only","permissions.sandbox_mode":"full"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert_eq!(refused["code"], "settings_unknown_field");
+        let message = refused["message"].as_str().expect("a message");
+        assert!(
+            message.contains("permissions.sandbox_mode"),
+            "the refusal names the field: {message}"
+        );
+        assert!(
+            message.contains("clock_format") && message.contains("conversation_sort"),
+            "the refusal lists what it accepts: {message}"
+        );
+        // The read-only field is not offered here: it is listed by the record and
+        // refused by its own code, which is a different answer from "unknown".
+        assert!(
+            !message.contains("workspace_path"),
+            "the accepted list is the writable ones: {message}"
+        );
+        // The valid field in the same body was not written either.
+        let after = read_settings(&fx.service).expect("the snapshot");
+        assert_eq!(
+            after["sandbox"], "read-only",
+            "the fixture default is untouched"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The conversation list
+    // -----------------------------------------------------------------------
+
+    /// Four conversations with distinct titles, starts and last-touched stamps.
+    fn seeded_conversations(fx: &Fixture) {
+        let db = fx.service.engine().db().clone();
+        db.with_conn(|conn| {
+            for (id, title, created, updated) in [
+                (
+                    "conv-b",
+                    "bravo",
+                    "2026-10-01T10:00:00.000Z",
+                    "2026-10-26T12:00:00.000Z",
+                ),
+                (
+                    "conv-a",
+                    "Alpha",
+                    "2026-10-02T10:00:00.000Z",
+                    "2026-10-24T12:00:00.000Z",
+                ),
+                (
+                    "conv-d",
+                    "delta",
+                    "2026-10-03T10:00:00.000Z",
+                    "2026-10-26T02:00:00.000Z",
+                ),
+                (
+                    "conv-c",
+                    "Charlie",
+                    "2026-10-04T10:00:00.000Z",
+                    "2026-10-25T12:00:00.000Z",
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO chat_conversations (id, title, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![id, title, created, updated],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("the conversations");
+    }
+
+    #[tokio::test]
+    async fn the_device_list_honours_all_four_sort_modes() {
+        let fx = fixture();
+        seeded_conversations(&fx);
+        let ids = |body: &serde_json::Value| -> Vec<String> {
+            body["conversations"]
+                .as_array()
+                .expect("a list")
+                .iter()
+                .map(|row| row["id"].as_str().expect("an id").to_owned())
+                .collect()
+        };
+
+        let (status, body) = send(&fx.service, "GET", "/v1/conversations", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["sort"], "updated", "the default mode is named");
+        assert_eq!(ids(&body), vec!["conv-b", "conv-d", "conv-c", "conv-a"]);
+        assert!(body["groups"].is_null(), "only the day mode groups");
+        assert!(
+            body["conversations"][0]["created_at"].is_string(),
+            "the row carries when it started: {body}"
+        );
+
+        let (status, body) = send(
+            &fx.service,
+            "GET",
+            "/v1/conversations?sort=created",
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["sort"], "created");
+        assert_eq!(ids(&body), vec!["conv-c", "conv-d", "conv-a", "conv-b"]);
+
+        let (status, body) = send(
+            &fx.service,
+            "GET",
+            "/v1/conversations?sort=title",
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["sort"], "title");
+        assert_eq!(
+            ids(&body),
+            vec!["conv-a", "conv-b", "conv-c", "conv-d"],
+            "alphabetical ignores case"
+        );
+
+        // An unknown mode is the default, not a lost archive.
+        let (status, body) = send(
+            &fx.service,
+            "GET",
+            "/v1/conversations?sort=sideways",
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["sort"], "updated");
+        assert_eq!(ids(&body), vec!["conv-b", "conv-d", "conv-c", "conv-a"]);
+    }
+
+    #[tokio::test]
+    async fn the_day_mode_groups_on_the_operators_clock() {
+        let fx = fixture();
+        seeded_conversations(&fx);
+        // A fixed offset, so the day boundaries are the test's fact rather than
+        // the host's. At -04:00 the 02:00Z stamp on the 26th is the 25th, 22:00.
+        fx.service
+            .engine()
+            .set_setting(crate::zone::SETTING_TIMEZONE, "-04:00")
+            .expect("the zone");
+        let (status, body) = send(
+            &fx.service,
+            "GET",
+            "/v1/conversations?sort=day",
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["sort"], "day");
+        let groups = body["groups"].as_array().expect("the day groups");
+        let keys: Vec<&str> = groups
+            .iter()
+            .map(|group| group["key"].as_str().expect("a key"))
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["2026-10-26", "2026-10-25", "2026-10-24"],
+            "days descend, and the 02:00Z stamp is on the previous day at -04:00: {body}"
+        );
+        // Inside a day the order is `updated`, newest first.
+        let first = groups[0]["conversations"].as_array().expect("a day");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0]["id"], "conv-b");
+        let second = groups[1]["conversations"].as_array().expect("a day");
+        let second_ids: Vec<&str> = second
+            .iter()
+            .map(|row| row["id"].as_str().expect("an id"))
+            .collect();
+        assert_eq!(
+            second_ids,
+            vec!["conv-d", "conv-c"],
+            "inside a day the order is `updated`, newest first"
+        );
+        for group in groups {
+            assert!(
+                group["label"]
+                    .as_str()
+                    .is_some_and(|label| !label.is_empty()),
+                "every day has a heading: {group}"
+            );
+        }
+        // And the flat list is still there, in the same order as the days.
+        let flat: Vec<&str> = body["conversations"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|row| row["id"].as_str().expect("an id"))
+            .collect();
+        assert_eq!(flat, vec!["conv-b", "conv-d", "conv-c", "conv-a"]);
     }
 
     #[tokio::test]

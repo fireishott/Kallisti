@@ -1917,9 +1917,12 @@ impl TurnHub {
     /// phone can read it, so a push that does not land must never turn a good
     /// turn into a failed one.
     async fn announce_finished(&self, job: &JobRow, conversation: Option<&ConversationTurn>) {
-        let Some(device_id) = job.device_id.clone() else {
-            return;
-        };
+        // No owning device is a fact to route around, not a reason to stop: a
+        // turn that started on the web UI has none, and `all` and `targeted` are
+        // perfectly able to reach a phone without one. The empty id is what
+        // `origin` refuses with a logged reason, so the decision is made once, in
+        // the router, rather than twice with one copy here.
+        let device_id = job.device_id.clone().unwrap_or_default();
         let status = self
             .store
             .status(&job.id)
@@ -1941,18 +1944,31 @@ impl TurnHub {
         }
         let sender = self.apns.lock().ok().and_then(|slot| slot.clone());
         let push = self.push.lock().ok().and_then(|slot| slot.clone());
-        let enabled = crate::push::notify_on_reply_enabled(
-            crate::web::store::settings_get(self.store.db(), crate::push::SETTING_NOTIFY_ON_REPLY)
+        // Three settings, read the way this call site already read one: inline,
+        // through the same helper, with no extra plumbing. They are read even
+        // when the master switch is off, because the decision needs to say which
+        // scope it was under, not only that it was disabled.
+        let read = |key: &str| {
+            crate::web::store::settings_get(self.store.db(), key)
                 .ok()
                 .flatten()
-                .as_deref(),
-        );
+        };
+        let notify = read(crate::push::SETTING_NOTIFY_ON_REPLY);
+        let enabled = crate::push::notify_on_reply_enabled(notify.as_deref());
+        // Read even when the master switch is off, because the settings record
+        // renders what is stored rather than what is in force, and a turn that
+        // reaches nobody still has to say which scope it was under.
+        let scope = crate::push::notify_scope(read(crate::push::SETTING_NOTIFY_SCOPE).as_deref());
+        let devices =
+            crate::push::notify_devices(read(crate::push::SETTING_NOTIFY_DEVICES).as_deref());
         let announcement = crate::device::notify::Announcement {
             device_id,
             job_id: job.id.clone(),
             text,
             conversation: conversation.map(|write| write.conversation.clone()),
             message_id: conversation.map(|write| write.answer_id.clone()),
+            scope,
+            devices,
         };
         let outcome =
             crate::device::notify::announce(sender, push.as_ref(), &announcement, enabled).await;

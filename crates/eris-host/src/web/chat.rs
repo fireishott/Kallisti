@@ -444,6 +444,8 @@ pub struct Conversation {
     pub title: String,
     /// The database stamp of the last message, for ordering and for the rail.
     pub updated_at: String,
+    /// When the conversation was started, for the `created` sort.
+    pub created_at: String,
     /// The project this conversation is filed under, when it is filed.
     pub project_id: Option<String>,
     /// The model this conversation last ran on, when one was recorded.
@@ -455,26 +457,266 @@ pub struct Conversation {
     pub model: Option<String>,
 }
 
+/// The `settings` row that remembers the rail's sort order.
+///
+/// Defined here rather than in the device handlers because the rail is the
+/// surface that owns the preference: the settings page writes it, the rail reads
+/// it, and the device API honours it.
+pub const SETTING_CONVERSATION_SORT: &str = "display.conversation_sort";
+
+/// How the rail lists conversations.
+///
+/// One enum for the web rail and the device API, so the two can never disagree
+/// about what "alphabetical" means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationSort {
+    /// Recently used. Today's order, and the default.
+    Updated,
+    /// Newest conversation first.
+    Created,
+    /// Alphabetical by title, case-insensitively.
+    Title,
+    /// Grouped by calendar day on the operator's clock, newest day first.
+    Day,
+}
+
+impl ConversationSort {
+    /// Every value a form or a query string may submit, in display order.
+    pub const ALL: [Self; 4] = [Self::Updated, Self::Created, Self::Title, Self::Day];
+
+    /// What an unwritten or unknown value means.
+    pub const DEFAULT: Self = Self::Updated;
+
+    /// Parse a stored or submitted value, falling back to [`Self::Updated`].
+    ///
+    /// An unknown value means the rail somebody already knows rather than an
+    /// empty one: a bad query string must not look like a lost archive.
+    #[must_use]
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim) {
+            Some("created") => Self::Created,
+            Some("title") => Self::Title,
+            Some("day") => Self::Day,
+            _ => Self::Updated,
+        }
+    }
+
+    /// The stored spelling, and the query value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Created => "created",
+            Self::Title => "title",
+            Self::Day => "day",
+        }
+    }
+
+    /// The label a person reads.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Updated => "Recently used",
+            Self::Created => "Newest",
+            Self::Title => "Title",
+            Self::Day => "By day",
+        }
+    }
+
+    /// The `ORDER BY` this mode reads with.
+    ///
+    /// A closed set of constants rather than a string built from input: the mode
+    /// is an enum, so there is no path from a query string into the SQL.
+    fn order_by(self) -> &'static str {
+        match self {
+            Self::Updated => "updated_at DESC, rowid DESC",
+            Self::Created => "created_at DESC, rowid DESC",
+            Self::Title => "title COLLATE NOCASE ASC, rowid ASC",
+            Self::Day => "updated_at DESC, rowid DESC",
+        }
+    }
+}
+
 /// The newest conversations, newest first.
+///
+/// The mode every existing caller reads with, kept as its own function so a
+/// caller that has no opinion about sorting does not have to pass one.
 pub fn conversations(db: &Db, limit: usize) -> Result<Vec<Conversation>, DbError> {
+    conversations_sorted(db, limit, ConversationSort::DEFAULT)
+}
+
+/// The conversations, in the operator's chosen order.
+pub fn conversations_sorted(
+    db: &Db,
+    limit: usize,
+    sort: ConversationSort,
+) -> Result<Vec<Conversation>, DbError> {
+    // The order clause is a constant chosen by a match on the enum, never
+    // interpolated from input.
+    let sql = format!(
+        "SELECT id, title, updated_at, created_at, project_id, model
+           FROM chat_conversations
+          ORDER BY {}
+          LIMIT ?1",
+        sort.order_by()
+    );
     db.with_conn(|conn| {
-        let mut statement = conn.prepare(
-            "SELECT id, title, updated_at, project_id, model
-               FROM chat_conversations
-              ORDER BY updated_at DESC, rowid DESC
-              LIMIT ?1",
-        )?;
+        let mut statement = conn.prepare(&sql)?;
         let rows = statement.query_map(params![limit as i64], |row| {
             Ok(Conversation {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 updated_at: row.get(2)?,
-                project_id: row.get(3)?,
-                model: row.get(4)?,
+                created_at: row.get(3)?,
+                project_id: row.get(4)?,
+                model: row.get(5)?,
             })
         })?;
         rows.collect()
     })
+}
+
+/// One day of a `day`-sorted list, as the rail's heading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationDay {
+    /// `YYYY-MM-DD` on the operator's clock, for a stable key.
+    pub key: String,
+    /// What the heading reads: `Today`, `Yesterday`, or `Mar 14`.
+    pub label: String,
+    /// The conversations in this day, in `updated` order.
+    pub conversations: Vec<Conversation>,
+}
+
+/// The calendar day a stored UTC stamp falls on, on the operator's clock.
+///
+/// `(year, month, day)`, so the grouping compares days rather than strings, and
+/// so a conversation at 02:00Z is the previous evening for an operator at -04:00.
+fn local_day(stamp: &str, offset_minutes: i64) -> Option<(i64, i64, i64)> {
+    let date = stamp.split_once('T')?.0;
+    let time = stamp.split_once('T')?.1;
+    if time.len() < 5 {
+        return None;
+    }
+    let year = date[0..4].parse::<i64>().ok()?;
+    let month = date[5..7].parse::<i64>().ok()?;
+    let day = date[8..10].parse::<i64>().ok()?;
+    let hour = time[0..2].parse::<i64>().ok()?;
+    let minute = time[3..5].parse::<i64>().ok()?;
+    let shifted = hour * 60 + minute + offset_minutes;
+    // The shift can move a stamp into the day before or after, so the day is
+    // adjusted by the whole days the shift crossed rather than left alone.
+    let day_delta = shifted.div_euclid(24 * 60);
+    Some(shift_day(year, month, day, day_delta))
+}
+
+/// Move a calendar day by whole days, in the proleptic Gregorian calendar.
+///
+/// Deliberately small: the only callers are a one-day step either side of a
+/// stamp, so a full date library would be a dependency for six lines of
+/// arithmetic.
+fn shift_day(year: i64, month: i64, day: i64, delta: i64) -> (i64, i64, i64) {
+    if delta == 0 {
+        return (year, month, day);
+    }
+    let (mut year, mut month, mut day) = (year, month, day + delta);
+    let days_in_month = |year: i64, month: i64| -> i64 {
+        match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
+            2 => 28,
+            _ => 30,
+        }
+    };
+    while day < 1 {
+        month -= 1;
+        if month < 1 {
+            month = 12;
+            year -= 1;
+        }
+        day += days_in_month(year, month);
+    }
+    while day > days_in_month(year, month) {
+        day -= days_in_month(year, month);
+        month += 1;
+        if month > 12 {
+            month = 1;
+            year += 1;
+        }
+    }
+    (year, month, day)
+}
+
+/// The heading for a day, given today's day on the same clock.
+///
+/// `Today`, `Yesterday`, then the short English month and the day number. The
+/// month names are a fixed list rather than a locale lookup: the product is one
+/// language, and a heading is not the place to discover otherwise.
+#[must_use]
+pub fn day_label(day: (i64, i64, i64), today: (i64, i64, i64)) -> String {
+    if day == today {
+        return "Today".to_owned();
+    }
+    if day == shift_day(today.0, today.1, today.2, -1) {
+        return "Yesterday".to_owned();
+    }
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month = MONTHS
+        .get((day.1 - 1).clamp(0, 11) as usize)
+        .copied()
+        .unwrap_or("???");
+    format!("{month} {}", day.2)
+}
+
+/// Group a `day`-sorted list into its days, newest day first.
+///
+/// The grouping happens here rather than in SQL because the day boundary is the
+/// operator's, and SQLite does not know their zone. The input is expected in
+/// `updated` order, which is the order each day's rows keep.
+#[must_use]
+pub fn group_by_day(
+    rows: Vec<Conversation>,
+    offset_minutes: i64,
+    today: (i64, i64, i64),
+) -> Vec<ConversationDay> {
+    let mut days: Vec<ConversationDay> = Vec::new();
+    for row in rows {
+        let Some(day) = local_day(&row.updated_at, offset_minutes) else {
+            // A row with a stamp this host cannot read still belongs somewhere,
+            // so it goes in its own group under the raw stamp rather than being
+            // dropped from a list the operator is reading.
+            days.push(ConversationDay {
+                key: row.updated_at.clone(),
+                label: row.updated_at.clone(),
+                conversations: vec![row],
+            });
+            continue;
+        };
+        let key = format!("{:04}-{:02}-{:02}", day.0, day.1, day.2);
+        match days.last_mut() {
+            Some(group) if group.key == key => group.conversations.push(row),
+            _ => days.push(ConversationDay {
+                key,
+                label: day_label(day, today),
+                conversations: vec![row],
+            }),
+        }
+    }
+    days
+}
+
+/// Today's calendar day on the operator's clock, for [`day_label`].
+#[must_use]
+pub fn today_on(offset_minutes: i64) -> (i64, i64, i64) {
+    let now = time::OffsetDateTime::now_utc();
+    shift_day(
+        i64::from(now.year()),
+        u32::from(now.month() as u8) as i64,
+        i64::from(now.day()),
+        (i64::from(now.hour()) * 60 + i64::from(now.minute()) + offset_minutes).div_euclid(24 * 60),
+    )
 }
 
 /// Whether a conversation id is one the daemon knows.
@@ -499,7 +741,7 @@ pub fn conversation_exists(db: &Db, id: &str) -> Result<bool, DbError> {
 pub fn conversation(db: &Db, id: &str) -> Result<Option<Conversation>, DbError> {
     db.with_conn(|conn| {
         conn.query_row(
-            "SELECT id, title, updated_at, project_id, model
+            "SELECT id, title, updated_at, created_at, project_id, model
                FROM chat_conversations WHERE id = ?1",
             params![id],
             |row| {
@@ -507,8 +749,9 @@ pub fn conversation(db: &Db, id: &str) -> Result<Option<Conversation>, DbError> 
                     id: row.get(0)?,
                     title: row.get(1)?,
                     updated_at: row.get(2)?,
-                    project_id: row.get(3)?,
-                    model: row.get(4)?,
+                    created_at: row.get(3)?,
+                    project_id: row.get(4)?,
+                    model: row.get(5)?,
                 })
             },
         )
@@ -6529,5 +6772,171 @@ mod tests {
         assert!(outcome.capped, "the budget still ends the turn");
         assert!(!outcome.wrapped_up);
         let _ = std::fs::remove_dir_all(&root);
+    }
+    /// Four conversations with deliberately crossed orders: the newest by
+    /// `updated_at` is not the newest by `created_at`, and the alphabetical first
+    /// is neither. Each sort mode has to disagree with the others or the test
+    /// would pass against a function that ignored the mode.
+    fn sorted_fixture() -> Db {
+        let db = db();
+        let insert = |id: &str, title: &str, created: &str, updated: &str| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO chat_conversations (id, title, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![id, title, created, updated],
+                )?;
+                Ok(())
+            })
+            .expect("insert");
+        };
+        insert(
+            "beta",
+            "beta work",
+            "2026-10-20T09:00:00Z",
+            "2026-10-26T09:00:00Z",
+        );
+        insert(
+            "alpha",
+            "Alpha notes",
+            "2026-10-26T08:00:00Z",
+            "2026-10-24T09:00:00Z",
+        );
+        insert(
+            "delta",
+            "delta ideas",
+            "2026-10-21T09:00:00Z",
+            "2026-10-25T09:00:00Z",
+        );
+        insert(
+            "gamma",
+            "Gamma plan",
+            "2026-10-22T09:00:00Z",
+            "2026-10-23T09:00:00Z",
+        );
+        db
+    }
+
+    fn ids(db: &Db, sort: ConversationSort) -> Vec<String> {
+        conversations_sorted(db, SESSION_LIMIT, sort)
+            .expect("the list reads")
+            .into_iter()
+            .map(|row| row.id)
+            .collect()
+    }
+
+    /// The four modes, each asserted against an order the others do not share.
+    #[test]
+    fn the_four_sorts_order_the_same_conversations_four_ways() {
+        let db = sorted_fixture();
+        assert_eq!(
+            ids(&db, ConversationSort::Updated),
+            vec!["beta", "delta", "alpha", "gamma"]
+        );
+        assert_eq!(
+            ids(&db, ConversationSort::Created),
+            vec!["alpha", "gamma", "delta", "beta"]
+        );
+        assert_eq!(
+            ids(&db, ConversationSort::Title),
+            vec!["alpha", "beta", "delta", "gamma"],
+            "title is case-insensitive, so Alpha sorts with the lower-case titles"
+        );
+        // `day` is the updated order; the grouping is what changes, not the order.
+        assert_eq!(
+            ids(&db, ConversationSort::Day),
+            vec!["beta", "delta", "alpha", "gamma"]
+        );
+    }
+
+    /// The default is today's order, and an unknown value is the default rather
+    /// than an empty rail.
+    #[test]
+    fn an_unknown_sort_means_the_order_the_rail_already_had() {
+        assert_eq!(ConversationSort::parse(None), ConversationSort::Updated);
+        assert_eq!(ConversationSort::parse(Some("")), ConversationSort::Updated);
+        assert_eq!(
+            ConversationSort::parse(Some("sideways")),
+            ConversationSort::Updated
+        );
+        assert_eq!(
+            ConversationSort::parse(Some(" title ")),
+            ConversationSort::Title
+        );
+        assert_eq!(ConversationSort::parse(Some("day")), ConversationSort::Day);
+        assert_eq!(ConversationSort::Created.as_str(), "created");
+        assert_eq!(ConversationSort::ALL.len(), 4);
+    }
+
+    /// The `conversations` entry point is the updated order, so every existing
+    /// caller reads exactly what it read before.
+    #[test]
+    fn the_plain_list_is_the_recently_used_one() {
+        let db = sorted_fixture();
+        let plain: Vec<String> = conversations(&db, SESSION_LIMIT)
+            .expect("the list reads")
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(plain, ids(&db, ConversationSort::Updated));
+    }
+
+    /// The day boundary is the operator's, not UTC, and the headings are the
+    /// three the rail reads.
+    ///
+    /// The fixture sits on both sides of midnight at -04:00: 02:00Z is the
+    /// previous evening there, which is exactly the case a UTC grouping gets
+    /// wrong.
+    #[test]
+    fn the_day_grouping_uses_the_operator_clock_and_labels_each_day() {
+        let db = db();
+        let insert = |id: &str, updated: &str| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO chat_conversations (id, title, created_at, updated_at)
+                     VALUES (?1, ?1, ?2, ?2)",
+                    params![id, updated],
+                )?;
+                Ok(())
+            })
+            .expect("insert");
+        };
+        insert("late-tonight", "2026-03-15T01:00:00Z");
+        insert("earlier-tonight", "2026-03-14T22:00:00Z");
+        insert("yesterday", "2026-03-14T03:00:00Z");
+        insert("older", "2026-03-12T15:00:00Z");
+
+        let rows = conversations_sorted(&db, SESSION_LIMIT, ConversationSort::Day)
+            .expect("the list reads");
+        let today = (2026, 3, 14);
+        let groups = group_by_day(rows, -240, today);
+
+        let labels: Vec<&str> = groups.iter().map(|group| group.label.as_str()).collect();
+        assert_eq!(labels, vec!["Today", "Yesterday", "Mar 12"]);
+        assert_eq!(
+            groups[0].key, "2026-03-14",
+            "01:00Z on the 15th is the evening of the 14th at -04:00"
+        );
+        assert_eq!(
+            groups[0]
+                .conversations
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["late-tonight", "earlier-tonight"]
+        );
+        assert_eq!(groups[1].conversations[0].id, "yesterday");
+        assert_eq!(groups[2].conversations[0].id, "older");
+    }
+
+    /// A day that is not today, not yesterday and wraps a month boundary still
+    /// reads as a month and a number.
+    #[test]
+    fn a_day_label_handles_the_month_boundary() {
+        assert_eq!(day_label((2026, 3, 1), (2026, 3, 2)), "Yesterday");
+        assert_eq!(day_label((2026, 2, 28), (2026, 3, 1)), "Yesterday");
+        assert_eq!(day_label((2026, 3, 14), (2026, 3, 14)), "Today");
+        assert_eq!(day_label((2026, 2, 14), (2026, 3, 14)), "Feb 14");
+        assert_eq!(day_label((2025, 12, 31), (2026, 1, 1)), "Yesterday");
     }
 }
