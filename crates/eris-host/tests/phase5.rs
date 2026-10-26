@@ -23,9 +23,7 @@ use tower::ServiceExt;
 /// already shipped. What the test is for is the shape: exact keys, wire order,
 /// no trailing prose. The version is checked by being the thing that fills it.
 fn healthz_exact() -> String {
-    format!(
-        r#"{{"status":"ok","version":"{VERSION}","state":"setup","db":"ok"}}"#
-    )
+    format!(r#"{{"status":"ok","version":"{VERSION}","state":"setup","db":"ok"}}"#)
 }
 
 /// Send one request through the router and return status, body text and headers.

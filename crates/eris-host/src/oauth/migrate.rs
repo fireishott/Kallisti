@@ -217,7 +217,11 @@ pub fn epoch_from(value: &serde_json::Value) -> Option<i64> {
 /// A millisecond stamp becomes seconds; a second stamp is left alone.
 #[must_use]
 pub fn normalise_epoch(raw: i64) -> i64 {
-    if raw > 10_000_000_000 { raw / 1_000 } else { raw }
+    if raw > 10_000_000_000 {
+        raw / 1_000
+    } else {
+        raw
+    }
 }
 
 /// Compare a stored record against the source row, field by field.
@@ -239,7 +243,10 @@ pub fn normalise_epoch(raw: i64) -> i64 {
 ///
 /// [`TokenError::Malformed`] when the blob is not JSON, for the same reason
 /// [`record_from_row`] fails: an unreadable row cannot be compared.
-pub fn compare(row: &SourceRow, record: &TokenRecord) -> Result<Vec<(&'static str, bool)>, TokenError> {
+pub fn compare(
+    row: &SourceRow,
+    record: &TokenRecord,
+) -> Result<Vec<(&'static str, bool)>, TokenError> {
     let value: serde_json::Value =
         serde_json::from_str(&row.data).map_err(|_| TokenError::Malformed {
             provider: row.provider.clone(),
@@ -286,7 +293,10 @@ pub fn compare(row: &SourceRow, record: &TokenRecord) -> Result<Vec<(&'static st
         });
 
     Ok(vec![
-        ("access_token", raw_access.as_deref() == Some(record.access_token.as_str())),
+        (
+            "access_token",
+            raw_access.as_deref() == Some(record.access_token.as_str()),
+        ),
         ("refresh_token", raw_refresh == record.refresh_token),
         (
             "expires_at",
@@ -417,7 +427,11 @@ mod tests {
 
         let row = source_row("antigravity", antigravity_blob());
         let record = record_from_row(&row).expect("parses");
-        assert_eq!(record.expires_at, Some(1_800_000_000), "seconds stay seconds");
+        assert_eq!(
+            record.expires_at,
+            Some(1_800_000_000),
+            "seconds stay seconds"
+        );
         assert_eq!(record.project_id.as_deref(), Some("proj-xyz"));
     }
 
@@ -434,7 +448,8 @@ mod tests {
     #[test]
     fn a_migration_writes_a_migrated_records_that_compare_field_by_field() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let store = TokenFileStore::new(dir.path().join("tokens"), dir.path().join("keys/token.key"));
+        let store =
+            TokenFileStore::new(dir.path().join("tokens"), dir.path().join("keys/token.key"));
         let source_db = dir.path().join("source.sqlite");
         {
             let connection = Connection::open(&source_db).expect("open");
@@ -456,12 +471,15 @@ mod tests {
                 .expect("rows");
         }
 
-        let report = migrate(&source_db, &store, &["claude", "antigravity", "minimax"])
-            .expect("migrates");
+        let report =
+            migrate(&source_db, &store, &["claude", "antigravity", "minimax"]).expect("migrates");
         assert_eq!(report.entries.len(), 3);
         assert!(report.entries[0].written);
         assert!(report.entries[1].written);
-        assert!(!report.entries[2].found, "a provider with no row is reported");
+        assert!(
+            !report.entries[2].found,
+            "a provider with no row is reported"
+        );
         assert!(
             report.mismatches().is_empty(),
             "every field must match: {:?}",
@@ -497,13 +515,17 @@ mod tests {
         let error = connection
             .execute("DELETE FROM providerConnections", [])
             .expect_err("a read-only connection must refuse a write");
-        assert!(error.to_string().to_lowercase().contains("readonly"), "{error}");
+        assert!(
+            error.to_string().to_lowercase().contains("readonly"),
+            "{error}"
+        );
     }
 
     #[test]
     fn an_inactive_row_is_not_migrated() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let store = TokenFileStore::new(dir.path().join("tokens"), dir.path().join("keys/token.key"));
+        let store =
+            TokenFileStore::new(dir.path().join("tokens"), dir.path().join("keys/token.key"));
         let source_db = dir.path().join("source.sqlite");
         {
             let connection = Connection::open(&source_db).expect("open");
@@ -531,9 +553,10 @@ mod tests {
     #[test]
     fn a_missing_source_database_is_a_typed_error() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let store = TokenFileStore::new(dir.path().join("tokens"), dir.path().join("keys/token.key"));
-        let error = migrate(&dir.path().join("nope.sqlite"), &store, &["claude"])
-            .expect_err("must fail");
+        let store =
+            TokenFileStore::new(dir.path().join("tokens"), dir.path().join("keys/token.key"));
+        let error =
+            migrate(&dir.path().join("nope.sqlite"), &store, &["claude"]).expect_err("must fail");
         assert!(error.to_string().contains("read-only"));
     }
 
@@ -557,7 +580,10 @@ mod tests {
 
         // And the record must now be able to say it is inside its refresh lead
         // and past its expiry, instead of answering "fresh" for ever.
-        assert!(!record.is_fresh(1_793_000_000), "the token is stale at that time");
+        assert!(
+            !record.is_fresh(1_793_000_000),
+            "the token is stale at that time"
+        );
     }
 
     #[test]

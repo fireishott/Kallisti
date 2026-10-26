@@ -177,10 +177,8 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, Arc<dyn TokenStore + Send + Sync>) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let store = TokenFileStore::new(
-            dir.path().join("tokens"),
-            dir.path().join("keys/token.key"),
-        );
+        let store =
+            TokenFileStore::new(dir.path().join("tokens"), dir.path().join("keys/token.key"));
         (dir, Arc::new(store) as Arc<dyn TokenStore + Send + Sync>)
     }
 
@@ -200,12 +198,8 @@ mod tests {
     fn a_missing_env_reference_is_an_auth_error_naming_the_variable() {
         let (_dir, store) = store();
         let source = CredentialSource::read_only(store);
-        let error = resolve_credential(
-            "env:KALLISTI_NOT_SET_XYZ",
-            &source,
-            0,
-        )
-        .expect_err("must fail");
+        let error =
+            resolve_credential("env:KALLISTI_NOT_SET_XYZ", &source, 0).expect_err("must fail");
         assert!(matches!(error, LlmError::Auth { .. }));
         assert!(error.to_string().contains("KALLISTI_NOT_SET_XYZ"));
     }

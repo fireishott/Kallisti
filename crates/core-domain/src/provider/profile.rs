@@ -29,6 +29,16 @@ pub enum ApiDialect {
     /// Anthropic Messages: `{base}/messages`. Claude models are served this way
     /// only, on every gateway that carries them.
     Messages,
+    /// Google Antigravity, the Cloud Code `v1internal` shape: a wrapped request
+    /// at `{base}/v1internal:generateContent`, answered with Gemini candidates
+    /// nested under `response`.
+    ///
+    /// This dialect needs three things the other two do not: the billable cloud
+    /// project travels in the body, the tool schema is
+    /// `functionDeclarations[]`, and the answer is
+    /// `candidates[0].content.parts[].text`. A profile that names it without a
+    /// project is refused at construction rather than at the first turn.
+    Antigravity,
 }
 
 impl ApiDialect {
@@ -38,7 +48,26 @@ impl ApiDialect {
         match self {
             Self::ChatCompletions => "chat_completions",
             Self::Messages => "messages",
+            Self::Antigravity => "antigravity",
         }
+    }
+
+    /// Whether this dialect speaks Anthropic's wire format.
+    #[must_use]
+    pub const fn is_messages(self) -> bool {
+        matches!(self, Self::Messages)
+    }
+
+    /// Whether this dialect needs the vendor's own HTTP headers.
+    ///
+    /// A gateway in front of Claude accepts a bearer token and nothing else; the
+    /// vendor's own API refuses a request without `anthropic-version`. The two
+    /// send the same body and different headers, so the header choice is a
+    /// property of the deployment, recorded on its registry entry as
+    /// `direct: true`, and never inferred from the dialect.
+    #[must_use]
+    pub const fn needs_vendor_headers(self) -> bool {
+        matches!(self, Self::Messages | Self::Antigravity)
     }
 
     /// Read a stored value. Anything unrecognised is the OpenAI shape, which is
@@ -47,6 +76,7 @@ impl ApiDialect {
     pub fn parse(raw: &str) -> Self {
         match raw.trim() {
             "messages" => Self::Messages,
+            "antigravity" => Self::Antigravity,
             _ => Self::ChatCompletions,
         }
     }
@@ -86,6 +116,22 @@ pub struct ProviderProfile {
     /// existed before this field sent exactly the bytes it sends now.
     #[serde(default)]
     pub reasoning_split: bool,
+    /// The cloud project an Antigravity request is billed to.
+    ///
+    /// Antigravity's `v1internal` body carries a `project`, and a request without
+    /// one is refused before the model runs. The value is discovered by the
+    /// login flow (or `loadCodeAssist`) and is not a secret: it is an account
+    /// label in the shape `aicode-...`. Absent on every other dialect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Whether this deployment is the vendor's own API rather than a gateway.
+    ///
+    /// `false` is what every profile that existed before this field sent, and a
+    /// false profile keeps sending exactly the bytes it sent then: a bearer
+    /// token, no vendor headers. `true` adds `anthropic-version`/`anthropic-beta`
+    /// on the Messages dialect and the Antigravity `User-Agent` on its own.
+    #[serde(default)]
+    pub direct: bool,
 }
 
 impl ProviderProfile {
@@ -121,6 +167,8 @@ impl ProviderProfile {
             api_key_ref,
             dialect: ApiDialect::ChatCompletions,
             reasoning_split: false,
+            project: None,
+            direct: false,
         })
     }
 
@@ -131,6 +179,23 @@ impl ProviderProfile {
     #[must_use]
     pub fn with_dialect(mut self, dialect: ApiDialect) -> Self {
         self.dialect = dialect;
+        self
+    }
+
+    /// The same profile, aimed at the vendor's own API rather than a gateway.
+    ///
+    /// A separate step for the same reason as [`Self::with_dialect`]: a caller
+    /// that never heard of the flag keeps sending the bytes it always sent.
+    #[must_use]
+    pub fn with_direct(mut self, direct: bool) -> Self {
+        self.direct = direct;
+        self
+    }
+
+    /// The same profile, billed to one cloud project.
+    #[must_use]
+    pub fn with_project(mut self, project: Option<String>) -> Self {
+        self.project = project;
         self
     }
 
@@ -276,7 +341,7 @@ mod tests {
         let profile = ProviderProfile::new("9router", "http://127.0.0.1:20128/v1/", key())
             .expect("profile should build");
         assert_eq!(profile.base_url, "http://127.0.0.1:20128/v1");
-        assert_eq!(profile.api_key_ref.env_name(), "NINEROUTER_API_KEY");
+        assert_eq!(profile.api_key_ref.env_name(), Some("NINEROUTER_API_KEY"));
     }
 
     #[test]

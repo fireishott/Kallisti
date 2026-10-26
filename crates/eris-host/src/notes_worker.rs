@@ -398,9 +398,13 @@ fn production_runner(
     request: &WorkRequest,
     on_text: &mut dyn FnMut(&str),
 ) -> Result<WorkOutput, (String, String)> {
-    use core_runtime::provider::{ChatMessage, ChatRole, resolve_api_key};
+    use core_runtime::provider::{ChatMessage, ChatRole};
 
-    let key = resolve_api_key(&request.config.key_ref)
+    // Through the daemon's one credential choke point, like every other role: a
+    // provider that authenticates with a stored grant is usable here for the same
+    // reason it is usable in a turn, and an `env:` reference resolves exactly as
+    // it did before.
+    let key = crate::oauth::credential::resolve_key_now(&request.config.key_ref)
         .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
     let sandbox = crate::tools::Sandbox::new(
         std::path::PathBuf::from("."),

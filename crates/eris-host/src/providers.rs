@@ -62,6 +62,25 @@ pub struct Provider {
     /// and one compatibility flag is not worth a 400 on somebody else's server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_split: Option<bool>,
+    /// Whether this endpoint is the vendor's own API rather than a gateway.
+    ///
+    /// `None` sends exactly the bytes every entry sent before this field
+    /// existed: a bearer token and no vendor headers. An entry sets `true` for
+    /// a direct deployment, which adds `anthropic-version`/`anthropic-beta` on
+    /// the Messages dialect and the Antigravity `User-Agent` on its own. The
+    /// header choice is a property of the deployment and never inferred from
+    /// the dialect: a gateway in front of Claude wants the body and none of
+    /// those headers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct: Option<bool>,
+    /// The cloud project an Antigravity entry is billed to.
+    ///
+    /// `None` on every other dialect. Antigravity's `v1internal` body requires
+    /// one, and a login discovers it, so an entry whose account has never
+    /// onboarded leaves this empty and the first turn says so by name rather
+    /// than the endpoint answering an opaque 400.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 /// Why a registry could not be used.
@@ -154,14 +173,14 @@ fn validate_one(provider: &Provider) -> Result<(), RegistryError> {
             provider.id
         )));
     }
-    if !is_env_reference(&provider.key_ref) {
+    if !is_key_reference(&provider.key_ref) {
         return Err(RegistryError::new(format!(
-            "{} needs a key reference like `env:NAME`, and never the key itself",
+            "{} needs a key reference like `env:NAME` or `token:NAME`, and never the key itself",
             provider.id
         )));
     }
     if let Some(dialect) = provider.dialect.as_deref() {
-        let known = ["chat_completions", "messages"];
+        let known = ["chat_completions", "messages", "antigravity"];
         if !known.contains(&dialect.trim()) {
             return Err(RegistryError::new(format!(
                 "{} names the dialect `{}`; this build speaks {}",
@@ -209,6 +228,43 @@ pub fn is_env_reference(raw: &str) -> bool {
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// Whether a string is a key reference this build can resolve: an environment
+/// variable name or a stored grant.
+///
+/// The rule for `env:` is unchanged from build 107 and is still enforced by
+/// [`is_env_reference`]: a reference travels, a value does not. `token:` names a
+/// grant the daemon itself sealed after a browser login, and the character set
+/// is [`core_domain::SecretRef::token`]'s, so a name can never become a path
+/// traversal into another file in the store.
+#[must_use]
+pub fn is_key_reference(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if let Some(name) = trimmed.strip_prefix(core_domain::TOKEN_REF_PREFIX) {
+        return core_domain::SecretRef::token(name).is_ok();
+    }
+    is_env_reference(trimmed)
+}
+
+/// Whether one registry entry asks for the vendor's own headers.
+///
+/// An absent value is `false`, which is what every entry written before the
+/// field existed meant: bearer token, no vendor headers.
+#[must_use]
+pub fn direct_of(provider: &Provider) -> bool {
+    provider.direct.unwrap_or(false)
+}
+
+/// The cloud project an Antigravity entry is billed to, when it names one.
+#[must_use]
+pub fn project_of(provider: &Provider) -> Option<String> {
+    provider
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|project| !project.is_empty())
+        .map(str::to_owned)
+}
+
 /// The provider a turn should use.
 ///
 /// A named primary wins. A primary id that is not in the list falls back to the
@@ -233,6 +289,8 @@ pub fn seed(base_url: &str, key_ref: &str) -> Vec<Provider> {
         key_ref: key_ref.to_owned(),
         dialect: None,
         reasoning_split: None,
+        direct: None,
+        project: None,
     }]
 }
 
@@ -252,6 +310,82 @@ pub fn legacy_provider_id(providers: &[Provider], key_ref: &str) -> String {
         .find(|provider| provider.key_ref.trim() == wire)
         .map(|provider| provider.id.clone())
         .unwrap_or_else(|| DEFAULT_ID.to_owned())
+}
+
+/// The registry entry a connected account becomes.
+///
+/// Built from the login side's own facts - id, label, base URL - so the entry and
+/// the account cannot disagree about which endpoint they name. The key reference
+/// is the `token:` the grant is sealed under, `direct` is on because both of these
+/// are the vendor's own API rather than a gateway, and the dialect is the shape
+/// that API speaks.
+#[must_use]
+pub fn oauth_entry(
+    provider_id: &str,
+    label: &str,
+    base_url: &str,
+    dialect: &str,
+    project: Option<String>,
+) -> Provider {
+    Provider {
+        id: provider_id.to_owned(),
+        name: label.to_owned(),
+        base_url: base_url.trim_end_matches('/').to_owned(),
+        key_ref: format!("{}{}", core_domain::TOKEN_REF_PREFIX, provider_id),
+        dialect: Some(dialect.to_owned()),
+        reasoning_split: None,
+        direct: Some(true),
+        project: project
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
+    }
+}
+
+/// What an upsert did to one entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Upserted {
+    /// The entry was not there and now is.
+    Added,
+    /// The entry was there and its endpoint or project was updated.
+    Updated,
+    /// The entry already said exactly this.
+    Unchanged,
+}
+
+/// Put one entry into a registry, or bring the existing one up to date.
+///
+/// An account that was reconnected can discover a different cloud project, and an
+/// entry that kept the old one would bill the wrong project. Everything else on
+/// the entry - the name an operator may have edited, the reasoning flag - is
+/// left alone: this function owns the four fields a login can state and no more.
+pub fn upsert(providers: &mut Vec<Provider>, entry: Provider) -> Upserted {
+    match providers
+        .iter_mut()
+        .find(|existing| existing.id == entry.id)
+    {
+        None => {
+            providers.push(entry);
+            Upserted::Added
+        }
+        Some(existing) => {
+            let changed = existing.key_ref != entry.key_ref
+                || existing.base_url != entry.base_url
+                || existing.dialect != entry.dialect
+                || existing.direct != entry.direct
+                || (entry.project.is_some() && existing.project != entry.project);
+            if !changed {
+                return Upserted::Unchanged;
+            }
+            existing.key_ref = entry.key_ref;
+            existing.base_url = entry.base_url;
+            existing.dialect = entry.dialect;
+            existing.direct = entry.direct;
+            if entry.project.is_some() {
+                existing.project = entry.project;
+            }
+            Upserted::Updated
+        }
+    }
 }
 
 /// Render a registry for the editor.
@@ -275,6 +409,8 @@ mod tests {
             key_ref: "env:NINEROUTER_API_KEY".to_owned(),
             dialect: None,
             reasoning_split: None,
+            direct: None,
+            project: None,
         }
     }
 
@@ -433,5 +569,118 @@ mod tests {
         assert_eq!(seeded.len(), 1);
         assert_eq!(seeded[0].id, DEFAULT_ID);
         assert!(validate(&seeded).is_ok(), "the seed must be valid itself");
+    }
+
+    #[test]
+    fn a_connected_account_becomes_a_valid_registry_entry() {
+        let entry = oauth_entry(
+            "claude",
+            "Claude",
+            "https://api.anthropic.com/v1/",
+            "messages",
+            None,
+        );
+        assert_eq!(entry.key_ref, "token:claude");
+        assert_eq!(
+            entry.base_url, "https://api.anthropic.com/v1",
+            "the trailing slash is trimmed once, here, not at every call site"
+        );
+        assert_eq!(entry.dialect.as_deref(), Some("messages"));
+        assert_eq!(entry.direct, Some(true));
+        assert_eq!(entry.project, None);
+        assert!(
+            validate(std::slice::from_ref(&entry)).is_ok(),
+            "the entry this build writes has to pass this build's own validator"
+        );
+    }
+
+    #[test]
+    fn an_antigravity_entry_carries_its_project_and_drops_an_empty_one() {
+        let entry = oauth_entry(
+            "antigravity",
+            "Google Antigravity",
+            "https://daily-cloudcode-pa.googleapis.com",
+            "antigravity",
+            Some("  my-project  ".to_owned()),
+        );
+        assert_eq!(entry.project.as_deref(), Some("my-project"));
+
+        let without = oauth_entry(
+            "antigravity",
+            "Google Antigravity",
+            "https://daily-cloudcode-pa.googleapis.com",
+            "antigravity",
+            Some("   ".to_owned()),
+        );
+        assert_eq!(
+            without.project, None,
+            "a blank project is the same as no project, and Antigravity says so by name"
+        );
+    }
+
+    #[test]
+    fn upserting_twice_adds_once() {
+        let mut registry = Vec::new();
+        let entry = oauth_entry(
+            "claude",
+            "Claude",
+            "https://api.anthropic.com/v1",
+            "messages",
+            None,
+        );
+        assert_eq!(upsert(&mut registry, entry.clone()), Upserted::Added);
+        assert_eq!(upsert(&mut registry, entry), Upserted::Unchanged);
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn a_reconnect_that_discovers_a_new_project_updates_the_entry() {
+        let mut registry = vec![oauth_entry(
+            "antigravity",
+            "Google Antigravity",
+            "https://daily-cloudcode-pa.googleapis.com",
+            "antigravity",
+            Some("old-project".to_owned()),
+        )];
+        let reopened = oauth_entry(
+            "antigravity",
+            "Google Antigravity",
+            "https://daily-cloudcode-pa.googleapis.com",
+            "antigravity",
+            Some("new-project".to_owned()),
+        );
+        assert_eq!(upsert(&mut registry, reopened), Upserted::Updated);
+        assert_eq!(registry[0].project.as_deref(), Some("new-project"));
+
+        // A re-login that discovered nothing must not erase what the last one
+        // found: the entry still bills the project it knows.
+        let blind = oauth_entry(
+            "antigravity",
+            "Google Antigravity",
+            "https://daily-cloudcode-pa.googleapis.com",
+            "antigravity",
+            None,
+        );
+        assert_eq!(upsert(&mut registry, blind), Upserted::Unchanged);
+        assert_eq!(registry[0].project.as_deref(), Some("new-project"));
+    }
+
+    #[test]
+    fn an_entry_beside_the_gateway_does_not_disturb_it() {
+        let mut registry = vec![one("default")];
+        let entry = oauth_entry(
+            "claude",
+            "Claude",
+            "https://api.anthropic.com/v1",
+            "messages",
+            None,
+        );
+        assert_eq!(upsert(&mut registry, entry), Upserted::Added);
+        assert_eq!(registry.len(), 2);
+        assert_eq!(registry[0].id, "default");
+        assert!(
+            validate(&registry).is_ok(),
+            "a gateway and a login share one registry without arguing"
+        );
     }
 }

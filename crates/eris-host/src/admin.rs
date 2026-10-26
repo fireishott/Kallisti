@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 109;
+pub const BUILD: u32 = 110;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -197,6 +197,26 @@ pub const ROUTE_SETTINGS_MCP: &str = "/dashboard/settings/mcp";
 
 /// `POST /dashboard/settings/greeting` - the generated line on an empty chat page.
 pub const ROUTE_SETTINGS_GREETING: &str = "/dashboard/settings/greeting";
+/// `POST /dashboard/settings/accounts/connect` - start a browser login for one
+/// account. The form names which, and the answer is a redirect to the provider.
+pub const ROUTE_ACCOUNTS_CONNECT: &str = "/dashboard/settings/accounts/connect";
+
+/// `POST /dashboard/settings/accounts/verify` - finish a login from the address
+/// the operator pasted back after approving it in a browser on any device.
+pub const ROUTE_ACCOUNTS_VERIFY: &str = "/dashboard/settings/accounts/verify";
+
+/// `POST /dashboard/settings/accounts/register` - put a connected account into the
+/// provider registry, so its models reach every picker.
+pub const ROUTE_ACCOUNTS_REGISTER: &str = "/dashboard/settings/accounts/register";
+
+/// `POST /dashboard/settings/accounts/disconnect` - delete one stored grant.
+///
+/// Local only: it removes the record this daemon sealed and makes no call to the
+/// provider, because nothing here has proven a revoke endpoint exists for either
+/// account and guessing one is how a "disconnect" deletes somebody's other
+/// sessions.
+pub const ROUTE_ACCOUNTS_DISCONNECT: &str = "/dashboard/settings/accounts/disconnect";
+
 /// `POST /dashboard/settings/schedules` - create, toggle and delete schedules.
 pub const ROUTE_SETTINGS_SCHEDULES: &str = "/dashboard/settings/schedules";
 
@@ -324,6 +344,10 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_MCP,
     ROUTE_SETTINGS_GREETING,
+    ROUTE_ACCOUNTS_CONNECT,
+    ROUTE_ACCOUNTS_VERIFY,
+    ROUTE_ACCOUNTS_DISCONNECT,
+    ROUTE_ACCOUNTS_REGISTER,
     ROUTE_SETTINGS_SCHEDULES,
     ROUTE_SETTINGS_SKILLS,
     ROUTE_SIDEBAR,
@@ -389,6 +413,13 @@ pub struct AppState {
     /// The assistant's identity: where the file is, and whether it is on.
     /// Resolved from `[persona]` in `config.toml` plus the paths a run chose.
     pub persona: PersonaConfig,
+    /// The browser logins this process has started, and what the last one did.
+    ///
+    /// In process for the same reason the steering queue and the question
+    /// registry are: a pending login is a verifier and an anti-forgery token, and
+    /// neither belongs in a database. A restart ends the logins, and an operator
+    /// who was mid-flow starts again from Settings.
+    pub oauth: Arc<crate::oauth::Callbacks>,
     /// The addresses actually bound, in bind order. Written once by `serve`
     /// before anything serves, read by the pages that report the truth.
     listeners: Arc<RwLock<Vec<SocketAddr>>>,
@@ -454,6 +485,18 @@ impl AppState {
                 device = device.with_apns_fault(error.to_string());
             }
         }
+        // The login service is built with the shipped client ids and a store that
+        // is never installed. `serve` replaces it through `with_oauth` and
+        // `with_oauth_store` before anything binds, so a page can always be
+        // rendered and a token can only be sealed by the daemon that owns one.
+        let oauth = Arc::new(crate::oauth::Callbacks::new(
+            Arc::new(crate::oauth::PendingFlows::new()),
+            Arc::new(crate::oauth::Clients::default()),
+            Arc::new(crate::oauth::store::TokenFileStore::new(
+                engine.paths().token_dir.clone(),
+                engine.paths().token_key_file.clone(),
+            )),
+        ));
         Self {
             engine,
             mcp,
@@ -466,6 +509,7 @@ impl AppState {
             device,
             access: Arc::new(AdminAccess::loopback_only()),
             persona,
+            oauth,
             listeners: Arc::new(RwLock::new(vec![
                 ADMIN_ADDR
                     .parse()
@@ -481,6 +525,36 @@ impl AppState {
         self.device.set_persona(persona.clone());
         self.persona = persona;
         self
+    }
+
+    /// Attach the login service this process runs, with the client ids and the
+    /// callback port `oauth-clients.toml` resolved.
+    #[must_use]
+    pub fn with_oauth(self, clients: crate::oauth::Clients) -> Self {
+        let callbacks = Arc::new(crate::oauth::Callbacks::new(
+            Arc::clone(&self.oauth.pending),
+            Arc::new(clients),
+            Arc::clone(&self.oauth.store),
+        ));
+        Self {
+            oauth: callbacks,
+            ..self
+        }
+    }
+
+    /// Point the login service at the encrypted store the rest of the daemon
+    /// reads, so a granted token is sealed where a turn will look for it.
+    #[must_use]
+    pub fn with_oauth_store(self, store: Arc<dyn core_domain::TokenStore + Send + Sync>) -> Self {
+        let callbacks = Arc::new(crate::oauth::Callbacks::new(
+            Arc::clone(&self.oauth.pending),
+            Arc::clone(&self.oauth.clients),
+            store,
+        ));
+        Self {
+            oauth: callbacks,
+            ..self
+        }
     }
 
     /// Attach the access model the config resolved.

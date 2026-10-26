@@ -575,9 +575,70 @@ fn run_serve(
         }
     };
 
+    // The credential resolver, installed once before anything can answer.
+    //
+    // Every `token:` reference in the registry resolves through it, and the store
+    // it reads is the encrypted one under the same root the rest of the daemon
+    // uses. `oauth.auto_refresh` comes from `config.toml` and is false unless the
+    // operator wrote true, so a shipped host never spends a refresh token. A host
+    // whose store cannot be opened says so and keeps serving: an `env:` provider
+    // is unaffected, and the one thing worse than a broken account is a daemon
+    // that will not start because of one.
+    // The same store is handed to two owners: the resolver, which turns a
+    // reference into a credential for a turn, and the callback listener, which
+    // seals a grant a login just produced. Both must be the *same* store - a
+    // second one built from the same paths would work by luck and stop working
+    // the moment either grew a cache - so the `Arc` is cloned rather than rebuilt.
+    // The OAuth client ids and the callback port, read once, ahead of the
+    // resolver: a refresh needs the same client id the login used, so the specs
+    // are built from this file rather than from a second copy of the constants.
+    // A file that does not parse is reported by path and the defaults stand,
+    // because a callback on the wrong port is better than a daemon that will not
+    // start.
+    let clients = match eris_host::oauth::clients::load(&paths.config_dir) {
+        Ok(clients) => clients,
+        Err(error) => {
+            tracing::error!(%error, "the OAuth client file was not understood; using the defaults");
+            eris_host::oauth::clients::Clients::default()
+        }
+    };
+    let mut oauth_store: Option<std::sync::Arc<dyn core_domain::TokenStore + Send + Sync>> = None;
+    match eris_host::oauth::default_store(&paths) {
+        Ok(store) => {
+            oauth_store = Some(std::sync::Arc::clone(&store));
+            let specs = eris_host::oauth::credential::refresh_specs(&clients);
+            let installed = eris_host::oauth::credential::install(
+                store,
+                loaded.toml().oauth().auto_refresh(),
+                specs,
+            );
+            tracing::info!(
+                installed,
+                auto_refresh = loaded.toml().oauth().auto_refresh(),
+                "credential resolver installed"
+            );
+        }
+        Err(error) => {
+            tracing::error!(%error, "the credential store could not be opened; account references will be refused");
+        }
+    }
+    tracing::info!(
+        callback_port = clients.callback_port,
+        configured = clients.source.is_some(),
+        "OAuth callback listener"
+    );
+
     let state = AppState::new(engine, allow_full)
         .with_access(access)
-        .with_persona(PersonaConfig::from_toml(loaded.toml().persona(), &paths));
+        .with_oauth(clients);
+    // A host whose store would not open keeps the store the constructor built, so
+    // the panel renders a state rather than failing the page. The login it seals
+    // into goes nowhere, which is why the resolver above logs the same failure.
+    let state = match oauth_store {
+        Some(store) => state.with_oauth_store(store),
+        None => state,
+    };
+    let state = state.with_persona(PersonaConfig::from_toml(loaded.toml().persona(), &paths));
 
     // The device listener is opt-in twice over: the flag, or the switch the
     // operator last saved in the dashboard. Either one binds 127.0.0.1:7341; the

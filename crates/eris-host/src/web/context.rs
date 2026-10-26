@@ -836,6 +836,8 @@ mod tests {
             model: "m/one".to_owned(),
             dialect: core_domain::ApiDialect::ChatCompletions,
             reasoning_split: false,
+            direct: false,
+            project: None,
         };
         // Nothing listens on that port, so a call would return None anyway; what
         // is asserted is that the covered comparison decides it, before any

@@ -26,9 +26,7 @@ use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use core_domain::{
-    TokenError, TokenRecord, TokenStore,
-};
+use core_domain::{TokenError, TokenRecord, TokenStore};
 
 /// The first four bytes of every token file. A file that does not start with
 /// this is refused before a decrypt is attempted, so a stray file in the
@@ -113,9 +111,7 @@ impl TokenFileStore {
             Ok(bytes) => {
                 let bytes: [u8; KEY_LEN] = bytes.try_into().map_err(|_| TokenError::Store {
                     provider: "token-key".to_owned(),
-                    detail: format!(
-                        "the key file is not {KEY_LEN} bytes; refusing to guess a key"
-                    ),
+                    detail: format!("the key file is not {KEY_LEN} bytes; refusing to guess a key"),
                 })?;
                 Ok(bytes)
             }
@@ -329,11 +325,9 @@ fn ensure_dir(path: &Path) -> Result<(), TokenError> {
 
 /// `chmod` one path.
 fn set_mode(path: &Path, mode: u32) -> Result<(), TokenError> {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|error| {
-        TokenError::Store {
-            provider: "token-store".to_owned(),
-            detail: format!("the permissions could not be set: {error}"),
-        }
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|error| TokenError::Store {
+        provider: "token-store".to_owned(),
+        detail: format!("the permissions could not be set: {error}"),
     })
 }
 
@@ -359,10 +353,8 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, TokenFileStore) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let store = TokenFileStore::new(
-            dir.path().join("tokens"),
-            dir.path().join("keys/token.key"),
-        );
+        let store =
+            TokenFileStore::new(dir.path().join("tokens"), dir.path().join("keys/token.key"));
         (dir, store)
     }
 
@@ -413,8 +405,11 @@ mod tests {
             .expect("stores");
         assert_eq!(mode_of(store.dir()), DIR_MODE, "token directory");
         assert_eq!(mode_of(&store.path_for("claude")), FILE_MODE, "token file");
-        assert_eq!(mode_of(&store.key_path()), FILE_MODE, "key file");
-        assert_eq!(mode_of(store.key_path().parent().expect("parent")), DIR_MODE);
+        assert_eq!(mode_of(store.key_path()), FILE_MODE, "key file");
+        assert_eq!(
+            mode_of(store.key_path().parent().expect("parent")),
+            DIR_MODE
+        );
     }
 
     #[test]
@@ -441,7 +436,8 @@ mod tests {
 
         // A different key at the same path: the same ciphertext, a different
         // secret.
-        let other = TokenFileStore::new(dir.path().join("tokens"), dir.path().join("keys/other.key"));
+        let other =
+            TokenFileStore::new(dir.path().join("tokens"), dir.path().join("keys/other.key"));
         let error = other.load("claude").expect_err("must not decrypt");
         assert!(matches!(error, TokenError::Store { .. }), "{error:?}");
         let message = error.to_string();

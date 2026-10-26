@@ -292,12 +292,12 @@ pub fn sweep_orphan_attachments(db: &Db, older_than_secs: i64) -> Result<usize, 
         return Ok(0);
     }
     let removed = db.with_conn(|conn| {
-        Ok(conn.execute(
+        conn.execute(
             "DELETE FROM chat_attachments
               WHERE message_id IS NULL
                 AND created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
             params![format!("-{older_than_secs} seconds")],
-        )?)
+        )
     })?;
     for path in stale {
         // A path in the table is where this daemon put the bytes. A file that has
@@ -699,6 +699,8 @@ pub fn aux_pinned_config(
         model,
         dialect,
         reasoning_split: crate::providers::reasoning_split_of(provider),
+        direct: crate::providers::direct_of(provider),
+        project: crate::providers::project_of(provider),
     }))
 }
 
@@ -786,21 +788,14 @@ pub fn title_from(text: &str) -> String {
 /// failing a turn that already answered.
 #[must_use]
 pub fn suggest_title(config: &TurnConfig, question: &str, answer: &str) -> Option<String> {
-    let profile = ProviderProfile::new(
-        "title-generation",
-        config.base_url.clone(),
-        config.key_ref.clone(),
-    )
-    .ok()?
-    .with_dialect(config.dialect)
-    .with_reasoning_split(config.reasoning_split);
+    let profile = config.profile("title-generation").ok()?;
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
         Capabilities::openai_compatible(),
     )
     .ok()?;
-    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let key = crate::oauth::credential::resolve_key_now(&config.key_ref).ok()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1722,18 +1717,14 @@ pub fn dropped(transcript: &[Message], answering: &str) -> Vec<Message> {
 /// unpinned.
 #[must_use]
 pub fn aux_completion(config: &TurnConfig, system: &str, user: &str) -> Option<String> {
-    let profile =
-        ProviderProfile::new("auxiliary", config.base_url.clone(), config.key_ref.clone())
-            .ok()?
-            .with_dialect(config.dialect)
-            .with_reasoning_split(config.reasoning_split);
+    let profile = config.profile("auxiliary").ok()?;
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
         Capabilities::openai_compatible(),
     )
     .ok()?;
-    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let key = crate::oauth::credential::resolve_key_now(&config.key_ref).ok()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1841,17 +1832,14 @@ pub fn describe_images(config: &TurnConfig, files: &[Attachment]) -> Option<Stri
         return None;
     }
 
-    let profile = ProviderProfile::new("vision", config.base_url.clone(), config.key_ref.clone())
-        .ok()?
-        .with_dialect(config.dialect)
-        .with_reasoning_split(config.reasoning_split);
+    let profile = config.profile("vision").ok()?;
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
         Capabilities::openai_compatible(),
     )
     .ok()?;
-    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let key = crate::oauth::credential::resolve_key_now(&config.key_ref).ok()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1889,21 +1877,14 @@ pub fn extract_readable(config: &TurnConfig, page: &str) -> Option<String> {
     if text.is_empty() {
         return None;
     }
-    let profile = ProviderProfile::new(
-        "web-extract",
-        config.base_url.clone(),
-        config.key_ref.clone(),
-    )
-    .ok()?
-    .with_dialect(config.dialect)
-    .with_reasoning_split(config.reasoning_split);
+    let profile = config.profile("web-extract").ok()?;
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
         Capabilities::openai_compatible(),
     )
     .ok()?;
-    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let key = crate::oauth::credential::resolve_key_now(&config.key_ref).ok()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1943,17 +1924,14 @@ pub fn advise_approval(
     arguments: &str,
     sandbox_mode: &str,
 ) -> Option<String> {
-    let profile = ProviderProfile::new("approval", config.base_url.clone(), config.key_ref.clone())
-        .ok()?
-        .with_dialect(config.dialect)
-        .with_reasoning_split(config.reasoning_split);
+    let profile = config.profile("approval").ok()?;
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
         Capabilities::openai_compatible(),
     )
     .ok()?;
-    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let key = crate::oauth::credential::resolve_key_now(&config.key_ref).ok()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -2071,7 +2049,7 @@ pub fn generate_image(config: &TurnConfig, prompt: &str) -> Option<Vec<u8>> {
         .enable_all()
         .build()
         .ok()?;
-    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let key = crate::oauth::credential::resolve_key_now(&config.key_ref).ok()?;
 
     let response = runtime.block_on(async {
         let client = reqwest::Client::builder()
@@ -2189,6 +2167,46 @@ pub struct TurnConfig {
     /// property of the deployment the registry entry declares, and a turn that
     /// dropped it would put the chain of thought back into the reply.
     pub reasoning_split: bool,
+    /// Whether this endpoint is the vendor's own API rather than a gateway.
+    ///
+    /// Travels with the turn for the third time and the same reason: the vendor
+    /// refuses a request without `anthropic-version`, and a gateway in front of
+    /// the same model refuses one that carries it. The registry entry declares
+    /// it, so the turn carries it rather than a vendor name deciding it.
+    pub direct: bool,
+    /// The cloud project an Antigravity turn is billed to, when one is known.
+    ///
+    /// Only the Antigravity dialect reads it, and only a login can discover it:
+    /// a projection nobody has connected leaves this `None` and the first turn
+    /// says so by name instead of the endpoint answering an opaque 400.
+    pub project: Option<String>,
+}
+
+impl TurnConfig {
+    /// The provider profile this turn is sent as.
+    ///
+    /// Every role in this module builds its profile here, so the four facts that
+    /// decide the wire shape - dialect, reasoning split, whether this is the
+    /// vendor's own API, and which cloud project pays - travel together. A role
+    /// that spelled them out again is exactly how `greeting.rs` shipped in build
+    /// 106 with two of the four missing, and sent the wrong request in silence.
+    ///
+    /// # Errors
+    ///
+    /// [`core_domain::LlmError::Protocol`] when the configured base URL is not
+    /// one a request can be built for.
+    pub fn profile(
+        &self,
+        label: impl Into<String>,
+    ) -> Result<ProviderProfile, core_domain::LlmError> {
+        ProviderProfile::new(label, self.base_url.clone(), self.key_ref.clone()).map(|profile| {
+            profile
+                .with_dialect(self.dialect)
+                .with_reasoning_split(self.reasoning_split)
+                .with_direct(self.direct)
+                .with_project(self.project.clone())
+        })
+    }
 }
 
 /// The stored provider settings, or `None` when onboarding never wrote them.
@@ -2216,6 +2234,8 @@ pub fn turn_config(engine: &SetupEngine) -> Result<Option<TurnConfig>, Onboardin
         model: choice.model,
         dialect,
         reasoning_split: crate::providers::reasoning_split_of(chosen),
+        direct: crate::providers::direct_of(chosen),
+        project: crate::providers::project_of(chosen),
     }))
 }
 
@@ -2385,6 +2405,11 @@ pub fn apply_model(
         config.base_url = chosen.base_url.clone();
         config.key_ref = key_ref;
         config.reasoning_split = crate::providers::reasoning_split_of(chosen);
+        // The four facts that decide the wire shape all move with the endpoint.
+        // A turn that changed provider and kept the old direct flag would send
+        // vendor headers to a gateway, so the whole set is taken from the entry.
+        config.direct = crate::providers::direct_of(chosen);
+        config.project = crate::providers::project_of(chosen);
     }
     let dialect = engine.provider_dialect_for(&provider_id, &model)?;
     config.dialect = dialect;
@@ -2993,7 +3018,7 @@ pub fn run_turn(
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> Result<TurnOutcome, TurnFailure> {
-    let key = core_runtime::provider::resolve_api_key(&config.key_ref)
+    let key = crate::oauth::credential::resolve_key_now(&config.key_ref)
         .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
     run_turn_with_key(
         config,
@@ -3056,7 +3081,7 @@ pub fn run_turn_resilient(
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> (Result<TurnOutcome, TurnFailure>, ResilientNote) {
-    let key = match core_runtime::provider::resolve_api_key(&config.key_ref) {
+    let key = match crate::oauth::credential::resolve_key_now(&config.key_ref) {
         Ok(key) => key,
         Err(error) => {
             return (
@@ -3069,7 +3094,7 @@ pub fn run_turn_resilient(
     // as "fallback unusable", not as a silent skip, and the retry decision itself
     // stays in `run_turn_resilient_with_keys` where it is tested.
     let fallback_key =
-        fallback.and_then(|config| core_runtime::provider::resolve_api_key(&config.key_ref).ok());
+        fallback.and_then(|config| crate::oauth::credential::resolve_key_now(&config.key_ref).ok());
     run_turn_resilient_with_keys(
         config,
         &key,
@@ -3214,11 +3239,9 @@ pub fn run_turn_with_key(
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> Result<TurnOutcome, TurnFailure> {
-    let profile =
-        ProviderProfile::new("chat-turn", config.base_url.clone(), config.key_ref.clone())
-            .map_err(|error| (error.kind().to_owned(), error.to_string()))?
-            .with_dialect(config.dialect)
-            .with_reasoning_split(config.reasoning_split);
+    let profile = config
+        .profile("chat-turn")
+        .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
@@ -4158,8 +4181,7 @@ mod tests {
         assert!(claimed_file.exists(), "a claimed row is never swept");
         let left: Vec<String> = db
             .with_conn(|conn| {
-                let mut statement =
-                    conn.prepare("SELECT id FROM chat_attachments ORDER BY id")?;
+                let mut statement = conn.prepare("SELECT id FROM chat_attachments ORDER BY id")?;
                 let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
                 let mut ids = Vec::new();
                 for row in rows {
@@ -4898,6 +4920,8 @@ mod tests {
             model: "cmc/deepseek/deepseek-v4-flash".to_owned(),
             dialect: core_domain::ApiDialect::ChatCompletions,
             reasoning_split: false,
+            direct: false,
+            project: None,
         };
         apply_model(&mut config, &engine, "commandcode/claude-opus-5-5")
             .expect("the engine is readable");
@@ -4918,6 +4942,8 @@ mod tests {
             model: "deepseek/deepseek-v4-flash".to_owned(),
             dialect: core_domain::ApiDialect::ChatCompletions,
             reasoning_split: false,
+            direct: false,
+            project: None,
         };
         apply_model(&mut config, &engine, "other/model").expect("readable");
         assert_eq!(
@@ -4942,6 +4968,8 @@ mod tests {
             model: "m/one".to_owned(),
             dialect: core_domain::ApiDialect::ChatCompletions,
             reasoning_split: false,
+            direct: false,
+            project: None,
         };
         assert!(
             summarise(&config, &[]).is_none(),

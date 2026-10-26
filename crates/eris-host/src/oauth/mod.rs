@@ -21,12 +21,27 @@
 //! and no `Serialize`, errors name the provider and the reason, and the one place
 //! plaintext exists is the store's encrypt step.
 
+pub mod callback;
+pub mod clients;
+pub mod credential;
+pub mod discover;
+pub mod flow;
 pub mod migrate;
+pub mod pkce;
 pub mod refresh;
 pub mod resolve;
 pub mod store;
 
+pub use callback::{Callbacks, Outcome};
+pub use clients::{Clients, ClientsError};
+pub use credential::{install, install_source, resolve_key, resolve_key_now};
+pub use discover::{Discovered, discover};
+pub use flow::{
+    Grant, Pasted, Pending, PendingFlows, Provider, authorize_url, callback_page, exchange,
+    now_secs, parse_grant, parse_paste, query_pairs, query_value,
+};
 pub use migrate::{MigrationReport, migrate, read_source_rows};
+pub use pkce::Pkce;
 pub use refresh::{
     HttpRequest, HttpTransport, NoTransport, RefreshEncoding, RefreshSpec, RefreshedGrant,
     TransportError, parse_refresh_body, refresh_decision, refresh_now, refresh_request,
@@ -41,8 +56,7 @@ pub use store::TokenFileStore;
 /// [`core_domain::TokenError::Store`] when `$HOME` is unset.
 pub fn default_store(
     paths: &crate::config::Paths,
-) -> Result<std::sync::Arc<dyn core_domain::TokenStore + Send + Sync>, core_domain::TokenError>
-{
+) -> Result<std::sync::Arc<dyn core_domain::TokenStore + Send + Sync>, core_domain::TokenError> {
     let store = TokenFileStore::new(paths.token_dir.clone(), paths.token_key_file.clone());
     Ok(std::sync::Arc::new(store))
 }

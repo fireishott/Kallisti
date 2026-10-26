@@ -571,17 +571,10 @@ struct OAuthRaw {
 /// that is inside its refresh lead is reported as needing a login, and a grant
 /// copied out of another program is reported as expired. Build 108 never turns
 /// it on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OAuthTable {
+    /// False unless the operator wrote `true`. This is the shipped default.
     auto_refresh: bool,
-}
-
-impl Default for OAuthTable {
-    fn default() -> Self {
-        Self {
-            auto_refresh: false,
-        }
-    }
 }
 
 impl OAuthTable {
@@ -917,7 +910,7 @@ KALLISTI_API_KEY_REF=env:NINEROUTER_API_KEY
         assert_eq!(config.model(), "ds/deepseek-v4-flash");
         assert_eq!(
             config.api_key_ref().env_name(),
-            "NINEROUTER_API_KEY",
+            Some("NINEROUTER_API_KEY"),
             "the file carries a reference, and only a reference"
         );
         assert_eq!(config.max_output_tokens(), None);
@@ -1291,7 +1284,10 @@ KALLISTI_API_KEY_REF=sk-not-a-reference
     fn a_secret_in_the_oauth_table_is_refused_by_name() {
         let error = TomlConfig::parse("[oauth]\nrefresh_token = \"abc\"\n", &toml_path())
             .expect_err("a secret belongs nowhere near this file");
-        assert!(matches!(error, ConfigError::SecretInToml { .. }), "{error:?}");
+        assert!(
+            matches!(error, ConfigError::SecretInToml { .. }),
+            "{error:?}"
+        );
         assert!(error.to_string().contains("oauth.refresh_token"), "{error}");
     }
 

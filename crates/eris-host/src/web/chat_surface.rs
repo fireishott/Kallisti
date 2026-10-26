@@ -1448,7 +1448,12 @@ fn a_refused_send_leaves_no_file_and_no_attachment_row() {
             .cookie(Some(&cookie)),
     ));
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
-    assert_eq!(reply.json()["code"], "too_many_attachments", "{}", reply.body);
+    assert_eq!(
+        reply.json()["code"],
+        "too_many_attachments",
+        "{}",
+        reply.body
+    );
 
     // Nothing on disk: the eight files that arrived before the refusal are not
     // there, because none of them was written until every part had passed.
@@ -1465,7 +1470,11 @@ fn a_refused_send_leaves_no_file_and_no_attachment_row() {
     // And nothing in the database, so no orphan row survives the request.
     let rows: i64 = engine
         .db()
-        .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM chat_attachments", [], |row| row.get(0)))
+        .with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM chat_attachments", [], |row| {
+                row.get(0)
+            })
+        })
         .unwrap();
     assert_eq!(rows, 0, "a refused send records no attachment");
 }

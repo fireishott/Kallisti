@@ -914,6 +914,8 @@ mod tests {
             key_ref: "env:NINEROUTER_API_KEY".to_owned(),
             dialect: None,
             reasoning_split: None,
+            direct: None,
+            project: None,
         }];
         let rendered = providers_json(&registry, Some("alpha")).to_string();
         assert!(rendered.contains("\"id\":\"alpha\""), "{rendered}");
@@ -933,6 +935,8 @@ mod tests {
                 key_ref: "env:A".to_owned(),
                 dialect: None,
                 reasoning_split: None,
+                direct: None,
+                project: None,
             },
             Provider {
                 id: "beta".to_owned(),
@@ -941,6 +945,8 @@ mod tests {
                 key_ref: "env:B".to_owned(),
                 dialect: None,
                 reasoning_split: None,
+                direct: None,
+                project: None,
             },
         ];
         let rows = providers_json(&registry, Some("beta"));

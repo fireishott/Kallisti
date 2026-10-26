@@ -85,7 +85,44 @@ impl ModelCatalog {
 }
 
 /// Ask a configured endpoint which models it serves.
+///
+/// The verb and the shape are a property of the dialect. Everything except
+/// Antigravity answers `GET {base}/models`; Antigravity publishes its catalogue
+/// from the account (`POST v1internal:fetchAvailableModels`), because its base
+/// URL has no `/models` route at all and a GET against it is a 404 that would be
+/// reported as a dead provider.
 pub async fn list_models(
+    profile: &ProviderProfile,
+    key: &SecretKey,
+) -> Result<ModelCatalog, LlmError> {
+    if profile.dialect == ApiDialect::Antigravity {
+        return list_antigravity_models(profile, key).await;
+    }
+    list_openai_models(profile, key).await
+}
+
+/// The vendor headers one deployment needs, from the profile alone.
+///
+/// A gateway in front of Claude wants a bearer token and nothing else; the
+/// vendor's own API refuses a request without `anthropic-version`. The choice is
+/// recorded on the registry entry as `direct: true` and never inferred from the
+/// dialect, which is the same rule the chat adapter applies to a turn.
+fn vendor_headers(profile: &ProviderProfile) -> Vec<(&'static str, &'static str)> {
+    if !profile.direct {
+        return Vec::new();
+    }
+    match profile.dialect {
+        ApiDialect::Messages => vec![
+            ("anthropic-version", super::openai_compat::ANTHROPIC_VERSION),
+            ("anthropic-beta", super::openai_compat::ANTHROPIC_BETA),
+        ],
+        ApiDialect::Antigravity => vec![("user-agent", super::antigravity::ANTIGRAVITY_USER_AGENT)],
+        ApiDialect::ChatCompletions => Vec::new(),
+    }
+}
+
+/// The OpenAI-compatible path: `GET {base}/models`.
+async fn list_openai_models(
     profile: &ProviderProfile,
     key: &SecretKey,
 ) -> Result<ModelCatalog, LlmError> {
@@ -97,19 +134,18 @@ pub async fn list_models(
         .build()
         .map_err(|error| classify::protocol(format!("could not build the HTTP client: {error}")))?;
 
-    let response = http
-        .get(&url)
-        .bearer_auth(key.expose())
-        .send()
-        .await
-        .map_err(|error| {
-            classify::classify_request_failure(
-                error.is_connect(),
-                error.is_timeout(),
-                error.is_body(),
-                &format!("{url}: {error}"),
-            )
-        })?;
+    let mut pending = http.get(&url).bearer_auth(key.expose());
+    for (name, value) in vendor_headers(profile) {
+        pending = pending.header(name, value);
+    }
+    let response = pending.send().await.map_err(|error| {
+        classify::classify_request_failure(
+            error.is_connect(),
+            error.is_timeout(),
+            error.is_body(),
+            &format!("{url}: {error}"),
+        )
+    })?;
 
     let status = response.status();
     let retry_after_secs = response
@@ -136,6 +172,153 @@ pub async fn list_models(
         classify::protocol(format!(
             "{url} answered 200 but the body is not a model list: {detail}"
         ))
+    })
+}
+
+/// The Antigravity path: `POST {base}/v1internal:fetchAvailableModels`.
+///
+/// The catalogue there is "what this account can reach", not "what this endpoint
+/// serves", so it is a per-account answer and it needs the cloud project the
+/// grant is billed to. The body is the project alone; the service reads the
+/// account from the bearer token.
+async fn list_antigravity_models(
+    profile: &ProviderProfile,
+    key: &SecretKey,
+) -> Result<ModelCatalog, LlmError> {
+    let url = format!(
+        "{}/v1internal:fetchAvailableModels",
+        profile.base_url.trim_end_matches('/')
+    );
+    let project = profile
+        .project
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    let body = if project.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ "project": project })
+    };
+    let http = Client::builder()
+        .user_agent(concat!("kallisti-eris/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| classify::protocol(format!("could not build the HTTP client: {error}")))?;
+    let mut pending = http.post(&url).bearer_auth(key.expose()).json(&body);
+    for (name, value) in vendor_headers(profile) {
+        pending = pending.header(name, value);
+    }
+    let response = pending.send().await.map_err(|error| {
+        classify::classify_request_failure(
+            error.is_connect(),
+            error.is_timeout(),
+            error.is_body(),
+            &format!("{url}: {error}"),
+        )
+    })?;
+    let status = response.status();
+    let retry_after_secs = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(classify::classify_http(
+            status.as_u16(),
+            &body,
+            retry_after_secs,
+        ));
+    }
+    let body = response.text().await.map_err(|error| {
+        classify::classify_transport(
+            classify::TransportFailure::Body,
+            &format!("{url}: could not read the model list: {error}"),
+        )
+    })?;
+    parse_available_models(&body).map_err(|detail| {
+        classify::protocol(format!(
+            "{url} answered 200 but the body is not an Antigravity model list: {detail}"
+        ))
+    })
+}
+
+/// Parse `v1internal:fetchAvailableModels`.
+///
+/// Two shapes are in the wild for the same answer: `models` as an object keyed by
+/// id, and `models` as an array of entries. An entry flagged `isInternal` is the
+/// surface's own plumbing (`tab_*`, `chat_*`) and is dropped here rather than
+/// offered to a picker: no operator can run a turn on it.
+pub fn parse_available_models(body: &str) -> Result<ModelCatalog, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|error| format!("not JSON: {error}"))?;
+    let models = value
+        .get("models")
+        .ok_or_else(|| "the body has no models".to_owned())?;
+    let mut ids: Vec<String> = Vec::new();
+    let mut context_lengths: BTreeMap<String, u64> = BTreeMap::new();
+    match models {
+        serde_json::Value::Object(by_id) => {
+            for (id, info) in by_id {
+                if info
+                    .get("isInternal")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let id = id.trim();
+                if id.is_empty() {
+                    continue;
+                }
+                for key in ["maxTokens", "maxOutputTokens", "contextWindow"] {
+                    if let Some(tokens) = info.get(key).and_then(serde_json::Value::as_u64)
+                        && tokens > 0
+                    {
+                        context_lengths.insert(id.to_owned(), tokens);
+                        break;
+                    }
+                }
+                ids.push(id.to_owned());
+            }
+        }
+        serde_json::Value::Array(entries) => {
+            for entry in entries {
+                if entry
+                    .get("isInternal")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let Some(id) = entry
+                    .get("id")
+                    .or_else(|| entry.get("model"))
+                    .or_else(|| entry.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let id = id.trim();
+                if id.is_empty() {
+                    continue;
+                }
+                ids.push(id.to_owned());
+            }
+        }
+        _ => return Err("`models` is neither an object nor an array".to_owned()),
+    }
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return Err("every entry was internal, so the list names no model".to_owned());
+    }
+    Ok(ModelCatalog {
+        models: ids,
+        context_lengths,
+        dialects: BTreeMap::new(),
+        unreachable: Vec::new(),
     })
 }
 
@@ -253,6 +436,38 @@ pub fn declared_dialect(object: &serde_json::Map<String, serde_json::Value>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_antigravity_object_catalogue_drops_the_internal_entries() {
+        let catalog = parse_available_models(
+            r#"{"models":{
+                 "gemini-3-flash":{"displayName":"Gemini 3 Flash","maxTokens":1048576},
+                 "tab_completion":{"isInternal":true},
+                 "chat_judge":{"isInternal":true},
+                 "claude-sonnet-5-5":{"displayName":"Claude Sonnet 5.5"}
+               }}"#,
+        )
+        .expect("parses");
+        assert_eq!(catalog.models, vec!["claude-sonnet-5-5", "gemini-3-flash"]);
+        assert_eq!(catalog.context_length("gemini-3-flash"), Some(1_048_576));
+        assert_eq!(catalog.context_length("claude-sonnet-5-5"), None);
+    }
+
+    #[test]
+    fn an_antigravity_array_catalogue_parses_too() {
+        let catalog = parse_available_models(
+            r#"{"models":[{"id":"b/model"},{"model":"a/model"},{"name":"dead/model","isInternal":true}]}"#,
+        )
+        .expect("parses");
+        assert_eq!(catalog.models, vec!["a/model", "b/model"]);
+    }
+
+    #[test]
+    fn a_catalogue_that_is_only_internal_entries_is_refused_rather_than_empty() {
+        let error = parse_available_models(r#"{"models":[{"id":"tab_x","isInternal":true}]}"#)
+            .expect_err("no model to offer");
+        assert!(error.contains("internal"), "{error}");
+    }
 
     #[test]
     fn the_documented_envelope_parses() {

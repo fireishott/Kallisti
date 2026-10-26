@@ -26,19 +26,20 @@ use axum::routing::{get, post};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::admin::{
-    AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
-    ROUTE_CHAT, ROUTE_CHAT_ANSWER, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_FILE,
-    ROUTE_CHAT_ID, ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND,
-    ROUTE_CHAT_SESSIONS, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD, ROUTE_DEVICE_REMOVE, ROUTE_DEVICES,
-    ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN,
-    ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
-    ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP,
-    ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
-    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_PROBE,
-    ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
-    ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
-    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
-    VERSION, session_path,
+    AppState, ROUTE_ACCOUNTS_CONNECT, ROUTE_ACCOUNTS_DISCONNECT, ROUTE_ACCOUNTS_REGISTER,
+    ROUTE_ACCOUNTS_VERIFY, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE,
+    ROUTE_BACKUPS_RESTORE, ROUTE_CHAT, ROUTE_CHAT_ANSWER, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE,
+    ROUTE_CHAT_FILE, ROUTE_CHAT_ID, ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW,
+    ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD,
+    ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_LOGOUT,
+    ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS,
+    ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS,
+    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
+    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
+    ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING,
+    ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS,
+    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -126,6 +127,10 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_AUX, post(save_aux))
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
         .route(ROUTE_SETTINGS_GREETING, post(save_greeting))
+        .route(ROUTE_ACCOUNTS_CONNECT, post(connect_account))
+        .route(ROUTE_ACCOUNTS_VERIFY, post(verify_account))
+        .route(ROUTE_ACCOUNTS_DISCONNECT, post(disconnect_account))
+        .route(ROUTE_ACCOUNTS_REGISTER, post(register_account))
         .route(ROUTE_SETTINGS_SCHEDULES, post(save_schedules))
         .route(ROUTE_SETTINGS_SKILLS, post(save_skills))
         .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
@@ -710,6 +715,23 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     )
     .as_str()
     .to_owned();
+    // The account panel: one row per login this build can run, from the store the
+    // daemon itself writes. Read on every render rather than cached, because the
+    // one thing this panel exists to state is the truth as of now.
+    let account_registry = chat::provider_registry(engine).unwrap_or_default();
+    view.accounts = crate::web::accounts::rows(
+        &state.oauth,
+        crate::zone::offset_minutes(
+            engine.db(),
+            crate::zone::Zone::parse(
+                engine
+                    .setting(crate::zone::SETTING_TIMEZONE)
+                    .map_err(|error| form_error(&error))?
+                    .as_deref(),
+            ),
+        ),
+        &account_registry,
+    );
     view.models = engine.primary_provider_catalog().unwrap_or_default();
     // Every model on every configured provider, provider-qualified. The picker
     // offers this list; the text field below it stays, because an endpoint's
@@ -2330,7 +2352,7 @@ async fn provider(
             );
         }
     };
-    let key = match core_runtime::provider::resolve_api_key(&reference) {
+    let key = match crate::oauth::credential::resolve_key_now(&reference) {
         Ok(key) => key,
         Err(error) => {
             return fail(
@@ -2735,7 +2757,7 @@ async fn rotate_provider(
             );
         }
     };
-    let key = match core_runtime::provider::resolve_api_key(&reference) {
+    let key = match crate::oauth::credential::resolve_key_now(&reference) {
         Ok(key) => key,
         Err(error) => {
             return fail_dashboard(
@@ -3613,8 +3635,7 @@ async fn save_reasoning(
     // unrecognised value stores `expanded`, which is what every earlier build
     // drew, so a bad post cannot hide an answer.
     let reply = chat::reply_state(Some(field(&fields, "reply_state"))).as_str();
-    if let Err(error) = store::settings_put(state.engine.db(), chat::SETTING_REPLY_STATE, reply)
-    {
+    if let Err(error) = store::settings_put(state.engine.db(), chat::SETTING_REPLY_STATE, reply) {
         return store_failure(&request_id.0, chat::SETTING_REPLY_STATE, error);
     }
     if let Err(error) = state
@@ -4097,7 +4118,7 @@ pub async fn probe_registry(
                 continue;
             }
         };
-        let key = match core_runtime::provider::resolve_api_key(&reference) {
+        let key = match crate::oauth::credential::resolve_key_now(&reference) {
             Ok(key) => key,
             Err(error) => {
                 failed.push(format!("{}: {error}", provider.id));
@@ -4108,7 +4129,14 @@ pub async fn probe_registry(
             format!("registry-probe:{}", provider.id),
             provider.base_url.clone(),
             reference.clone(),
-        ) {
+        )
+        .map(|profile| {
+            profile
+                .with_dialect(crate::providers::dialect_of(provider))
+                .with_reasoning_split(crate::providers::reasoning_split_of(provider))
+                .with_direct(crate::providers::direct_of(provider))
+                .with_project(crate::providers::project_of(provider))
+        }) {
             Ok(profile) => profile,
             Err(error) => {
                 failed.push(format!("{}: {error}", provider.id));
@@ -4757,11 +4785,16 @@ fn validate_provider(
             Some("api_key_ref"),
             "provider_key_ref_invalid",
             format!(
-                "the key reference must be env:NAME, with the variable name in capitals: {source}"
+                "the key reference must be env:NAME in capitals, or token:NAME naming a connected account: {source}"
             ),
         )
     })?;
-    if !is_env_var_name(reference.env_name()) {
+    // Two schemes, two rules. `env:` names a variable in capitals; `token:` names
+    // a stored grant by its provider id, and the character set was already
+    // enforced by the parse above, so there is nothing further to check.
+    if let Some(name) = reference.env_name()
+        && !is_env_var_name(name)
+    {
         return Err(FormError::new(
             Some("api_key_ref"),
             "provider_key_ref_invalid",
@@ -8547,6 +8580,361 @@ async fn save_skills(
         return audit_failure(&request_id.0, "settings.skills", error);
     }
     see_other(SAVED_SKILLS)
+}
+
+// ---------------------------------------------------------------------------
+// Accounts: the two presses
+// ---------------------------------------------------------------------------
+
+/// `POST /dashboard/settings/accounts/connect` - start a browser login.
+///
+/// A session is required, and so is a form post: starting a login is a state
+/// change, so it is not something a link can do on a page load and not something
+/// an unauthenticated caller can do at all.
+///
+/// The answer is a 303 back to Settings in both cases, with the panel stating what
+/// happened. On success the row carries the authorize URL as a link, because the
+/// daemon cannot know whether a browser is on this host: a headless box has none,
+/// and the operator is already looking at this page through one.
+async fn connect_account(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let provider = match crate::web::accounts::provider_from(field(&fields, "account_provider")) {
+        Ok(provider) => provider,
+        Err(reason) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(Some("account_provider"), "account_provider_invalid", reason),
+            );
+        }
+    };
+    match crate::web::accounts::start(&state.oauth, provider).await {
+        crate::web::accounts::Started::Ready { url, .. } => {
+            let notice = format!(
+                "{} login started: open the link, approve, then paste the address the browser lands on and press Verify",
+                provider.label()
+            );
+            if as_html {
+                render_settings_ok(&state, SettingsGroup::Accounts, notice)
+            } else {
+                ok_json(serde_json::json!({
+                    "ok": true,
+                    "provider": provider.id(),
+                    "authorize_url": url,
+                }))
+            }
+        }
+        crate::web::accounts::Started::Refused(reason) => {
+            // Recorded as well as shown: the listener's failure outlives the page
+            // it was reported on, and the next render states it beside the row.
+            state
+                .oauth
+                .note(crate::oauth::Outcome::failed(provider, reason.clone()));
+            if as_html {
+                fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(Some("account_provider"), "account_login_refused", reason),
+                )
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({
+                        "ok": false,
+                        "provider": provider.id(),
+                        "error": reason,
+                    })),
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
+/// Put one connected account into the registry and publish its catalogue.
+///
+/// Called by a successful Verify and by the Add to providers press, so both ends
+/// in the same state: a registry entry naming `token:<id>` and a catalogue under
+/// that id. The catalogue is the point - the pickers read it, and an entry with
+/// no catalogue contributes no options anywhere.
+///
+/// Returns the sentence the row states, which is never a failure the operator has
+/// to guess at: a registry refusal and a probe refusal are both reported, and
+/// both name what to do next.
+async fn wire_account(
+    state: &AppState,
+    provider: crate::oauth::flow::Provider,
+) -> Result<String, String> {
+    let project = crate::web::accounts::project_of(&state.oauth, provider);
+    let outcome =
+        crate::web::accounts::register(&state.engine, provider, project).map_err(|error| {
+            format!(
+                "{} is connected, but adding it as a provider failed: {error}",
+                provider.label()
+            )
+        })?;
+    let registry = chat::provider_registry(&state.engine).unwrap_or_default();
+    let ours: Vec<_> = registry
+        .into_iter()
+        .filter(|entry| {
+            entry.key_ref.trim() == format!("{}{}", core_domain::TOKEN_REF_PREFIX, provider.id())
+        })
+        .collect();
+    let (probed, failed) = probe_registry(&state.engine, &ours).await;
+    let wired = match outcome {
+        crate::providers::Upserted::Added => format!("{} added to providers", provider.label()),
+        crate::providers::Upserted::Updated => {
+            format!("{} updated in providers", provider.label())
+        }
+        crate::providers::Upserted::Unchanged => {
+            format!("{} was already a provider", provider.label())
+        }
+    };
+    if probed == 0 {
+        let why = failed
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "the catalogue probe returned nothing".to_owned());
+        return Err(format!(
+            "{wired}, but its model list could not be read: {why}"
+        ));
+    }
+    Ok(format!("{wired} with {probed} model catalogue(s)"))
+}
+
+/// `POST /dashboard/settings/accounts/register` - add a connected account to the
+/// provider registry.
+///
+/// The same work a successful Verify does, offered on its own so an account that
+/// was connected before this build existed can be wired without a re-login.
+async fn register_account(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let provider = match crate::web::accounts::provider_from(field(&fields, "account_provider")) {
+        Ok(provider) => provider,
+        Err(reason) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(Some("account_provider"), "account_provider_invalid", reason),
+            );
+        }
+    };
+    match wire_account(&state, provider).await {
+        Ok(message) => {
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "settings.accounts.register",
+                Some(&format!("provider={}", provider.id())),
+            );
+            state.oauth.note(crate::oauth::Outcome {
+                provider,
+                ok: true,
+                account: None,
+                project: None,
+                message: message.clone(),
+                at: crate::oauth::now_secs(),
+            });
+            if as_html {
+                render_settings_ok(&state, SettingsGroup::Accounts, message)
+            } else {
+                ok_json(serde_json::json!({"ok": true, "provider": provider.id()}))
+            }
+        }
+        Err(reason) => {
+            state
+                .oauth
+                .note(crate::oauth::Outcome::failed(provider, reason.clone()));
+            if as_html {
+                fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(Some("account_provider"), "account_register_refused", reason),
+                )
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({
+                        "ok": false,
+                        "provider": provider.id(),
+                        "error": reason,
+                    })),
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
+/// `POST /dashboard/settings/accounts/verify` - finish a login from the address
+/// the operator pasted back.
+///
+/// Works from any device: the browser that approved the login only has to show
+/// its address bar, and the operator copies it here. The exchange is blocking
+/// network I/O, so it runs on the blocking pool.
+async fn verify_account(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let provider = match crate::web::accounts::provider_from(field(&fields, "account_provider")) {
+        Ok(provider) => provider,
+        Err(reason) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(Some("account_provider"), "account_provider_invalid", reason),
+            );
+        }
+    };
+    let pasted = field(&fields, "account_paste").to_owned();
+    let callbacks = std::sync::Arc::clone(&state.oauth);
+    let outcome = tokio::task::spawn_blocking(move || callbacks.handle_paste(provider, &pasted))
+        .await
+        .unwrap_or_else(|_| {
+            crate::oauth::Outcome::failed(provider, "the login exchange stopped unexpectedly")
+        });
+    if outcome.ok {
+        // A sealed grant is not a provider yet. Wiring it here is what makes a
+        // successful Verify end with the account's models in every picker,
+        // instead of with a second press the operator has to know about.
+        let message = match wire_account(&state, provider).await {
+            Ok(detail) => format!("{}; {detail}", outcome.message),
+            Err(detail) => format!("{}; {detail}", outcome.message),
+        };
+        if as_html {
+            render_settings_ok(&state, SettingsGroup::Accounts, message)
+        } else {
+            ok_json(serde_json::json!({"ok": true, "provider": provider.id()}))
+        }
+    } else if as_html {
+        fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("account_paste"),
+                "account_verify_refused",
+                outcome.message,
+            ),
+        )
+    } else {
+        (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "provider": provider.id(),
+                "error": outcome.message,
+            })),
+        )
+            .into_response()
+    }
+}
+
+/// `POST /dashboard/settings/accounts/disconnect` - delete one sealed grant.
+///
+/// Local only. It removes the record this daemon wrote, so the next turn that
+/// names `token:NAME` says the account is not connected rather than presenting a
+/// grant the operator believes they revoked.
+async fn disconnect_account(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let provider = match crate::web::accounts::provider_from(field(&fields, "account_provider")) {
+        Ok(provider) => provider,
+        Err(reason) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(Some("account_provider"), "account_provider_invalid", reason),
+            );
+        }
+    };
+    match crate::web::accounts::disconnect(state.oauth.store.as_ref(), provider) {
+        crate::web::accounts::Deleted::Removed => {
+            let notice = format!("{} is disconnected; no grant is stored", provider.label());
+            state.oauth.note(crate::oauth::Outcome {
+                provider,
+                ok: true,
+                account: None,
+                project: None,
+                message: notice.clone(),
+                at: crate::oauth::now_secs(),
+            });
+            if as_html {
+                render_settings_ok(&state, SettingsGroup::Accounts, notice)
+            } else {
+                ok_json(serde_json::json!({"ok": true, "provider": provider.id()}))
+            }
+        }
+        crate::web::accounts::Deleted::Refused(reason) => {
+            state
+                .oauth
+                .note(crate::oauth::Outcome::failed(provider, reason.clone()));
+            if as_html {
+                fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(
+                        Some("account_provider"),
+                        "account_disconnect_refused",
+                        reason,
+                    ),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({
+                        "ok": false,
+                        "provider": provider.id(),
+                        "error": reason,
+                    })),
+                )
+                    .into_response()
+            }
+        }
+    }
 }
 
 #[cfg(test)]

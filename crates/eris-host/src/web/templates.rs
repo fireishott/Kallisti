@@ -1649,12 +1649,15 @@ pub enum SettingsGroup {
     Schedules,
     /// The operator's skill library and its per-skill switches.
     Skills,
+    /// The connected accounts: a browser login per provider, and its status.
+    Accounts,
 }
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Provider,
+        Self::Accounts,
         Self::Workspace,
         Self::Permissions,
         Self::Persona,
@@ -1674,6 +1677,7 @@ impl SettingsGroup {
             Self::Greeting => "greeting",
             Self::Schedules => "schedules",
             Self::Skills => "skills",
+            Self::Accounts => "accounts",
         }
     }
 
@@ -1710,6 +1714,12 @@ impl SettingsGroup {
                     | "schedules_enabled"
             ),
             Self::Skills => matches!(field, "skills_enabled" | "skills_dir" | "skills_library"),
+            // The accounts panel has one field: which provider the press named.
+            // Anything it refuses is refused inside the panel, next to the row.
+            Self::Accounts => matches!(
+                field,
+                "account_provider" | "account_action" | "account_paste"
+            ),
         }
     }
 
@@ -1724,6 +1734,7 @@ impl SettingsGroup {
             Self::Greeting => "greeting saved",
             Self::Schedules => "schedules saved",
             Self::Skills => "skills saved",
+            Self::Accounts => "account updated",
         }
     }
 }
@@ -1743,6 +1754,48 @@ pub struct AuxRow {
     pub provider_selected: String,
     /// What consumes it today, when anything does.
     pub consumed_by: String,
+}
+
+/// One connected account as the settings page shows it.
+///
+/// Status only. There is no field here that could hold a token, a refresh token,
+/// or any part of one, and the store type it is built from cannot print one: the
+/// panel states whether an account is connected, whose it is, and when the grant
+/// stops working. That is the whole surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountView {
+    /// The provider id the routes take back: `claude` or `antigravity`.
+    pub provider: String,
+    /// The name a person reads.
+    pub label: String,
+    /// The endpoint its models are served from, stated so the operator knows
+    /// which API a connected account points turns at.
+    pub base_url: String,
+    /// Whether a grant is sealed on disk.
+    pub connected: bool,
+    /// The account label the login discovered: an email or a display name.
+    pub account: Option<String>,
+    /// When the grant stops being usable, in the page's own clock.
+    pub expires_at: Option<String>,
+    /// Whether that expiry is already past.
+    pub expired: bool,
+    /// `login` or `migrated`, which decides whether it may ever be refreshed.
+    pub origin: Option<String>,
+    /// The cloud project an Antigravity grant is billed to, when one is known.
+    pub project: Option<String>,
+    /// The `token:NAME` reference a registry entry would carry for it.
+    pub key_ref: String,
+    /// Whether the provider registry already names this account, which is what
+    /// decides between offering the Add press and stating it is wired.
+    pub in_registry: bool,
+    /// A started login that has not finished, as the URL to open.
+    pub pending_url: Option<String>,
+    /// What the last press on this row did, when it did anything.
+    pub outcome: Option<String>,
+    /// Whether the press succeeded, for the row's own styling.
+    pub outcome_ok: bool,
+    /// Why the callback listener is not serving, when it is not.
+    pub listener_error: Option<String>,
 }
 
 /// Everything the settings page needs.
@@ -1868,6 +1921,8 @@ pub struct SettingsView {
     pub skills_path: String,
     /// Why the library could not be read, when it could not.
     pub skills_error: Option<String>,
+    /// One row per account this build can log in to, in page order.
+    pub accounts: Vec<AccountView>,
     /// The failure to show, when this render follows a refused post.
     pub error: Option<FormError>,
     /// The group that was saved and the sentence to show, after a redirect.
@@ -1924,6 +1979,7 @@ impl SettingsView {
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
             chat_hint: crate::greeting::DEFAULT_HINT.to_owned(),
             aux_roles: Vec::new(),
+            accounts: Vec::new(),
             models: Vec::new(),
             mcp_servers: "[]".to_owned(),
             mcp_errors: Vec::new(),
@@ -2073,6 +2129,160 @@ fn provider_group(view: &SettingsView) -> Markup {
                 "Saving here writes the rows and nothing else. It does not call the endpoint: "
                 "the rotate button on the dashboard is the probe."
             }
+        }
+    }
+}
+
+/// The accounts panel: one row per provider this build can log in to.
+///
+/// Each row is its own form, because each press is one action on one account. The
+/// panel shows status and nothing else: no token, no refresh token, no fragment of
+/// either. A connect press hands back a URL that a second form submits, so the
+/// daemon never has to open a browser on a host that has none - and an operator on
+/// a headless box pastes it into whichever browser they are already using.
+fn accounts_group(view: &SettingsView) -> Markup {
+    html! {
+        (group_region(view, SettingsGroup::Accounts))
+        @for row in &view.accounts {
+            div .account id=(format!("account-{}", row.provider)) {
+                h3 {
+                    (row.label)
+                    " "
+                    @if row.connected {
+                        span .badge { "connected" }
+                    } @else {
+                        span .badge .muted { "not connected" }
+                    }
+                }
+                dl .kv {
+                    dt { "Endpoint" } dd { (row.base_url) }
+                    dt { "Key reference" } dd { code { (row.key_ref) } }
+                    @if row.connected {
+                        @if let Some(account) = &row.account {
+                            dt { "Account" } dd { (account) }
+                        }
+                        @if let Some(origin) = &row.origin {
+                            dt { "Grant" } dd {
+                                (origin)
+                                @if origin == "migrated" {
+                                    " (copied from another program; never refreshed, so it expires once)"
+                                }
+                            }
+                        }
+                        dt { "Expires" } dd {
+                            @match &row.expires_at {
+                                Some(when) => {
+                                    (when)
+                                    @if row.expired { " (past)" }
+                                }
+                                None => { "the provider did not say" }
+                            }
+                        }
+                        @if let Some(project) = &row.project {
+                            dt { "Cloud project" } dd { code { (project) } }
+                        }
+                    }
+                }
+                @if let Some(url) = &row.pending_url {
+                    div .login-box id=(format!("login-{}", row.provider)) {
+                        h4 { "Finish connecting " (row.label) }
+                        ol .login-steps {
+                            li {
+                                strong { "Open the login." }
+                                " This button opens it in a new tab."
+                                div .actions {
+                                    a .button href=(url) target="_blank" rel="noreferrer noopener" {
+                                        "Open " (row.label) " login (new tab)"
+                                    }
+                                }
+                                p .small {
+                                    "If no tab opens, copy this link and open it in any browser:"
+                                }
+                                input type="text" readonly .login-url
+                                    aria-label="Login link"
+                                    value=(url);
+                            }
+                            li {
+                                strong { "Approve it." }
+                                " The browser then lands on an address starting "
+                                code { "localhost" }
+                                ". The page will probably say it cannot load. That is fine."
+                                " Copy the whole address from the address bar."
+                            }
+                            li {
+                                strong { "Paste it here, then press Verify." }
+                            }
+                        }
+                        form method="post" action=(crate::admin::ROUTE_ACCOUNTS_VERIFY) {
+                            input type="hidden" name="account_provider" value=(row.provider);
+                            label for=(format!("paste-{}", row.provider)) { "Address from the browser" }
+                            input type="text" id=(format!("paste-{}", row.provider)) name="account_paste"
+                                autofocus autocomplete="off" autocapitalize="off" spellcheck="false"
+                                placeholder="http://localhost:7345/callback?code=...&state=...";
+                            div .actions {
+                                button type="submit" { "Verify" }
+                            }
+                        }
+                    }
+                }
+                @if row.connected {
+                    form method="post" action=(crate::admin::ROUTE_ACCOUNTS_CONNECT) {
+                        input type="hidden" name="account_provider" value=(row.provider);
+                        div .actions {
+                            button type="submit" { "Reconnect " (row.label) }
+                        }
+                    }
+                    form method="post" action=(crate::admin::ROUTE_ACCOUNTS_DISCONNECT) {
+                        input type="hidden" name="account_provider" value=(row.provider);
+                        div .actions {
+                            button type="submit" .danger { "Disconnect " (row.label) }
+                        }
+                    }
+                } @else {
+                    form method="post" action=(crate::admin::ROUTE_ACCOUNTS_CONNECT) {
+                        input type="hidden" name="account_provider" value=(row.provider);
+                        div .actions {
+                            button type="submit" { "Connect " (row.label) }
+                        }
+                    }
+                }
+                @if row.connected {
+                    @if row.in_registry {
+                        p .small {
+                            "This account is a provider: its models appear in every model picker, "
+                            "including the auxiliary roles and the reply bubble."
+                        }
+                    } @else {
+                        form method="post" action=(crate::admin::ROUTE_ACCOUNTS_REGISTER) {
+                            input type="hidden" name="account_provider" value=(row.provider);
+                            div .actions {
+                                button type="submit" { "Add " (row.label) " to providers" }
+                            }
+                        }
+                    }
+                }
+                @if let Some(outcome) = &row.outcome {
+                    div role="status" aria-live="polite" {
+                        @if row.outcome_ok {
+                            div .alert .notice { (outcome) }
+                        } @else {
+                            div .alert { (outcome) }
+                        }
+                    }
+                }
+                @if let Some(error) = &row.listener_error {
+                    div .alert {
+                        "the browser cannot come back to this host: " (error)
+                    }
+                }
+            }
+        }
+        p .small {
+            "Connect starts the provider's own browser login. Open the link in any browser, "
+            "approve, then paste the address it lands on and press Verify - that works from "
+            "a phone or a laptop. A browser on the daemon's own host finishes by itself. The "
+            "grant is sealed in this daemon's encrypted store. Disconnecting deletes the sealed grant and makes no call to "
+            "the provider."
         }
     }
 }
@@ -2529,12 +2739,16 @@ fn providers_group(view: &SettingsView) -> Markup {
                 }
                 span .hint {
                     "A JSON array of {\"id\", \"name\", \"base_url\", \"key_ref\"}. The id is "
-                    "what auxiliary roles point at. A key reference like env:NAME, never a key. "
+                    "what auxiliary roles point at. A key reference is env:NAME for a variable "
+                    "in this daemon's environment, or token:NAME for an account connected above - "
+                    "token:claude and token:antigravity are the two a login seals. Never a key. "
                     "An optional \"dialect\" of messages makes this endpoint's requests use the "
-                    "Anthropic shape; a probe that measures a model's own shape overrides it. "
-                    "An optional \"reasoning_split\" of true asks an endpoint that inlines its "
-                    "chain of thought - MiniMax does - to send it separately, so the thinking "
-                    "lands in the reasoning view instead of the reply."
+                    "Anthropic shape, and of antigravity uses the Antigravity wrapper; a probe "
+                    "that measures a model's own shape overrides it. An optional \"reasoning_split\" "
+                    "of true asks an endpoint that inlines its chain of thought - MiniMax does - to "
+                    "send it separately, so the thinking lands in the reasoning view instead of "
+                    "the reply. For an Antigravity entry, \"direct\" of true adds the OAuth beta "
+                    "headers and \"project\" names the cloud project its requests bill to."
                 }
             }
             div .field {
@@ -2979,6 +3193,16 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "holds its key. A reference travels; a key value never does."
             }
             (provider_group(view))
+        }
+
+        section .card aria-labelledby="accounts-heading" {
+            h2 id="accounts-heading" { "Accounts" }
+            p .small {
+                "The providers this daemon can log in to itself, instead of reading a key out "
+                "of the environment. Connecting one makes its models available to every turn "
+                "and every role, with the grant encrypted on disk."
+            }
+            (accounts_group(view))
         }
 
         section .card aria-labelledby="workspace-heading" {
@@ -4864,10 +5088,11 @@ fn reply_state_for(default: crate::web::chat::ReplyState, line: &ChatLine) -> &'
     if line.pending || line.failed {
         return ReplyState::Expanded.as_str();
     }
-    let waiting = line
-        .tools
-        .iter()
-        .any(|tool| tool.asked.as_ref().is_some_and(|asked| asked.answer.is_none()));
+    let waiting = line.tools.iter().any(|tool| {
+        tool.asked
+            .as_ref()
+            .is_some_and(|asked| asked.answer.is_none())
+    });
     if waiting {
         return ReplyState::Expanded.as_str();
     }
@@ -7788,7 +8013,10 @@ mod tests {
         );
         // Flattened: a short two-line answer becomes one line, because the
         // minimized state is one line.
-        assert_eq!(reply_peek("First line.\nSecond line."), "First line. Second line.");
+        assert_eq!(
+            reply_peek("First line.\nSecond line."),
+            "First line. Second line."
+        );
         // Bounded, with an ellipsis, counted in characters rather than bytes.
         let long = reply_peek(&"word ".repeat(40));
         assert_eq!(long.chars().count(), REPLY_PEEK_CHARS + 1, "{long}");
@@ -7901,7 +8129,9 @@ mod tests {
             let label = reply_next_label(state);
             assert!(label.len() > 20, "{state}: {label}");
             assert!(
-                label.starts_with("Collapse") || label.starts_with("Minimize") || label.starts_with("Expand"),
+                label.starts_with("Collapse")
+                    || label.starts_with("Minimize")
+                    || label.starts_with("Expand"),
                 "{state}: {label}"
             );
         }

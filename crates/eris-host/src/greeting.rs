@@ -21,7 +21,7 @@
 //! The scrubber is not cosmetic. The rendered page is tested for a bang and for
 //! an em dash, so a model that writes either does not get to put one there.
 
-use core_domain::{Capabilities, ModelProfile, ProviderProfile};
+use core_domain::{Capabilities, ModelProfile};
 use core_runtime::provider::{
     ChatMessage, ChatRequest, ChatRole, OpenAiCompatProvider, ProviderEvent,
 };
@@ -256,21 +256,19 @@ const INSTRUCTION: &str = "Write the line now.";
 /// on a blocking thread.
 #[must_use]
 pub fn generate(config: &TurnConfig) -> Option<String> {
-    let profile =
-        ProviderProfile::new("greeting", config.base_url.clone(), config.key_ref.clone())
-            .ok()?
-            // Build 106 shipped without these two, so a greeting on a provider that
-            // inlines its reasoning or speaks the Messages dialect was sent the
-            // wrong request and failed silently. Same pair `web/chat.rs` uses.
-            .with_dialect(config.dialect)
-            .with_reasoning_split(config.reasoning_split);
+    // Build 106 shipped without the dialect and the split, so a greeting on a
+    // provider that inlines its reasoning or speaks the Messages dialect was sent
+    // the wrong request and failed silently. Build 106's fix added two of the
+    // four facts; this reads all four from the turn, through the one constructor
+    // that carries them, so a fifth cannot be forgotten here and nowhere else.
+    let profile = config.profile("greeting").ok()?;
     let provider = OpenAiCompatProvider::new(
         profile,
         ModelProfile::new(config.model.clone()),
         Capabilities::openai_compatible(),
     )
     .ok()?;
-    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let key = crate::oauth::credential::resolve_key_now(&config.key_ref).ok()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

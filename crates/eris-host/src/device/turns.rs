@@ -298,6 +298,13 @@ pub struct ProviderConfig {
     /// Read off the same registry entry as the dialect, so a phone turn asks the
     /// endpoint the same question a browser turn does.
     pub reasoning_split: bool,
+    /// Whether this endpoint is the vendor's own API rather than a gateway. Read
+    /// off the same entry for the same reason: a phone turn and a browser turn
+    /// must send the same headers to the same provider.
+    pub direct: bool,
+    /// The cloud project an Antigravity turn is billed to, when the account's
+    /// login discovered one.
+    pub project: Option<String>,
 }
 
 /// Everything about a turn that is decided before it starts.
@@ -820,6 +827,8 @@ impl TurnStore {
             model: choice.model,
             dialect,
             reasoning_split: crate::providers::reasoning_split_of(chosen),
+            direct: crate::providers::direct_of(chosen),
+            project: crate::providers::project_of(chosen),
         }))
     }
 
@@ -1051,6 +1060,20 @@ impl TurnHub {
             apns: Mutex::new(None),
             push: Mutex::new(None),
             ask_keys: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Resolve one key reference: the injected environment for `env:`, the
+    /// daemon's credential resolver for `token:`.
+    fn resolve_key(
+        &self,
+        reference: &SecretRef,
+    ) -> Result<core_runtime::provider::SecretKey, core_domain::LlmError> {
+        match reference {
+            SecretRef::Token(_) => crate::oauth::credential::resolve_key_now(reference),
+            SecretRef::Env(name) => core_runtime::provider::resolve_api_key_with(reference, |_| {
+                self.key_lookup.as_ref()(name)
+            }),
         }
     }
 
@@ -1569,9 +1592,11 @@ impl TurnHub {
         // The key, resolved through the hub's own lookup so a test can inject one.
         // A key that cannot be resolved is a configuration failure and fails the
         // turn before the loop starts, exactly as the browser's does.
-        let key = match core_runtime::provider::resolve_api_key_with(&config.key_ref, |name| {
-            self.key_lookup.as_ref()(name)
-        }) {
+        // The hub's own lookup answers an `env:` reference, so a test that injects
+        // one still sees its own environment. A `token:` reference goes through
+        // the daemon's credential resolver, because the encrypted store lives
+        // above this crate and there is exactly one place that reads it.
+        let key = match self.resolve_key(&config.key_ref) {
             Ok(key) => key,
             Err(error) => {
                 let _ = self
@@ -1588,6 +1613,8 @@ impl TurnHub {
             model: config.model,
             dialect: config.dialect,
             reasoning_split: config.reasoning_split,
+            direct: config.direct,
+            project: config.project,
         };
 
         // The turn itself: the same `run_turn_with_key` the browser drives, so a

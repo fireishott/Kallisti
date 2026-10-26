@@ -63,6 +63,44 @@ pub trait HttpTransport {
     ///
     /// [`TransportError`] when the request did not complete.
     fn post(&self, request: &HttpRequest) -> Result<(u16, String), TransportError>;
+
+    /// GET one URL with a bearer credential, and return the status and the body.
+    ///
+    /// A default that refuses, so a transport written for the token endpoints --
+    /// which are all POST -- keeps compiling and cannot accidentally reach the
+    /// network through a path it was never given. Only account discovery calls
+    /// this, and discovery treats a refusal as "the provider did not tell us",
+    /// which costs a label rather than a login.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError`] when the request did not complete.
+    fn get(&self, _url: &str, _bearer: &str) -> Result<(u16, String), TransportError> {
+        Err(TransportError::Unreachable(
+            "no GET transport is configured".to_owned(),
+        ))
+    }
+
+    /// POST one request with an `Authorization: Bearer` header.
+    ///
+    /// Separate from [`HttpTransport::post`] because the token endpoints take
+    /// their credential in the body and only account discovery takes one in a
+    /// header, and one function doing both would put a bearer in a body on the
+    /// path that is easiest to log. The default refuses for the same reason as
+    /// `get`: a transport is given exactly the powers it was written for.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError`] when the request did not complete.
+    fn post_bearer(
+        &self,
+        _request: &HttpRequest,
+        _bearer: &str,
+    ) -> Result<(u16, String), TransportError> {
+        Err(TransportError::Unreachable(
+            "no bearer POST transport is configured".to_owned(),
+        ))
+    }
 }
 
 /// A transport that refuses everything. The default, so a caller that forgets to
@@ -253,16 +291,16 @@ pub fn refresh_decision(
     source: &super::resolve::CredentialSource,
 ) -> Result<String, TokenError> {
     match record.usable(now) {
-        Ok(access_token) => return Ok(access_token.to_owned()),
-        Err(error @ TokenError::Expired { .. }) => return Err(error),
+        Ok(access_token) => Ok(access_token.to_owned()),
+        Err(error @ TokenError::Expired { .. }) => Err(error),
         Err(TokenError::NeedsRefresh { provider }) => {
             if !auto_refresh {
                 // The shipped path. Nothing leaves the process.
                 return Err(TokenError::NeedsRefresh { provider });
             }
-            return refresh_now(record, now, source).map(|record| record.access_token);
+            refresh_now(record, now, source).map(|record| record.access_token)
         }
-        Err(other) => return Err(other),
+        Err(other) => Err(other),
     }
 }
 
@@ -331,37 +369,140 @@ pub fn refresh_now(
     Ok(next)
 }
 
+/// Run one blocking `reqwest` exchange on a thread that owns its own runtime.
+///
+/// **Why a thread and not an `async fn`.** [`HttpTransport`] is a synchronous
+/// trait: `refresh_now`, `discover`, and `exchange_code` are all called from
+/// synchronous code, and half of that code is already inside the daemon's Tokio
+/// runtime. `Runtime::block_on` **panics** when it is called from a thread that
+/// is driving a runtime ("Cannot start a runtime from within a runtime"), which
+/// is exactly the shape this transport shipped with.
+///
+/// The fix is not to build the runtime next to the caller. A freshly spawned
+/// thread is by definition not inside a runtime, so it can build one, drive the
+/// exchange and exit. A panic inside it arrives at the join as a `JoinError`
+/// and is mapped to a [`TransportError`] here, so a transport fault is a typed
+/// failure at the caller and never an unwind through the daemon.
+///
+/// The body that runs on that thread receives a `reqwest::Client` and the
+/// values it needs, already moved in, and returns the status and the text.
+fn on_own_thread<F>(work: F) -> Result<(u16, String), TransportError>
+where
+    F: FnOnce(
+            reqwest::Client,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(u16, String), TransportError>> + Send>,
+        > + Send
+        + 'static,
+{
+    let handle = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| TransportError::Unreachable(error.to_string()))?;
+        runtime.block_on(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|error| TransportError::Unreachable(error.to_string()))?;
+            work(client).await
+        })
+    });
+    handle.join().unwrap_or_else(|panic| {
+        // A panic in the transport must not take the daemon with it. The
+        // message is the panic payload when it is a string and the type name
+        // when it is not; neither carries a request body.
+        let reason = if let Some(text) = panic.downcast_ref::<&str>() {
+            (*text).to_owned()
+        } else if let Some(text) = panic.downcast_ref::<String>() {
+            text.clone()
+        } else {
+            "the transport thread panicked".to_owned()
+        };
+        Err(TransportError::Unreachable(reason))
+    })
+}
+
+/// Read one `reqwest` response into a status and a body.
+///
+/// # Errors
+///
+/// [`TransportError::Unreachable`] when the body could not be read.
+async fn read_response(response: reqwest::Response) -> Result<(u16, String), TransportError> {
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| TransportError::Unreachable(error.to_string()))?;
+    Ok((status, body))
+}
+
 /// A `reqwest` transport for the day the flag is turned on.
 ///
 /// Not wired into the shipped path: `CredentialSource` only reaches a transport
-/// when `oauth.auto_refresh` is true, and nothing in build 108 sets it.
+/// when `oauth.auto_refresh` is true, and nothing in build 111 sets it.
+///
+/// Every method hands its exchange to [`on_own_thread`], so a refresh that runs
+/// from inside the daemon's runtime is a normal request rather than a panic.
 #[derive(Debug, Clone, Default)]
 pub struct ReqwestTransport;
 
 impl HttpTransport for ReqwestTransport {
     fn post(&self, request: &HttpRequest) -> Result<(u16, String), TransportError> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| TransportError::Unreachable(error.to_string()))?;
-        runtime.block_on(async {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .map_err(|error| TransportError::Unreachable(error.to_string()))?;
-            let response = client
-                .post(&request.url)
-                .header(reqwest::header::CONTENT_TYPE, request.content_type)
-                .body(request.body.clone())
-                .send()
-                .await
-                .map_err(|error| TransportError::Unreachable(error.to_string()))?;
-            let status = response.status().as_u16();
-            let body = response
-                .text()
-                .await
-                .map_err(|error| TransportError::Unreachable(error.to_string()))?;
-            Ok((status, body))
+        let url = request.url.clone();
+        let content_type = request.content_type;
+        let body = request.body.clone();
+        on_own_thread(move |client| {
+            Box::pin(async move {
+                let response = client
+                    .post(&url)
+                    .header(reqwest::header::CONTENT_TYPE, content_type)
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(|error| TransportError::Unreachable(error.to_string()))?;
+                read_response(response).await
+            })
+        })
+    }
+
+    fn get(&self, url: &str, bearer: &str) -> Result<(u16, String), TransportError> {
+        let url = url.to_owned();
+        let bearer = bearer.to_owned();
+        on_own_thread(move |client| {
+            Box::pin(async move {
+                let response = client
+                    .get(&url)
+                    .header(reqwest::header::AUTHORIZATION, format!("Bearer {bearer}"))
+                    .send()
+                    .await
+                    .map_err(|error| TransportError::Unreachable(error.to_string()))?;
+                read_response(response).await
+            })
+        })
+    }
+
+    fn post_bearer(
+        &self,
+        request: &HttpRequest,
+        bearer: &str,
+    ) -> Result<(u16, String), TransportError> {
+        let url = request.url.clone();
+        let content_type = request.content_type;
+        let body = request.body.clone();
+        let bearer = bearer.to_owned();
+        on_own_thread(move |client| {
+            Box::pin(async move {
+                let response = client
+                    .post(&url)
+                    .header(reqwest::header::CONTENT_TYPE, content_type)
+                    .header(reqwest::header::AUTHORIZATION, format!("Bearer {bearer}"))
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(|error| TransportError::Unreachable(error.to_string()))?;
+                read_response(response).await
+            })
         })
     }
 }
@@ -385,10 +526,10 @@ impl MockServer {
             let mut seen = Vec::new();
             // One request is all any test needs; accepting a second would hang
             // the harness on a bug rather than failing it.
-            if let Ok((stream, _)) = listener.accept() {
-                if let Some(body) = serve_once(stream, status, body) {
-                    seen.push(body);
-                }
+            if let Ok((stream, _)) = listener.accept()
+                && let Some(body) = serve_once(stream, status, body)
+            {
+                seen.push(body);
             }
             seen
         });
@@ -482,7 +623,11 @@ mod tests {
         (dir, store)
     }
 
-    fn source(store: Arc<TokenFileStore>, transport: Arc<dyn HttpTransport + Send + Sync>, specs: Vec<RefreshSpec>) -> CredentialSource {
+    fn source(
+        store: Arc<TokenFileStore>,
+        transport: Arc<dyn HttpTransport + Send + Sync>,
+        specs: Vec<RefreshSpec>,
+    ) -> CredentialSource {
         CredentialSource {
             store: store as Arc<dyn TokenStore + Send + Sync>,
             policy: RefreshPolicy { auto_refresh: true },
@@ -573,10 +718,7 @@ mod tests {
     fn the_google_refresh_is_form_encoded_with_the_client_secret() {
         let spec = RefreshSpec::antigravity("client-id-value", "secret-value");
         let request = refresh_request(&spec, "refresh-value-secret");
-        assert_eq!(
-            request.content_type,
-            "application/x-www-form-urlencoded"
-        );
+        assert_eq!(request.content_type, "application/x-www-form-urlencoded");
         assert!(request.body.starts_with("grant_type=refresh_token&"));
         // Split so no single literal is a 32+ character run of the token
         // alphabet: `tests/bearer_literals.rs` scans `src/`, test modules
@@ -664,7 +806,10 @@ mod tests {
         let error = refresh_now(&record, 5_000, &source).expect_err("must fail");
         let message = error.to_string();
         assert!(message.contains("HTTP 400"), "{message}");
-        assert!(!message.contains("invalid_grant"), "the body must not be echoed: {message}");
+        assert!(
+            !message.contains("invalid_grant"),
+            "the body must not be echoed: {message}"
+        );
         assert!(!message.contains("refresh-value-secret"), "{message}");
     }
 
@@ -686,8 +831,8 @@ mod tests {
 
     #[test]
     fn a_body_with_no_access_token_is_refused_rather_than_storing_an_empty_one() {
-        let error = parse_refresh_body("claude", r#"{"token_type":"Bearer"}"#)
-            .expect_err("must fail");
+        let error =
+            parse_refresh_body("claude", r#"{"token_type":"Bearer"}"#).expect_err("must fail");
         assert!(error.to_string().contains("without an access token"));
         let error = parse_refresh_body("claude", "not json").expect_err("must fail");
         assert!(error.to_string().contains("not JSON"));
@@ -716,5 +861,87 @@ mod tests {
             })
             .expect_err("refuses");
         assert!(error.to_string().contains("no HTTP transport"));
+    }
+}
+
+#[cfg(test)]
+mod runtime_shape_tests {
+    use std::sync::Arc;
+
+    use core_domain::TokenStore;
+
+    use super::*;
+    use crate::oauth::resolve::{CredentialSource, RefreshPolicy};
+    use crate::oauth::store::TokenFileStore;
+    use core_domain::{TokenOrigin, TokenRecord};
+
+    fn record() -> TokenRecord {
+        TokenRecord {
+            provider: "claude".to_owned(),
+            access_token: "OLD-ACCESS".to_owned(),
+            refresh_token: Some("refresh-value-secret".to_owned()),
+            expires_at: Some(1_000),
+            scopes: Vec::new(),
+            project_id: None,
+            token_type: Some("Bearer".to_owned()),
+            last_refresh: None,
+            account: None,
+            origin: TokenOrigin::Login,
+        }
+    }
+
+    fn mock_source(url: String) -> (tempfile::TempDir, CredentialSource) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Arc::new(TokenFileStore::new(
+            dir.path().join("tokens"),
+            dir.path().join("keys/token.key"),
+        ));
+        let record = record();
+        store.store_token(&record).expect("stores");
+        let source = CredentialSource {
+            store: store as Arc<dyn TokenStore + Send + Sync>,
+            policy: RefreshPolicy { auto_refresh: true },
+            transport: Arc::new(ReqwestTransport),
+            specs: Arc::new(vec![RefreshSpec::claude("client-id").at(url)]),
+        };
+        (dir, source)
+    }
+
+    /// The defect this test was written against.
+    ///
+    /// `ReqwestTransport::post` used to build a current-thread runtime and
+    /// `block_on` it. `block_on` **panics** when it is called from a thread that
+    /// is already inside a Tokio runtime, and every caller of
+    /// `refresh_now` on the daemon's turn path is inside one. Before the fix
+    /// this test failed with "Cannot start a runtime from within a runtime";
+    /// with the fix it passes, and the request is answered by the loopback
+    /// mock.
+    ///
+    /// **The only url this test passes in is the mock's**, bound on
+    /// `127.0.0.1` with an ephemeral port. No request reaches a vendor
+    /// endpoint: `NO REFRESH WAS PERFORMED` against anything real.
+    #[test]
+    fn the_transport_does_not_panic_inside_a_runtime() {
+        let server = MockServer::start(200, r#"{"access_token":"NEW-ACCESS","expires_in":3600}"#);
+        let (_dir, source) = mock_source(server.url.clone());
+        let record = record();
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("a runtime to stand in for the daemon's");
+
+        // A task on a worker thread is exactly where the daemon calls this, and
+        // a panic inside it arrives here as a `JoinError` rather than tearing
+        // the test down, so the failure names the cause.
+        let outcome = runtime.block_on(async move {
+            tokio::spawn(async move { refresh_now(&record, 5_000, &source) }).await
+        });
+        let refreshed = outcome
+            .expect("the transport must not panic inside a runtime")
+            .expect("the mock answers a refresh");
+        assert_eq!(refreshed.access_token, "NEW-ACCESS");
+        assert_eq!(server.bodies().len(), 1, "one request, to the mock");
     }
 }

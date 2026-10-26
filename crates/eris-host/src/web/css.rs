@@ -867,6 +867,19 @@ button:focus-visible, .button:focus-visible {
   outline-offset: 2px;
 }
 
+.login-box {
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--raise);
+  padding: 14px 16px;
+  margin: 14px 0;
+}
+.login-box h4 { margin: 0 0 8px; font-size: 14px; }
+.login-steps { margin: 0 0 12px; padding-left: 20px; }
+.login-steps li { margin: 0 0 12px; }
+.login-steps a.button { text-decoration: none; }
+input.login-url { width: 100%; font-size: 12px; user-select: all; -webkit-user-select: all; }
+
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
 
 /* Feedback --------------------------------------------------------------- */

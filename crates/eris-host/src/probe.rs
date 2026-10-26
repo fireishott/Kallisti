@@ -16,9 +16,7 @@ use std::io::{self, Write};
 
 use core_domain::{Capabilities, LlmError, ModelProfile, Provider, ProviderProfile};
 use core_runtime::prompt::{PromptInputs, compile};
-use core_runtime::provider::{
-    ChatRequest, OpenAiCompatProvider, ProviderEvent, SecretKey, resolve_api_key,
-};
+use core_runtime::provider::{ChatRequest, OpenAiCompatProvider, ProviderEvent, SecretKey};
 
 use crate::config::KallistiConfig;
 use crate::persona::PersonaConfig;
@@ -59,7 +57,9 @@ pub fn provider_for(
     // capability here rather than an if-let on a label.
     let capabilities = Capabilities::openai_compatible();
     let provider = OpenAiCompatProvider::new(profile, model, capabilities)?;
-    let key = resolve_api_key(config.api_key_ref())?;
+    // The daemon's one credential choke point, so a `--config` that names a
+    // stored grant works in `eris probe` exactly as it does in a turn.
+    let key = crate::oauth::credential::resolve_key_now(config.api_key_ref())?;
     Ok((provider, key))
 }
 

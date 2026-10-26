@@ -659,7 +659,7 @@ pub fn child_sandbox(workspace: PathBuf) -> crate::tools::Sandbox {
 /// The production runner: one tool-less turn through the same loop every other
 /// turn uses.
 fn run_child_turn(request: &RunRequest) -> Result<RunOutput, (String, String)> {
-    let key = core_runtime::provider::resolve_api_key(&request.config.key_ref)
+    let key = crate::oauth::credential::resolve_key_now(&request.config.key_ref)
         .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
     let sandbox = child_sandbox(request.workspace.clone());
     // Nothing a child asks for may run, including a call that a provider invented
@@ -990,6 +990,8 @@ mod tests {
             model: "stub/model".to_owned(),
             dialect: core_domain::ApiDialect::ChatCompletions,
             reasoning_split: false,
+            direct: false,
+            project: None,
         };
         Desk::new(
             db.clone(),

@@ -123,11 +123,12 @@ fn the_settings_page_renders_current_values() {
             "the {name} radio for {value} has no label: {page}"
         );
     }
-    // Five groups: provider, workspace, permissions, persona and greeting. The
-    // page level region plus one per group is six.
+    // Six groups carry a live region: provider, accounts, workspace,
+    // permissions, persona and greeting. The page level region plus one per
+    // group is seven. Schedules and skills render no region of their own.
     assert_eq!(
         page.matches(r#"aria-live="polite""#).count(),
-        6,
+        7,
         "one page level region plus one per form: {page}"
     );
 

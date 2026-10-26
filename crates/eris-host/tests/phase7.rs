@@ -783,8 +783,11 @@ async fn every_get_route_answers_with_a_body() {
 #[test]
 fn the_documented_address_and_version_are_unchanged() {
     assert_eq!(ADMIN_ADDR, "127.0.0.1:7340");
-    assert_eq!(VERSION, env!("CARGO_PKG_VERSION"),
-        "VERSION is the workspace version, so a release moves both or neither");
+    assert_eq!(
+        VERSION,
+        env!("CARGO_PKG_VERSION"),
+        "VERSION is the workspace version, so a release moves both or neither"
+    );
     assert!(ALL_GET_ROUTES.contains(&ROUTE_SETUP_STATE));
     assert!(POST_ROUTES.contains(&"/setup/finish"));
 }

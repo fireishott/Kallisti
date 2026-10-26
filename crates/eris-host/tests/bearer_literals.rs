@@ -20,6 +20,21 @@ use std::path::{Path, PathBuf};
 /// an identifier or an English word reaches.
 const MIN_SECRET_RUN: usize = 32;
 
+/// Literals that are published constants rather than secrets.
+///
+/// The only entry is the worked example from RFC 7636 appendix B, which the PKCE
+/// test pins `S256` to. It is a public test vector: printed in the RFC, not a
+/// grant, and it cannot authenticate anything. Match is exact and whole-run: the
+/// run compared is the longest secret-alphabet run in the literal, and it has to
+/// appear here character for character, so a real token cannot be waved through
+/// by adding a prefix of itself to this list.
+const PUBLISHED_NOT_SECRET: &[&str] = &[
+    // RFC 7636 B.1, the verifier half of the worked example.
+    "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+    // RFC 7636 B.1, the S256 challenge derived from it.
+    "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+];
+
 /// Every `.rs` file under `root`, recursively, sorted for a stable message.
 fn rust_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -157,6 +172,9 @@ fn no_bearer_literals_in_src() {
             }
             for literal in string_literals(line) {
                 let (length, run) = longest_run(&literal);
+                if PUBLISHED_NOT_SECRET.contains(&run.as_str()) {
+                    continue;
+                }
                 if length >= MIN_SECRET_RUN && !is_path_or_identifier(&run) {
                     violations.push(format!(
                         "{}:{}: {length}-character literal beginning {:?}",

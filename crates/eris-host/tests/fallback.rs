@@ -81,6 +81,8 @@ fn config(url: String, model: &str) -> TurnConfig {
         model: model.to_owned(),
         dialect: core_domain::ApiDialect::ChatCompletions,
         reasoning_split: false,
+        direct: false,
+        project: None,
     }
 }
 

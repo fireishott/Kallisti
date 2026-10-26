@@ -531,11 +531,21 @@ fn check_provider(eris: Option<&KallistiConfig>) -> (&'static str, ProviderDetai
         );
     };
 
-    // Presence only. The value is read from the process environment and dropped;
-    // it is never printed, stored or compared.
-    let key_present = std::env::var(config.api_key_ref().env_name())
-        .map(|value| !value.is_empty())
-        .unwrap_or(false);
+    // Presence only. A value read from the process environment is dropped and
+    // never printed, stored or compared; a stored grant is asked the same
+    // question through the store, which answers without handing the token back.
+    let key_present = match config.api_key_ref() {
+        core_domain::SecretRef::Env(name) => std::env::var(name)
+            .map(|value| !value.is_empty())
+            .unwrap_or(false),
+        core_domain::SecretRef::Token(name) => {
+            use core_domain::TokenStore as _;
+            crate::oauth::store::TokenFileStore::from_home()
+                .and_then(|store| store.load(name))
+                .map(|record| record.is_some())
+                .unwrap_or(false)
+        }
+    };
     let tcp_target = host_port(config.base_url());
     let tcp_reachable = tcp_target.as_deref().map(tcp_reachable);
 

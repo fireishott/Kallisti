@@ -6,6 +6,56 @@ observe; commit history carries the detail.
 
 ## 1.4.9
 
+- **A Claude account is connected from the Settings page.** Connect starts
+  Anthropic's own browser login and the page hands back the link instead of
+  opening it, because the daemon may well be headless and opening a browser is
+  a thing a person does on the machine in front of them. Approve the login, then
+  paste the address the browser lands on and press Verify: that works from a
+  phone as easily as from a laptop, and a browser on the daemon's own host
+  finishes by itself because the callback listener catches the redirect. The
+  grant is sealed into the encrypted store, and the row states the account, when
+  the grant stops working, and whether it was logged in here or copied from
+  another program. `build 110`.
+- **A Google Antigravity account is connected the same way, and finds its own
+  cloud project.** Antigravity bills a turn to a cloud project, so a login that
+  sealed a grant without one had a token this daemon could not spend. The login
+  now asks the account for its project and every request carries it. An account
+  that has never had a project is told so by name rather than meeting an opaque
+  refusal mid-turn, and `[google] project` in `oauth-clients.toml` is the manual
+  answer. Nothing provisions a project on the operator's behalf. `build 110`.
+- **A connected account becomes a provider in one press.** A login is not a
+  provider until it is in the registry: the model pickers, the auxiliary roles
+  and the reply bubble all read catalogues keyed by a registry id, so a
+  connected account that was never added served nothing. The press adds the
+  entry with the account's own `token:` reference and reads its model catalogue
+  at the same time, so a provider that answers with no models says so at the
+  press rather than in the first turn. Reconnecting can discover a different
+  cloud project and the entry follows it. `build 110`.
+- **The daemon talks to Anthropic and Antigravity in their own shapes.** A
+  registry entry can now declare that its endpoint is the vendor's own API
+  rather than a gateway in front of one. That adds `anthropic-version` and the
+  beta set a browser login's grant needs on the Messages dialect, and the
+  Antigravity `User-Agent` on its own, and the Antigravity body is Gemini's
+  `contents`/`parts` with `functionCall` and `functionResponse` blocks instead
+  of `tool_calls`. A gateway carrying the same model still gets a bearer token
+  and no vendor headers, because a header it does not expect is a header that
+  can be refused. `build 110`.
+- **A stored grant is a credential a turn can use.** Until now a `token:`
+  reference was storable and not resolveable: twenty-one call sites read an
+  environment variable and nothing else, so a provider that authenticates with
+  a login could not serve a turn however well it was sealed. One function now
+  answers both kinds of reference and every call site uses it, including the
+  greeting, the auxiliary roles, the probe and the phone's turns. Refreshing
+  stays off: a grant past its refresh lead is reported as needing a reconnect
+  rather than having its refresh token spent. `build 110`.
+- **A refresh can no longer take the daemon down.** The refresh transport built
+  a runtime inside code that already runs inside one, and that combination
+  panics rather than fails. It now runs its one exchange on a thread that owns
+  its own runtime and maps a panic to a typed transport error, so a transport
+  fault reaches the operator as a failure instead of unwinding the process. A
+  test calls it from inside a runtime against a loopback mock and proves it. No
+  token was refreshed to write that test, and auto-refresh is still off.
+  `build 110`.
 - **A reply can take the whole window.** The fold control answers "how much of
   this answer do I want in the column", and the operator kept asking a different
   question: show me this one thing and nothing else. `Maximize` sits beside the

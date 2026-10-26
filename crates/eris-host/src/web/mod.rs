@@ -6,6 +6,7 @@
 //! enhancement: with it the answer streams in, without it the form still works
 //! and the reply arrives on the next page.
 
+pub mod accounts;
 pub mod backups;
 pub mod chat;
 pub mod clarify;

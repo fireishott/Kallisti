@@ -236,6 +236,19 @@ struct UsageDraft {
 #[derive(Debug)]
 pub struct ChatStreamParser {
     capabilities: Capabilities,
+    /// Which shape the *request* was sent in. It decides which frame families a
+    /// reply is read with, and it is recorded rather than guessed so a frame
+    /// nobody can explain is reported instead of scored as an empty answer.
+    dialect: ApiDialect,
+    /// What has already been emitted for the Antigravity dialect, per channel.
+    ///
+    /// Gemini's streaming surface is not one of the two delta shapes this parser
+    /// was built for: `/v1internal:streamGenerateContent` sends candidate parts
+    /// that may be incremental or already accumulated, and the difference is not
+    /// announced. So the parser remembers what it has emitted and emits only the
+    /// suffix. A sender that repeats itself costs nothing; a sender that
+    /// accumulates is not printed twice.
+    antigravity_seen: [String; 2],
     text: String,
     reasoning: String,
     tools: Vec<ToolAccumulator>,
@@ -272,9 +285,10 @@ impl ChatStreamParser {
     /// silently empty answer from looking like a model with nothing to say.
     #[must_use]
     pub fn for_dialect(capabilities: Capabilities, dialect: ApiDialect) -> Self {
-        let _ = dialect;
         Self {
             capabilities,
+            dialect,
+            antigravity_seen: [String::new(), String::new()],
             text: String::new(),
             reasoning: String::new(),
             tools: Vec::new(),
@@ -325,10 +339,40 @@ impl ChatStreamParser {
             return Err(classify::classify_error_frame(&frame));
         }
 
+        // Antigravity first, and by shape rather than by dialect: a Cloud Code
+        // frame is the only one that nests its answer under `response`, and a
+        // rerouted reply that arrives in that shape must be read the same way
+        // whatever this parser was told to expect.
+        if is_antigravity_frame(&frame) {
+            return self.push_antigravity(&frame);
+        }
         match frame.get("type").and_then(serde_json::Value::as_str) {
             Some(kind) if is_anthropic_type(kind) => self.push_anthropic(kind, &frame),
-            _ => self.push_openai(&frame),
+            _ => {
+                // A stream that was told it is an Antigravity stream, and then
+                // sends a frame belonging to none of the three shapes, is
+                // reported rather than scored as an empty OpenAI chunk: an empty
+                // chunk looks like a model with nothing to say, and that is the
+                // failure this check exists to stop.
+                if self.dialect == ApiDialect::Antigravity
+                    && frame.get("choices").is_none()
+                    && frame.get("candidates").is_none()
+                    && frame.get("response").is_none()
+                {
+                    return Err(classify::protocol(
+                        "an Antigravity stream sent a frame with no candidates and no choices"
+                            .to_owned(),
+                    ));
+                }
+                self.push_openai(&frame)
+            }
         }
+    }
+
+    /// The dialect this parser was built for.
+    #[must_use]
+    pub fn dialect(&self) -> ApiDialect {
+        self.dialect
     }
 
     /// Finish the stream: flush complete tool calls and reconcile usage.
@@ -677,6 +721,139 @@ impl ChatStreamParser {
         Ok(events)
     }
 
+    // ---- Google Antigravity, v1internal ----------------------------------
+
+    /// Read one `v1internal` frame.
+    ///
+    /// The shape, measured from the bundle that serves it: the whole Gemini
+    /// response is nested under `response`, the answer is
+    /// `candidates[0].content.parts[]`, a part marked `thought: true` is the
+    /// reasoning channel rather than the reply, a part carrying `functionCall`
+    /// is a tool call, and the counters are `usageMetadata`. A non-streaming
+    /// `generateContent` answer is the same frame with the same nesting, so both
+    /// arrive here.
+    fn push_antigravity(
+        &mut self,
+        frame: &serde_json::Value,
+    ) -> Result<Vec<ProviderEvent>, LlmError> {
+        let mut events = Vec::new();
+        let response = frame.get("response").unwrap_or(frame);
+
+        if let Some(metadata) = response.get("usageMetadata") {
+            self.observe_antigravity_usage(metadata);
+        }
+        let Some(candidate) = response
+            .get("candidates")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|candidates| candidates.first())
+        else {
+            return Ok(events);
+        };
+        if let Some(parts) = candidate
+            .get("content")
+            .and_then(|content| content.get("parts"))
+            .and_then(serde_json::Value::as_array)
+        {
+            for part in parts {
+                if let Some(call) = part.get("functionCall") {
+                    let name = call
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    if !name.is_empty() {
+                        let id = call
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!("call_{}", self.completed.len()));
+                        // The arguments arrive as an object here, not as a JSON
+                        // string, so the accumulator is seeded whole and flushed
+                        // at once: there is no fragment to wait for.
+                        let arguments = call
+                            .get("args")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        let id = call
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .map_or(id, str::to_owned);
+                        let accumulator = self.accumulator(self.tools.len() as u32);
+                        accumulator.observe_id(&id);
+                        accumulator.push_name(name);
+                        accumulator.push_arguments(&arguments.to_string());
+                        events.extend(self.flush_index(accumulator_index(&self.tools))?);
+                    }
+                    continue;
+                }
+                let Some(text) = part.get("text").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                if part.get("thought").and_then(serde_json::Value::as_bool) == Some(true) {
+                    let fresh = antigravity_delta(&mut self.antigravity_seen[1], text);
+                    self.push_reasoning(&fresh, &mut events);
+                } else {
+                    let fresh = antigravity_delta(&mut self.antigravity_seen[0], text);
+                    self.push_text(&fresh, &mut events);
+                }
+            }
+        }
+        if let Some(reason) = candidate
+            .get("finishReason")
+            .and_then(serde_json::Value::as_str)
+        {
+            self.finish_reason = Some(reason.to_owned());
+            // `STOP` here means "this candidate finished", which is the end of
+            // the turn unless a tool call says otherwise. Anything else (or a
+            // tool call) is recorded rather than turned into a decision: the
+            // caller reads `finish_reason` and the calls together.
+            if reason == "STOP" && self.tools.is_empty() {
+                self.done = true;
+            }
+        }
+        Ok(events)
+    }
+
+    fn observe_antigravity_usage(&mut self, metadata: &serde_json::Value) {
+        self.usage.seen = true;
+        // Gemini reports its cached count as a part of `promptTokenCount`, so
+        // this dialect must have it subtracted to bill the same as a
+        // separate-field provider. `Thoughts` ride inside the candidate count
+        // and belong to the output total, not to the reply.
+        if self.capabilities.cache_read_reporting != CacheReadReporting::NotReported {
+            self.usage.reporting = Some(CacheReadReporting::FoldedIntoPrompt);
+        }
+        let output = metadata
+            .get("candidatesTokenCount")
+            .and_then(serde_json::Value::as_u64)
+            .map(|count| {
+                count
+                    + metadata
+                        .get("thoughtsTokenCount")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+            });
+        if let Some(output) = output {
+            self.usage.output_tokens = Some(output);
+        }
+        if let Some(prompt) = metadata
+            .get("promptTokenCount")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.usage.prompt_tokens = Some(prompt);
+        }
+        if let Some(cached) = metadata
+            .get("cachedContentTokenCount")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.usage.cache_read_tokens = Some(cached);
+        }
+    }
+
     fn frame_index(&self, frame: &serde_json::Value) -> Result<u32, LlmError> {
         let index = frame
             .get("index")
@@ -712,6 +889,42 @@ impl ChatStreamParser {
             self.usage.output_tokens = Some(output);
         }
     }
+}
+
+/// The index of the accumulator just pushed, for the flush that follows it.
+fn accumulator_index(tools: &[ToolAccumulator]) -> u32 {
+    tools.last().map(|tool| tool.index).unwrap_or(0)
+}
+
+/// Whether a frame is a Cloud Code `v1internal` frame.
+fn is_antigravity_frame(frame: &serde_json::Value) -> bool {
+    match frame.get("response") {
+        Some(response) => response.get("candidates").is_some(),
+        None => frame.get("candidates").is_some(),
+    }
+}
+
+/// The part of `text` that has not been emitted yet, and the running record.
+///
+/// Three senders are possible and only one of them is documented: incremental
+/// fragments, the whole text again on every frame, and the whole text growing.
+/// Comparing against what was already emitted handles all three, and a repeated
+/// frame produces an empty delta rather than a duplicate paragraph.
+fn antigravity_delta(seen: &mut String, text: &str) -> String {
+    if text.starts_with(seen.as_str()) {
+        let fresh = text[seen.len()..].to_owned();
+        seen.push_str(&fresh);
+        return fresh;
+    }
+    if seen.starts_with(text) {
+        // The sender repeated a prefix it already sent: nothing new.
+        return String::new();
+    }
+    // The sender rewrote its own text. Emitting the whole thing would duplicate
+    // the answer, so only the part beyond the last thing said is taken when the
+    // new text extends the old one, and nothing is taken when it does not.
+    seen.push_str(text);
+    text.to_owned()
 }
 
 /// The Anthropic event names this parser recognises.

@@ -35,6 +35,44 @@ use super::classify;
 use super::stream::ChatStreamParser;
 use super::{ChatRequest, ChatRole, Completion, ProviderEvent, Reachability, SecretKey};
 
+pub use super::antigravity::DEFAULT_ANTIGRAVITY_MAX_OUTPUT;
+
+/// The one `anthropic-version` value the Messages dialect has ever accepted.
+///
+/// Not configurable on purpose: the header names the wire contract, and a knob
+/// that could name another version would be a knob that could only be wrong.
+pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// The **minimum** beta set for a Claude grant that came from a browser login.
+///
+/// The bundle that serves the same grant sends a dozen flags. Two are shipped
+/// here because those are the two the OAuth path needs to be answered at all;
+/// if a turn fails with a beta named in the error, that beta is added to this
+/// list with the failure that required it recorded beside it. Shipping twelve on
+/// faith is how a beta nobody needed gets debugged in production.
+pub const ANTHROPIC_BETA: &str = "oauth-2025-04-20";
+
+/// The first system block a direct Claude deployment requires.
+///
+/// Not decoration and not a persona: the grant this daemon seals is issued to a
+/// surface that identifies itself, and a Messages turn that omits this line is
+/// answered `429 rate_limit_error` on every model above Haiku while the same
+/// account's rate-limit headers still read five percent used. That failure looks
+/// like a quota problem and is not one, so the line is sent by name rather than
+/// discovered again in production.
+///
+/// Only a `direct` Messages entry sends it. A gateway in front of Claude wants
+/// its own auth and no extra block, which is the same rule that decides the
+/// vendor headers.
+pub const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+/// A monotonic counter behind the Antigravity session id.
+///
+/// The id only has to be stable within one turn and distinct between turns; a
+/// counter plus the clock says both without a random source, and neither value
+/// is a fact about the operator.
+static ANTIGRAVITY_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// How long to wait for the connection itself. Separate from the stream: a slow
 /// model is normal, an endpoint that will not accept a TCP connection is not.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -130,6 +168,47 @@ impl OpenAiCompatProvider {
         match self.profile.dialect {
             ApiDialect::ChatCompletions => self.chat_completions_url(),
             ApiDialect::Messages => self.messages_url(),
+            ApiDialect::Antigravity => self.antigravity_url(),
+        }
+    }
+
+    /// The Antigravity streaming endpoint: a verb on `v1internal`, not a path
+    /// under a version. `antigravity::stream_url` owns the shape so the request
+    /// builder and this adapter cannot drift apart.
+    #[must_use]
+    pub fn antigravity_url(&self) -> String {
+        super::antigravity::stream_url(&self.profile.base_url)
+    }
+
+    /// The headers this profile's deployment needs beyond a bearer token.
+    ///
+    /// Empty for every profile that existed before this method did, which is what
+    /// keeps the OpenAI path byte-identical to the build that shipped it: a
+    /// gateway answers a bearer token and nothing else, and a header it does not
+    /// expect is a header that can be refused.
+    ///
+    /// A `direct` profile is the vendor's own API, which is strict in the other
+    /// direction: Anthropic refuses a Messages request with no
+    /// `anthropic-version`, and Antigravity frames its replies around its own
+    /// `User-Agent`. The choice is a property of the deployment and is declared
+    /// on its registry entry, never inferred from the dialect.
+    #[must_use]
+    pub fn vendor_headers(&self) -> Vec<(&'static str, &'static str)> {
+        if !self.profile.direct && self.profile.dialect != ApiDialect::Antigravity {
+            return Vec::new();
+        }
+        match self.profile.dialect {
+            ApiDialect::Messages => vec![
+                // The minimum set, measured rather than guessed: a Messages
+                // request is accepted with only these two, and shipping beta
+                // flags on faith is how a beta nobody needed gets debugged.
+                ("anthropic-version", ANTHROPIC_VERSION),
+                ("anthropic-beta", ANTHROPIC_BETA),
+            ],
+            ApiDialect::Antigravity => {
+                vec![("user-agent", super::antigravity::ANTIGRAVITY_USER_AGENT)]
+            }
+            ApiDialect::ChatCompletions => Vec::new(),
         }
     }
 
@@ -406,6 +485,17 @@ impl OpenAiCompatProvider {
                 .max_output_tokens
                 .unwrap_or(Self::DEFAULT_MESSAGES_MAX_TOKENS),
         });
+        // The identity line first, when this deployment needs one, then the
+        // preamble. Both are blocks rather than one joined string, because the
+        // preamble is where the cache breakpoint goes and the identity block must
+        // stay byte-identical across turns for that breakpoint to help.
+        let mut system_blocks: Vec<serde_json::Value> = Vec::new();
+        if self.profile.direct && self.profile.dialect == ApiDialect::Messages {
+            system_blocks.push(serde_json::json!({
+                "type": "text",
+                "text": CLAUDE_CODE_IDENTITY,
+            }));
+        }
         if let Some(system) = preamble {
             // As a block array rather than a bare string, because a string has
             // nowhere to hang `cache_control` - and this preamble is the most
@@ -413,11 +503,14 @@ impl OpenAiCompatProvider {
             // rules change once a week and are re-sent on every turn of every
             // conversation. A breakpoint here is what turns that into a cache
             // read instead of full prompt price.
-            body["system"] = serde_json::json!([{
+            system_blocks.push(serde_json::json!({
                 "type": "text",
                 "text": system,
                 "cache_control": ephemeral_breakpoint(),
-            }]);
+            }));
+        }
+        if !system_blocks.is_empty() {
+            body["system"] = serde_json::Value::Array(system_blocks);
         }
 
         if !request.tools.is_empty() {
@@ -459,7 +552,41 @@ impl OpenAiCompatProvider {
         match self.profile.dialect {
             ApiDialect::ChatCompletions => self.build_body(request),
             ApiDialect::Messages => self.build_messages_body(request),
+            // A wrapping request cannot fail to build for a well-formed profile,
+            // and a malformed one has already been refused by the turn that
+            // resolved it: `build_antigravity_body` is the fallible form, and
+            // this is the infallible door the trait-shaped callers use.
+            ApiDialect::Antigravity => self
+                .build_antigravity_body(request)
+                .unwrap_or_else(|error| serde_json::json!({ "error": error.to_string() })),
         }
+    }
+
+    /// The `v1internal` body for one Antigravity turn.
+    ///
+    /// # Errors
+    ///
+    /// [`LlmError::Protocol`] when the profile names no cloud project or no
+    /// model: both are refused before the request is sent, because the endpoint
+    /// answers them with an opaque 400.
+    pub fn build_antigravity_body(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<serde_json::Value, LlmError> {
+        let step = ANTIGRAVITY_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let epoch_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or(0);
+        let session = format!("kallisti-{step}");
+        super::antigravity::build_body(
+            &self.profile,
+            &self.model.id,
+            request,
+            super::antigravity::RequestType::Agent,
+            &super::antigravity::request_id(&session, &session, epoch_millis, 1),
+            &session,
+        )
     }
 
     /// Ask the endpoint which models it serves, and which of them answer.
@@ -479,6 +606,10 @@ impl OpenAiCompatProvider {
         key: &SecretKey,
         probe: Reachability,
     ) -> Result<super::ModelCatalog, LlmError> {
+        // The catalogue comes from `list_models`, which knows that Antigravity
+        // publishes its list from the account (`v1internal:fetchAvailableModels`)
+        // rather than from `GET /models`. The reachability half below speaks the
+        // Antigravity shape too, so one pass covers both dialects.
         let mut catalog = super::list_models(&self.profile, key).await?;
         if probe == Reachability::Skip {
             return Ok(catalog);
@@ -496,33 +627,30 @@ impl OpenAiCompatProvider {
             let url = match dialect {
                 ApiDialect::ChatCompletions => format!("{base}/chat/completions"),
                 ApiDialect::Messages => format!("{base}/messages"),
+                ApiDialect::Antigravity => super::antigravity::generate_url(&base),
             };
             let request = ChatRequest {
                 max_output_tokens: Some(16),
                 ..ChatRequest::user_text("hi")
             };
+            let prober = OpenAiCompatProvider::new(
+                self.profile.clone(),
+                ModelProfile::new(model.clone()),
+                capabilities,
+            )?;
             let body = match dialect {
-                ApiDialect::ChatCompletions => OpenAiCompatProvider::new(
-                    self.profile.clone(),
-                    ModelProfile::new(model.clone()),
-                    capabilities,
-                )?
-                .build_body(&request),
-                ApiDialect::Messages => OpenAiCompatProvider::new(
-                    self.profile.clone(),
-                    ModelProfile::new(model.clone()),
-                    capabilities,
-                )?
-                .build_messages_body(&request),
+                ApiDialect::ChatCompletions => prober.build_body(&request),
+                ApiDialect::Messages => prober.build_messages_body(&request),
+                ApiDialect::Antigravity => prober.build_antigravity_body(&request)?,
             };
-            match http
+            let mut pending = http
                 .post(&url)
                 .bearer_auth(key.expose())
-                .header(reqwest::header::ACCEPT, "text/event-stream")
-                .json(&body)
-                .send()
-                .await
-            {
+                .header(reqwest::header::ACCEPT, "text/event-stream");
+            for (name, value) in self.vendor_headers() {
+                pending = pending.header(name, value);
+            }
+            match pending.json(&body).send().await {
                 Ok(response) if response.status().is_success() => {
                     // The body is a stream this pass does not read: the status
                     // is the whole question being asked. Dropping the response
@@ -575,14 +703,18 @@ impl OpenAiCompatProvider {
         // away before the answer started". See `SEND_ATTEMPTS`.
         let mut attempt = 1;
         let response = loop {
-            let sent = self
+            let mut pending = self
                 .http
                 .post(&url)
                 .bearer_auth(key.expose())
-                .header(reqwest::header::ACCEPT, "text/event-stream")
-                .json(&body)
-                .send()
-                .await;
+                .header(reqwest::header::ACCEPT, "text/event-stream");
+            // A gateway gets a bearer token and nothing else; the vendor's own
+            // API gets the headers it refuses to work without. Same body, and the
+            // difference is declared on the registry entry rather than guessed.
+            for (name, value) in self.vendor_headers() {
+                pending = pending.header(name, value);
+            }
+            let sent = pending.json(&body).send().await;
             match sent {
                 Ok(response) => break response,
                 Err(error)
@@ -1074,6 +1206,57 @@ mod tests {
             messages_provider().chat_completions_url(),
             "https://api.commandcode.ai/provider/v1/chat/completions"
         );
+    }
+
+    /// A direct Claude deployment: the vendor's own API, not a gateway.
+    fn direct_claude_provider() -> OpenAiCompatProvider {
+        let profile = core_domain::ProviderProfile::new(
+            "claude",
+            "https://api.anthropic.com/v1",
+            SecretRef::Token("claude".to_owned()),
+        )
+        .expect("profile should build")
+        .with_dialect(ApiDialect::Messages)
+        .with_direct(true);
+        OpenAiCompatProvider::new(
+            profile,
+            ModelProfile::new("claude-sonnet-5-5"),
+            Capabilities::openai_compatible(),
+        )
+        .expect("provider should build")
+    }
+
+    #[test]
+    fn a_direct_claude_body_leads_with_the_identity_block() {
+        let body = direct_claude_provider().build_messages_body(&ChatRequest::with_system(
+            Some("Be brief.".to_owned()),
+            "hi",
+        ));
+        assert_eq!(body["system"][0]["text"], CLAUDE_CODE_IDENTITY);
+        assert_eq!(body["system"][1]["text"], "Be brief.");
+        // The breakpoint stays on the preamble, which is the block that changes;
+        // the identity block has to stay byte-identical to be worth caching.
+        assert!(body["system"][1].get("cache_control").is_some());
+        assert!(body["system"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn a_direct_claude_turn_with_no_preamble_still_sends_the_identity() {
+        let body = direct_claude_provider().build_messages_body(&ChatRequest::user_text("hi"));
+        assert_eq!(body["system"][0]["text"], CLAUDE_CODE_IDENTITY);
+        assert_eq!(body["system"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn a_gateway_in_front_of_claude_gets_no_identity_block() {
+        // Same dialect, not direct: this is commandcode, and adding a block to
+        // its request would change a wire shape that already works.
+        let body = messages_provider().build_messages_body(&ChatRequest::with_system(
+            Some("Be brief.".to_owned()),
+            "hi",
+        ));
+        assert_eq!(body["system"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["system"][0]["text"], "Be brief.");
     }
 
     #[test]

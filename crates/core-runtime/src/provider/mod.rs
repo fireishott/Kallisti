@@ -22,6 +22,7 @@
 //!   [`core_domain::Usage::reconcile`], the only constructor that touches
 //!   provider numbers.
 
+pub mod antigravity;
 pub mod classify;
 pub mod models;
 pub mod openai_compat;
@@ -32,7 +33,10 @@ use std::fmt;
 use core_domain::LlmError;
 
 pub use core_domain::{API_KEY_REF_ENV_PREFIX, SecretRef, SecretRefError};
-pub use models::{ModelCatalog, declared_dialect, list_models, parse_model_list, unreachable_line};
+pub use models::{
+    ModelCatalog, declared_dialect, list_models, parse_available_models, parse_model_list,
+    unreachable_line,
+};
 pub use openai_compat::OpenAiCompatProvider;
 pub use stream::ChatStreamParser;
 
@@ -46,6 +50,15 @@ pub fn resolve_api_key_with(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<SecretKey, LlmError> {
     match reference {
+        // A token reference is resolved by `eris_host`, which owns the encrypted
+        // store, its key and the refresh gate. This crate has no way to read one
+        // and says so by name instead of returning an empty credential: a silent
+        // empty here would surface as an unexplained 401 from the vendor.
+        SecretRef::Token(name) => Err(LlmError::Auth {
+            detail: format!(
+                "`token:{name}` is a stored grant, which only the daemon's credential resolver can read"
+            ),
+        }),
         SecretRef::Env(name) => match lookup(name) {
             Some(value) if !value.trim().is_empty() => SecretKey::new(value),
             Some(_) => Err(LlmError::Auth {
