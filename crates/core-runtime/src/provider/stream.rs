@@ -87,6 +87,19 @@ impl ToolAccumulator {
             // The sender repeated a fragment it already sent: nothing new.
             return;
         }
+        // A fragment that is a complete JSON value on its own is a whole object,
+        // not a continuation: the sender re-serialised the call between deltas
+        // (a field reordered, whitespace moved, an escape spelled differently) so
+        // it does not extend what is buffered, but it does say the same thing.
+        // Appending it would glue two objects together and fail the parse at a
+        // column nobody can explain from the payload; replacing keeps the newest
+        // spelling, which is the one the sender meant. A genuine continuation is
+        // never valid JSON on its own, so this cannot swallow one.
+        if looks_complete(fragment) {
+            self.arguments.clear();
+            self.arguments.push_str(fragment);
+            return;
+        }
         self.arguments.push_str(fragment);
     }
 
@@ -122,19 +135,95 @@ impl ToolAccumulator {
             // empty string in that case, and `{}` is the accurate reading.
             serde_json::json!({})
         } else {
-            serde_json::from_str(buffered).map_err(|error| {
-                classify::protocol(format!(
-                    "tool call `{}` arguments never completed into valid JSON after {} byte(s): {error}",
-                    self.name,
-                    buffered.len()
-                ))
-            })?
+            match serde_json::from_str(buffered) {
+                Ok(value) => value,
+                Err(error) => {
+                    // Two objects glued together parse as neither. A sender that
+                    // appends whole objects instead of fragments leaves exactly
+                    // that, and the newest object is the one it meant, so the
+                    // last complete one is recovered rather than the turn dying
+                    // at the parser. A real truncation has no complete object to
+                    // recover and is still refused, with the same message it
+                    // always had.
+                    match newest_object(buffered) {
+                        Some(value) => value,
+                        None => {
+                            return Err(classify::protocol(format!(
+                                "tool call `{}` arguments never completed into valid JSON after {} byte(s): {error}",
+                                self.name,
+                                buffered.len()
+                            )));
+                        }
+                    }
+                }
+            }
         };
 
         ToolCall::new(self.index, id, self.name.clone(), arguments)
             .map(Some)
             .map_err(|error| classify::protocol(format!("tool call `{}`: {error}", self.name)))
     }
+}
+
+/// Whether a fragment is a complete JSON value on its own.
+///
+/// Used to tell "the sender re-serialised the whole call" from "this is the next
+/// chunk of a long string". A chunk of a JSON document is virtually never valid
+/// JSON by itself; a whole object always is.
+fn looks_complete(fragment: &str) -> bool {
+    let trimmed = fragment.trim();
+    if trimmed.len() < 2 {
+        return false;
+    }
+    matches!(trimmed.as_bytes()[0], b'{' | b'[')
+        && serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
+}
+
+/// The newest complete JSON object inside a buffer of concatenated ones.
+///
+/// A sender that appends whole objects leaves `{...}{...}`. The last object is
+/// the newest and therefore the one the sender meant; earlier ones are stale.
+/// String-aware, so a brace inside a quoted value is not a boundary. Only the
+/// last few candidates are tried, so a pathological buffer cannot turn a refused
+/// turn into a slow one.
+fn newest_object(text: &str) -> Option<serde_json::Value> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut starts: Vec<usize> = Vec::new();
+    for (index, byte) in bytes.iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => {
+                if depth == 0 {
+                    starts.push(index);
+                }
+                depth += 1;
+            }
+            b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    // Newest first, and at most a handful: if the whole buffer were one object
+    // the parse that got us here would have succeeded, so a candidate at index 0
+    // is only worth trying when nothing later works.
+    for start in starts.iter().rev().take(4) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text[*start..]) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// The two things an inlined chain of thought can be.
@@ -969,4 +1058,96 @@ fn is_anthropic_type(kind: &str) -> bool {
             | "message_stop"
             | "ping"
     )
+}
+
+#[cfg(test)]
+mod argument_assembly_tests {
+    use super::*;
+
+    fn accumulator(fragments: &[&str]) -> ToolAccumulator {
+        let mut acc = ToolAccumulator::new(0);
+        acc.observe_id("call-1");
+        acc.push_name("clarify");
+        for fragment in fragments {
+            acc.push_arguments(fragment);
+        }
+        acc
+    }
+
+    /// The shape the three-way heuristic exists for: the documented sender
+    /// appends only new bytes.
+    #[test]
+    fn plain_fragments_append() {
+        let acc = accumulator(&[r#"{"title":"#, r#""deck","#, r#""questions":"#, r#"[]}"#]);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(call.arguments["title"], "deck");
+    }
+
+    /// A sender that re-serialises the whole call between deltas: the second
+    /// spelling is not a continuation of the first, and appending the two would
+    /// produce two objects glued together.
+    #[test]
+    fn a_whole_object_resend_replaces_the_buffer() {
+        let acc = accumulator(&[
+            r#"{"title":"deck","questions":[]}"#,
+            r#"{"questions":[],"title":"deck for Cheyne"}"#,
+        ]);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(
+            call.arguments["title"], "deck for Cheyne",
+            "the newest whole object is the one the sender meant"
+        );
+    }
+
+    /// A gateway that appends whole objects leaves `{...}{...}`. Neither parses as
+    /// one value, the newest is the intended one, and the turn should not die at
+    /// the parser.
+    #[test]
+    fn two_objects_glued_together_recover_the_newest() {
+        let mut acc = ToolAccumulator::new(0);
+        acc.observe_id("call-1");
+        acc.push_name("clarify");
+        // Written straight into the buffer to model a sender this client cannot
+        // classify, which is exactly the case recovery is for.
+        acc.arguments
+            .push_str(r#"{"title":"first"}{"title":"second","questions":[]}"#);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(call.arguments["title"], "second");
+    }
+
+    /// A brace inside a quoted value is not a boundary: recovery must not cut a
+    /// string in half and call the tail a tool call.
+    #[test]
+    fn a_brace_in_a_string_is_not_a_boundary() {
+        let value = r#"{"title":"a } in the title","questions":[]}"#;
+        assert!(newest_object(value).is_some());
+        let glued = format!(r#"{{"title":"x"}}{value}"#);
+        let recovered = newest_object(&glued).expect("the newest object");
+        assert_eq!(recovered["title"], "a } in the title");
+    }
+
+    /// The case that must keep failing: a genuine truncation has no complete
+    /// object to recover, and the message names the tool and the size.
+    #[test]
+    fn a_real_truncation_is_still_refused() {
+        let acc = accumulator(&[r#"{"title":"deck","questions":[{"question":"which form"#]);
+        let error = acc.finish().expect_err("a refusal");
+        let text = error.to_string();
+        assert!(
+            text.contains("never completed into valid JSON"),
+            "the refusal keeps its message: {text}"
+        );
+        assert!(text.contains("clarify"), "and names the tool: {text}");
+    }
+
+    /// A fragment that is a complete value but not a continuation must not
+    /// replace a buffer that is genuinely mid-string.
+    #[test]
+    fn a_continuation_is_never_mistaken_for_a_whole_object() {
+        assert!(!looks_complete(
+            r#""deck for Cheyne"\#));
+        assert!(!looks_complete("deck"));
+        assert!(looks_complete(r#"{"a":1}"#
+        ));
+    }
 }

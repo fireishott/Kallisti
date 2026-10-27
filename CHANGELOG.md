@@ -47,6 +47,18 @@ observe; commit history carries the detail.
   itself, and a provider nobody probed contributes nothing - the same distinction
   the `probed` flag draws for the whole answer. `build 123`.
 
+- **A `clarify` call survives a sender that re-serialises it.** Three turns here
+  died with `tool call clarify arguments never completed into valid JSON`, twice
+  failing at byte 14 of a 692-byte buffer - a parse error at the START of an
+  argument buffer, which a truncation cannot produce. The assembler appended
+  fragments unless one extended what it already held, so a gateway that re-emits
+  the whole object with a field reordered (or an escape spelled differently) glued
+  two objects together. A fragment that is a complete JSON value on its own is now
+  taken as a whole object and replaces the buffer, and a buffer that still holds
+  concatenated objects is parsed from its newest complete one instead of failing
+  the turn. A genuine truncation has no complete object to recover and is refused
+  with the same message it always had. `build 124`.
+
 ## 1.4.10
 
 - **A turn that is nearly out of budget answers instead of giving up.** The
