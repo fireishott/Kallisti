@@ -1378,21 +1378,32 @@ pre.code {
 .thread {
   position: relative;
   z-index: 1;
-  display: grid;
-  /* One explicit track, bounded by the container. An implicit `auto` track sizes
-     to its widest item's max-content, so one long paragraph, code block or table
-     made the whole column wider than the window and pushed the right-aligned
-     operator bubble off the screen edge. */
-  grid-template-columns: minmax(0, 1fr);
+  /* A column, not a grid.
+   *
+   * It was a one-column grid with `minmax(0, 1fr)`, which is a fine way to say
+   * "never wider than the column" and a terrible way to say "stack these". Grid
+   * row sizing gave the engine a size to decide per message, and when a
+   * message's own floor came from its content the two facts formed a cycle:
+   * measured on a real transcript, Chrome settled on 8px rows and Safari on
+   * something that left every message overlapping the one below it, with the
+   * answer inside shrunk to a sliver. A flex column has no such question: an
+   * item that may not shrink is exactly as tall as what it holds, and two of
+   * them cannot occupy one line.
+   *
+   * `min-width: 0` on the items keeps the old promise about width: a long
+   * paragraph, a table or a terminal line scrolls inside its own box instead of
+   * widening the column past the window. */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 18px;
-  align-content: start;
   padding: 4px 2px 12px;
   min-height: 0;
   flex: 1 1 auto;
   overflow-y: auto;
   /* Stated, not implied. With only `overflow-y` set, the other axis computes to
      `auto` and the transcript becomes a sideways scroller: one child wider than
-     the track is enough, and a sideways scroller that has been nudged hides the
+     the column is enough, and a sideways scroller that has been nudged hides the
      left edge of every line in the conversation. A wide child scrolls inside
      itself. */
   overflow-x: hidden;
@@ -1473,22 +1484,13 @@ body:has(.chat-shell) .app {
   width: min(100%, 78%);
   max-width: 52rem;
   min-width: 0;
-  /* A message is as tall as what it holds.
-   *
-   * `min-height: 0` was here to let the bounded scrollers inside a message size
-   * themselves rather than their content. What it also did was remove the floor
-   * a grid item normally gets from its own content: the transcript could hand a
-   * message less height than its parts needed, and the flex column inside then
-   * did the only thing it can do with a deficit, which is shrink its children.
-   * A collapsed answer, 320px of text under a fade, was rendered as a 45px sliver
-   * with 2133px of text clipped behind it. Measured on the operator's own
-   * transcript, the message wanted 893 and was given 432.
-   *
-   * The ceilings inside a message are `max-height` on the scrollers themselves
-   * (the fold token on a reasoning body, 340px on a call's output), so they bite
-   * whether or not this element can shrink. `max-content` cannot shrink it, and
-   * the transcript scrolls, which is the one thing that was supposed to happen. */
-  min-height: max-content;
+  /* Never shrinks. A column flex item shrinks by default, and shrinking is how a
+     320px folded answer once came out 45px tall: the transcript had decided the
+     message got less room than its parts needed and the message did as it was
+     told. `0 0 auto` takes that decision away from the container. The ceilings
+     inside a message are `max-height` on the scrollers themselves, so they still
+     bite. */
+  flex: 0 0 auto;
 }
 
 /* A reply with no thinking bubble has nothing to align against, so it takes the
@@ -3102,11 +3104,19 @@ mod tests {
             log.contains("overscroll-behavior: contain"),
             "and reaching its end does not scroll the page behind it: {log}"
         );
+        // The transcript is a column, and its items may not shrink. A grid gave
+        // the engine a row height to decide per message, and a message whose
+        // floor came from its own content made that a cycle: one engine settled on
+        // 8px rows with every message overlapping the next, the other shrank a
+        // 320px folded answer to a sliver.
+        let thread = rule(".thread");
         assert!(
-            rule(".msg").contains("min-height: max-content"),
-            "a message is as tall as what it holds: with `min-height: 0` the \
-             transcript handed it less height than its parts needed, and the flex \
-             column shrank a 320px collapsed answer to a 45px sliver"
+            thread.contains("display: flex") && thread.contains("flex-direction: column"),
+            "the transcript stacks its messages instead of grid-placing them: {thread}"
+        );
+        assert!(
+            rule(".msg").contains("flex: 0 0 auto"),
+            "a message is as tall as what it holds and cannot be shrunk"
         );
     }
 
@@ -3422,8 +3432,10 @@ mod tests {
             "the shell keeps a readable cap of its own"
         );
         assert!(
-            rule(".thread").contains("grid-template-columns: minmax(0, 1fr)"),
-            "the transcript has one track that cannot be widened by its contents"
+            rule(".thread").contains("align-items: stretch")
+                && rule(".msg").contains("min-width: 0"),
+            "the transcript's items take the column and cannot widen it: {}",
+            rule(".thread")
         );
         assert!(
             rule(".msg").contains("width: min(100%, 78%)"),

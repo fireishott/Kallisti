@@ -132,6 +132,16 @@ observe; commit history carries the detail.
   trapping the gesture. The fade tracks the scroll position instead of the state,
   so it stops claiming there is more once the box is at its end, and a fold short
   enough to fit never wears it at all. `build 117`.
+- **The transcript stacks its messages, and a message is as tall as what it
+  holds.** The column was a one-track grid. That is a good way to say "never
+  wider than the column" and a bad way to say "stack these": the grid gave the
+  engine a height to decide per message, the message's floor came from its own
+  content, and the two facts made a cycle. Measured on a real conversation,
+  Chrome settled on 8px rows with every message on top of the next and Safari
+  left the answer inside squeezed back to a sliver, which is the mess of
+  overlapping cards and cut-off replies that survived three builds. The
+  transcript is a flex column now, a message cannot shrink, and tall replies,
+  tables and terminal output still scroll inside their own boxes. `build 118`.
 
 ## 1.4.9
 
