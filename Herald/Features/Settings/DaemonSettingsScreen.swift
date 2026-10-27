@@ -40,6 +40,10 @@ struct DaemonSettingsScreen: View {
     @State private var askingFullAccess = false
     /// The sandbox the daemon holds, which a disable can change underneath us.
     @State private var sandbox = ""
+    /// Where the listener binds, as the host holds it.
+    @State private var listen = ""
+    /// The origin a paired phone should call, when one is set.
+    @State private var relay = ""
 
     var body: some View {
         ZStack {
@@ -62,6 +66,7 @@ struct DaemonSettingsScreen: View {
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    reachabilitySection
                     hostAccessSection
                     ForEach(groups) { group in
                         SettingsSectionView(title: group.title) {
@@ -270,6 +275,50 @@ struct DaemonSettingsScreen: View {
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
     }
 
+    /// Where the daemon is reachable. Read-only: the bind and the public origin are
+    /// host configuration, and a phone that could move them is one typo away from
+    /// losing the daemon it is talking to. Showing them is the honest half: you can
+    /// see the address without opening a browser.
+    private var reachabilitySection: some View {
+        SettingsSectionView(title: "Reachability") {
+            VStack(spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: Design.Spacing.sm) {
+                    Text("Listener")
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                    Spacer()
+                    Text(listen.isEmpty ? "unknown" : listen)
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .multilineTextAlignment(.trailing)
+                }
+                .frame(minHeight: Design.Size.minTapTarget)
+
+                divider
+
+                HStack(alignment: .firstTextBaseline, spacing: Design.Spacing.sm) {
+                    Text("Public origin")
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                    Spacer()
+                    Text(relay.isEmpty ? "not set" : relay)
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .multilineTextAlignment(.trailing)
+                }
+                .frame(minHeight: Design.Size.minTapTarget)
+
+                divider
+
+                Text("Binding and the public origin are host changes: they apply on the daemon's next start, so this screen shows them rather than moving them.")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.tertiaryForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, Design.Spacing.xxs)
+            }
+        }
+    }
+
     /// Full host access: the switch that decides whether `full` is a sandbox a
     /// save may pick.
     ///
@@ -348,6 +397,8 @@ struct DaemonSettingsScreen: View {
             groups = snapshot.groups
             fullAccess = snapshot.fullAccess
             sandbox = snapshot.sandbox
+            listen = snapshot.listen
+            relay = snapshot.relay
             errorMessage = nil
         } catch {
             errorMessage = (error as? ErisError)?.errorDescription ?? error.localizedDescription

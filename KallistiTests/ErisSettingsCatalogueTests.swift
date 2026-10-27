@@ -192,6 +192,24 @@ struct ErisFullAccessTests {
         #expect(try JSONDecoder().decode(ErisSettingsSnapshot.self, from: Data(older.utf8)).fullAccess == false)
     }
 
+    /// The two host facts the Devices tab holds. A phone shows them and cannot
+    /// move them: a bind cannot be changed under a live phone, so the surface with
+    /// the address in its hand is the one that must not be able to rewrite it.
+    @Test("the snapshot carries where the daemon is reachable")
+    func snapshotCarriesReachability() throws {
+        let body = #"{"ok":true,"listen":"127.0.0.1:7341, 192.168.68.51:7341","relay":"https://kallisti.example.test","capabilities":[]}"#
+        let settings = try JSONDecoder().decode(ErisSettingsSnapshot.self, from: Data(body.utf8))
+        #expect(settings.listen == "127.0.0.1:7341, 192.168.68.51:7341")
+        #expect(settings.relay == "https://kallisti.example.test")
+
+        // A daemon that predates the two keys, and one with no origin set, are
+        // both readable rather than broken.
+        let older = #"{"ok":true,"capabilities":[]}"#
+        let bare = try JSONDecoder().decode(ErisSettingsSnapshot.self, from: Data(older.utf8))
+        #expect(bare.listen.isEmpty)
+        #expect(bare.relay.isEmpty)
+    }
+
     /// Disabling demotes a `full` sandbox, so the result has to carry the sandbox
     /// the daemon holds now. A surface that only heard its own request would keep
     /// drawing a mode that is no longer selected.

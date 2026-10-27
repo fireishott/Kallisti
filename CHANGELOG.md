@@ -5,6 +5,35 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.13] - 2026-10-27
+
+The Devices tab's last two facts.
+
+### Added
+
+- **Where the daemon is reachable, on the phone.** The Devices tab holds the
+  addresses the device listener binds and the origin the pairing QR carries, and
+  no device route exposed either. Settings now shows both in a Reachability card
+  at the top of Daemon settings, so you can read the address without opening a
+  browser. `build 108`.
+
+### Deliberately not writable
+
+- **Binding stays a host change.** A bind cannot be moved under a live phone, and
+  a phone that could rewrite its own daemon's bind is one typo away from losing
+  the daemon it is talking to. The card says so instead of offering a control that
+  could take the app offline. Both values are read the way the dashboard reads
+  them, including the shipped default, so the two surfaces cannot describe
+  different addresses.
+
+### Verification
+
+- Daemon: the phase8 wire-shape test grew the two keys, which is what pins the
+  snapshot rather than letting fields drift in.
+- `ErisFullAccessTests/snapshotCarriesReachability`: the values decode, and a
+  daemon that predates them (or has no origin set) reads as unknown rather than
+  broken.
+
 ## [1.4.12] - 2026-10-27
 
 Stop, actually.

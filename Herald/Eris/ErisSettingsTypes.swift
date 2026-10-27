@@ -27,6 +27,17 @@ struct ErisSettingsSnapshot: Equatable, Sendable {
     let approval: String
     /// The daemon's timezone label.
     let timezone: String
+    /// Where the device listener binds, as the host holds it.
+    ///
+    /// Read-only on the phone by design: a bind cannot be moved under a live
+    /// phone, and a phone that could move its own daemon's bind is one typo away
+    /// from locking itself out. Shown so the address is visible without a browser.
+    let listen: String
+    /// The origin a paired phone should call, when the operator has set one.
+    ///
+    /// This is what the pairing QR carries, so it is the address that actually
+    /// routes to this daemon rather than the one the host binds for itself.
+    let relay: String
     /// Whether full host access is enabled on the daemon.
     ///
     /// The one switch `capabilities` cannot carry: turning it on needs the word
@@ -50,6 +61,8 @@ struct ErisSettingsSnapshot: Equatable, Sendable {
         toolRounds: Int,
         approval: String,
         timezone: String,
+        listen: String = "",
+        relay: String = "",
         fullAccess: Bool = false,
         fields: [ErisSettingField] = []
     ) {
@@ -60,6 +73,8 @@ struct ErisSettingsSnapshot: Equatable, Sendable {
         self.toolRounds = toolRounds
         self.approval = approval
         self.timezone = timezone
+        self.listen = listen
+        self.relay = relay
         self.fullAccess = fullAccess
         self.fields = fields
     }
@@ -90,6 +105,8 @@ extension ErisSettingsSnapshot: Decodable {
         case toolRounds = "tool_rounds"
         case approval
         case timezone
+        case listen
+        case relay
         case fullAccess = "full_access"
         case capabilities
     }
@@ -104,6 +121,8 @@ extension ErisSettingsSnapshot: Decodable {
             toolRounds: try container.decodeIfPresent(Int.self, forKey: .toolRounds) ?? 0,
             approval: try container.decodeIfPresent(String.self, forKey: .approval) ?? "",
             timezone: try container.decodeIfPresent(String.self, forKey: .timezone) ?? "",
+            listen: try container.decodeIfPresent(String.self, forKey: .listen) ?? "",
+            relay: try container.decodeIfPresent(String.self, forKey: .relay) ?? "",
             fullAccess: try container.decodeIfPresent(Bool.self, forKey: .fullAccess) ?? false,
             fields: (try container.decodeIfPresent([FailableSettingField].self, forKey: .capabilities) ?? [])
                 .compactMap(\.field)
