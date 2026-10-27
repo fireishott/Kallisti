@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/daemon-1.4.11-C8CCD2?style=flat-square&labelColor=0C0C10" alt="daemon 1.4.11"/>
   <img src="https://img.shields.io/badge/iOS-1.4.14-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 1.4.14"/>
   <img src="https://img.shields.io/badge/Rust-1.99-F74C00?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99"/>
-  <img src="https://img.shields.io/badge/tests-1159-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1159 tests"/>
+  <img src="https://img.shields.io/badge/tests-1165-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1165 tests"/>
   <img src="https://img.shields.io/badge/device_api-no_relay-C8CCD2?style=flat-square&labelColor=0C0C10" alt="no relay"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
@@ -195,7 +195,7 @@ hostname that points at a private address.
 | `ios-host` | on-device surface stub: a UniFFI export with no I/O of its own, so the core never imports a device framework and every permission prompt belongs to the Swift shell. |
 
 ```sh
-cargo test --workspace        # 1159 tests across the unit and integration suites, 0 failures
+cargo test --workspace        # 1165 tests across the unit and integration suites, 0 failures
 cargo clippy --workspace --all-targets
 cargo fmt --check
 ```
