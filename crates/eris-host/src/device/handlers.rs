@@ -4084,7 +4084,10 @@ pub async fn set_full_access(
 
     if enabled {
         // The typed word is the guard, exactly as it is in the browser.
-        if !field(&fields, "confirm").trim().eq_ignore_ascii_case("full") {
+        if !field(&fields, "confirm")
+            .trim()
+            .eq_ignore_ascii_case("full")
+        {
             return DeviceError::bad_request(
                 "confirm_required",
                 "type full to enable full host access; nothing was changed",
@@ -4117,7 +4120,11 @@ pub async fn set_full_access(
         }
     }
 
-    let detail = if enabled { "full host on" } else { "full host off" };
+    let detail = if enabled {
+        "full host on"
+    } else {
+        "full host off"
+    };
     if let Err(error) = engine
         .auth()
         .audit(token.device_id(), "settings.full_access", Some(detail))
@@ -6510,9 +6517,16 @@ mod tests {
                 "int" => {
                     // A form control needs the range it may offer, and it cannot
                     // read the daemon's ceiling from anywhere else.
-                    assert!(entry["options"].is_null(), "{key} is an int with no options");
-                    let min = entry["min"].as_i64().unwrap_or_else(|| panic!("{key} has a min"));
-                    let max = entry["max"].as_i64().unwrap_or_else(|| panic!("{key} has a max"));
+                    assert!(
+                        entry["options"].is_null(),
+                        "{key} is an int with no options"
+                    );
+                    let min = entry["min"]
+                        .as_i64()
+                        .unwrap_or_else(|| panic!("{key} has a min"));
+                    let max = entry["max"]
+                        .as_i64()
+                        .unwrap_or_else(|| panic!("{key} has a max"));
                     assert!(min <= max, "{key} has min {min} above max {max}");
                     let value: i64 = entry["value"]
                         .as_str()

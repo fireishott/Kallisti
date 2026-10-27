@@ -3023,7 +3023,9 @@ async fn settings_require_a_bearer_and_the_admin_scope() {
             Some("int") => vec![
                 "group", "key", "label", "max", "min", "options", "type", "value", "writable",
             ],
-            _ => vec!["group", "key", "label", "options", "type", "value", "writable"],
+            _ => vec![
+                "group", "key", "label", "options", "type", "value", "writable",
+            ],
         };
         assert_eq!(
             members, expected,

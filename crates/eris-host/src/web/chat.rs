@@ -7048,7 +7048,11 @@ mod transcript_bound_tests {
     fn message(index: usize, body: &str, outputs: &[&str]) -> Message {
         Message {
             id: format!("m{index}"),
-            role: if index % 2 == 0 { Role::User } else { Role::Assistant },
+            role: if index.is_multiple_of(2) {
+                Role::User
+            } else {
+                Role::Assistant
+            },
             body: body.to_owned(),
             state: State::Complete,
             error_code: None,
@@ -7096,7 +7100,10 @@ mod transcript_bound_tests {
             bytes <= TRANSCRIPT_BYTE_BUDGET,
             "bounded transcript is {bytes} bytes, over the {TRANSCRIPT_BYTE_BUDGET} budget"
         );
-        assert!(!bounded.messages.is_empty(), "a bounded read keeps something");
+        assert!(
+            !bounded.messages.is_empty(),
+            "a bounded read keeps something"
+        );
         assert_eq!(bounded.elided_outputs, bounded.messages.len());
         // The newest message survives: the reader is looking at the bottom.
         assert_eq!(
@@ -7113,7 +7120,10 @@ mod transcript_bound_tests {
         let bounded = bound_transcript(vec![message(0, "q", &[huge.as_str()])], 1 << 20, 4096);
         let output = &bounded.messages[0].tools[0].output;
         assert!(output.starts_with(&"y".repeat(4096)));
-        assert!(output.contains("15904 bytes of output not shown"), "got: {output}");
+        assert!(
+            output.contains("15904 bytes of output not shown"),
+            "got: {output}"
+        );
         assert_eq!(bounded.elided_outputs, 1);
         assert_eq!(bounded.omitted, 0);
     }

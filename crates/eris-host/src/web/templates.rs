@@ -9350,7 +9350,7 @@ mod tests {
         // The row in force carries the check, and the check is on the row whose
         // value is the one stored.
         assert!(
-            page.contains(&format!(r#"value="day" aria-current="true">"#)),
+            page.contains(r#"value="day" aria-current="true">"#),
             "the stored order is the row marked current: {page}"
         );
         assert!(

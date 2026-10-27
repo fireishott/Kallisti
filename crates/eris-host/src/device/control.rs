@@ -967,8 +967,10 @@ mod tests {
         );
 
         // The pin is still one row, on the provider that holds it.
-        let defaults: Vec<&serde_json::Value> =
-            rows.iter().filter(|row| row["is_default"] == true).collect();
+        let defaults: Vec<&serde_json::Value> = rows
+            .iter()
+            .filter(|row| row["is_default"] == true)
+            .collect();
         assert_eq!(defaults.len(), 1, "exactly one row carries the tick");
         assert_eq!(defaults[0]["provider"], "alpha");
 

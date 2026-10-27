@@ -2383,9 +2383,9 @@ fn a_project_is_created_from_the_rail_and_files_a_conversation() {
         "the menu offers the clear as a row like any other: {body}"
     );
     assert!(
-        body.contains(&format!(
+        body.contains(
             r#"<span class="menu-name">Work</span><span class="sr-only"> (current)</span>"#
-        )),
+        ),
         "the menu marks the project the conversation is in: {body}"
     );
     assert!(
