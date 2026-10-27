@@ -1594,9 +1594,19 @@ body:has(.chat-shell) .app {
      one size and a fold lands where the operator already looks. `--fold` is the
      single number both rules read. */
   max-height: var(--fold);
-  overflow: hidden;
+  /* A fold that cannot reveal its own tail is hidden text with a promise: the
+     fade said there was more, and there was no way to reach it except opening
+     the whole window. The box scrolls instead. It is short, so the gesture
+     chains out to the transcript once it reaches its own end rather than
+     trapping it the way `contain` would. */
+  overflow-y: auto;
+  overscroll-behavior: auto;
   mask-image: linear-gradient(to bottom, var(--black) 78%, transparent 100%);
 }
+/* Once the fold has been read to its end there is nothing below it, so the fade
+   stops being true. The script adds this at the end of the box, and on load for
+   a fold that never needed to scroll. */
+.msg[data-reply-state="collapsed"] .bubble.at-end { mask-image: none; }
 /* The whole reply in the whole window. Not a fourth fold size: the reply leaves
    the column and takes the viewport, which is what a table, a long answer or a
    diff needs before it can be read at all. It is one attribute and one rule, so
@@ -3484,6 +3494,22 @@ mod tests {
         assert!(
             collapsed.contains("var(--black)"),
             "the fade is the palette's own ground, not a new colour: {collapsed}"
+        );
+        // The fold reveals its own tail. `overflow: hidden` made the last lines
+        // of an answer a promise with no way to keep it: the fade said there was
+        // more and the only door was the whole-window view.
+        assert!(
+            collapsed.contains("overflow-y: auto"),
+            "a folded answer scrolls to its own end: {collapsed}"
+        );
+        assert!(
+            !collapsed.contains("overflow: hidden"),
+            "and it is not clipped shut: {collapsed}"
+        );
+        assert!(
+            rule(".msg[data-reply-state=\"collapsed\"] .bubble.at-end")
+                .contains("mask-image: none"),
+            "the fade stops claiming there is more once the box is at its end"
         );
         // Expanded is the absence of both rules rather than a rule of its own, so
         // the shipped look cannot drift by being restated.

@@ -3188,3 +3188,53 @@ fn a_page_that_loads_mid_turn_is_told_to_attach_and_lands_at_the_bottom() {
         page.body
     );
 }
+
+#[test]
+fn a_folded_answer_can_be_scrolled_to_its_own_end() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(
+        db,
+        CONVERSATION_ID,
+        Role::User,
+        "how did it go",
+        State::Complete,
+    )
+    .unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    chat::settle(
+        db,
+        &answer,
+        "It went well, and this answer is long enough that a fold has a tail \
+         below the fade, which is the part that used to be unreachable.",
+        None,
+        &[],
+        None,
+        chat::Accounting::default(),
+    )
+    .unwrap();
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    // The fade is a statement about the scroll position, so the page has to keep
+    // it true: the class is toggled at the end of the fold, and on load for a
+    // fold short enough that it never scrolls.
+    assert!(
+        page.body.contains("function markFoldEnd("),
+        "the page knows where a fold ends: {}",
+        page.body
+    );
+    assert!(
+        page.body.contains("classList.toggle(\"at-end\""),
+        "and toggles the fade off at the end: {}",
+        page.body
+    );
+    assert!(
+        page.body.contains(".bubble"),
+        "the wiring looks at every bubble on the page: {}",
+        page.body
+    );
+}

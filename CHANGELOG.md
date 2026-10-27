@@ -125,6 +125,13 @@ observe; commit history carries the detail.
   on a real 98-turn transcript the message wanted 893 and was given 432. A
   message is now as tall as what it holds, and the ceilings inside it are the
   ones stated on the scrollers themselves. `build 116`.
+- **A folded answer can be read to its last line.** The fold was clipped shut:
+  the fade at its bottom edge said there was more, and the only way to reach it
+  was the whole-window view. A collapsed answer now scrolls inside its own 320px
+  ceiling and chains out to the transcript when it reaches its end rather than
+  trapping the gesture. The fade tracks the scroll position instead of the state,
+  so it stops claiming there is more once the box is at its end, and a fold short
+  enough to fit never wears it at all. `build 117`.
 
 ## 1.4.9
 

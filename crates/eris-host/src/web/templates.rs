@@ -6646,7 +6646,18 @@ const CHAT_JS: &str = r##"(function () {
       var peek = article.querySelector(".reply-peek");
       if (present(peek)) { peek.textContent = replyPeekText(article); }
     }
+    markFoldEnd(article.querySelector(".bubble"));
     return state;
+  }
+
+  // The fade on a folded answer says "there is more below". Once the fold has
+  // been scrolled to its end that sentence is false, and a permanently dimmed
+  // last line reads as more text that is still cut off. So the fade tracks the
+  // scroll position instead of the state.
+  function markFoldEnd(bubble) {
+    if (present(bubble) === false) { return; }
+    var atEnd = bubble.scrollTop + bubble.clientHeight >= bubble.scrollHeight - 2;
+    bubble.classList.toggle("at-end", atEnd);
   }
 
   // A reply that has finished takes the operator's choice for that reply, then
@@ -6671,6 +6682,17 @@ const CHAT_JS: &str = r##"(function () {
     // the composer guard below with the run log's controls.
     var replyBar = document.querySelector(".replyctl");
     if (present(replyBar)) { replyBar.hidden = false; }
+
+    // A folded answer scrolls inside its own ceiling. The fade at its bottom
+    // edge is the statement that more follows, so it has to stop saying that
+    // once the box is at its end, and start saying it again on the way back up.
+    var folds = thread.querySelectorAll('.bubble');
+    for (var foldIndex = 0; foldIndex < folds.length; foldIndex += 1) {
+      (function (bubble) {
+        markFoldEnd(bubble);
+        bubble.addEventListener("scroll", function () { markFoldEnd(bubble); }, { passive: true });
+      })(folds[foldIndex]);
+    }
 
     thread.addEventListener("click", function (event) {
       var cycle = event.target.closest("[data-reply-cycle]");
