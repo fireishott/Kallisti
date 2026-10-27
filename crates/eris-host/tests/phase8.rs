@@ -2958,15 +2958,19 @@ async fn settings_require_a_bearer_and_the_admin_scope() {
         .map(String::as_str)
         .collect();
     keys.sort_unstable();
-    // The seven fields a client read before build 111, plus the three the
-    // capability record added. Section 7.5 of the read-first file is this list,
-    // and a field that is not in that section is a wire shape that drifted.
+    // The seven fields a client read before build 111, the three the capability
+    // record added, and the full-access switch. Section 7.5 of the read-first
+    // file is this list, and a field that is not in that section is a wire shape
+    // that drifted. The switch is separate from `capabilities` on purpose: it is
+    // not a plain setting, because enabling it needs the word typed and turning
+    // it off demotes a `full` sandbox.
     assert_eq!(
         keys,
         vec![
             "approval",
             "capabilities",
             "clock_format",
+            "full_access",
             "memory",
             "model",
             "ok",

@@ -2690,6 +2690,13 @@ fn read_settings(service: &DeviceService) -> Result<serde_json::Value, DeviceErr
     let scope = crate::push::notify_scope(stored(crate::push::SETTING_NOTIFY_SCOPE)?.as_deref());
     let devices =
         crate::push::notify_devices(stored(crate::push::SETTING_NOTIFY_DEVICES)?.as_deref());
+    // The switch that decides whether `full` is a sandbox a save may pick. It is
+    // not in the capability record because it is not a plain setting: turning it
+    // on needs the word typed, and disabling it demotes the mode with it.
+    let full_access = matches!(
+        stored(crate::onboarding::SETTING_ALLOW_FULL),
+        Ok(Some(ref value)) if value.trim().eq_ignore_ascii_case("true")
+    );
     // The seven fields a client already reads, unchanged in shape and in order,
     // plus the three the settings record needs: the clock shape, the push routing,
     // and the capability list itself.
@@ -2703,6 +2710,7 @@ fn read_settings(service: &DeviceService) -> Result<serde_json::Value, DeviceErr
         "approval": permissions.approval_policy.as_str(),
         "timezone": timezone.as_str(),
         "clock_format": clock.as_str(),
+        "full_access": full_access,
         "push": {
             "notify_on_reply": notify_on_reply,
             "scope": scope.as_str(),
@@ -4017,6 +4025,112 @@ fn backup_error(error: &crate::backup::BackupError) -> DeviceError {
 
 /// `POST /v1/devices/{id}/code` - mint one pairing code for that device.
 ///
+/// `POST /v1/settings/full-access` - turn the full-host switch on or off.
+///
+/// The same three rules the dashboard's switch has had since it existed, because
+/// a phone is not a weaker operator:
+///
+/// 1. Enabling needs the word typed. It is the one switch that can hand a turn
+///    the whole host, and a confirmation dialog is a click, not a decision.
+/// 2. Disabling needs nothing. A refusal should cost one tap, not a ritual.
+/// 3. Turning it off demotes a `full` sandbox to the default. Leaving the mode
+///    selected while the switch that allowed it is off would store a tuple the
+///    next save refuses, so the record would disagree with its own rule.
+///
+/// The intent is explicit (`enable=on|off`) rather than "flip whatever is
+/// stored": a client showing a switch has already decided which way it is
+/// pointing, and a route that infers it turns a duplicate tap into the opposite
+/// of what was asked.
+pub async fn set_full_access(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let engine = service.engine();
+    let enabled = match field(&fields, "enable").to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => true,
+        "off" | "false" | "no" | "0" | "" => false,
+        other => {
+            return DeviceError::bad_request(
+                "enable_invalid",
+                format!("`{other}` is not a switch position: send on or off"),
+            )
+            .into_response();
+        }
+    };
+
+    if enabled {
+        // The typed word is the guard, exactly as it is in the browser.
+        if !field(&fields, "confirm").trim().eq_ignore_ascii_case("full") {
+            return DeviceError::bad_request(
+                "confirm_required",
+                "type full to enable full host access; nothing was changed",
+            )
+            .into_response();
+        }
+        if let Err(error) = engine.set_setting(crate::onboarding::SETTING_ALLOW_FULL, "true") {
+            return DeviceError::db_unavailable(format!(
+                "cannot write the full-access setting: {error}"
+            ))
+            .into_response();
+        }
+    } else {
+        if let Err(error) = engine.set_setting(crate::onboarding::SETTING_ALLOW_FULL, "false") {
+            return DeviceError::db_unavailable(format!(
+                "cannot write the full-access setting: {error}"
+            ))
+            .into_response();
+        }
+        if let Ok(mut permissions) = engine.permissions()
+            && permissions.sandbox_mode == crate::onboarding::SandboxMode::Full
+        {
+            permissions.sandbox_mode = crate::onboarding::SandboxMode::DEFAULT;
+            if let Err(error) = engine.set_permissions(permissions) {
+                return DeviceError::db_unavailable(format!(
+                    "cannot demote the sandbox away from full: {error}"
+                ))
+                .into_response();
+            }
+        }
+    }
+
+    let detail = if enabled { "full host on" } else { "full host off" };
+    if let Err(error) = engine
+        .auth()
+        .audit(token.device_id(), "settings.full_access", Some(detail))
+    {
+        return DeviceError::db_unavailable(format!(
+            "cannot append the settings.full_access audit row: {error}"
+        ))
+        .into_response();
+    }
+
+    // The answer states the result rather than echoing the request: a client
+    // showing a switch needs to know where it now points, including the sandbox
+    // that disabling just demoted.
+    let sandbox = engine
+        .permissions()
+        .map(|permissions| permissions.sandbox_mode.as_str().to_owned())
+        .unwrap_or_default();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "full_access": enabled,
+        "sandbox": sandbox,
+    }))
+    .into_response()
+}
+
 /// This exists so a second device is onboarded from a phone that is already
 /// paired, without reaching for a browser on the host. It is the same mint the
 /// devices page performs: [`PairingService::issue_for_device_asking`] with the
@@ -5655,6 +5769,93 @@ mod tests {
             .expect("body");
         let value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, value)
+    }
+
+    /// The full-host switch is the one setting a phone could pick and never
+    /// set: `sandbox=full` is refused until this is on, and the route to turn it
+    /// on existed only on the dashboard. Same three rules as the dashboard's
+    /// switch, so a phone is not a weaker operator.
+    #[tokio::test]
+    async fn full_access_needs_the_word_and_demotes_the_sandbox_when_switched_off() {
+        let fx = fixture();
+
+        // A device paired without administration cannot flip it at all.
+        let (status, _) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings/full-access",
+            &fx.chat,
+            r#"{"enable":"on","confirm":"full"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // Enabling without the word changes nothing and says what to do.
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings/full-access",
+            &fx.admin,
+            r#"{"enable":"on"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "confirm_required");
+
+        // ... and the switch really is still off, rather than off in the answer
+        // and on in the row.
+        let (_, settings) = send(&fx.service, "GET", "/v1/settings", &fx.admin, "").await;
+        assert_eq!(settings["full_access"], false, "{settings}");
+
+        // With the word, it turns on and the answer states the result.
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings/full-access",
+            &fx.admin,
+            r#"{"enable":"on","confirm":"FULL"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["full_access"], true);
+        let (_, settings) = send(&fx.service, "GET", "/v1/settings", &fx.admin, "").await;
+        assert_eq!(settings["full_access"], true);
+
+        // A stored `full` sandbox is what switching it off has to demote: the
+        // tuple would otherwise name a mode the switch no longer allows.
+        let mut permissions = fx.service.engine().permissions().expect("permissions");
+        permissions.sandbox_mode = crate::onboarding::SandboxMode::Full;
+        fx.service
+            .engine()
+            .set_permissions(permissions)
+            .expect("stored permissions");
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings/full-access",
+            &fx.admin,
+            r#"{"enable":"off"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["full_access"], false);
+        assert_ne!(
+            body["sandbox"], "full",
+            "turning the switch off demotes the mode it allowed: {body}"
+        );
+
+        // A position nobody can read is refused rather than guessed at.
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings/full-access",
+            &fx.admin,
+            r#"{"enable":"maybe"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "enable_invalid");
     }
 
     #[tokio::test]

@@ -286,6 +286,17 @@ pub const ROUTE_BACKUP_RESTORE: &str = "/v1/backups/{name}/restore";
 /// exactly once: in that response.
 pub const ROUTE_DEVICE_CODE: &str = "/v1/devices/{id}/code";
 
+/// `POST /v1/settings/full-access` - the operator's own switch for full host
+/// access, from the device that is allowed to flip it.
+///
+/// The dashboard has had this switch since it had an operator; the phone could
+/// reach every other setting and not this one, so `sandbox=full` was a value a
+/// phone could pick and never set - the write is refused until this switch is on.
+/// The same guard applies here: enabling needs the typed word, disabling needs
+/// nothing, and turning it off demotes a `full` sandbox rather than leaving a
+/// stored mode that disagrees with the switch that allowed it.
+pub const ROUTE_FULL_ACCESS: &str = "/v1/settings/full-access";
+
 /// `POST /v1/device/sensor/location` - record one location point.
 pub const ROUTE_SENSOR_LOCATION: &str = "/v1/device/sensor/location";
 
@@ -1035,6 +1046,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_DEVICES, get(handlers::devices))
         .route(ROUTE_DEVICE_REVOKE, post(handlers::revoke_device))
         .route(ROUTE_DEVICE_CODE, post(handlers::mint_device_code))
+        .route(ROUTE_FULL_ACCESS, post(handlers::set_full_access))
         .route(ROUTE_AUDIT, get(handlers::audit))
         .route(
             ROUTE_BACKUPS,
@@ -1220,6 +1232,7 @@ mod tests {
             ROUTE_CONVERSATION,
             ROUTE_CONVERSATION_CLEAR,
             ROUTE_SETTINGS,
+            ROUTE_FULL_ACCESS,
             ROUTE_APPROVALS,
             ROUTE_APPROVAL_DECIDE,
             ROUTE_MCP,
