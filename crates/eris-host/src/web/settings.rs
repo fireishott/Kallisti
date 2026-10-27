@@ -35,6 +35,15 @@ const GREETING_POST: &str = "/dashboard/settings/greeting";
 const WORKSPACE_POST: &str = "/dashboard/settings/workspace";
 const PERMISSIONS_POST: &str = "/dashboard/settings/permissions";
 
+/// The path of one settings tab.
+///
+/// The page is six tabs now, so a test that asserts on a card has to name the tab
+/// that holds it. Spelling the query here rather than in every test means a test
+/// says which tab it means and the route stays one place.
+fn settings_tab_path(tab: &str) -> String {
+    format!("{ROUTE_SETTINGS}?tab={tab}")
+}
+
 /// A provider form body, with the reference spelled the way the rule requires.
 fn provider_body(base_url: &str, key_ref: &str, model: &str) -> String {
     // `model_selection` is sent empty so the typed-model fallback path is what
@@ -66,12 +75,22 @@ fn the_settings_page_renders_current_values() {
 
     let reply = block_on(send(
         &app,
-        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+        Call::get_owned(settings_tab_path("models"))
+            .html()
+            .cookie(Some(&cookie)),
     ));
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    let page = &reply.body;
 
-    // The three forms, each posting to its own route.
+    // The three forms, each posting to its own route. Provider lives on Models
+    // and workspace and permissions on System, so both tabs are read here.
+    let system = block_on(send(
+        &app,
+        Call::get_owned(settings_tab_path("system"))
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(system.status, StatusCode::OK, "{}", system.body);
+    let page = &format!("{}{}", reply.body, system.body);
     for action in [PROVIDER_POST, WORKSPACE_POST, PERMISSIONS_POST] {
         assert!(
             page.contains(&format!(r#"action="{action}""#)),
@@ -125,13 +144,22 @@ fn the_settings_page_renders_current_values() {
             "the {name} radio for {value} has no label: {page}"
         );
     }
-    // Six groups carry a live region: provider, accounts, workspace,
-    // permissions, persona and greeting. The page level region plus one per
-    // group is seven. Schedules and skills render no region of their own.
+    // Every form has its own live region, and each tab carries only its own:
+    // the page level region, plus provider and accounts on Models, plus
+    // workspace and permissions on System. Schedules, skills, tools and the
+    // auxiliary roles render none of their own, which is exactly why this
+    // count is per tab rather than for a page that no longer holds every card.
     assert_eq!(
-        page.matches(r#"aria-live="polite""#).count(),
-        7,
-        "one page level region plus one per form: {page}"
+        reply.body.matches(r#"aria-live="polite""#).count(),
+        3,
+        "the Models tab carries the page region and two forms: {}",
+        reply.body
+    );
+    assert_eq!(
+        system.body.matches(r#"aria-live="polite""#).count(),
+        3,
+        "the System tab carries the page region and two forms: {}",
+        system.body
     );
 
     // The read-only rows, with their consequences.
@@ -581,10 +609,13 @@ fn full_sandbox_is_refused_without_allow_full() {
     drop(dir);
 
     // And `full` is only offered as a control when the flag is set: the page for
-    // a process without it renders the option disabled.
+    // a process without it renders the option disabled. The permission table and
+    // the full-access card are both on the System tab.
     let page = block_on(send(
         &app,
-        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+        Call::get_owned(settings_tab_path("system"))
+            .html()
+            .cookie(Some(&cookie)),
     ));
     assert_eq!(page.status, StatusCode::OK);
     assert!(
@@ -966,7 +997,9 @@ fn the_push_scope_stores_the_comma_separated_shape_the_daemon_reads() {
 
     let page = block_on(send(
         &app,
-        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+        Call::get_owned(settings_tab_path("devices"))
+            .html()
+            .cookie(Some(&cookie)),
     ));
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(
@@ -1062,7 +1095,9 @@ fn the_push_scope_stores_the_comma_separated_shape_the_daemon_reads() {
     // The page comes back with the choice on it.
     let after = block_on(send(
         &app,
-        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+        Call::get_owned(settings_tab_path("devices"))
+            .html()
+            .cookie(Some(&cookie)),
     ));
     assert!(
         after.body.contains(r#"value="targeted" checked"#),
@@ -1312,4 +1347,648 @@ fn an_unknown_greeting_model_is_refused_by_field() {
     assert_eq!(body["ok"], false);
     assert_eq!(body["field"], "greeting_model");
     assert_eq!(body["code"], "greeting_model_unknown");
+}
+
+// ---------------------------------------------------------------------------
+// The provider form
+// ---------------------------------------------------------------------------
+
+/// A provider form body, field by field, so a test names the one it varies.
+fn provider_form_body(id: &str, name: &str, base_url: &str, key_ref: &str) -> String {
+    format!(
+        "provider_id={}&provider_name={}&provider_base_url={}&provider_key_ref={}",
+        encode(id),
+        encode(name),
+        encode(base_url),
+        encode(key_ref)
+    )
+}
+
+/// The registry as the daemon reads it, including the fallback.
+///
+/// A daemon that has never had the registry row written still has one endpoint:
+/// [`crate::web::chat::provider_registry`] seeds it from the legacy provider
+/// rows. Reading the raw row instead would report an empty registry that no turn
+/// would agree with, so this reads it the way a turn does.
+fn registry_rows(engine: &crate::onboarding::SetupEngine) -> Vec<crate::providers::Provider> {
+    crate::web::chat::provider_registry(engine).expect("the registry reads")
+}
+
+/// The provider form adds, edits and deletes one entry at a time, and the
+/// registry is one document the whole way through.
+///
+/// The endpoint is a closed loopback port on purpose: adding a provider probes
+/// it, and a probe against a port nothing listens on fails fast instead of
+/// asking a real endpoint what it serves. The probe is not what this test is
+/// about - the stored document is.
+#[test]
+fn the_provider_form_adds_edits_and_deletes_one_entry() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    // A fresh daemon has one entry, seeded from the legacy provider rows. It is
+    // the primary, because `providers.primary` names nothing else.
+    let start = registry_rows(&engine);
+    assert_eq!(start.len(), 1, "the legacy seed is one entry");
+    assert_eq!(start[0].id, crate::providers::DEFAULT_ID);
+
+    // Add.
+    let added = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PROVIDERS_ADD,
+            &provider_form_body("alpha", "Alpha", "http://127.0.0.1:1/v1", "env:ALPHA_KEY"),
+        )
+        .html()
+        .cookie(cookie),
+    ));
+    assert_eq!(
+        added.status,
+        StatusCode::SEE_OTHER,
+        "an add redirects: {}",
+        added.body
+    );
+    assert!(
+        added
+            .location()
+            .unwrap_or_default()
+            .contains("saved=providers"),
+        "the redirect returns to the tab that holds the table"
+    );
+
+    let after_add = registry_rows(&engine);
+    assert_eq!(after_add.len(), 2, "one entry was added");
+    let alpha = after_add
+        .iter()
+        .find(|entry| entry.id == "alpha")
+        .expect("the new entry is in the registry");
+    assert_eq!(alpha.name, "Alpha");
+    assert_eq!(alpha.base_url, "http://127.0.0.1:1/v1");
+    assert_eq!(alpha.key_ref, "env:ALPHA_KEY");
+    // The legacy entry is untouched, so an add never rewrites its neighbours.
+    assert!(
+        after_add
+            .iter()
+            .any(|entry| entry.id == crate::providers::DEFAULT_ID),
+        "the existing entry survives an add"
+    );
+
+    // Edit. The id identifies the entry and is not the thing that changes.
+    let edited = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PROVIDERS_EDIT,
+            &format!(
+                "{}&provider_dialect=messages",
+                provider_form_body(
+                    "alpha",
+                    "Alpha renamed",
+                    "http://127.0.0.1:2/v1",
+                    "env:ALPHA_KEY",
+                )
+            ),
+        )
+        .html()
+        .cookie(cookie),
+    ));
+    assert_eq!(
+        edited.status,
+        StatusCode::SEE_OTHER,
+        "an edit redirects: {}",
+        edited.body
+    );
+    let after_edit = registry_rows(&engine);
+    assert_eq!(after_edit.len(), 2, "an edit added nothing");
+    let alpha = after_edit
+        .iter()
+        .find(|entry| entry.id == "alpha")
+        .expect("still there");
+    assert_eq!(
+        alpha.name, "Alpha renamed",
+        "the name an operator reads moved"
+    );
+    assert_eq!(
+        alpha.base_url, "http://127.0.0.1:2/v1",
+        "the endpoint moved"
+    );
+    assert_eq!(
+        alpha.dialect.as_deref(),
+        Some("messages"),
+        "the dialect moved"
+    );
+
+    // The page shows the row and the form, and the raw editor agrees with both.
+    let page = block_on(send(
+        &app,
+        Call::get_owned(settings_tab_path("models"))
+            .html()
+            .cookie(cookie),
+    ));
+    assert_eq!(page.status, StatusCode::OK);
+    for needle in [
+        r#"id="provider-row-alpha""#,
+        "Alpha renamed",
+        "http://127.0.0.1:2/v1",
+        "env:ALPHA_KEY",
+        r#"action="/dashboard/settings/providers/delete""#,
+        "Advanced: edit the registry as JSON",
+    ] {
+        assert!(page.body.contains(needle), "the table shows {needle}");
+    }
+
+    // Delete.
+    let deleted = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PROVIDERS_DELETE,
+            "provider_id=alpha",
+        )
+        .html()
+        .cookie(cookie),
+    ));
+    assert_eq!(
+        deleted.status,
+        StatusCode::SEE_OTHER,
+        "a delete redirects: {}",
+        deleted.body
+    );
+    let after_delete = registry_rows(&engine);
+    assert_eq!(after_delete.len(), 1, "one entry was removed");
+    assert!(
+        !after_delete.iter().any(|entry| entry.id == "alpha"),
+        "the named entry is gone"
+    );
+}
+
+/// Every way a provider form can be wrong is refused by the field that is wrong,
+/// and the stored document is not touched.
+#[test]
+fn a_bad_provider_is_refused_by_field_and_nothing_is_written() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    // One entry exists so a duplicate can be attempted against it.
+    let added = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PROVIDERS_ADD,
+            &provider_form_body("alpha", "Alpha", "http://127.0.0.1:1/v1", "env:A"),
+        )
+        .html()
+        .cookie(cookie),
+    ));
+    assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
+    let before = crate::web::store::settings_get(engine.db(), crate::providers::SETTING_REGISTRY)
+        .expect("read");
+
+    // The field, the case, and why each one is wrong.
+    let cases: Vec<(&'static str, String, &'static str)> = vec![
+        (
+            "provider_id",
+            provider_form_body("alpha", "Again", "http://127.0.0.1:3/v1", "env:B"),
+            "a duplicate id would make every auxiliary role ambiguous",
+        ),
+        (
+            "provider_id",
+            provider_form_body("Alpha", "Caps", "http://127.0.0.1:3/v1", "env:B"),
+            "an id is lowercase letters, digits, hyphen and underscore",
+        ),
+        (
+            "provider_name",
+            provider_form_body("beta", "", "http://127.0.0.1:3/v1", "env:B"),
+            "every entry needs a name",
+        ),
+        (
+            "provider_base_url",
+            provider_form_body("beta", "Beta", "ftp://x/v1", "env:B"),
+            "an endpoint starts http:// or https://",
+        ),
+        (
+            "provider_base_url",
+            provider_form_body("beta", "Beta", "http://x /v1", "env:B"),
+            "an endpoint with a space in it is not an endpoint",
+        ),
+        (
+            "provider_key_ref",
+            provider_form_body(
+                "beta",
+                "Beta",
+                "http://127.0.0.1:3/v1",
+                "sk-live-1234567890",
+            ),
+            "a pasted key value is never accepted",
+        ),
+        (
+            "provider_key_ref",
+            provider_form_body("beta", "Beta", "http://127.0.0.1:3/v1", "env:lower_case"),
+            "a reference names an upper-case variable",
+        ),
+    ];
+
+    for (field, body, why) in cases {
+        let refused = block_on(send(
+            &app,
+            Call::post(crate::admin::ROUTE_SETTINGS_PROVIDERS_ADD, &body)
+                .html()
+                .cookie(cookie),
+        ));
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{why}: {}",
+            refused.body
+        );
+        assert!(
+            refused.body.contains(field),
+            "the refusal names {field} ({why}): {}",
+            refused.body
+        );
+        assert_eq!(
+            crate::web::store::settings_get(engine.db(), crate::providers::SETTING_REGISTRY)
+                .expect("read"),
+            before,
+            "a refusal writes nothing ({why})"
+        );
+    }
+}
+
+/// The primary cannot be deleted, and the refusal says what to do instead.
+///
+/// Moving the primary is a decision about which endpoint every turn is sent to.
+/// A delete button does not get to make that decision silently, so the route
+/// refuses and names the field.
+#[test]
+fn the_primary_provider_cannot_be_deleted() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+    block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PROVIDERS_ADD,
+            &provider_form_body("alpha", "Alpha", "http://127.0.0.1:1/v1", "env:A"),
+        )
+        .html()
+        .cookie(cookie),
+    ));
+    let before = crate::web::store::settings_get(engine.db(), crate::providers::SETTING_REGISTRY)
+        .expect("read");
+
+    let refused = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PROVIDERS_DELETE,
+            &format!("provider_id={}", crate::providers::DEFAULT_ID),
+        )
+        .html()
+        .cookie(cookie),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    for needle in [
+        "provider_id",
+        "primary provider",
+        "move the primary to another entry first",
+    ] {
+        assert!(
+            refused.body.contains(needle),
+            "the refusal says {needle}: {}",
+            refused.body
+        );
+    }
+    assert_eq!(
+        crate::web::store::settings_get(engine.db(), crate::providers::SETTING_REGISTRY)
+            .expect("read"),
+        before,
+        "the registry is untouched by a refused delete"
+    );
+
+    // An id that does not exist is refused too, rather than deleting nothing
+    // quietly and reporting success.
+    let unknown = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PROVIDERS_DELETE,
+            "provider_id=nobody",
+        )
+        .html()
+        .cookie(cookie),
+    ));
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST, "{}", unknown.body);
+    assert!(unknown.body.contains("there is no provider with the id"));
+}
+
+// ---------------------------------------------------------------------------
+// The parity check
+// ---------------------------------------------------------------------------
+
+/// Every writable capability, the settings row it writes, and the web control
+/// that writes it.
+///
+/// The record's `key` is the device API's field name and the web form's `name`
+/// is the form's own; they are not the same string and were never meant to be.
+/// What has to match is the **row**: two clients writing different spellings of
+/// one preference is the drift that makes a phone and a browser disagree. So the
+/// mapping is by row, and the control is checked by the name the page renders.
+const WEB_CONTROLS: &[(&str, &str)] = &[
+    // (the settings row, the form field the web page renders)
+    (crate::onboarding::SETTING_MODEL, "model"),
+    (crate::tools::SETTING_TOOLS_ENABLED, "tools_enabled"),
+    (crate::tools::SETTING_TOOL_ROUNDS, "tool_rounds"),
+    (crate::subagents::SETTING_AGENTS_ENABLED, "agents_enabled"),
+    (crate::persona::SETTING_ASSISTANT_NAME, "assistant_name"),
+    (crate::persona::SETTING_PERSONA_ENABLED, "persona_enabled"),
+    (crate::web::chat::SETTING_SHOW_REASONING, "show_reasoning"),
+    (crate::web::chat::SETTING_SHOW_TOOL_LOG, "tool_log"),
+    (crate::web::chat::SETTING_STREAMING, "stream_responses"),
+    (crate::web::quota::SETTING_SHOW_QUOTA, "show_quota"),
+    (crate::web::chat::SETTING_REPLY_STATE, "reply_state"),
+    (
+        crate::greeting::SETTING_GREETING_ENABLED,
+        "greeting_enabled",
+    ),
+    (
+        crate::greeting::SETTING_GREETING_REFRESH,
+        "greeting_refresh",
+    ),
+    (crate::memory::SETTING_BACKEND, "memory_backend"),
+    (crate::push::SETTING_NOTIFY_ON_REPLY, "notify_on_reply"),
+    (crate::push::SETTING_NOTIFY_SCOPE, "notify_scope"),
+    (crate::push::SETTING_NOTIFY_DEVICES, "notify_devices"),
+    (crate::scheduler::SETTING_ENABLED, "schedules_enabled"),
+    (crate::skills::SETTING_ENABLED, "skills_enabled"),
+    (crate::onboarding::SETTING_SANDBOX_MODE, "sandbox_mode"),
+    (
+        crate::onboarding::SETTING_APPROVAL_POLICY,
+        "approval_policy",
+    ),
+    (crate::zone::SETTING_TIMEZONE, "timezone"),
+    (crate::zone::SETTING_CLOCK_FORMAT, "clock_format"),
+    // The rail owns this one: the control sits beside the conversation list, not
+    // in the settings page, because that is where the order is being changed.
+    (crate::web::chat::SETTING_CONVERSATION_SORT, "sort"),
+];
+
+/// The capability record and the web page cover the same settings.
+///
+/// Three claims:
+///
+/// - every **writable** capability's row is written by a web control, so a
+///   field a phone can change is a field a browser can change;
+/// - every control in the mapping belongs to a capability, so the page does not
+///   write a row the record never mentions;
+/// - the one read-only capability is read-only for a reason, and says so.
+#[test]
+fn every_writable_capability_has_a_web_control_on_the_same_row() {
+    use crate::device::handlers::SETTING_SPECS;
+
+    let (_dir, engine, app, cookie) = ready_app();
+    // The targeted-device picker only exists once there is a device to pick: a
+    // list of checkboxes with nothing in it is not a control. So the fixture
+    // pairs one, which is what an operator would have done before reaching this
+    // form.
+    super::harness::seed_device(engine.db(), "dev-a", "iPhone", "ios", None, None, None);
+    super::harness::seed_redeemed_code(engine.db(), "dev-a");
+
+    // Every tab, concatenated: the controls are spread across five of the six,
+    // and the rail control is on the chat page rather than in settings at all.
+    let mut markup = String::new();
+    for tab in crate::web::templates::SettingsTab::ALL {
+        let page = block_on(send(
+            &app,
+            Call::get_owned(settings_tab_path(tab.id()))
+                .html()
+                .cookie(Some(&cookie)),
+        ));
+        assert_eq!(page.status, StatusCode::OK, "tab {}", tab.id());
+        markup.push_str(&page.body);
+    }
+    let chat = block_on(send(
+        &app,
+        Call::get(crate::admin::ROUTE_CHAT)
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(chat.status, StatusCode::OK);
+    markup.push_str(&chat.body);
+
+    let _ = engine;
+    let control_for = |row: &str| {
+        WEB_CONTROLS
+            .iter()
+            .find(|(mapped, _)| *mapped == row)
+            .map(|(_, field)| *field)
+    };
+
+    let mut writable = 0usize;
+    for spec in SETTING_SPECS {
+        if spec.writable {
+            writable += 1;
+            let field = control_for(spec.row).unwrap_or_else(|| {
+                panic!(
+                    "the record offers `{}` (row {}) as writable and no web control writes that \
+                     row; add one, or mark the capability not writable and say why",
+                    spec.key, spec.row
+                )
+            });
+            assert!(
+                markup.contains(&format!(r#"name="{field}""#)),
+                "the control for `{}` is not rendered anywhere: expected name=\"{field}\"",
+                spec.key
+            );
+        } else {
+            // Read-only on purpose: the workspace is moved by the wizard, which
+            // checks the path against the reserved roots. A free-text box here
+            // would be a second, weaker rule for the same decision.
+            assert_eq!(
+                spec.key, "workspace_path",
+                "`{}` is not writable and this test does not know why",
+                spec.key
+            );
+        }
+    }
+    assert!(writable >= 20, "the record is the field list: {writable}");
+
+    // And nothing in the mapping is invented: every row it names belongs to a
+    // capability, so the page cannot write a setting the record does not state.
+    for (row, field) in WEB_CONTROLS {
+        assert!(
+            SETTING_SPECS.iter().any(|spec| spec.row == *row),
+            "the web control `{field}` writes the row `{row}`, which is not a capability"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The rail order
+// ---------------------------------------------------------------------------
+
+/// Four conversations, each with its own created and updated stamps.
+fn sortable_rail(engine: &crate::onboarding::SetupEngine) {
+    let insert = |id: &str, title: &str, created: &str, updated: &str| {
+        engine
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO chat_conversations (id, title, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![id, title, created, updated],
+                )?;
+                Ok(())
+            })
+            .expect("insert");
+    };
+    insert(
+        "beta",
+        "beta work",
+        "2026-10-20T09:00:00Z",
+        "2026-10-26T09:00:00Z",
+    );
+    insert(
+        "alpha",
+        "Alpha notes",
+        "2026-10-26T08:00:00Z",
+        "2026-10-24T09:00:00Z",
+    );
+    insert(
+        "delta",
+        "delta ideas",
+        "2026-10-21T09:00:00Z",
+        "2026-10-25T09:00:00Z",
+    );
+    insert(
+        "gamma",
+        "Gamma plan",
+        "2026-10-22T09:00:00Z",
+        "2026-10-23T09:00:00Z",
+    );
+}
+
+/// The ids the rail reports, in the order it reports them.
+fn rail_order(app: &axum::Router, cookie: &str) -> Vec<String> {
+    let rail = block_on(send(
+        app,
+        Call::get(crate::admin::ROUTE_CHAT_SESSIONS).cookie(Some(cookie)),
+    ));
+    assert_eq!(rail.status, StatusCode::OK, "{}", rail.body);
+    let body = rail.json();
+    body["sessions"]
+        .as_array()
+        .expect("the rail is a list")
+        .iter()
+        .map(|row| row["id"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// The rail's order is a stored setting, written from the rail itself.
+///
+/// The whole point of storing it rather than passing it is the page's own live
+/// refresh: it fetches `sessions.json` with no parameters at all, so the order
+/// has to come back from the database or the rail re-sorts itself after every
+/// turn.
+#[test]
+fn the_rail_order_is_a_setting_the_rail_itself_writes() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    sortable_rail(&engine);
+    // The suite's own fixture conversation is in the table too and is not part of
+    // the four; it is empty and stamped at seed time, so it is first by `updated`
+    // unless the fixture says otherwise. Pinning its stamps keeps the assertion
+    // about the four below it rather than about when the suite ran.
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_conversations SET created_at = '2026-10-19T09:00:00Z', \
+             updated_at = '2026-10-19T09:00:00Z' WHERE title = ?1",
+            rusqlite::params![crate::web::chat::NEW_CONVERSATION_TITLE],
+        )?;
+        Ok(())
+    })
+    .expect("stamp the fixture");
+    let fixture = crate::web::chat::CONVERSATION_ID.to_owned();
+
+    let read = || {
+        crate::web::store::settings_get(db, crate::web::chat::SETTING_CONVERSATION_SORT)
+            .expect("read")
+            .unwrap_or_default()
+    };
+    assert_eq!(read(), "", "the order is the default until it is chosen");
+
+    // The default is the order the rail already had: recently used.
+    assert_eq!(
+        rail_order(&app, &cookie),
+        vec!["beta", "delta", "alpha", "gamma", &fixture]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    );
+
+    // Each of the four modes, posted from the rail and read back from the rail.
+    // `main` is the suite's own fixture conversation and sits behind the four
+    // under every order, so each list below is about the four above it.
+    let cases: [(&str, Vec<&str>); 4] = [
+        ("updated", vec!["beta", "delta", "alpha", "gamma", &fixture]),
+        ("created", vec!["alpha", "gamma", "delta", "beta", &fixture]),
+        ("title", vec!["alpha", "beta", "delta", "gamma", &fixture]),
+        // `day` is the recently-used order; what changes is the grouping.
+        ("day", vec!["beta", "delta", "alpha", "gamma", &fixture]),
+    ];
+    for (sort, order) in cases {
+        let reply = block_on(send(
+            &app,
+            Call::post(crate::admin::ROUTE_CHAT_SORT, &format!("sort={sort}"))
+                .html()
+                .cookie(Some(&cookie)),
+        ));
+        assert_eq!(
+            reply.status,
+            StatusCode::SEE_OTHER,
+            "choosing {sort} redirects back to the rail: {}",
+            reply.body
+        );
+        assert_eq!(read(), sort, "the choice is the stored setting");
+        assert_eq!(
+            rail_order(&app, &cookie),
+            order.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+            "the rail reads back in the {sort} order"
+        );
+
+        // The control states the choice on the next page, so a reload of the same
+        // address bar says what the rail just did.
+        let page = block_on(send(
+            &app,
+            Call::get(crate::admin::ROUTE_CHAT)
+                .html()
+                .cookie(Some(&cookie)),
+        ));
+        assert_eq!(page.status, StatusCode::OK);
+        let label = crate::web::chat::ConversationSort::parse(Some(sort)).label();
+        assert!(
+            page.body.contains(label),
+            "the rail control shows {label}: {}",
+            page.body
+        );
+        assert!(
+            page.body
+                .contains(&format!(r#"option value="{sort}" selected"#)),
+            "the select has {sort} selected"
+        );
+    }
+
+    // A mode the enum does not hold is refused by field, and the stored order is
+    // what it was: a typo must not read as a choice.
+    let refused = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_CHAT_SORT, "sort=sideways")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(refused.body.contains("sort"), "{}", refused.body);
+    assert_eq!(read(), "day", "the stored order survives a refused write");
+
+    // The write is audited, because "why did my rail reorder itself" is a
+    // question somebody asks later.
+    let rows = super::harness::audit_rows(db);
+    assert!(
+        rows.iter().any(|row| row.action == "chat.sort"),
+        "the choice leaves an audit row"
+    );
 }

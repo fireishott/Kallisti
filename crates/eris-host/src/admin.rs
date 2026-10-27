@@ -193,6 +193,26 @@ pub const ROUTE_SETTINGS_PROVIDERS: &str = "/dashboard/settings/providers";
 /// `POST /dashboard/settings/providers/probe` - re-probe every configured provider now.
 pub const ROUTE_SETTINGS_PROVIDERS_PROBE: &str = "/dashboard/settings/providers/probe";
 
+/// `POST /dashboard/settings/providers/add` - add one provider to the registry.
+///
+/// Three routes rather than one route with an action field, because each one
+/// changes the registry in a different way and a refusal names a different
+/// field: an add has no target, an edit and a delete must name an entry that
+/// already exists, and a delete has a rule the other two do not.
+pub const ROUTE_SETTINGS_PROVIDERS_ADD: &str = "/dashboard/settings/providers/add";
+
+/// `POST /dashboard/settings/providers/edit` - change one provider in place.
+///
+/// The id is the key and cannot be edited here: every auxiliary role and every
+/// stored model choice points at it by name.
+pub const ROUTE_SETTINGS_PROVIDERS_EDIT: &str = "/dashboard/settings/providers/edit";
+
+/// `POST /dashboard/settings/providers/delete` - remove one provider.
+///
+/// Refuses to remove the primary, because that would silently move which
+/// endpoint every turn is sent to.
+pub const ROUTE_SETTINGS_PROVIDERS_DELETE: &str = "/dashboard/settings/providers/delete";
+
 /// `POST /dashboard/settings/push` - who a reply notification reaches.
 ///
 /// Its own route rather than a field on the device-bind form: a bind is applied
@@ -355,6 +375,9 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_TOOLS,
     ROUTE_SETTINGS_PROVIDERS,
     ROUTE_SETTINGS_PROVIDERS_PROBE,
+    ROUTE_SETTINGS_PROVIDERS_ADD,
+    ROUTE_SETTINGS_PROVIDERS_EDIT,
+    ROUTE_SETTINGS_PROVIDERS_DELETE,
     ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_MCP,

@@ -1839,6 +1839,52 @@ pub struct AuxRow {
     pub consumed_by: String,
 }
 
+/// One configured provider, as the registry table shows it.
+///
+/// A row is a *view* of one registry entry and nothing more: it holds the four
+/// fields a person reads and the two flags, all already validated, so the table
+/// cannot present an entry the daemon would refuse. It carries no key value,
+/// because the registry stores a reference and a reference is all there is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRow {
+    /// The stable id every auxiliary role points at.
+    pub id: String,
+    /// What the operator reads.
+    pub name: String,
+    /// The endpoint.
+    pub base_url: String,
+    /// `env:NAME` or `token:NAME`. A pointer, never a secret.
+    pub key_ref: String,
+    /// The request shape, or the empty string for the OpenAI default.
+    pub dialect: String,
+    /// Whether this endpoint inlines its reasoning by default.
+    pub reasoning_split: bool,
+    /// Whether this is the vendor's own API.
+    pub direct: bool,
+    /// The Antigravity cloud project, when one is named.
+    pub project: String,
+    /// Whether this entry is the primary.
+    pub is_primary: bool,
+}
+
+impl ProviderRow {
+    /// The row a registry entry renders as.
+    #[must_use]
+    pub fn of(provider: &crate::providers::Provider, primary: &str) -> Self {
+        Self {
+            id: provider.id.clone(),
+            name: provider.name.clone(),
+            base_url: provider.base_url.clone(),
+            key_ref: provider.key_ref.clone(),
+            dialect: provider.dialect.clone().unwrap_or_default(),
+            reasoning_split: crate::providers::reasoning_split_of(provider),
+            direct: crate::providers::direct_of(provider),
+            project: crate::providers::project_of(provider).unwrap_or_default(),
+            is_primary: provider.id == primary,
+        }
+    }
+}
+
 /// One connected account as the settings page shows it.
 ///
 /// Status only. There is no field here that could hold a token, a refresh token,
@@ -1965,6 +2011,15 @@ pub struct SettingsView {
     pub provider_ids: Vec<String>,
     /// The id and the display name of every configured provider.
     pub provider_labels: Vec<(String, String)>,
+    /// One row per configured provider, for the registry table.
+    pub providers: Vec<ProviderRow>,
+    /// The provider an edit was asked for, pre-filled in the edit form.
+    ///
+    /// `None` means no edit form is showing. The edit target arrives as
+    /// `?edit=<id>` on the page and is carried into a refusal, so a refused
+    /// edit re-renders the form that was being filled in rather than the add
+    /// form with the message nowhere near the field.
+    pub provider_edit: Option<ProviderRow>,
     /// Every model on every configured provider, as `(option value, label)`.
     ///
     /// The option value is `provider/model`, which is what a turn stores and
@@ -2021,6 +2076,11 @@ pub struct SettingsView {
     pub error: Option<FormError>,
     /// The group that was saved and the sentence to show, after a redirect.
     pub notice: Option<(SettingsGroup, String)>,
+    /// Which tab is showing.
+    ///
+    /// A tab is a view, not a setting: it lives on the request rather than in a
+    /// row, so two browsers can look at two tabs and neither is wrong.
+    pub tab: SettingsTab,
 }
 
 impl SettingsView {
@@ -2068,6 +2128,8 @@ impl SettingsView {
             providers_primary: crate::providers::DEFAULT_ID.to_owned(),
             provider_ids: Vec::new(),
             provider_labels: Vec::new(),
+            providers: Vec::new(),
+            provider_edit: None,
             model_options: Vec::new(),
             model_selection: String::new(),
             tools_enabled: true,
@@ -2094,6 +2156,7 @@ impl SettingsView {
             skills_error: None,
             error: None,
             notice: None,
+            tab: SettingsTab::default(),
         }
     }
 
@@ -2123,6 +2186,210 @@ impl SettingsView {
     #[must_use]
     pub fn never_available(&self) -> bool {
         self.paired_devices > 0 && self.state == SetupState::Ready
+    }
+}
+
+/// The six settings tabs.
+///
+/// The names are the daemon's own capability groups, spelled once, so a field
+/// cannot end up in a group the page has no tab for: `S3`'s record and this enum
+/// say `models`, `assistant`, `memory`, `devices`, `automation`, `system`.
+///
+/// A tab is a *link*, not a widget. The page is server-rendered and has to work
+/// with no script at all, so the active tab is a query parameter and the strip is
+/// a `<nav>` of anchors. That also makes a tab bookmarkable and it makes the back
+/// button do the obvious thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    /// Where a turn is sent, and what it may call.
+    Models,
+    /// How a turn talks and reports.
+    Assistant,
+    /// What a turn recalls.
+    Memory,
+    /// Where phones reach this daemon.
+    Devices,
+    /// What runs without a person asking.
+    Automation,
+    /// What a turn may touch, when it is, and how it looks.
+    System,
+}
+
+/// The tab a page opens on when nobody picked one.
+///
+/// Models is first because it is the tab a fresh install has to fill in: an
+/// endpoint and a model are what makes a turn answer at all.
+impl Default for SettingsTab {
+    fn default() -> Self {
+        Self::Models
+    }
+}
+
+impl SettingsTab {
+    /// Every tab, in strip order.
+    pub const ALL: [Self; 6] = [
+        Self::Models,
+        Self::Assistant,
+        Self::Memory,
+        Self::Devices,
+        Self::Automation,
+        Self::System,
+    ];
+
+    /// The query value, which is also the capability record's group name.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Models => "models",
+            Self::Assistant => "assistant",
+            Self::Memory => "memory",
+            Self::Devices => "devices",
+            Self::Automation => "automation",
+            Self::System => "system",
+        }
+    }
+
+    /// The word on the tab.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Models => "Models",
+            Self::Assistant => "Assistant",
+            Self::Memory => "Memory",
+            Self::Devices => "Devices",
+            Self::Automation => "Automation",
+            Self::System => "System",
+        }
+    }
+
+    /// The one line under the strip, so a tab says what it holds.
+    #[must_use]
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Self::Models => "Where a turn is sent, and what it may call.",
+            Self::Assistant => "How a turn talks, thinks, and reports what it did.",
+            Self::Memory => "What a turn recalls before it answers.",
+            Self::Devices => "Where a phone reaches this daemon, and what it is told.",
+            Self::Automation => "What runs without a person asking.",
+            Self::System => "What a turn may touch, when it is, and how the page looks.",
+        }
+    }
+
+    /// The tab a `?tab=` value names, or `None` when it names none of them.
+    ///
+    /// Case and stray spacing are tolerated: this comes from a URL a person may
+    /// have typed, and refusing an odd spelling would land them on a page that
+    /// looks broken rather than on the tab they asked for.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let wanted = raw.trim();
+        Self::ALL
+            .into_iter()
+            .find(|tab| tab.id().eq_ignore_ascii_case(wanted))
+    }
+
+    /// The path of this tab, for the strip and for a redirect.
+    #[must_use]
+    pub fn path(self) -> String {
+        format!("{}?tab={}", crate::admin::ROUTE_SETTINGS, self.id())
+    }
+
+    /// The tab that holds one of the eight form groups.
+    ///
+    /// The groups and the tabs are different axes - a tab holds several groups -
+    /// so this is the map between them, and it is the only one.
+    #[must_use]
+    pub fn for_group(group: SettingsGroup) -> Self {
+        match group {
+            SettingsGroup::Provider | SettingsGroup::Accounts => Self::Models,
+            SettingsGroup::Persona | SettingsGroup::Greeting => Self::Assistant,
+            SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
+            SettingsGroup::Workspace | SettingsGroup::Permissions => Self::System,
+        }
+    }
+
+    /// The tab a `?saved=` value belongs to.
+    ///
+    /// A save redirects to `?saved=<group>`, and the group a notice belongs to is
+    /// also the tab it belongs to, so the notice lands on the card that produced
+    /// it without every redirect constant having to learn about tabs.
+    #[must_use]
+    pub fn for_saved(saved: &str) -> Self {
+        match saved {
+            "provider" | "accounts" | "providers" | "tools" | "aux" | "models" => Self::Models,
+            "persona" | "reasoning" | "streaming" | "quota" | "greeting" => Self::Assistant,
+            "memory" => Self::Memory,
+            "device" | "devices" => Self::Devices,
+            "schedules" | "skills" | "mcp" | "automation" => Self::Automation,
+            _ => Self::System,
+        }
+    }
+
+    /// The tab a refused field belongs to.
+    ///
+    /// A refusal re-renders the page, and it has to re-render the tab that holds
+    /// the field or the operator is sent to a page where the reason is nowhere.
+    /// The list is by field name because that is what a [`FormError`] carries.
+    #[must_use]
+    pub fn for_field(field: Option<&str>) -> Self {
+        let Some(field) = field else {
+            return Self::Models;
+        };
+        match field {
+            "base_url"
+            | "api_key_ref"
+            | "model"
+            | "providers_registry"
+            | "providers_primary"
+            | "provider_id"
+            | "provider_name"
+            | "provider_base_url"
+            | "provider_key_ref"
+            | "provider_dialect"
+            | "provider_reasoning_split"
+            | "provider_direct"
+            | "provider_project"
+            | "provider_edit_id"
+            | "tools_enabled"
+            | "tool_rounds"
+            | "agents_enabled"
+            | "aux_primary"
+            | "aux_model"
+            | "account_provider"
+            | "account_action"
+            | "account_paste" => Self::Models,
+            "persona_text" | "persona_enabled" | "assistant_name" | "reply_state"
+            | "show_reasoning" | "streaming" | "show_quota" | "show_tool_log" | "tool_log_mode"
+            | "greeting_enabled" | "greeting_model" | "greeting_refresh" | "chat_hint" => {
+                Self::Assistant
+            }
+            "memory_backend" | "memory_vault" => Self::Memory,
+            "device_listen" | "device_relay" | "notify_on_reply" | "notify_scope"
+            | "notify_devices" => Self::Devices,
+            "schedule_name" | "schedule_cron" | "schedule_prompt" | "schedule_id"
+            | "schedules_action" | "schedules_enabled" | "skills_enabled" | "skills_dir"
+            | "skills_library" | "mcp_name" | "mcp_url" | "mcp_action" => Self::Automation,
+            _ => Self::System,
+        }
+    }
+}
+
+/// The tab strip.
+///
+/// `aria-current="page"` marks the active tab for a screen reader, and the active
+/// tab is also heavier and underscored, so it is not marked by colour alone. The
+/// strip scrolls sideways on a phone; the page does not.
+fn tab_strip(current: SettingsTab) -> Markup {
+    html! {
+        nav class="tabs" aria-label="Settings sections" {
+            @for tab in SettingsTab::ALL {
+                a class="tab" href=(tab.path())
+                    aria-current=[(tab == current).then_some("page")] {
+                    (tab.label())
+                }
+            }
+        }
+        p .small .tab-blurb { (current.blurb()) }
     }
 }
 
@@ -2879,57 +3146,266 @@ fn chosen_devices(stored: &str) -> Vec<String> {
 fn providers_group(view: &SettingsView) -> Markup {
     let error = view.error.as_ref();
     let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    // The first failing field of this form takes the focus, and only the first.
+    let first = [
+        "provider_id",
+        "provider_name",
+        "provider_base_url",
+        "provider_key_ref",
+        "provider_dialect",
+        "provider_project",
+    ]
+    .into_iter()
+    .find(|name| focuses(name));
+    let editing = view.provider_edit.as_ref();
+    let action = if editing.is_some() {
+        crate::admin::ROUTE_SETTINGS_PROVIDERS_EDIT
+    } else {
+        crate::admin::ROUTE_SETTINGS_PROVIDERS_ADD
+    };
     html! {
-        form method="post" action=(crate::admin::ROUTE_SETTINGS_PROVIDERS) novalidate {
-            div .field {
-                label for="providers_registry" { "Providers" }
-                textarea id="providers_registry" name="providers_registry" rows="10"
-                    spellcheck="false" autofocus[focuses("providers_registry")] {
-                    (view.providers_json)
-                }
-                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("providers_registry")) {
-                    span .error { (error.message) }
-                }
-                span .hint {
-                    "A JSON array of {\"id\", \"name\", \"base_url\", \"key_ref\"}. The id is "
-                    "what auxiliary roles point at. A key reference is env:NAME for a variable "
-                    "in this daemon's environment, or token:NAME for an account connected above - "
-                    "token:claude and token:antigravity are the two a login seals. Never a key. "
-                    "An optional \"dialect\" of messages makes this endpoint's requests use the "
-                    "Anthropic shape, and of antigravity uses the Antigravity wrapper; a probe "
-                    "that measures a model's own shape overrides it. An optional \"reasoning_split\" "
-                    "of true asks an endpoint that inlines its chain of thought - MiniMax does - to "
-                    "send it separately, so the thinking lands in the reasoning view instead of "
-                    "the reply. For an Antigravity entry, \"direct\" of true adds the OAuth beta "
-                    "headers and \"project\" names the cloud project its requests bill to."
-                }
+        @if view.providers.is_empty() {
+            p .empty {
+                strong { "No provider is configured yet." }
+                " A turn needs one endpoint and one model before it can answer. Add one below, "
+                "or fill in the three Provider fields above."
             }
-            div .field {
-                label for="providers_primary" { "Primary" }
-                select id="providers_primary" name="providers_primary"
-                    autofocus[focuses("providers_primary")] {
-                    @for (id, name) in &view.provider_labels {
-                        option value=(id) selected[view.providers_primary == *id] { (name) }
+        } @else {
+            /* One row per endpoint, read-only except for the two actions. The
+               table is the point: before this, the only view of the registry was
+               a JSON document, which is not a thing an operator can check at a
+               glance. `key_ref` is shown as-is because it is already visible in
+               the JSON editor - it is a reference, not a key. */
+            table {
+                caption { "Every endpoint this daemon may talk to" }
+                thead {
+                    tr {
+                        th scope="col" { "Id" }
+                        th scope="col" { "Name" }
+                        th scope="col" { "Endpoint" }
+                        th scope="col" { "Dialect" }
+                        th scope="col" { "Direct" }
+                        th scope="col" { "Keys" }
+                        th scope="col" { "Actions" }
                     }
                 }
-                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("providers_primary")) {
+                tbody {
+                    @for row in &view.providers {
+                        tr id=(format!("provider-row-{}", row.id)) {
+                            th scope="row" {
+                                code { (row.id) }
+                                @if row.is_primary {
+                                    " " span .badge { "primary" }
+                                }
+                            }
+                            td { (row.name) }
+                            td .mono { (row.base_url) }
+                            td {
+                                @if row.dialect.is_empty() {
+                                    span .muted { "openai" }
+                                } @else {
+                                    (row.dialect)
+                                }
+                            }
+                            td { @if row.direct { "yes" } @else { "no" } }
+                            td .mono { (row.key_ref) }
+                            td .row-actions {
+                                a .button .secondary
+                                    href=(format!("{}?tab=models&edit={}", crate::admin::ROUTE_SETTINGS, row.id)) {
+                                    "Edit"
+                                }
+                                /* A delete is a form, not a link: it changes
+                                   stored state and a GET must never do that. The
+                                   row carries the id, and the handler refuses the
+                                   primary by name. */
+                                form method="post"
+                                    action=(crate::admin::ROUTE_SETTINGS_PROVIDERS_DELETE) {
+                                    input type="hidden" name="provider_id" value=(row.id);
+                                    button type="submit" class="danger" {
+                                        "Delete"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        h3 id="provider-form-heading" {
+            @if editing.is_some() { "Edit a provider" } @else { "Add a provider" }
+        }
+        form method="post" action=(action) novalidate aria-labelledby="provider-form-heading" {
+            @if let Some(row) = editing {
+                /* The id is the key every auxiliary role and every stored model
+                   choice points at. Editing it would silently orphan all of
+                   them, so it is shown and submitted unchanged. */
+                div .field {
+                    label for="provider_id" { "Id" }
+                    input id="provider_id" type="text" name="provider_id" value=(row.id)
+                        readonly spellcheck="false";
+                    span .hint {
+                        "The id cannot be changed: auxiliary roles and stored model choices point "
+                        "at it by name. To rename one, add it under the new id and delete this one."
+                    }
+                }
+            } @else {
+                (text_field(
+                    "provider_id",
+                    "Id",
+                    "",
+                    Some("Lowercase letters, digits, hyphen and underscore. Stable: every auxiliary role points at it."),
+                    error,
+                    first == Some("provider_id"),
+                    false,
+                ))
+            }
+            (text_field(
+                "provider_name",
+                "Name",
+                editing.map_or("", |row| row.name.as_str()),
+                Some("What you read in the pickers. Two endpoints may serve the same model id, so this is how you tell them apart."),
+                error,
+                first == Some("provider_name"),
+                false,
+            ))
+            (text_field(
+                "provider_base_url",
+                "Endpoint",
+                editing.map_or("", |row| row.base_url.as_str()),
+                Some("An OpenAI-compatible base URL. Must start with http:// or https://."),
+                error,
+                first == Some("provider_base_url"),
+                false,
+            ))
+            (text_field(
+                "provider_key_ref",
+                "Key reference",
+                editing.map_or("", |row| row.key_ref.as_str()),
+                Some("env:NAME for a variable in this daemon's environment, or token:NAME for an account connected above. Never a key value."),
+                error,
+                first == Some("provider_key_ref"),
+                false,
+            ))
+            div .field {
+                label for="provider_dialect" { "Dialect" }
+                @let dialect = editing.map_or("", |row| row.dialect.as_str());
+                select id="provider_dialect" name="provider_dialect"
+                    autofocus[first == Some("provider_dialect")] {
+                    option value="" selected[dialect.is_empty()] { "OpenAI chat completions" }
+                    option value="messages" selected[dialect == "messages"] { "Anthropic messages" }
+                    option value="antigravity" selected[dialect == "antigravity"] { "Antigravity" }
+                }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("provider_dialect")) {
                     span .error { (error.message) }
                 }
                 span .hint {
-                    "The endpoint a turn uses unless a role says otherwise. When the registry is "
-                    "empty the three provider fields above still seed a default entry."
+                    "The request shape this endpoint speaks. A probe that measures a model's own "
+                    "shape overrides it per turn."
                 }
             }
+            div .field {
+                span .label { "Flags" }
+                label .check {
+                    input type="checkbox" name="provider_reasoning_split" value="on"
+                        checked[editing.is_some_and(|row| row.reasoning_split)];
+                    span .check-name { "Ask this endpoint to split reasoning from the answer" }
+                }
+                label .check {
+                    input type="checkbox" name="provider_direct" value="on"
+                        checked[editing.is_some_and(|row| row.direct)];
+                    span .check-name { "This is the vendor's own API, not a gateway" }
+                }
+                span .hint {
+                    "Reasoning split is for an endpoint that inlines its chain of thought - MiniMax "
+                    "does - so the thinking lands in the reasoning view. Direct adds the vendor "
+                    "headers on the Messages and Antigravity dialects."
+                }
+            }
+            (text_field(
+                "provider_project",
+                "Cloud project",
+                editing.map_or("", |row| row.project.as_str()),
+                Some("Antigravity only: the cloud project its requests bill to. A login discovers this, so leave it empty unless you know it."),
+                error,
+                first == Some("provider_project"),
+                false,
+            ))
             div .actions {
-                button type="submit" { "Save providers" }
-                button type="submit" class="secondary" formaction=(crate::admin::ROUTE_SETTINGS_PROVIDERS_PROBE) {
-                    "Probe all providers now"
+                button type="submit" {
+                    @if editing.is_some() { "Save this provider" } @else { "Add this provider" }
+                }
+                @if editing.is_some() {
+                    a .button .secondary
+                        href=(format!("{}?tab=models", crate::admin::ROUTE_SETTINGS)) {
+                        "Cancel"
+                    }
                 }
             }
             p .small {
-                "Saving stores the endpoints and nothing else. Probing calls every configured "
-                "endpoint and publishes each one's model list, which is what puts those models "
-                "into every picker on this page."
+                "The registry is validated as a whole before anything is written: a duplicate id, a "
+                "key reference that is not a reference, or a seventeenth entry is refused by field "
+                "and nothing is stored. A probe runs on save, so a new endpoint's models appear in "
+                "every picker without a second press."
+            }
+        }
+
+        /* The raw editor stays, collapsed, and it is the same route it always
+           was: an escape hatch for a registry shape the form does not cover, not
+           a second way to store it. Both paths write the one row. */
+        details .advanced {
+            summary { "Advanced: edit the registry as JSON" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_PROVIDERS) novalidate {
+                div .field {
+                    label for="providers_registry" { "Registry" }
+                    textarea id="providers_registry" name="providers_registry" rows="10"
+                        spellcheck="false" autofocus[focuses("providers_registry")] {
+                        (view.providers_json)
+                    }
+                    @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("providers_registry")) {
+                        span .error { (error.message) }
+                    }
+                    span .hint {
+                        "A JSON array of {\"id\", \"name\", \"base_url\", \"key_ref\"}. The id is "
+                        "what auxiliary roles point at. A key reference is env:NAME for a variable "
+                        "in this daemon's environment, or token:NAME for an account connected above - "
+                        "token:claude and token:antigravity are the two a login seals. Never a key. "
+                        "An optional \"dialect\" of messages makes this endpoint's requests use the "
+                        "Anthropic shape, and of antigravity uses the Antigravity wrapper; a probe "
+                        "that measures a model's own shape overrides it. An optional \"reasoning_split\" "
+                        "of true asks an endpoint that inlines its chain of thought - MiniMax does - to "
+                        "send it separately, so the thinking lands in the reasoning view instead of "
+                        "the reply. For an Antigravity entry, \"direct\" of true adds the OAuth beta "
+                        "headers and \"project\" names the cloud project its requests bill to."
+                    }
+                }
+                div .field {
+                    label for="providers_primary" { "Primary" }
+                    select id="providers_primary" name="providers_primary"
+                        autofocus[focuses("providers_primary")] {
+                        @for (id, name) in &view.provider_labels {
+                            option value=(id) selected[view.providers_primary == *id] { (name) }
+                        }
+                    }
+                    @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("providers_primary")) {
+                        span .error { (error.message) }
+                    }
+                    span .hint {
+                        "The endpoint a turn uses unless a role says otherwise. When the registry is "
+                        "empty the three Provider fields above still seed a default entry."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save providers" }
+                    button type="submit" class="secondary" formaction=(crate::admin::ROUTE_SETTINGS_PROVIDERS_PROBE) {
+                        "Probe all providers now"
+                    }
+                }
+                p .small {
+                    "Saving stores the endpoints and nothing else. Probing calls every configured "
+                    "endpoint and publishes each one's model list, which is what puts those models "
+                    "into every picker on this page."
+                }
             }
         }
     }
@@ -3317,7 +3793,28 @@ pub fn security_page(view: &SettingsView) -> Markup {
 }
 
 pub fn settings_page(view: &SettingsView) -> Markup {
-    let page_error = view.error.as_ref().filter(|error| error.field.is_none());
+    // A refusal reaches the page in one of two ways: next to the field, when a
+    // group claims it, or in the page level region. The second half of that is
+    // not only for an error with no field at all: plenty of forms here have no
+    // `SettingsGroup` of their own - the tools card, the clock, the provider
+    // form's id and endpoint - and an error those cards produced used to be
+    // rendered nowhere, which reads as a save that silently did nothing. So a
+    // field error that no group owns falls back to this region.
+    let page_error = view.error.as_ref().filter(|error| {
+        error.field.is_none() || !SettingsGroup::ALL.iter().any(|group| group.owns(error))
+    });
+    let tab = view.tab;
+    // Only the chosen tab's cards are built. Every card is still a function of
+    // the same view, so the union of the six requests is the whole page, and the
+    // acceptance test walks all six to prove it.
+    let cards = match tab {
+        SettingsTab::Models => tab_models(view),
+        SettingsTab::Assistant => tab_assistant(view),
+        SettingsTab::Memory => tab_memory(view),
+        SettingsTab::Devices => tab_devices(view),
+        SettingsTab::Automation => tab_automation(view),
+        SettingsTab::System => tab_system(view),
+    };
     let body = html! {
         h1 { "Settings" }
         p .lede {
@@ -3339,6 +3836,24 @@ pub fn settings_page(view: &SettingsView) -> Markup {
             }
         }
 
+        /* The tab strip sits under the identity card and above the cards it
+           switches between. It is a nav of links, so a tab works with no script,
+           survives a bookmark, and is what the back button steps through. */
+        (tab_strip(tab))
+        (cards)
+    };
+    shell(
+        "Settings",
+        view.state,
+        Some(Nav::Settings),
+        body,
+        &view.chrome,
+    )
+}
+
+/// The Models tab: where a turn is sent, and what it may call.
+fn tab_models(view: &SettingsView) -> Markup {
+    html! {
         section .card aria-labelledby="provider-heading" {
             h2 id="provider-heading" { "Provider" }
             p .small {
@@ -3358,78 +3873,44 @@ pub fn settings_page(view: &SettingsView) -> Markup {
             (accounts_group(view))
         }
 
-        section .card aria-labelledby="workspace-heading" {
-            h2 id="workspace-heading" { "Workspace" }
+        section .card aria-labelledby="providers-heading" {
+            h2 id="providers-heading" { "Providers" }
             p .small {
-                "The one directory a turn may write to."
+                "Every endpoint this daemon may talk to. One of them is primary, and the auxiliary "
+                "roles below can point at any of them."
             }
-            (workspace_group(view))
+            (providers_group(view))
         }
 
-        section .card aria-labelledby="permissions-heading" {
-            h2 id="permissions-heading" { "Permissions" }
+        section .card aria-labelledby="tools-heading" {
+            h2 id="tools-heading" { "Tools" }
             p .small {
-                "What a turn may do, and who has to approve it. The defaults are the narrow ones: "
-                "read only, ask first, drafts only, telemetry off."
+                "What a turn may call, and how long it may keep calling. The sandbox mode above "
+                "decides what each tool is allowed to touch."
             }
-            (permissions_group(view))
-            dl .kv .mt {
-                dt { "Paired devices" } dd { (view.paired_devices) }
-                dt { "Device listener" } dd {
-                    @if view.device_listener { "on" } @else { "off" }
-                    ", "
-                    @if view.device_listener_bound { "bound" } @else { "not bound" }
-                    " on " (DEVICE_ADDR)
-                }
-            }
+            (tools_group(view))
         }
 
-        section .card aria-labelledby="full-access-heading" {
-            h2 id="full-access-heading" { "Full host access" }
+        section .card aria-labelledby="aux-heading" {
+            h2 id="aux-heading" { "Auxiliary models" }
             p .small {
-                "Whether this operator may select full host sandbox mode at all. It is off by "
-                "default, it needs a typed confirmation to enable, and every change is audited. "
-                "While it is off the option stays greyed out in the permissions table above."
+                "A turn answers with the primary model. These are the jobs beside it. A role set to "
+                "primary follows whatever the provider section uses; a role pinned to a model keeps "
+                "that model when the primary moves."
             }
-            dl .kv {
-                dt { "Stored switch" } dd {
-                    @if view.allow_full_stored { "on" } @else { "off" }
-                }
-                dt { "Command line" } dd {
-                    @if view.allow_full_from_flag { "started with --allow-full" } @else { "not passed" }
-                }
-                dt { "Effective" } dd {
-                    @if view.allow_full { "full host selectable" } @else { "refused" }
-                }
+            p .small {
+                "Pinning a model to a role is what turns that role on: left on primary, the role does "
+                "nothing, because re-running the primary model for a job the turn already did would be "
+                "cost with no answer behind it. Each row states whether anything reads it yet."
             }
-            form method="post" action="/dashboard/settings/full-access" novalidate {
-                @if !view.allow_full_stored {
-                    div .field {
-                        label for="confirm" { "Type full to enable" }
-                        input id="confirm" type="text" name="confirm" value=""
-                            autocomplete="off" spellcheck="false"
-                            placeholder="full";
-                        span .hint {
-                            "This unlocks command execution on the whole host for every turn. The "
-                            "rest of the daemon does not change; this is the one switch that decides "
-                            "whether the sandbox may be opened."
-                        }
-                    }
-                    div .actions {
-                        button type="submit" { "Enable full host" }
-                    }
-                } @else {
-                    p .small {
-                        "Full host is enabled. Turning it off refuses the option immediately; a turn "
-                        "that is already running is not interrupted."
-                    }
-                    div .actions {
-                        button type="submit" class="danger" { "Disable full host" }
-                    }
-                }
-            }
+            (aux_group(view))
         }
+    }
+}
 
+/// The Assistant tab: how a turn talks, thinks, and reports what it did.
+fn tab_assistant(view: &SettingsView) -> Markup {
+    html! {
         section .card aria-labelledby="persona-heading" {
             h2 id="persona-heading" { "Assistant identity" }
             p .small {
@@ -3475,7 +3956,26 @@ pub fn settings_page(view: &SettingsView) -> Markup {
             }
             (greeting_group(view))
         }
+    }
+}
 
+/// The Memory tab: what a turn recalls before it answers.
+fn tab_memory(view: &SettingsView) -> Markup {
+    html! {
+        section .card aria-labelledby="memory-heading" {
+            h2 id="memory-heading" { "Memory" }
+            p .small {
+                "Recalled notes are added to the prompt as context and marked as possibly out of "
+                "date. A backend that cannot answer is recorded and the turn goes on without it."
+            }
+            (memory_group(view))
+        }
+    }
+}
+
+/// The Devices tab: where a phone reaches this daemon, and what it is told.
+fn tab_devices(view: &SettingsView) -> Markup {
+    html! {
         section .card aria-labelledby="device-bind-heading" {
             h2 id="device-bind-heading" { "Device listener" }
             p .small {
@@ -3592,89 +4092,12 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 }
             }
         }
+    }
+}
 
-        section .card aria-labelledby="memory-heading" {
-            h2 id="memory-heading" { "Memory" }
-            p .small {
-                "Recalled notes are added to the prompt as context and marked as possibly out of "
-                "date. A backend that cannot answer is recorded and the turn goes on without it."
-            }
-            (memory_group(view))
-        }
-
-        section .card aria-labelledby="clock-heading" {
-            h2 id="clock-heading" { "Clock" }
-            p .small {
-                "Every stamp in the transcript and the rail is shown in this zone. Timestamps are "
-                "stored in UTC and converted for display, so changing this never rewrites history."
-            }
-            (clock_group(view))
-        }
-
-
-        section .card aria-labelledby="providers-heading" {
-            h2 id="providers-heading" { "Providers" }
-            p .small {
-                "Every endpoint this daemon may talk to. One of them is primary, and the auxiliary "
-                "roles below can point at any of them."
-            }
-            (providers_group(view))
-        }
-
-        section .card.service aria-labelledby="daemon-heading" {
-            h2 id="daemon-heading" { "Daemon" }
-            p .small {
-                "Some changes only take effect once the process starts again: a bind address, a "
-                "flag, a fresh environment. This restarts the daemon's own service unit, not "
-                "anything else on the host."
-            }
-            form method="post" action=(crate::admin::ROUTE_SETTINGS_RESTART) novalidate {
-                div .restart-actions {
-                    button type="submit" class="danger" { "Restart daemon" }
-                }
-            }
-            p .small {
-                "A restart interrupts anything still running and the daemon returns on the same "
-                "addresses in a few seconds."
-            }
-            p .small {
-                "Adding a provider or saving its key does not need this: the model lists are read "
-                "from the database on every page load, and saving the provider table asks each "
-                "endpoint what it serves. Restart when the process itself has to change - a new "
-                "environment file, a flag, a bind address - or after editing a key by hand outside "
-                "this page, so the new value is read."
-            }
-        }
-
-        section .card aria-labelledby="tools-heading" {
-            h2 id="tools-heading" { "Tools" }
-            p .small {
-                "What a turn may call, and how long it may keep calling. The sandbox mode above "
-                "decides what each tool is allowed to touch."
-            }
-            (tools_group(view))
-        }
-
-        section .card aria-labelledby="aux-heading" {
-            h2 id="aux-heading" { "Auxiliary models" }
-            p .small {
-                "A turn answers with the primary model. These are the jobs beside it. A role set to "
-                "primary follows whatever the provider section uses; a role pinned to a model keeps "
-                "that model when the primary moves."
-            }
-            p .small {
-                "Pinning a model to a role is what turns that role on: left on primary, the role does "
-                "nothing, because re-running the primary model for a job the turn already did would be "
-                "cost with no answer behind it. Each row states whether anything reads it yet."
-            }
-            (aux_group(view))
-        }
-
-        section .card aria-labelledby="mcp-heading" {
-            h2 id="mcp-heading" { "MCP servers" }
-            (mcp_group(view))
-        }
-
+/// The Automation tab: what runs without a person asking.
+fn tab_automation(view: &SettingsView) -> Markup {
+    html! {
         section .card aria-labelledby="schedules-heading" {
             h2 id="schedules-heading" { "Schedules" }
             p .small {
@@ -3692,6 +4115,97 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "descriptions only; a turn reads one on demand before following it."
             }
             (skills_group(view))
+        }
+
+        section .card aria-labelledby="mcp-heading" {
+            h2 id="mcp-heading" { "MCP servers" }
+            (mcp_group(view))
+        }
+    }
+}
+
+/// The System tab: what a turn may touch, when it is, and how the page looks.
+fn tab_system(view: &SettingsView) -> Markup {
+    html! {
+        section .card aria-labelledby="permissions-heading" {
+            h2 id="permissions-heading" { "Permissions" }
+            p .small {
+                "What a turn may do, and who has to approve it. The defaults are the narrow ones: "
+                "read only, ask first, drafts only, telemetry off."
+            }
+            (permissions_group(view))
+            dl .kv .mt {
+                dt { "Paired devices" } dd { (view.paired_devices) }
+                dt { "Device listener" } dd {
+                    @if view.device_listener { "on" } @else { "off" }
+                    ", "
+                    @if view.device_listener_bound { "bound" } @else { "not bound" }
+                    " on " (DEVICE_ADDR)
+                }
+            }
+        }
+
+        section .card aria-labelledby="full-access-heading" {
+            h2 id="full-access-heading" { "Full host access" }
+            p .small {
+                "Whether this operator may select full host sandbox mode at all. It is off by "
+                "default, it needs a typed confirmation to enable, and every change is audited. "
+                "While it is off the option stays greyed out in the permissions table above."
+            }
+            dl .kv {
+                dt { "Stored switch" } dd {
+                    @if view.allow_full_stored { "on" } @else { "off" }
+                }
+                dt { "Command line" } dd {
+                    @if view.allow_full_from_flag { "started with --allow-full" } @else { "not passed" }
+                }
+                dt { "Effective" } dd {
+                    @if view.allow_full { "full host selectable" } @else { "refused" }
+                }
+            }
+            form method="post" action="/dashboard/settings/full-access" novalidate {
+                @if !view.allow_full_stored {
+                    div .field {
+                        label for="confirm" { "Type full to enable" }
+                        input id="confirm" type="text" name="confirm" value=""
+                            autocomplete="off" spellcheck="false"
+                            placeholder="full";
+                        span .hint {
+                            "This unlocks command execution on the whole host for every turn. The "
+                            "rest of the daemon does not change; this is the one switch that decides "
+                            "whether the sandbox may be opened."
+                        }
+                    }
+                    div .actions {
+                        button type="submit" { "Enable full host" }
+                    }
+                } @else {
+                    p .small {
+                        "Full host is enabled. Turning it off refuses the option immediately; a turn "
+                        "that is already running is not interrupted."
+                    }
+                    div .actions {
+                        button type="submit" class="danger" { "Disable full host" }
+                    }
+                }
+            }
+        }
+
+        section .card aria-labelledby="workspace-heading" {
+            h2 id="workspace-heading" { "Workspace" }
+            p .small {
+                "The one directory a turn may write to."
+            }
+            (workspace_group(view))
+        }
+
+        section .card aria-labelledby="clock-heading" {
+            h2 id="clock-heading" { "Clock" }
+            p .small {
+                "Every stamp in the transcript and the rail is shown in this zone. Timestamps are "
+                "stored in UTC and converted for display, so changing this never rewrites history."
+            }
+            (clock_group(view))
         }
 
         section .card aria-labelledby="appearance-heading" {
@@ -3744,6 +4258,31 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 div .actions {
                     button type="submit" class="secondary" { "Upload and use" }
                 }
+            }
+        }
+
+        section .card.service aria-labelledby="daemon-heading" {
+            h2 id="daemon-heading" { "Daemon" }
+            p .small {
+                "Some changes only take effect once the process starts again: a bind address, a "
+                "flag, a fresh environment. This restarts the daemon's own service unit, not "
+                "anything else on the host."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_RESTART) novalidate {
+                div .restart-actions {
+                    button type="submit" class="danger" { "Restart daemon" }
+                }
+            }
+            p .small {
+                "A restart interrupts anything still running and the daemon returns on the same "
+                "addresses in a few seconds."
+            }
+            p .small {
+                "Adding a provider or saving its key does not need this: the model lists are read "
+                "from the database on every page load, and saving the provider table asks each "
+                "endpoint what it serves. Restart when the process itself has to change - a new "
+                "environment file, a flag, a bind address - or after editing a key by hand outside "
+                "this page, so the new value is read."
             }
         }
 
@@ -3805,14 +4344,7 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 }
             }
         }
-    };
-    shell(
-        "Settings",
-        view.state,
-        Some(Nav::Settings),
-        body,
-        &view.chrome,
-    )
+    }
 }
 
 /// Everything the activity page needs.

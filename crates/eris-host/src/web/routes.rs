@@ -36,6 +36,7 @@ use crate::admin::{
     ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS,
     ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
     ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
+    ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT,
     ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA,
     ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
     ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
@@ -124,6 +125,9 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_TOOLS, post(save_tools))
         .route(ROUTE_SETTINGS_PROVIDERS, post(save_providers))
         .route(ROUTE_SETTINGS_PROVIDERS_PROBE, post(probe_providers))
+        .route(ROUTE_SETTINGS_PROVIDERS_ADD, post(add_provider))
+        .route(ROUTE_SETTINGS_PROVIDERS_EDIT, post(edit_provider))
+        .route(ROUTE_SETTINGS_PROVIDERS_DELETE, post(delete_provider))
         .route(ROUTE_SETTINGS_RESTART, post(restart_daemon))
         .route(ROUTE_SETTINGS_AUX, post(save_aux))
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
@@ -811,6 +815,13 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .iter()
         .map(|provider| (provider.id.clone(), provider.name.clone()))
         .collect();
+    // The table the operator reads. It is built from the same registry the
+    // editor and the pickers read, so a row cannot describe an entry that is not
+    // there and an entry cannot be missing from the table.
+    view.providers = registry
+        .iter()
+        .map(|provider| crate::web::templates::ProviderRow::of(provider, &view.providers_primary))
+        .collect();
     view.aux_roles = crate::aux::ROLES
         .iter()
         .map(|role| {
@@ -1154,10 +1165,42 @@ async fn settings(
             if let Some(group) = saved_group(&uri) {
                 view.notice = Some((group, group.saved_notice().to_owned()));
             }
+            view.tab = settings_tab(&uri);
+            // `?edit=<id>` pre-fills the provider form with that entry. An id
+            // that names nothing leaves the form in its add state rather than
+            // showing an empty edit form that would refuse every save.
+            if let Some(id) = query_value(&uri, "edit") {
+                view.provider_edit = view.providers.iter().find(|row| row.id == id).cloned();
+            }
             page(settings_page(&view))
         }
         Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
     }
+}
+
+/// The tab a settings request is showing.
+///
+/// Three things decide it, in this order:
+///
+/// 1. `?tab=`, which is what the strip's links carry and what a bookmark holds.
+/// 2. `?saved=`, because a save redirects with the group it saved and the notice
+///    belongs on the card that produced it - without this, saving the persona
+///    would land the operator on Models and the notice would be nowhere.
+/// 3. Models, the default.
+///
+/// An unknown `?tab=` value is not an error: it falls through to the rest of the
+/// rules, so a stale bookmark lands on a page rather than on a refusal.
+fn settings_tab(uri: &Uri) -> crate::web::templates::SettingsTab {
+    use crate::web::templates::SettingsTab;
+    if let Some(name) = query_value(uri, "tab")
+        && let Some(tab) = SettingsTab::parse(&name)
+    {
+        return tab;
+    }
+    if let Some(name) = query_value(uri, "saved") {
+        return SettingsTab::for_saved(&name);
+    }
+    SettingsTab::default()
 }
 
 /// `GET /dashboard/activity` - the audit trail, newest first.
@@ -3487,6 +3530,9 @@ fn fail_settings(state: &AppState, as_html: bool, error: FormError) -> Response 
     if as_html {
         match build_settings_view(state) {
             Ok(mut view) => {
+                // A refusal has to land on the tab that holds the field, or the
+                // reason is on a page the operator is not looking at.
+                view.tab = crate::web::templates::SettingsTab::for_field(error.field.as_deref());
                 view.error = Some(error);
                 page_with_status(settings_page(&view), status)
             }
@@ -4379,6 +4425,374 @@ async fn save_providers(
     );
 
     see_other(SAVED_PROVIDERS)
+}
+
+/// The provider a `POST /dashboard/settings/providers/{add,edit}` body describes.
+///
+/// One reader for both routes, because an add and an edit describe the same
+/// entry: validating one and not the other would store an entry the registry
+/// refuses, or refuse one it would have taken.
+fn provider_from_fields(fields: &BTreeMap<String, String>) -> crate::providers::Provider {
+    let dialect = field(fields, "provider_dialect").trim();
+    let project = field(fields, "provider_project").trim();
+    crate::providers::Provider {
+        id: field(fields, "provider_id").trim().to_owned(),
+        name: field(fields, "provider_name").trim().to_owned(),
+        base_url: field(fields, "provider_base_url").trim().to_owned(),
+        key_ref: field(fields, "provider_key_ref").trim().to_owned(),
+        dialect: (!dialect.is_empty()).then(|| dialect.to_owned()),
+        // An unticked checkbox posts nothing at all, so absent means off. There
+        // is no third state here, and inventing one would let a page that forgot
+        // the field silently switch a flag off.
+        reasoning_split: Some(flag(fields, "provider_reasoning_split")),
+        direct: Some(flag(fields, "provider_direct")),
+        project: (!project.is_empty()).then(|| project.to_owned()),
+    }
+}
+
+/// Write a whole registry and its primary, reporting the row that failed.
+///
+/// The registry is one row, so a failure here is a database failure rather than a
+/// half-applied registry: either the document is stored or it is not.
+///
+/// The failure is boxed because a `Response` is a large value and this returns one
+/// by value: a `Result` that carries a large error is a cost on every call, and
+/// the three call sites here are the only ones that pay it.
+fn store_registry(
+    state: &AppState,
+    request_id: &str,
+    registry: &[crate::providers::Provider],
+    primary: &str,
+) -> Result<(), Box<Response>> {
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::providers::SETTING_REGISTRY,
+        &crate::providers::to_json(registry),
+    ) {
+        return Err(Box::new(store_failure(
+            request_id,
+            crate::providers::SETTING_REGISTRY,
+            error,
+        )));
+    }
+    // The primary row is only written when it actually changes. An add, an edit
+    // and a delete all leave it alone, and a write that failed *after* the
+    // registry landed would leave the two rows disagreeing about which entry a
+    // turn goes to. Writing it only when it differs keeps the write to the one
+    // row that changed.
+    let stored = state
+        .engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .ok()
+        .flatten();
+    if stored.as_deref() != Some(primary)
+        && let Err(error) = store::settings_put(
+            state.engine.db(),
+            crate::providers::SETTING_PRIMARY,
+            primary,
+        )
+    {
+        return Err(Box::new(store_failure(
+            request_id,
+            crate::providers::SETTING_PRIMARY,
+            error,
+        )));
+    }
+    Ok(())
+}
+
+/// The entry a turn would actually go to, as the registry resolves it.
+///
+/// The stored `providers.primary` row is a *name*, and a name that is not in
+/// the registry falls back to the first entry. Protecting the row's spelling
+/// rather than the resolved entry would let a delete remove the endpoint every
+/// turn is sent to, which is the one thing this route refuses to do.
+fn effective_primary(registry: &[crate::providers::Provider], stored: &str) -> String {
+    crate::providers::resolve(registry, stored)
+        .map(|provider| provider.id.clone())
+        .unwrap_or_else(|| stored.to_owned())
+}
+
+/// The registry as stored, or the reason it could not be read.
+///
+/// An unreadable registry is refused rather than treated as empty: an add that
+/// started from an empty list would overwrite every existing endpoint with the one
+/// that was being typed.
+fn stored_registry(state: &AppState) -> Result<Vec<crate::providers::Provider>, FormError> {
+    chat::provider_registry(&state.engine).map_err(|error| form_error(&error))
+}
+
+/// The stored primary, or the documented default when the row is absent.
+fn stored_primary(state: &AppState) -> Result<String, FormError> {
+    state
+        .engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .map_err(|error| form_error(&error))
+        .map(|stored| stored.unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned()))
+}
+
+/// The id a body names, trimmed.
+fn named_provider(fields: &BTreeMap<String, String>) -> &str {
+    field(fields, "provider_id")
+}
+
+/// `POST /dashboard/settings/providers/add` - add one provider to the registry.
+///
+/// The registry is validated as a whole before anything is written, so a duplicate
+/// id or a seventeenth entry is refused with the registry exactly as it was. The
+/// new endpoint is then probed, for the same reason the JSON save probes: an entry
+/// with no catalogue offers no model in any picker, which reads as a save that did
+/// not take.
+async fn add_provider(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let candidate = provider_from_fields(&fields);
+    if let Err(problem) = crate::providers::check_entry(&candidate) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(Some(problem.field), "providers_invalid", problem.message),
+        );
+    }
+    let mut registry = match stored_registry(&state) {
+        Ok(registry) => registry,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    if registry.iter().any(|entry| entry.id == candidate.id) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("provider_id"),
+                "providers_duplicate",
+                format!(
+                    "the registry already has a provider with the id `{}`; pick another id, or edit the existing one",
+                    candidate.id
+                ),
+            ),
+        );
+    }
+    let id = candidate.id.clone();
+    registry.push(candidate);
+    if let Err(error) = crate::providers::validate(&registry) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(Some("provider_id"), "providers_invalid", error.message),
+        );
+    }
+    let primary = match stored_primary(&state) {
+        Ok(primary) => primary,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    if let Err(response) = store_registry(&state, &request_id.0, &registry, &primary) {
+        return *response;
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.providers.add",
+        Some(&format!("id={id}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.providers.add", error);
+    }
+    probe_one(&state, &registry, &id).await;
+    see_other(SAVED_PROVIDERS)
+}
+
+/// `POST /dashboard/settings/providers/edit` - change one provider in place.
+///
+/// The id identifies the entry and is not editable: every auxiliary role and every
+/// stored model choice points at it by name, and a rename would orphan all of
+/// them. A body that names no existing id is refused by field rather than quietly
+/// adding a new entry, because that is what a typo in an id looks like.
+async fn edit_provider(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let candidate = provider_from_fields(&fields);
+    if let Err(problem) = crate::providers::check_entry(&candidate) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(Some(problem.field), "providers_invalid", problem.message),
+        );
+    }
+    let id = candidate.id.clone();
+    let mut registry = match stored_registry(&state) {
+        Ok(registry) => registry,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let Some(existing) = registry.iter_mut().find(|entry| entry.id == id) else {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("provider_id"),
+                "providers_unknown",
+                format!(
+                    "there is no provider with the id `{id}`; to add one under that id, use the add form"
+                ),
+            ),
+        );
+    };
+    *existing = candidate;
+    if let Err(error) = crate::providers::validate(&registry) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(Some("provider_id"), "providers_invalid", error.message),
+        );
+    }
+    let primary = match stored_primary(&state) {
+        Ok(primary) => primary,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    if let Err(response) = store_registry(&state, &request_id.0, &registry, &primary) {
+        return *response;
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.providers.edit",
+        Some(&format!("id={id}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.providers.edit", error);
+    }
+    probe_one(&state, &registry, &id).await;
+    see_other(SAVED_PROVIDERS)
+}
+
+/// `POST /dashboard/settings/providers/delete` - remove one provider.
+///
+/// **The primary cannot be deleted.** Moving the primary is a decision about which
+/// endpoint every turn is sent to, and a delete button does not get to make that
+/// decision silently. The refusal names the provider and says what to do instead.
+async fn delete_provider(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let id = named_provider(&fields).trim().to_owned();
+    if id.is_empty() {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("provider_id"),
+                "providers_unknown",
+                "a delete has to name the provider it removes",
+            ),
+        );
+    }
+    let registry = match stored_registry(&state) {
+        Ok(registry) => registry,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    if !registry.iter().any(|entry| entry.id == id) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("provider_id"),
+                "providers_unknown",
+                format!("there is no provider with the id `{id}`"),
+            ),
+        );
+    }
+    let primary = match stored_primary(&state) {
+        Ok(primary) => primary,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let primary = effective_primary(&registry, &primary);
+    if id == primary {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("provider_id"),
+                "providers_primary_locked",
+                format!(
+                    "`{id}` is the primary provider; move the primary to another entry first, then delete this one"
+                ),
+            ),
+        );
+    }
+    let kept: Vec<crate::providers::Provider> = registry
+        .into_iter()
+        .filter(|entry| entry.id != id)
+        .collect();
+    if let Err(error) = crate::providers::validate(&kept) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(Some("provider_id"), "providers_invalid", error.message),
+        );
+    }
+    if let Err(response) = store_registry(&state, &request_id.0, &kept, &primary) {
+        return *response;
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.providers.delete",
+        Some(&format!("id={id}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.providers.delete", error);
+    }
+    // The removed entry's keyed rows go with it, so a later provider that reuses
+    // the id cannot inherit a catalogue nobody probed for it.
+    let _ = state
+        .engine
+        .set_provider_catalog(&id, &[], &std::collections::BTreeMap::new());
+    see_other(SAVED_PROVIDERS)
+}
+
+/// Probe one entry of a registry that was just written.
+///
+/// Bounded work: one `/models` call with its own timeout. An endpoint that will not
+/// answer leaves every other catalogue alone and the save still lands, because the
+/// endpoint is configured whether or not it is reachable right now.
+async fn probe_one(state: &AppState, registry: &[crate::providers::Provider], id: &str) {
+    let Some(provider) = registry.iter().find(|entry| entry.id == id) else {
+        return;
+    };
+    let (probed, failed) = probe_registry(&state.engine, std::slice::from_ref(provider)).await;
+    let _ = state.engine.auth().audit(
+        "loopback",
+        "settings.providers.probe",
+        Some(&format!(
+            "after_change=1; id={id}; probed={probed}; failed={}",
+            failed.len()
+        )),
+    );
 }
 
 /// `POST /dashboard/settings/providers/probe` - probe every configured provider

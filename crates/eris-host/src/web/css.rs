@@ -2667,6 +2667,113 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
   .card:has(table) table { min-width: 520px; }
   .card:has(table) > h2 { position: sticky; left: 0; }
 }
+
+/*
+ * The settings tabs.
+ *
+ * A tab is an anchor, so the strip works with no script, and the active one is
+ * marked with `aria-current=page` as well as weight, an underline and a border:
+ * nothing here depends on colour alone.
+ *
+ * The strip itself scrolls sideways on a narrow screen. Six tabs do not fit on
+ * a 393px phone, and the one thing that must never happen is the page growing a
+ * sideways scrollbar because of a row that can scroll its own, so the overflow
+ * lives here and `overscroll-behavior-x` keeps a flick from escaping into the
+ * page behind it.
+ */
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin: 18px 0 10px;
+  padding: 0 0 2px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+.tab {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.tab:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+  text-decoration: none;
+}
+.tab[aria-current=page] {
+  color: var(--text);
+  background: var(--raise);
+  border-color: var(--platinum);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.tab:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
+.tab-blurb { margin: 0 0 14px; }
+
+/* The provider table and its form ----------------------------------------- */
+
+/* One row per endpoint, with the two actions in the last cell. The actions are a
+   form and a link, so the cell is a flex row rather than a run of inline boxes:
+   a button and an anchor sitting on the same baseline is the one thing a table
+   cell will not do on its own. */
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.row-actions .button,
+.row-actions button {
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+/* The table is bounded rather than free: seven columns of endpoint data is the
+   widest thing on any settings tab, and a phone has to scroll the table instead
+   of the page. The card already does this for its own tables; this row is here
+   so the rule holds wherever a provider table is rendered. */
+.card table td .mono,
+.card table th .mono { overflow-wrap: anywhere; }
+
+/* The add/edit form sits under the table it edits, separated by a rule and its
+   own heading, because it is a second thing and not another row. */
+#provider-form-heading {
+  margin: 22px 0 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+  font-weight: 620;
+}
+#provider-form-heading + form { margin-top: 0; }
+
+/* The raw JSON editor is the escape hatch, so it is closed until asked for and
+   quieter than the form above it. */
+details.advanced {
+  margin-top: 22px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+details.advanced > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  list-style: none;
+}
+details.advanced > summary::-webkit-details-marker { display: none; }
+details.advanced > summary:hover { color: var(--text); }
+details.advanced > summary:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+details.advanced[open] > summary { color: var(--text); margin-bottom: 12px; }
 "#;
 
 #[cfg(test)]

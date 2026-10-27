@@ -1927,9 +1927,12 @@ fn an_unknown_wallpaper_path_is_a_404_with_a_body() {
 #[test]
 fn the_settings_page_offers_every_wallpaper_and_the_upload() {
     let (_dir, _engine, app, cookie) = ready_app();
+    // The wallpaper card is on the System tab.
     let page = block_on(send(
         &app,
-        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+        Call::get_owned(format!("{ROUTE_SETTINGS}?tab=system"))
+            .html()
+            .cookie(Some(&cookie)),
     ));
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     let body = &page.body;
@@ -2092,12 +2095,25 @@ fn the_settings_page_states_the_tools_aux_and_mcp_surfaces() {
         .set_setting(crate::onboarding::SETTING_PROVIDER_MODELS, r#"["m/one"]"#)
         .unwrap();
 
-    let page = block_on(send(
+    // The page is six tabs, and these surfaces live on two of them: the tools and
+    // the aux roles are on Models, the MCP list is on Automation. One request no
+    // longer carries all three, so this reads both rather than asserting on a
+    // page that cannot hold them.
+    let models_page = block_on(send(
         &app,
-        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+        Call::get_owned(format!("{ROUTE_SETTINGS}?tab=models"))
+            .html()
+            .cookie(Some(&cookie)),
     ));
-    assert_eq!(page.status, StatusCode::OK);
-    let body = &page.body;
+    assert_eq!(models_page.status, StatusCode::OK);
+    let automation_page = block_on(send(
+        &app,
+        Call::get_owned(format!("{ROUTE_SETTINGS}?tab=automation"))
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(automation_page.status, StatusCode::OK);
+    let body = &format!("{}{}", models_page.body, automation_page.body);
     assert!(
         body.contains("Tool rounds per turn"),
         "the budget is offered"

@@ -63,6 +63,174 @@ fn owner_of_aria_current(body: &str) -> String {
 }
 
 #[test]
+fn every_settings_tab_renders_its_own_cards_and_exactly_one_is_current() {
+    use crate::web::templates::SettingsTab;
+
+    let (_dir, _engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    // The cards each tab owns, by the heading id the card carries. This is the
+    // other half of the union assertion above: the union proves nothing was
+    // lost, and this proves nothing was duplicated into a tab that does not own
+    // it, which is how a page quietly becomes the long scroll it used to be.
+    let owned: [(SettingsTab, &[&str]); 6] = [
+        (
+            SettingsTab::Models,
+            &[
+                "provider-heading",
+                "accounts-heading",
+                "providers-heading",
+                "tools-heading",
+                "aux-heading",
+            ],
+        ),
+        (
+            SettingsTab::Assistant,
+            &[
+                "persona-heading",
+                "reasoning-heading",
+                "streaming-heading",
+                "quota-heading",
+                "greeting-heading",
+            ],
+        ),
+        (SettingsTab::Memory, &["memory-heading"]),
+        (SettingsTab::Devices, &["device-bind-heading"]),
+        (
+            SettingsTab::Automation,
+            &["schedules-heading", "skills-heading", "mcp-heading"],
+        ),
+        (
+            SettingsTab::System,
+            &[
+                "permissions-heading",
+                "full-access-heading",
+                "workspace-heading",
+                "clock-heading",
+                "appearance-heading",
+                "daemon-heading",
+                "read-only-heading",
+            ],
+        ),
+    ];
+
+    let mut seen: Vec<&str> = Vec::new();
+    for (tab, cards) in owned {
+        let page = block_on(send(
+            &app,
+            Call::get_owned(tab.path()).html().cookie(cookie),
+        ));
+        assert_eq!(page.status, StatusCode::OK, "{tab:?}: {}", page.body);
+
+        // 1. The tab renders, and every card it owns is on it.
+        for card in cards {
+            assert!(
+                page.body.contains(&format!(r#"aria-labelledby="{card}""#)),
+                "{tab:?} holds {card}: {}",
+                page.body
+            );
+            assert!(
+                !seen.contains(card),
+                "{card} is rendered by two tabs, so the page is one long scroll again"
+            );
+            seen.push(card);
+        }
+
+        // 2. Every tab is in the strip, and the active one is marked for a
+        //    reader as well as for the eye.
+        for other in SettingsTab::ALL {
+            assert!(
+                page.body.contains(&format!(r#"href="{}""#, other.path())),
+                "the strip always offers {other:?}: {}",
+                page.body
+            );
+        }
+        // The active tab is the only tab marked current, named by its own href
+        // so this cannot be satisfied by the section row above it or the cog
+        // beside it, both of which legitimately mark themselves on this page.
+        for other in SettingsTab::ALL {
+            let marked = format!(r#"href="{}" aria-current="page""#, other.path());
+            if other == tab {
+                assert!(
+                    page.body.contains(&marked),
+                    "the {tab:?} tab is the marked one: {}",
+                    page.body
+                );
+            } else {
+                assert!(
+                    !page.body.contains(&marked),
+                    "{other:?} is not marked while {tab:?} is showing: {}",
+                    page.body
+                );
+            }
+        }
+        assert!(
+            page.body.contains(tab.blurb()),
+            "the tab says what it holds: {}",
+            page.body
+        );
+    }
+    assert_eq!(seen.len(), 22, "every card is owned by exactly one tab");
+}
+
+#[test]
+fn a_save_lands_on_the_tab_that_holds_the_card_it_saved() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    // A save redirects with `?saved=<group>`, and the notice belongs on the card
+    // that produced it. The persona group is on Assistant, so a persona redirect
+    // has to open Assistant rather than the default tab, or the operator saves
+    // something and lands on a page that does not mention it.
+    let page = block_on(send(
+        &app,
+        Call::get("/dashboard/settings?saved=persona")
+            .html()
+            .cookie(cookie),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains("assistant identity saved"),
+        "the notice renders: {}",
+        page.body
+    );
+    assert!(
+        page.body.contains(r#"aria-labelledby="persona-heading""#),
+        "and the card that produced it is on the page: {}",
+        page.body
+    );
+
+    // An unknown `?tab=` is not an error: a stale bookmark lands on a page.
+    let stale = block_on(send(
+        &app,
+        Call::get("/dashboard/settings?tab=nonsense")
+            .html()
+            .cookie(cookie),
+    ));
+    assert_eq!(stale.status, StatusCode::OK, "{}", stale.body);
+    assert!(
+        stale.body.contains(r#"aria-labelledby="provider-heading""#),
+        "an unknown tab falls back rather than refusing: {}",
+        stale.body
+    );
+
+    // The tab wins over `saved` when both are present, because the tab is what
+    // the operator clicked last.
+    let both = block_on(send(
+        &app,
+        Call::get("/dashboard/settings?tab=memory&saved=persona")
+            .html()
+            .cookie(cookie),
+    ));
+    assert_eq!(both.status, StatusCode::OK, "{}", both.body);
+    assert!(
+        both.body.contains(r#"aria-labelledby="memory-heading""#),
+        "the tab parameter is what the page opens on: {}",
+        both.body
+    );
+}
+
+#[test]
 fn the_dashboard_lists_every_bound_listener() {
     let (_dir, engine, passphrase) = ready_engine();
     let state = AppState::new(engine, false);
@@ -273,6 +441,57 @@ fn the_settings_page_reaches_every_section_and_none_is_a_placeholder() {
         "no section is unavailable: {}",
         settings.body
     );
+
+    // The settings page is six tabs now, so one request no longer carries every
+    // card. Walk all six and assert the union is the whole page: every group id
+    // that existed before the tabs did still renders somewhere in it. That is a
+    // stronger claim than the single-request version it replaces, because a card
+    // dropped from its own tab and from its neighbour's is a failure here rather
+    // than a page that merely looks shorter.
+    let sections = [
+        "provider-heading",
+        "accounts-heading",
+        "providers-heading",
+        "tools-heading",
+        "aux-heading",
+        "persona-heading",
+        "reasoning-heading",
+        "streaming-heading",
+        "quota-heading",
+        "greeting-heading",
+        "memory-heading",
+        "device-bind-heading",
+        "schedules-heading",
+        "skills-heading",
+        "mcp-heading",
+        "workspace-heading",
+        "permissions-heading",
+        "full-access-heading",
+        "clock-heading",
+        "appearance-heading",
+        "daemon-heading",
+        "read-only-heading",
+    ];
+    let mut union = String::new();
+    for tab in crate::web::templates::SettingsTab::ALL {
+        let page = block_on(send(
+            &app,
+            Call::get_owned(tab.path()).html().cookie(cookie),
+        ));
+        assert_eq!(page.status, StatusCode::OK, "{tab:?}: {}", page.body);
+        assert!(
+            page.body.contains(&format!(r#"href="{ROUTE_SETTINGS}""#)),
+            "the {tab:?} tab keeps the cog: {}",
+            page.body
+        );
+        union.push_str(&page.body);
+    }
+    for section in sections {
+        assert!(
+            union.contains(&format!(r#"aria-labelledby="{section}""#)),
+            "some tab renders {section}"
+        );
+    }
 
     // Every admin page keeps its own identity and can get back to the cog.
     for route in [

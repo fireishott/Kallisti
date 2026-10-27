@@ -39,9 +39,12 @@ fn the_settings_page_shows_the_persona_and_its_size() {
     let text = "You are Kallisti, Sam's chief of staff.\n";
     std::fs::write(&path, text).expect("write");
 
+    // The persona card lives on the Assistant tab.
     let reply = block_on(send(
         &app,
-        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+        Call::get_owned(format!("{ROUTE_SETTINGS}?tab=assistant"))
+            .html()
+            .cookie(Some(&cookie)),
     ));
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     let page = &reply.body;

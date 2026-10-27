@@ -143,6 +143,54 @@ pub fn validate(providers: &[Provider]) -> Result<(), RegistryError> {
     Ok(())
 }
 
+/// One entry's problem, and which form field it belongs to.
+///
+/// A registry is edited by an operator through a form, and a refusal that says
+/// "the id must be lowercase" without saying *which* box to fix is the kind of
+/// message that sends somebody hunting. The rule for what is acceptable lives in
+/// [`check_entry`] and is the only copy: [`RegistryError`] carries the sentence
+/// and this carries the field, and they are produced together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldProblem {
+    /// The form field the sentence belongs to.
+    pub field: &'static str,
+    /// What the operator should fix.
+    pub message: String,
+}
+
+/// Check one entry, naming the field at fault.
+///
+/// # Errors
+///
+/// [`FieldProblem`] for the first problem found.
+pub fn check_entry(provider: &Provider) -> Result<(), FieldProblem> {
+    validate_one(provider).map_err(|error| {
+        let field = if provider.id.trim().is_empty()
+            || !provider
+                .id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        {
+            "provider_id"
+        } else if provider.name.trim().is_empty() {
+            "provider_name"
+        } else if !(provider.base_url.starts_with("http://")
+            || provider.base_url.starts_with("https://"))
+            || provider.base_url.contains(char::is_whitespace)
+        {
+            "provider_base_url"
+        } else if !is_key_reference(&provider.key_ref) {
+            "provider_key_ref"
+        } else {
+            "provider_dialect"
+        };
+        FieldProblem {
+            field,
+            message: error.message,
+        }
+    })
+}
+
 /// Check one entry.
 fn validate_one(provider: &Provider) -> Result<(), RegistryError> {
     if provider.id.trim().is_empty() {
