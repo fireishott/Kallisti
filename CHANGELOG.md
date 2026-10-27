@@ -85,6 +85,15 @@ observe; commit history carries the detail.
   fragment that begins with the buffer contributes only its new suffix, a
   fragment already inside it contributes nothing, and a real truncation is still
   refused. `build 112`.
+- **A reply opened in the whole window is above the page, and its way out stays
+  in reach.** The window was `position: fixed` inside the transcript, and the
+  transcript is a stacking context, so `fixed` bought the viewport but not the
+  top layer: the composer printed over the bottom of the answer, and below 900
+  points the rail drawer and its scrim covered the whole thing. The answer could
+  not be read and the control that puts it back was behind the page. The
+  transcript rises while a window is open, and the window's own row of controls
+  now sticks to its top edge, so `Restore` is reachable however far down the
+  answer you have read. `build 113`.
 
 ## 1.4.9
 

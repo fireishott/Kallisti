@@ -1390,6 +1390,19 @@ pre.code {
 }
 .thread:empty { display: none; }
 
+/* A reply opened in the whole window is above the page, not inside it.
+ *
+ * The window is `position: fixed`, but `fixed` only chooses the viewport as its
+ * containing block: it does not escape a stacking context. This element is one
+ * (`position: relative` plus a z-index), so the window's own z-index was being
+ * compared with the transcript's siblings and lost: the composer (z-index 2)
+ * painted over the bottom of the answer, and below 900px the rail drawer (40)
+ * and its scrim (35) painted over all of it. Raising the transcript while a
+ * window is open makes the window the top layer it claims to be, and it costs
+ * nothing when no window is open because the selector matches nothing.
+ */
+.thread:has(.msg[data-reply-max]) { z-index: 50; }
+
 /* A bubble is sized by the screen, not by its own text: every bubble takes the
    same share of the window, so a three-word answer and a table sit in one column
    and the conversation reads as a column instead of a ragged stack. The ceiling
@@ -1537,6 +1550,19 @@ pre.code {
   padding: 18px 18px calc(18px + env(safe-area-inset-bottom));
   overflow-y: auto;
   overscroll-behavior: contain;
+  background: var(--bg);
+}
+/* The window's own control row travels with it.
+   It is the only way back out of the window, and it is an ordinary row inside a
+   scroller: reading four screens down left it above the fold and the answer had
+   no exit that was reachable. Sticky pins the row to the window's own top edge,
+   and the ground behind it stops the answer from scrolling through the words. */
+.msg.assistant[data-reply-max] .who {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 0 8px;
+  padding: 4px 2px 8px;
   background: var(--bg);
 }
 .msg.assistant[data-reply-max] .bubble {
@@ -3511,7 +3537,30 @@ mod tests {
         );
         assert!(
             window.contains("z-index: 60"),
-            "the window sits above the rail and the composer: {window}"
+            "the window is a layer above the page inside its subject: {window}"
+        );
+        // `fixed` picks the viewport as the containing block; it does not escape
+        // a stacking context. The transcript is one, so the window was being
+        // compared with the composer (2), the drawer (40) and its scrim (35) and
+        // losing. The transcript has to move up while a window is open, or the
+        // window is a big answer with a composer printed on it.
+        let z = |block: &str| -> u32 {
+            block
+                .split("z-index: ")
+                .nth(1)
+                .and_then(|rest| rest.split(';').next())
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or(0)
+        };
+        let lifted = rule(".thread:has(.msg[data-reply-max])");
+        assert!(
+            z(lifted) > z(rule(".composer")) && z(lifted) > 40,
+            "the transcript outranks the composer and the drawer while a window is open: {lifted}"
+        );
+        let controls = rule(".msg.assistant[data-reply-max] .who");
+        assert!(
+            controls.contains("position: sticky") && controls.contains("background: var(--bg)"),
+            "the way out of the window travels with it and stays readable: {controls}"
         );
         let bubble = rule(".msg.assistant[data-reply-max] .bubble");
         assert!(
