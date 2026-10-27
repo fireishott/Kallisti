@@ -1386,6 +1386,12 @@ pre.code {
   min-height: 0;
   flex: 1 1 auto;
   overflow-y: auto;
+  /* Stated, not implied. With only `overflow-y` set, the other axis computes to
+     `auto` and the transcript becomes a sideways scroller: one child wider than
+     the track is enough, and a sideways scroller that has been nudged hides the
+     left edge of every line in the conversation. A wide child scrolls inside
+     itself. */
+  overflow-x: hidden;
   overscroll-behavior: contain;
 }
 .thread:empty { display: none; }
@@ -1402,6 +1408,30 @@ pre.code {
  * nothing when no window is open because the selector matches nothing.
  */
 .thread:has(.msg[data-reply-max]) { z-index: 50; }
+
+/* A conversation is the window.
+ *
+ * The shell already states `100dvh`, but a page is allowed to scroll past that:
+ * one card, one long run log or one wide line made the document taller than the
+ * window, and then the composer was not on the bottom edge any more, it was
+ * somewhere in the middle of the document with the transcript running behind it.
+ * Scrolling the page to reach the end of an answer moved the composer up over
+ * the words instead of moving the words. Only the transcript may scroll: the
+ * document that holds a conversation does not.
+ *
+ * `overflow-x: hidden` on the transcript is the second half. A grid row that
+ * holds something wider than the column (an unwrapped terminal line, a table
+ * with a min-width) turns `overflow-y: auto` into a sideways scroller too, and a
+ * sideways scroller that has been nudged puts the left edge of every line out of
+ * view. A wide child scrolls inside itself; the transcript never travels.
+ */
+body:has(.chat-shell) {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body:has(.chat-shell) .app { height: 100vh; height: 100dvh; min-height: 0; }
 
 /* A bubble is sized by the screen, not by its own text: every bubble takes the
    same share of the window, so a three-word answer and a table sit in one column
@@ -2078,8 +2108,15 @@ pre.code {
 
 .msg .meta {
   display: flex;
+  /* The stamp, the model, the turn count, the token counts, the duration and
+     the tag are one line on a desk display and five on a phone. A single
+     unwrapped row is wider than the column at some of those widths, and a row
+     that is wider than the column is what puts a scrollbar where a transcript
+     should be. Wrapping keeps every fact and costs a line on the rare turn that
+     fills all of them. */
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   margin-top: 6px;
   font-size: 11px;
   color: var(--muted);
@@ -3472,6 +3509,24 @@ mod tests {
         assert!(
             rule(".thread").contains("overflow-y: auto"),
             "the transcript scrolls inside the window rather than growing it"
+        );
+        // The document that holds a conversation does not scroll: it only
+        // scrolls the transcript. A document that can scroll is a composer in
+        // the middle of the page with the answer running behind it.
+        let page = rule("body:has(.chat-shell)");
+        assert!(
+            page.contains("overflow: hidden") && page.contains("height: 100dvh"),
+            "the conversation page is the window, not a document: {page}"
+        );
+        // And the transcript never travels sideways. `overflow-y` alone makes the
+        // other axis `auto`, so one wide child hid the left edge of every line.
+        assert!(
+            rule(".thread").contains("overflow-x: hidden"),
+            "the transcript cannot be scrolled sideways"
+        );
+        assert!(
+            rule(".msg .meta").contains("flex-wrap: wrap"),
+            "a long stat line wraps instead of widening the column"
         );
         assert!(
             phone_block().contains(".app > .wrap:has(> .chat-shell) { height: 100vh; height: 100dvh; padding-bottom: 0; }"),

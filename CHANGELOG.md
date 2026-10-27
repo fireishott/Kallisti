@@ -94,6 +94,17 @@ observe; commit history carries the detail.
   transcript rises while a window is open, and the window's own row of controls
   now sticks to its top edge, so `Restore` is reachable however far down the
   answer you have read. `build 113`.
+- **A conversation scrolls inside itself, not with the page.** The shell stated
+  a height, but a page is allowed to grow past it: one long turn made the
+  document taller than the window, and from then on the composer was not on the
+  bottom edge, it was somewhere in the middle of the document with the answer
+  running behind it. Scrolling to the end of a reply moved the composer up over
+  the words instead of moving the words. The page that holds a conversation no
+  longer scrolls at all; only the transcript does. The transcript also refuses to
+  travel sideways, which it was silently allowed to do because stating
+  `overflow-y` makes the other axis scrollable too, and a run log line that
+  filled every fact about a turn could be wide enough to push the left edge of
+  the conversation out of view. That line wraps now. `build 114`.
 
 ## 1.4.9
 
