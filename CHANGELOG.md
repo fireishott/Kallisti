@@ -4,6 +4,67 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.10
+
+- **A turn that is nearly out of budget answers instead of giving up.** The
+  engine used to run tools until the last one was gone and then force an answer
+  out of a model that had been cut off mid-thought. It now sees the end coming
+  two rounds early, stops offering tools at that point so no call is spent that
+  cannot finish, and asks for what it has found so far. The footer says
+  `wrapped up` when that happened, and still says `capped` when the answer
+  genuinely had to be forced. `build 111`.
+- **A question the turn is waiting on takes the reply's place.** The clarify
+  card used to sit above the run log, where a long turn buried it. It now
+  stands where the answer is going to be, the answer's own bubble waits out of
+  sight behind it, and settling the question brings the answer back in the same
+  spot. A question that was already answered stays in the run log as a record
+  rather than a second card. `build 111`.
+- **A reply that is still being written does not show an empty box.** The
+  bubble does not exist until there is a word to put in it; the caret lives on
+  the status line, which says `thinking` from the first frame. Both the live
+  path and a reloaded page behave the same way. `build 111`.
+- **The run log says what it means.** `Turn 3` is which answer this is in the
+  conversation, and `7 turns` is how much work it did. The word `round` is gone
+  from every visible string; the database column is still called `rounds` and
+  nothing had to be migrated. `build 111`.
+- **A reply longer than the window scrolls inside its own box, and can be
+  opened full.** The answer bubble stops growing at seventy percent of the
+  window and scrolls from there, with a follow that yields the moment you
+  scroll up to read something. It carries the same expand control in its top
+  right corner as the thinking bubble, and Escape closes it. A wide table or a
+  long terminal line inside an answer scrolls sideways inside the answer
+  instead of dragging the whole chat page with it. `build 111`.
+- **The settings page has six tabs.** Models, Assistant, Memory, Devices,
+  Automation and System, each its own set of forms, and every tab is a link:
+  the page still works with no script at all, and a bookmark to one tab lands
+  on that tab. A save returns you to the tab that holds the card you saved, and
+  a refused value reopens the tab that holds the field it refused, so the
+  message is never on a page you are not looking at. `build 111`.
+- **A provider is added from a form.** The registry is a table you can read,
+  with add, edit and delete, and a refusal names the box to fix. The primary
+  cannot be deleted, because that would silently move which endpoint every turn
+  is sent to; the refusal says so and says what to do instead. The JSON editor
+  is still there, folded away, for the times a form is not enough. `build 111`.
+- **The clock is twelve hours or twenty-four.** One setting, and every stamp on
+  every surface follows it: the transcript, the conversation list and the
+  sessions page. `build 111`.
+- **A reply is announced to every device, or to the ones you pick.** The scope
+  is a setting with three answers: the device that asked, every paired device,
+  or a list you choose. There is a master switch above it, and off means
+  nothing is sent whatever the scope says. A device that has been unpaired
+  stops being announced to, even if its registration never expired, and a scope
+  that reaches nobody says so rather than going quiet. `build 111`.
+- **The conversation list can be sorted.** Recently used, newest first, by
+  title, or grouped by day. The control sits next to the word Conversations at
+  the top of the list rather than in the settings page, because that is where
+  you are looking when you want it changed. `build 111`.
+- **The phone and the browser render settings from one record.** The daemon
+  serves a capability record naming every setting it accepts, which section it
+  belongs to, what shape it is and what values it allows, so neither client
+  keeps its own copy of the list. The device settings route also gained the
+  clock format and the push scope alongside the seven fields it already had.
+  `build 111`.
+
 ## 1.4.9
 
 - **A Claude account is connected from the Settings page.** Connect starts
