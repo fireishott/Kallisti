@@ -5,6 +5,20 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.15] - 2026-10-27
+
+Two fixes that pair with daemon 1.4.12 build 125.
+
+### Fixed
+
+- **Tapping a model pins that model.** The picker sent the row's bare id, and the
+  daemon split a bare id against its primary provider, so pinning a Gemini model
+  answered `400 model_invalid: commandcode publishes 93 models and that id is not
+  one of them`. The switch now sends `provider/model` whenever the row carries a
+  provider, and the picker recognises a pin stored in that form when it draws the
+  tick - before this, a canonical pin matched no row and the sheet showed the
+  primary provider's name as the active one. `build 110`.
+
 ## [1.4.14] - 2026-10-27
 
 Two things the phone was making harder than they are.

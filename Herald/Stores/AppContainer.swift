@@ -820,8 +820,14 @@ final class AppContainer {
         container.modelStore.erisCatalogProvider = {
             ErisControlMapping.catalog(try await erisClient().controlModels())
         }
-        container.modelStore.erisSwitchProvider = { name, _ in
-            try await erisClient().setControlModel(name)
+        container.modelStore.erisSwitchProvider = { name, provider in
+            // A pin is stored `provider/model`. A bare id is accepted when
+            // exactly one catalogue publishes it, but an id two providers both
+            // publish needs the provider named, so send it whenever the row that
+            // was tapped carried one.
+            let slug = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+            let target = (slug.isEmpty || name.contains("/")) ? name : "\(slug)/\(name)"
+            try await erisClient().setControlModel(target)
         }
 
         container.cronStore.erisCronProvider = {

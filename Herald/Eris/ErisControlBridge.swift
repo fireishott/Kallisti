@@ -55,10 +55,17 @@ enum ErisControlMapping {
             )
         }
         let pinned = wire.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A pin is stored `provider/model` and a row's `id` is the bare id its
+        // own provider spells. Match either spelling, or a pinned row is never
+        // recognised: no tick is drawn and the active model is named after the
+        // primary provider instead of the one that serves it.
+        func isPinned(_ row: ErisControlModelRow) -> Bool {
+            row.id == pinned || "\(row.provider ?? "")/\(row.id)" == pinned
+        }
         let active: ModelStore.ActiveModel?
         if pinned.isEmpty {
             active = nil
-        } else if let row = wire.models.first(where: { $0.id == pinned }) {
+        } else if let row = wire.models.first(where: isPinned) {
             active = ModelStore.ActiveModel(
                 name: row.id,
                 provider: row.provider,
