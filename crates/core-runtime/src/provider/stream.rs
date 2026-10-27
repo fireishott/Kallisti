@@ -56,7 +56,37 @@ impl ToolAccumulator {
         self.name.push_str(fragment);
     }
 
+    /// Add one `arguments` fragment, tolerating a sender that replays what it
+    /// already sent.
+    ///
+    /// The documented sender appends only new bytes. A gateway in front of
+    /// 9router can instead send the whole object again on a later delta, and it
+    /// can send the whole object growing, the same three shapes the text path
+    /// guards against in `antigravity_delta`. Appending blind turned
+    /// `{...}` into `{...}{...}`, which fails as `trailing characters` or as
+    /// `EOF while parsing a list` depending on where the cut fell, and the turn
+    /// dies at the parser before any tool runs. So: a fragment that begins with
+    /// everything already buffered contributes only its new suffix, a fragment
+    /// already contained in the buffer contributes nothing, and anything else is
+    /// a genuine continuation. A real truncation still ends short of valid JSON
+    /// and is still refused in `finish`.
     fn push_arguments(&mut self, fragment: &str) {
+        if fragment.is_empty() {
+            return;
+        }
+        if self.arguments.is_empty() {
+            self.arguments.push_str(fragment);
+            return;
+        }
+        if fragment.starts_with(self.arguments.as_str()) {
+            let fresh = fragment[self.arguments.len()..].to_owned();
+            self.arguments.push_str(&fresh);
+            return;
+        }
+        if self.arguments.starts_with(fragment) {
+            // The sender repeated a fragment it already sent: nothing new.
+            return;
+        }
         self.arguments.push_str(fragment);
     }
 

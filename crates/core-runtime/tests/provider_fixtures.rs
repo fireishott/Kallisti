@@ -154,6 +154,40 @@ async fn openai_argument_fragments_assemble_into_complete_calls() {
     assert_eq!(completion.usage.cache_read_tokens(), Some(900));
 }
 
+/// A gateway may replay the whole `arguments` string on a later delta instead
+/// of only the new fragment. Recorded on 2026-10-27: a `clarify` call failed
+/// with `trailing characters at line 1 column 501` because the buffer had become
+/// `{...}{...}`. Appending every fragment blind is what produced that, so the
+/// accumulator compares against what it already holds the way the text path
+/// does, and the call assembles once.
+#[tokio::test]
+async fn a_resend_of_the_whole_arguments_object_assembles_into_one_call() {
+    let replay = replay_fixture("openai-tool-call-arguments-resend.sse").await;
+    let completion = &replay.completion;
+
+    assert_eq!(completion.finish_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(
+        completion.tool_calls.len(),
+        1,
+        "the replayed object must not become a second call: {:?}",
+        completion.tool_calls
+    );
+
+    let call = &completion.tool_calls[0];
+    assert_eq!(call.name, "clarify");
+    assert_eq!(call.id, "call_clarify");
+    assert_eq!(
+        call.arguments,
+        serde_json::json!({
+            "question": "Which timezone should the report use?",
+            "options": ["America/New_York", "UTC"],
+            "allow_free_text": true,
+        })
+    );
+
+    assert_no_partial_tool_call(&replay, "\"arguments\"");
+}
+
 #[tokio::test]
 async fn anthropic_input_json_deltas_assemble_into_one_complete_call() {
     let replay = replay_fixture("anthropic-input-json-delta-stream.sse").await;

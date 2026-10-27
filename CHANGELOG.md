@@ -27,13 +27,17 @@ observe; commit history carries the detail.
   conversation, and `7 turns` is how much work it did. The word `round` is gone
   from every visible string; the database column is still called `rounds` and
   nothing had to be migrated. `build 111`.
-- **A reply longer than the window scrolls inside its own box, and can be
-  opened full.** The answer bubble stops growing at seventy percent of the
-  window and scrolls from there, with a follow that yields the moment you
-  scroll up to read something. It carries the same expand control in its top
-  right corner as the thinking bubble, and Escape closes it. A wide table or a
-  long terminal line inside an answer scrolls sideways inside the answer
-  instead of dragging the whole chat page with it. `build 111`.
+- **A long answer flows in the thread instead of scrolling in its own box, and
+  can be opened full.** The answer bubble used to stop growing at seventy
+  percent of the window and scroll from there, which put a second scrollbar
+  inside a page that already scrolls and made a long answer hard to read. The
+  bubble now has no height ceiling: the thread carries the scroll, the way it
+  does for every other block. A collapsed answer folds to `--fold`, the one
+  token the thinking bubble's body also reads, so the two blocks are the same
+  size. The expand control in the bubble's top right corner, and Escape, still
+  open the reply in the whole window; a wide table or a long terminal line still
+  scrolls sideways inside the answer rather than dragging the chat page with it.
+  `build 111`.
 - **The settings page has six tabs.** Models, Assistant, Memory, Devices,
   Automation and System, each its own set of forms, and every tab is a link:
   the page still works with no script at all, and a bookmark to one tab lands
@@ -58,12 +62,29 @@ observe; commit history carries the detail.
   title, or grouped by day. The control sits next to the word Conversations at
   the top of the list rather than in the settings page, because that is where
   you are looking when you want it changed. `build 111`.
+- **The menus are rows, the way iOS draws one.** The sort control and a
+  conversation's project control were a select box and a separate Move button,
+  which is two affordances for one choice. Both are now a single panel of rows:
+  a check against the option in force, related rows grouped, the destructive row
+  last and below a rule, title case, no ellipsis, and the press is the change.
+  It is still a `details` element, so every one of them works with no script.
+  `build 111`.
 - **The phone and the browser render settings from one record.** The daemon
   serves a capability record naming every setting it accepts, which section it
   belongs to, what shape it is and what values it allows, so neither client
   keeps its own copy of the list. The device settings route also gained the
   clock format and the push scope alongside the seven fields it already had.
   `build 111`.
+- **A tool call survives a gateway that repeats itself.** The argument buffer
+  appended every fragment the provider sent, on the documented assumption that a
+  fragment is only the new bytes. A gateway in front of 9router re-sent the whole
+  `arguments` object on a later delta instead, which made the buffer two objects
+  in a row and failed the turn at the parser with `trailing characters` or
+  `EOF while parsing a list` before any tool ran. The buffer now compares each
+  fragment with what it already holds, the same way the reasoning text does: a
+  fragment that begins with the buffer contributes only its new suffix, a
+  fragment already inside it contributes nothing, and a real truncation is still
+  refused. `build 112`.
 
 ## 1.4.9
 
