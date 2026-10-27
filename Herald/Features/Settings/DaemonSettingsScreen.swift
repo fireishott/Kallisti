@@ -32,6 +32,14 @@ struct DaemonSettingsScreen: View {
     @State private var writingKey: String?
     /// Text being typed into a free-text field, before it is committed.
     @State private var drafts: [String: String] = [:]
+    /// Whether the daemon currently allows full host access.
+    @State private var fullAccess = false
+    /// The word being typed into the guard, before it counts as a decision.
+    @State private var confirmWord = ""
+    /// Whether the guard is on screen.
+    @State private var askingFullAccess = false
+    /// The sandbox the daemon holds, which a disable can change underneath us.
+    @State private var sandbox = ""
 
     var body: some View {
         ZStack {
@@ -54,6 +62,7 @@ struct DaemonSettingsScreen: View {
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    hostAccessSection
                     ForEach(groups) { group in
                         SettingsSectionView(title: group.title) {
                             VStack(spacing: 0) {
@@ -74,6 +83,23 @@ struct DaemonSettingsScreen: View {
                 .padding(.vertical, Design.Spacing.sm)
             }
             .refreshable { await load() }
+        }
+        .alert("Enable full host access?", isPresented: $askingFullAccess) {
+            // A dialog is a click; the word is a decision. This is the one switch
+            // that can hand a turn the whole host, and the daemon refuses the
+            // write without the word, so asking here is the same guard, not extra
+            // ceremony.
+            TextField("type full", text: $confirmWord)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Cancel", role: .cancel) { confirmWord = "" }
+            Button("Enable", role: .destructive) {
+                let word = confirmWord
+                confirmWord = ""
+                Task { await setFullAccess(enable: true, confirm: word) }
+            }
+        } message: {
+            Text("Turns would run on the host itself, outside the workspace sandbox. Type full to confirm.")
         }
         .navigationTitle("Daemon")
         .navigationBarTitleDisplayMode(.inline)
@@ -244,6 +270,57 @@ struct DaemonSettingsScreen: View {
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
     }
 
+    /// Full host access: the switch that decides whether `full` is a sandbox a
+    /// save may pick.
+    ///
+    /// It is not in the catalogue because it is not a plain setting. Enabling
+    /// needs the word typed, and disabling demotes a `full` sandbox, so the
+    /// screen treats it as the guard it is rather than as another row.
+    private var hostAccessSection: some View {
+        SettingsSectionView(title: "Host access") {
+            VStack(spacing: 0) {
+                Toggle(isOn: Binding(
+                    get: { fullAccess },
+                    set: { wants in
+                        if wants {
+                            askingFullAccess = true
+                        } else {
+                            Task { await setFullAccess(enable: false, confirm: nil) }
+                        }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Full host access")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Text(fullAccess
+                             ? "Turns can run on the host. The sandbox may select full."
+                             : "Turns are confined to the workspace. The sandbox cannot select full.")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                }
+                .tint(Design.Colors.accent)
+                .disabled(writingKey != nil)
+                .frame(minHeight: Design.Size.minTapTarget)
+
+                if !sandbox.isEmpty {
+                    divider
+                    HStack {
+                        Text("Sandbox now")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Spacer()
+                        Text(ErisSettingsOption.sandboxLabel(sandbox))
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+            }
+        }
+    }
+
     private var divider: some View {
         Rectangle()
             .fill(Design.Colors.border)
@@ -269,7 +346,27 @@ struct DaemonSettingsScreen: View {
         do {
             let snapshot = try await client.settings()
             groups = snapshot.groups
+            fullAccess = snapshot.fullAccess
+            sandbox = snapshot.sandbox
             errorMessage = nil
+        } catch {
+            errorMessage = (error as? ErisError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Flip the guard, then re-read: disabling it demotes a `full` sandbox, and
+    /// only the daemon knows what it holds afterwards.
+    private func setFullAccess(enable: Bool, confirm: String?) async {
+        guard let client = await erisClient() else { return }
+        writingKey = enable ? "full_access:on" : "full_access:off"
+        notice = nil
+        defer { writingKey = nil }
+        do {
+            let result = try await client.setFullAccess(enable: enable, confirm: confirm)
+            fullAccess = result.fullAccess
+            sandbox = result.sandbox
+            notice = result.fullAccess ? "Full host access on." : "Full host access off."
+            await load()
         } catch {
             errorMessage = (error as? ErisError)?.errorDescription ?? error.localizedDescription
         }

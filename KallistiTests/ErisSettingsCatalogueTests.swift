@@ -167,3 +167,39 @@ struct ErisSettingsCatalogueTests {
         }
     }
 }
+
+// MARK: - The switch that gates `full`
+//
+// `sandbox=full` is refused until the daemon's full-access switch is on, and that
+// switch deliberately is not in the capability record: enabling it needs the word
+// typed and disabling it demotes a `full` sandbox with it. So it has its own route
+// and its own state, and these tests hold the two things that matter about it: the
+// switch's state comes from the daemon, and the answer to a flip is the state
+// after it rather than a copy of the request.
+
+@Suite("Eris full access switch")
+struct ErisFullAccessTests {
+
+    @Test("the snapshot says whether the switch is on")
+    func snapshotCarriesTheSwitch() throws {
+        let on = #"{"ok":true,"full_access":true,"sandbox":"full","capabilities":[]}"#
+        let off = #"{"ok":true,"full_access":false,"sandbox":"workspace-write","capabilities":[]}"#
+        #expect(try JSONDecoder().decode(ErisSettingsSnapshot.self, from: Data(on.utf8)).fullAccess)
+        let disabled = try JSONDecoder().decode(ErisSettingsSnapshot.self, from: Data(off.utf8))
+        #expect(!disabled.fullAccess)
+        // A daemon that predates the key reads as off, not as broken.
+        let older = #"{"ok":true,"sandbox":"read-only","capabilities":[]}"#
+        #expect(try JSONDecoder().decode(ErisSettingsSnapshot.self, from: Data(older.utf8)).fullAccess == false)
+    }
+
+    /// Disabling demotes a `full` sandbox, so the result has to carry the sandbox
+    /// the daemon holds now. A surface that only heard its own request would keep
+    /// drawing a mode that is no longer selected.
+    @Test("the answer is the state after the flip")
+    func resultCarriesTheDemotedSandbox() throws {
+        let body = #"{"ok":true,"full_access":false,"sandbox":"workspace-write"}"#
+        let result = try JSONDecoder().decode(ErisFullAccessResult.self, from: Data(body.utf8))
+        #expect(!result.fullAccess)
+        #expect(result.sandbox == "workspace-write")
+    }
+}

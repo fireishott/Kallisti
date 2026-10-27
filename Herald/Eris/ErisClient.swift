@@ -46,6 +46,10 @@ enum ErisRoute: Equatable, Sendable {
     case settings
     /// `POST /v1/settings` - change a subset of those settings.
     case updateSettings
+    /// `POST /v1/settings/full-access` - the switch that decides whether `full`
+    /// is a sandbox a save may pick. Enabling needs the word typed; disabling
+    /// needs nothing and demotes a `full` sandbox with it.
+    case fullAccess
     /// `GET /v1/projects` - the names a conversation's `project_id` points at.
     case projects
     /// `GET /v1/approvals` - the calls parked for a person, newest first.
@@ -142,6 +146,8 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/conversations/\(Self.segment(conversationID))/clear"
         case .settings, .updateSettings:
             return "/v1/settings"
+        case .fullAccess:
+            return "/v1/settings/full-access"
         case .projects:
             return "/v1/projects"
         case .approvals:
@@ -212,6 +218,7 @@ enum ErisRoute: Equatable, Sendable {
         case .skill:
             return "GET"
         case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings,
+             .fullAccess,
              .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote,
              .setModel, .createCron, .setAux,
              .noteRecognition, .noteRuns, .cancelNoteRun, .gwRestart, .answer:
@@ -629,6 +636,20 @@ actor ErisClient {
         }
         let data = try await send(route: .updateSettings, form: patch.fields)
         return try decode(ErisSettingsUpdate.self, from: data).changed
+    }
+
+    /// `POST /v1/settings/full-access` - turn full host access on or off.
+    ///
+    /// Enable is the guarded direction: the daemon requires the word `full`, so
+    /// a dialog here is not ceremony, it is the same guard the browser has.
+    /// Disable needs nothing, and the daemon demotes a `full` sandbox with it,
+    /// so the answer carries the sandbox it now holds rather than echoing the
+    /// request.
+    func setFullAccess(enable: Bool, confirm: String? = nil) async throws -> ErisFullAccessResult {
+        var form: [String: String] = ["enable": enable ? "on" : "off"]
+        if let confirm, !confirm.isEmpty { form["confirm"] = confirm }
+        let data = try await send(route: .fullAccess, form: form)
+        return try decode(ErisFullAccessResult.self, from: data)
     }
 
     /// `POST /v1/settings` - write one field from the daemon's own record.

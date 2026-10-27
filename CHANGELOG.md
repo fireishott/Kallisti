@@ -5,6 +5,32 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.10] - 2026-10-27
+
+The one setting a phone could pick and never set.
+
+### Added
+
+- **Full host access, on the phone.** `sandbox=full` is refused until the daemon's
+  full-access switch is on, and the only route that flipped it was the dashboard's.
+  The settings record advertised `full` as an option, so the phone offered a choice
+  that could never be taken. Settings now has a "Host access" section with the
+  switch, and the same guard the browser has: enabling needs the word `full` typed,
+  disabling needs nothing, and turning it off demotes a `full` sandbox to the
+  default so the record cannot name a mode the switch no longer allows. `build 105`.
+- **The section states the sandbox it now holds**, because disabling changes the
+  mode underneath the switch.
+
+### Verification
+
+- Daemon: `full_access_needs_the_word_and_demotes_the_sandbox_when_switched_off`
+  walks the route end to end through the real router: a non-admin device is
+  refused, enabling without the word changes nothing, the word turns it on, and
+  switching off demotes a stored `full` sandbox.
+- `KallistiTests/ErisFullAccessTests`: the snapshot carries the switch, a daemon
+  that predates the key reads as off, and the answer to a flip is the state after
+  it rather than a copy of the request.
+
 ## [1.4.9] - 2026-10-27
 
 Settings, wired to the daemon instead of rebuilt beside it.

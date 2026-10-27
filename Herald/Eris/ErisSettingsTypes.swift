@@ -27,6 +27,13 @@ struct ErisSettingsSnapshot: Equatable, Sendable {
     let approval: String
     /// The daemon's timezone label.
     let timezone: String
+    /// Whether full host access is enabled on the daemon.
+    ///
+    /// The one switch `capabilities` cannot carry: turning it on needs the word
+    /// typed, and turning it off demotes a `full` sandbox with it, so it is not
+    /// a plain setting and not a plain write. `sandbox=full` is refused until
+    /// this is true, which is what made it a dead end on the phone.
+    let fullAccess: Bool
     /// Every operator-facing setting the daemon holds, in its own tab order.
     ///
     /// This is the Settings screen: labels, types, current values and closed
@@ -43,6 +50,7 @@ struct ErisSettingsSnapshot: Equatable, Sendable {
         toolRounds: Int,
         approval: String,
         timezone: String,
+        fullAccess: Bool = false,
         fields: [ErisSettingField] = []
     ) {
         self.model = model
@@ -52,6 +60,7 @@ struct ErisSettingsSnapshot: Equatable, Sendable {
         self.toolRounds = toolRounds
         self.approval = approval
         self.timezone = timezone
+        self.fullAccess = fullAccess
         self.fields = fields
     }
 
@@ -81,6 +90,7 @@ extension ErisSettingsSnapshot: Decodable {
         case toolRounds = "tool_rounds"
         case approval
         case timezone
+        case fullAccess = "full_access"
         case capabilities
     }
 
@@ -94,6 +104,7 @@ extension ErisSettingsSnapshot: Decodable {
             toolRounds: try container.decodeIfPresent(Int.self, forKey: .toolRounds) ?? 0,
             approval: try container.decodeIfPresent(String.self, forKey: .approval) ?? "",
             timezone: try container.decodeIfPresent(String.self, forKey: .timezone) ?? "",
+            fullAccess: try container.decodeIfPresent(Bool.self, forKey: .fullAccess) ?? false,
             fields: (try container.decodeIfPresent([FailableSettingField].self, forKey: .capabilities) ?? [])
                 .compactMap(\.field)
         )
@@ -458,6 +469,36 @@ private struct FailableSettingField: Decodable {
 
     init(from decoder: any Decoder) throws {
         field = try? ErisSettingField(from: decoder)
+    }
+}
+
+/// The `POST /v1/settings/full-access` answer.
+///
+/// The state after the write, not an echo of the request: disabling the switch
+/// also demotes a `full` sandbox, so a surface that only heard its own request
+/// would keep drawing a mode the daemon no longer holds.
+struct ErisFullAccessResult: Equatable, Sendable, Decodable {
+    /// Whether full host access is now on.
+    let fullAccess: Bool
+    /// The sandbox the daemon holds now, which may have been demoted.
+    let sandbox: String
+
+    init(fullAccess: Bool, sandbox: String) {
+        self.fullAccess = fullAccess
+        self.sandbox = sandbox
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case fullAccess = "full_access"
+        case sandbox
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            fullAccess: try container.decodeIfPresent(Bool.self, forKey: .fullAccess) ?? false,
+            sandbox: try container.decodeIfPresent(String.self, forKey: .sandbox) ?? ""
+        )
     }
 }
 
