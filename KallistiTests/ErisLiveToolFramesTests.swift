@@ -151,6 +151,8 @@ private func makeFrameClient(streamBody: Data) async -> ErisHeraldClient {
             ))
         case "/v1/turns/job-live/events":
             return (200, streamBody)
+        case "/v1/turns/job-live/cancel":
+            return (200, Data(#"{"ok":true,"state":"cancelled"}"#.utf8))
         default:
             return (404, Data(#"{"ok":false,"code":"not_found","message":"no"}"#.utf8))
         }
@@ -269,6 +271,40 @@ struct ErisLiveTurnFrameTests {
         #expect(completed.first?.1?.contains("3 passed") == true)
         #expect(completed.first?.2 == false)
         #expect(started.count == 1, "a finished call must not be a second row")
+    }
+
+    /// Stop has to reach the daemon. It used to throw `notBackedYet`, so the app
+    /// tore down its own view while the turn kept running - the invisible
+    /// background task, exactly.
+    @Test("stopping a turn cancels it on the daemon")
+    func stoppingCancelsOnTheDaemon() async {
+        defer { ErisTurnFrameURLProtocol.reset() }
+        // A stream that opens with one frame and then goes quiet, which is what a
+        // long thinking pass looks like: nothing to render, everything still
+        // running.
+        let body = sse([
+            ("round", #"{"round":1,"max_rounds":12,"tools_allowed":true}"#),
+        ])
+        let client = await makeFrameClient(streamBody: body)
+
+        var phases: [String] = []
+        for await update in client.sendStreaming(
+            message: "think about it",
+            attachments: [],
+            clientMessageID: UUID(),
+            continuationContext: nil
+        ) {
+            if case .started(let phase) = update { phases.append(phase) }
+        }
+        #expect(phases.count == 1)
+
+        // What the composer's Stop reaches.
+        let cancelled = await client.interruptSession()
+        #expect(cancelled, "the daemon was asked to stop the turn")
+        #expect(
+            ErisTurnFrameURLProtocol.calls().contains("POST /v1/turns/job-live/cancel"),
+            "a Stop is a request to the daemon, not a local teardown: \(ErisTurnFrameURLProtocol.calls())"
+        )
     }
 
     /// A daemon that predates the start frame still renders its finished calls,

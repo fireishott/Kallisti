@@ -5,6 +5,37 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.12] - 2026-10-27
+
+Stop, actually.
+
+### Fixed
+
+- **Stop cancels the turn on the daemon.** `ErisHeraldClient.cancelJob` threw
+  `notBackedYet`, so the composer's Stop tore down the app's own stream and left
+  the daemon working. The turn kept running with nothing on screen pointing at it,
+  its output landed later, and there was no way to tell that from a hang. Both
+  stop paths now reach `POST /v1/turns/{id}/cancel`: the explicit Stop, which
+  names the streamed job, and the drop-in Stop, which interrupts whatever this
+  client is streaming. A turn that finished in the gap answers
+  `turn_not_cancellable`, which is the outcome a Stop asked for and is not
+  reported as a failure. `build 107`.
+- **A late frame cannot restart a stopped turn.** The client forgets the turn id
+  and the open tool run on the way out, so a delta that arrives after the stop is
+  ignored instead of repainting a run the operator ended.
+
+### Verification
+
+- `ErisLiveTurnFrameTests/stoppingCancelsOnTheDaemon` drives a real send through
+  the stubbed transport, stops it, and asserts the daemon was asked:
+  `POST /v1/turns/job-live/cancel` must appear in the transport's own call list.
+  A local-only teardown cannot pass that test.
+
+### Note
+
+- Build 106 to TestFlight carried the Backups screen but not this fix: the archive
+  was already signed when the fix landed. **Install 107.**
+
 ## [1.4.11] - 2026-10-27
 
 Backups, which finish the System tab.

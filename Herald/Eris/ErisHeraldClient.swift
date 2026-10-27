@@ -549,12 +549,50 @@ final class ErisHeraldClient: HeraldClientProtocol {
         )
     }
 
+    /// Stop the turn on the daemon, not just on the phone.
+    ///
+    /// This used to throw `notBackedYet`, which read as harmless and was not: the
+    /// app tore down its own stream and the daemon kept working, so Stop left a
+    /// turn running with nothing on screen pointing at it. That is the whole of
+    /// "I stopped it and something kept going".
+    ///
+    /// The caller's id is the daemon's turn id: a turn id is a UUID and
+    /// `stableUUID(from:)` returns a UUID unchanged, so the local handle maps
+    /// back without a table. The turn this client is streaming wins when there is
+    /// one, because that is the turn a Stop can mean.
     func cancelJob(jobID: UUID) async throws {
-        throw ErisHeraldError.notBackedYet("cancelJob (needs the Eris turn id)")
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        let turnID = activeTurnID ?? jobID.uuidString
+        do {
+            _ = try await client.cancel(turnID: turnID)
+        } catch let error as ErisError where error.code == "turn_not_cancellable" {
+            // The turn finished in the gap. Nothing is running, which is the
+            // outcome a Stop asked for, so there is nothing to report.
+        }
+        // Whatever happened above, this client is no longer streaming it: a frame
+        // that arrives late must not quietly restart the run in the UI.
+        if activeTurnID == turnID { activeTurnID = nil }
+        activeToolRunID = nil
     }
 
+    /// Interrupt the turn this client is streaming, and say whether anything was
+    /// actually interrupted.
+    ///
+    /// `true` is the client's statement that the daemon stopped, so the UI can
+    /// settle; `false` means there was nothing running to stop.
     func interruptSession() async -> Bool {
-        false
+        guard let client = await pairedClient(), let turnID = activeTurnID else { return false }
+        do {
+            _ = try await client.cancel(turnID: turnID)
+        } catch let error as ErisError where error.code == "turn_not_cancellable" {
+            activeTurnID = nil
+            return false
+        } catch {
+            return false
+        }
+        activeTurnID = nil
+        activeToolRunID = nil
+        return true
     }
 
     // MARK: - Notes (not the chat path; notes are handled by NotesStore)
