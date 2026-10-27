@@ -114,6 +114,17 @@ observe; commit history carries the detail.
   conversation is now a fixed box the size of the visual viewport, the root is
   locked as well as the body, and the transcript is the only thing that moves.
   `build 115`.
+- **A collapsed answer is 320 pixels tall, not the sliver it was rendered as.**
+  A message carried `min-height: 0`, which is how a bounded scroller inside it
+  gets its ceilings to bite, and is also how a grid item loses the floor its own
+  content should give it. The transcript could then hand a message less height
+  than its parts needed, and the flex column inside shrank what it could: the
+  reasoning body held its 320px cap and the answer below it, also capped at 320,
+  came out 45px tall with two thousand pixels of text clipped behind the fade.
+  There was no reply to scroll to, because nothing was laying one out. Measured
+  on a real 98-turn transcript the message wanted 893 and was given 432. A
+  message is now as tall as what it holds, and the ceilings inside it are the
+  ones stated on the scrollers themselves. `build 116`.
 
 ## 1.4.9
 

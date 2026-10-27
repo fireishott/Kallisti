@@ -1473,10 +1473,22 @@ body:has(.chat-shell) .app {
   width: min(100%, 78%);
   max-width: 52rem;
   min-width: 0;
-  /* A flex child with taller content will not shrink below it without this, so
-     the bounded scrollers inside a message would size to their content and the
-     ceilings above them would never bite. */
-  min-height: 0;
+  /* A message is as tall as what it holds.
+   *
+   * `min-height: 0` was here to let the bounded scrollers inside a message size
+   * themselves rather than their content. What it also did was remove the floor
+   * a grid item normally gets from its own content: the transcript could hand a
+   * message less height than its parts needed, and the flex column inside then
+   * did the only thing it can do with a deficit, which is shrink its children.
+   * A collapsed answer, 320px of text under a fade, was rendered as a 45px sliver
+   * with 2133px of text clipped behind it. Measured on the operator's own
+   * transcript, the message wanted 893 and was given 432.
+   *
+   * The ceilings inside a message are `max-height` on the scrollers themselves
+   * (the fold token on a reasoning body, 340px on a call's output), so they bite
+   * whether or not this element can shrink. `max-content` cannot shrink it, and
+   * the transcript scrolls, which is the one thing that was supposed to happen. */
+  min-height: max-content;
 }
 
 /* A reply with no thinking bubble has nothing to align against, so it takes the
@@ -3081,9 +3093,10 @@ mod tests {
             "and reaching its end does not scroll the page behind it: {log}"
         );
         assert!(
-            rule(".msg").contains("min-height: 0"),
-            "a flex child with taller content will not shrink below it without this, so the \
-             ceilings inside it would never bite"
+            rule(".msg").contains("min-height: max-content"),
+            "a message is as tall as what it holds: with `min-height: 0` the \
+             transcript handed it less height than its parts needed, and the flex \
+             column shrank a 320px collapsed answer to a 45px sliver"
         );
     }
 
