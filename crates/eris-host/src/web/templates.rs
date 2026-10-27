@@ -340,6 +340,19 @@ pub struct Chrome {
     pub sessions: Vec<ChatSession>,
     /// The conversation this page is showing, when it is showing one.
     pub current_conversation: Option<String>,
+    /// How the rail orders its list, as the operator last chose.
+    ///
+    /// It lives here rather than on one page because every page that renders the
+    /// rail draws the same list: a preference the chat page honoured and the
+    /// dashboard ignored would be two rails.
+    pub conversation_sort: crate::web::chat::ConversationSort,
+    /// The rail's list split into calendar days, when the operator chose
+    /// `By day`. Empty for every other order, so a template that has no day
+    /// headings has nothing to iterate.
+    ///
+    /// The grouping is done on the server because the day boundary is the
+    /// operator's zone and the rail is rendered before any script runs.
+    pub rail_days: Vec<RailDay>,
     /// True when the operator collapsed the rail.
     pub rail_hidden: bool,
     /// The subagents worth reporting: anything still working, plus anything that
@@ -348,6 +361,20 @@ pub struct Chrome {
     /// The rows themselves rather than a copy, so the bar and a page that queries
     /// the table cannot disagree about a status or an elapsed time.
     pub subagents: Vec<crate::subagents::Subagent>,
+}
+
+/// One calendar day of the rail's list, as a heading and the rows under it.
+///
+/// Only rendered when the operator chose `By day`. The label is the server's
+/// (`Today`, `Yesterday`, `Mar 14`) because it depends on the operator's clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailDay {
+    /// `YYYY-MM-DD` on the operator's clock, for a stable key.
+    pub key: String,
+    /// What the heading reads.
+    pub label: String,
+    /// The conversations filed under this day, newest first.
+    pub sessions: Vec<ChatSession>,
 }
 
 /// One conversation in the rail.
@@ -380,6 +407,8 @@ impl Default for Chrome {
             projects: Vec::new(),
             sessions: Vec::new(),
             current_conversation: None,
+            conversation_sort: crate::web::chat::ConversationSort::DEFAULT,
+            rail_days: Vec::new(),
             rail_hidden: false,
             subagents: Vec::new(),
         }
@@ -523,11 +552,34 @@ pub fn shell(
                                 button type="submit" { "+  New chat" }
                             }
                             (new_project_control(chrome))
+                            /* The list's own head. The order used to be a field
+                               on the settings page, which meant changing how the
+                               rail reads required leaving the rail. It is a small
+                               disclosure beside the word it applies to. */
+                            div .rail-list-head {
+                                span .rail-list-label { "Conversations" }
+                                (rail_sort_control(chrome))
+                            }
                             nav .sessions id="rail-sessions" aria-label="Conversations" {
                                 @if chrome.sessions.is_empty() {
                                     span .side-empty { "No conversations yet" }
                                 }
-                                @if chrome.projects.is_empty() {
+                                @if !chrome.rail_days.is_empty() {
+                                    /* By day: the headings are calendar days on the
+                                       operator's clock, so a screen reader hears a day
+                                       rather than another conversation. */
+                                    @for day in &chrome.rail_days {
+                                        div .rail-group data-day=(day.key.as_str()) {
+                                            div .rail-group-head {
+                                                span .rail-group-name { (day.label) }
+                                                span .rail-group-count { (day.sessions.len()) }
+                                            }
+                                            @for session in &day.sessions {
+                                                (rail_session_row(chrome, session))
+                                            }
+                                        }
+                                    }
+                                } @else if chrome.projects.is_empty() {
                                     /* No project has been named, so there is nothing to
                                        head a group with: the list stays the flat one it
                                        has always been. */
@@ -696,6 +748,37 @@ fn new_project_control(chrome: &Chrome) -> Markup {
                 @if chrome.projects.is_empty() {
                     span .rail-hint { "No projects yet" }
                 }
+            }
+        }
+    }
+}
+
+/// The rail's order, as a small disclosure beside the list.
+///
+/// A `details` element rather than a scripted menu: the summary is the button,
+/// the form inside it posts the order, and the whole thing works with every
+/// script blocked. The summary states the current order, so the control says
+/// what it is doing before it is opened.
+fn rail_sort_control(chrome: &Chrome) -> Markup {
+    use crate::web::chat::ConversationSort;
+    let current = chrome.conversation_sort;
+    html! {
+        details .rail-sort {
+            summary title="Sort conversations"
+                aria-label=(format!("Sort conversations, currently {}", current.label())) {
+                span .rail-sort-glyph aria-hidden="true" { "\u{2195}" }
+                span .rail-sort-label { (current.label()) }
+            }
+            form method="post" action=(crate::admin::ROUTE_CHAT_SORT) {
+                label .sr-only for="rail-sort-order" { "Conversation order" }
+                select id="rail-sort-order" name="sort" {
+                    @for option in ConversationSort::ALL {
+                        option value=(option.as_str()) selected[option == current] {
+                            (option.label())
+                        }
+                    }
+                }
+                button type="submit" { "Sort" }
             }
         }
     }
@@ -1857,6 +1940,17 @@ pub struct SettingsView {
     pub memory_vault: String,
     /// The clock every stamp is shown in: `host`, `UTC`, or an offset.
     pub timezone: String,
+    /// Whether stamps are written `12h` or `24h`.
+    pub clock_format: crate::zone::ClockFormat,
+    /// Whether a finished reply is announced at all, read through the daemon's
+    /// own reader so the page shows what the daemon would actually do.
+    pub notify_on_reply: bool,
+    /// Which devices a reply notification reaches.
+    pub notify_scope: crate::push::NotifyScope,
+    /// The device ids a `targeted` scope names, comma separated as stored.
+    pub notify_devices: String,
+    /// The devices a scope may name: paired and not revoked, by name.
+    pub push_devices: Vec<(String, String)>,
     /// The file the persona lives in, stated on the page.
     pub persona_path: String,
     /// The stored wallpaper id: a preset name, `custom`, or `none`.
@@ -1962,6 +2056,11 @@ impl SettingsView {
             memory_backend: crate::memory::DEFAULT_BACKEND.to_owned(),
             memory_vault: String::new(),
             timezone: crate::zone::HOST.to_owned(),
+            clock_format: crate::zone::ClockFormat::TwentyFour,
+            notify_on_reply: true,
+            notify_scope: crate::push::NotifyScope::DEFAULT,
+            notify_devices: String::new(),
+            push_devices: Vec::new(),
             persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
             wallpaper: wallpaper::DEFAULT_WALLPAPER.to_owned(),
             wallpaper_custom: false,
@@ -2715,11 +2814,65 @@ fn clock_group(view: &SettingsView) -> Markup {
                     "An offset like `-04:00` is fixed and does not move when the clocks do."
                 }
             }
+            div .field {
+                span .label { "Clock" }
+                /* A radio group rather than a select: two options, and both fit
+                   on one line at every width. The pair reads as one question with
+                   the time zone above it, which is why it is one form and one
+                   route - the operator is answering "what time is it", and being
+                   sent to a second page to finish that answer is the kind of
+                   split this page is being cleaned up to remove. */
+                div .radio-row {
+                    label .radio {
+                        input type="radio" name="clock_format" value="24h"
+                            checked[view.clock_format == crate::zone::ClockFormat::TwentyFour];
+                        span { "24-hour" }
+                    }
+                    label .radio {
+                        input type="radio" name="clock_format" value="12h"
+                            checked[view.clock_format == crate::zone::ClockFormat::Twelve];
+                        span { "12-hour" }
+                    }
+                }
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("clock_format")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Every stamp in the product follows this: the transcript, the rail, "
+                    "the admin listings. The shape is the same clock the line above sets."
+                }
+            }
             div .actions {
-                button type="submit" { "Save time zone" }
+                button type="submit" { "Save clock" }
             }
         }
     }
+}
+
+/// What one push scope means, in the operator's own words.
+///
+/// `NotifyScope::label` is the short form a refusal and the iOS picker share;
+/// this is the sentence a radio button in a web form carries, where there is
+/// room to say what the choice actually does.
+#[must_use]
+fn scope_sentence(scope: crate::push::NotifyScope) -> &'static str {
+    use crate::push::NotifyScope;
+    match scope {
+        NotifyScope::Origin => "Only the device that asked",
+        NotifyScope::All => "Every paired device",
+        NotifyScope::Targeted => "Only the devices I pick",
+    }
+}
+
+/// The device ids a stored `push.notify_devices` row names, as the picker needs
+/// them.
+///
+/// The row is the stored shape, comma separated and possibly messy; this is the
+/// same trimming and the same de-duplication the daemon's own reader does, so a
+/// tick appears on exactly the devices the router would reach.
+#[must_use]
+fn chosen_devices(stored: &str) -> Vec<String> {
+    crate::push::notify_devices(Some(stored))
 }
 
 /// The provider registry: every endpoint this daemon may talk to.
@@ -3329,6 +3482,82 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "Where paired phones reach this daemon. Loopback only by default, which is why an "
                 "iPhone cannot pair until you add an address it can route to - your tailnet address, "
                 "or the LAN address if you are on the same network."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_PUSH) novalidate {
+                div .field {
+                    span .label { "Reply notifications" }
+                    /* The master switch and the scope are one control: off means no
+                       notification whatever the scope says, and a form that showed
+                       the scope without saying so would look like a picker that
+                       does not work.
+
+                       The hidden pair is how an unchecked box is told apart from a
+                       page that never had one: the box posts `on` after `off`, so
+                       reading the last value is the answer and reading no value at
+                       all is an older form. */
+                    label .check {
+                        input type="hidden" name="notify_on_reply" value="off";
+                        input type="checkbox" name="notify_on_reply" value="on"
+                            checked[view.notify_on_reply];
+                        span .check-name { "Announce a finished reply" }
+                    }
+                    span .hint {
+                        "While this is off nothing below it sends anything, whatever scope is "
+                        "chosen. A turn is the only thing this daemon does that a phone wants to "
+                        "hear about, so this is on by default."
+                    }
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("notify_on_reply")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    span .label { "Where it is sent" }
+                    div .radio-row {
+                        @for scope in crate::push::NotifyScope::ALL {
+                            label .radio {
+                                input type="radio" name="notify_scope"
+                                    value=(scope.as_str())
+                                    checked[view.notify_scope == scope];
+                                span { (scope_sentence(scope)) }
+                            }
+                        }
+                    }
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("notify_scope")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    span .label { "Chosen devices" }
+                    @if view.push_devices.is_empty() {
+                        span .hint {
+                            "No device is paired, so there is nothing to choose. Pair a phone "
+                            "on the Devices page first."
+                        }
+                    } @else {
+                        @let chosen = chosen_devices(&view.notify_devices);
+                        div .check-list {
+                            @for (id, name) in &view.push_devices {
+                                label .check {
+                                    input type="checkbox" name="notify_devices"
+                                        value=(id.as_str())
+                                        checked[chosen.iter().any(|picked| picked == id)];
+                                    span .check-name { (name) }
+                                    span .check-id { (id) }
+                                }
+                            }
+                        }
+                        span .hint {
+                            "Ticked devices are the ones \"Chosen devices\" reaches. A tick here "
+                            "does nothing until that scope is picked."
+                        }
+                    }
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("notify_devices")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save notifications" }
+                }
             }
             form method="post" action=(crate::admin::ROUTE_SETTINGS_DEVICE) novalidate {
                 div .field {
@@ -5293,6 +5522,17 @@ pub fn chat_page(view: &ChatView) -> Markup {
                     @let streaming = !line.user && line.pending && line.body.trim().is_empty();
                     @if !streaming {
                     div .bubble .failed[line.failed] {
+                        @if !line.user {
+                            // The same glyph, the same frame and the same meaning
+                            // as the thinking bubble's control: a bounded block
+                            // that can be asked for the whole window. It sits in
+                            // the corner of the bubble rather than in the who row,
+                            // because it acts on the answer and not on the reply.
+                            button type="button" .bubble-max data-bubble-max
+                                title="Expand" aria-label="Expand this answer" {
+                                "\u{2922}"
+                            }
+                        }
                         (blocks(&line.body))
                         @if !line.files.is_empty() {
                             div .attached {
@@ -5806,7 +6046,18 @@ const CHAT_JS: &str = r##"(function () {
   // screen, so both paths show the same sentence.
   function replyPeekText(article) {
     var bubble = article.querySelector(".bubble");
-    var text = bubble === null ? "" : (bubble.textContent || "");
+    // The corner control lives inside the bubble, so the answer's own words are
+    // read from a copy with the control taken out: a preview that opened with an
+    // arrow glyph would be the control being read as the answer.
+    var words = bubble;
+    if (present(bubble)) {
+      words = bubble.cloneNode(true);
+      var controls = words.querySelectorAll(".bubble-max");
+      for (var at = 0; at < controls.length; at += 1) {
+        controls[at].parentNode.removeChild(controls[at]);
+      }
+    }
+    var text = present(words) ? (words.textContent || "") : "";
     text = text.replace(/\s+/g, " ").trim();
     return text.length > 60 ? text.slice(0, 60) + "\u2026" : text;
   }
@@ -6703,6 +6954,16 @@ const CHAT_JS: &str = r##"(function () {
 
     var bubble = document.createElement("div");
     bubble.className = "bubble";
+    // The same control the server renders, in the same corner: a reply that
+    // arrives live offers the expand a reloaded one does.
+    var bubbleMax = document.createElement("button");
+    bubbleMax.type = "button";
+    bubbleMax.className = "bubble-max";
+    bubbleMax.setAttribute("data-bubble-max", "");
+    bubbleMax.title = "Expand";
+    bubbleMax.setAttribute("aria-label", "Expand this answer");
+    bubbleMax.textContent = "\u2922";
+    bubble.appendChild(bubbleMax);
     var text = document.createElement("p");
     bubble.appendChild(text);
     // What the turn is doing right now, if anything. Hidden until a status frame
@@ -6738,6 +6999,37 @@ const CHAT_JS: &str = r##"(function () {
       article.insertBefore(bubble, metaLive);
       bubbleShown = true;
     }
+    // The answer scrolls itself, and follows its own stream the way the thinking
+    // bubble does: the newest words arrive in view instead of the box sitting at
+    // its first line while the turn talks past the bottom of it. A reply is
+    // bounded (70dvh) rather than unbounded, so without this the end of a long
+    // answer is only reachable by hand.
+    //
+    // It yields to the operator: scrolling up inside an answer unpins it, the
+    // same bargain the transcript's own follow makes, and it is re-pinned by
+    // reaching the bottom again. At most once per frame, because a fragment is
+    // not worth a layout.
+    var bubblePinned = true;
+    var bubbleQueued = false;
+    bubble.addEventListener("scroll", function () {
+      bubblePinned = bubble.scrollHeight - bubble.scrollTop - bubble.clientHeight <= 48;
+    });
+    function bubbleFollow() {
+      if (bubbleShown === false) { return; }
+      if (bubblePinned === false) { return; }
+      if (bubbleQueued) { return; }
+      bubbleQueued = true;
+      var run = function () {
+        bubbleQueued = false;
+        bubble.scrollTop = bubble.scrollHeight;
+      };
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(run);
+        return;
+      }
+      run();
+    }
+
     // Every write of answer text goes through here, so the one place that knows
     // whether there is an answer is also the one place that decides whether the
     // bubble exists. An empty string is not an answer: it is the turn still
@@ -6746,6 +7038,7 @@ const CHAT_JS: &str = r##"(function () {
       var next = typeof value === "string" ? value : "";
       if (next.length > 0) { showBubble(); }
       text.textContent = next;
+      bubbleFollow();
       return next;
     }
     // A settled turn's answer, even an empty one. An empty answer is still an
@@ -6754,6 +7047,7 @@ const CHAT_JS: &str = r##"(function () {
     function settleAnswer(value) {
       showBubble();
       text.textContent = typeof value === "string" ? value : "";
+      bubbleFollow();
     }
 
     // The status line. It replaces the composer hint as the answer to "what is it
@@ -6993,6 +7287,43 @@ const CHAT_JS: &str = r##"(function () {
     var think = button.closest(".think");
     if (think === null) { return; }
     think.classList.toggle("max");
+  });
+
+  // The answer's expand, the same gesture as the thinking bubble's: bounded and
+  // scrolling until it is asked for the window, then the same window. The glyph
+  // turns around to say the press takes it back out.
+  thread.addEventListener("click", function (event) {
+    var button = event.target.closest(".bubble-max");
+    if (button === null) { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    var bubble = button.closest(".bubble");
+    if (bubble === null) { return; }
+    var on = bubble.classList.contains("max") === false;
+    bubble.classList.toggle("max");
+    button.textContent = on ? "\u2921" : "\u2922";
+    button.setAttribute("aria-label", on
+      ? "Put this answer back in the conversation"
+      : "Expand this answer");
+    if (on) { bubble.scrollTop = 0; }
+  });
+
+  // Escape takes the expanded answer back, exactly as it takes back the expanded
+  // thinking bubble and the whole-window reply. One key, every size.
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") {
+      var openBubble = document.querySelector(".msg .bubble.max");
+      if (present(openBubble)) {
+        event.preventDefault();
+        openBubble.classList.remove("max");
+        var control = openBubble.querySelector(".bubble-max");
+        if (present(control)) {
+          control.textContent = "\u2922";
+          control.setAttribute("aria-label", "Expand this answer");
+          control.focus();
+        }
+      }
+    }
   });
 
   function human(count) {
@@ -8303,6 +8634,156 @@ mod tests {
                 }),
             }),
         }
+    }
+
+    /// The answer is a bounded scroller with its own way out of the ceiling.
+    ///
+    /// The thinking bubble has carried an expand control since it was written;
+    /// the answer had none, so a long reply could only be read by scrolling a box
+    /// inside a page. The control is the same gesture, in the same corner of the
+    /// same kind of block, on both paths: a reload and a live turn must not
+    /// disagree about what a reply can do.
+    #[test]
+    fn an_answer_carries_the_expand_control_the_thinking_bubble_has() {
+        let mut line = a_line(false);
+        line.body = "A reply long enough to be worth the room.".to_owned();
+        let page = super::chat_page(&a_view(vec![a_line(true), line])).into_string();
+        let page = markup(&page);
+        assert!(
+            page.contains(r#"class="bubble-max""#) && page.contains("data-bubble-max"),
+            "the answer offers the expand the thinking bubble offers: {page}"
+        );
+        assert!(
+            page.contains(r#"aria-label="Expand this answer""#),
+            "and it is a control with a name, not a glyph: {page}"
+        );
+        // It belongs to the answer, so the operator's own message does not get
+        // one: there is nothing to expand about what they just said.
+        let bubbles = page.matches(r#"<button class="bubble-max""#).count();
+        assert_eq!(
+            bubbles, 1,
+            "one answer in the page, so one control in the page: {page}"
+        );
+        // The live builder carries the same control, or a streamed reply would
+        // lose the ability on the next reload the other way round.
+        let js = super::CHAT_JS;
+        assert!(
+            js.contains("bubbleMax.className = \"bubble-max\"")
+                && js.contains(r#"bubbleMax.setAttribute("aria-label", "Expand this answer")"#),
+            "the live builder builds the server's control"
+        );
+    }
+
+    /// The control sits outside the text flow and the answer keeps its measure.
+    ///
+    /// A button written into the flow would push the first line of every answer
+    /// down by its own height, which is a line of the transcript spent on chrome.
+    #[test]
+    fn the_answer_expands_without_spending_a_line_of_the_transcript() {
+        let mut line = a_line(false);
+        line.body = "short".to_owned();
+        let page = super::chat_page(&a_view(vec![line])).into_string();
+        let page = markup(&page);
+        let bubble = page
+            .split(r#"<div class="bubble">"#)
+            .nth(1)
+            .unwrap_or_else(|| panic!("the answer's bubble renders: {page}"));
+        // The control is the bubble's first child, so a reader meets it before
+        // the words it acts on rather than after a thousand of them.
+        assert!(
+            bubble.trim_start().starts_with("<button"),
+            "the control is first in the bubble: {bubble}"
+        );
+    }
+
+    /// The rail's order is a control on the rail, not a field on a page about it.
+    ///
+    /// It posts a stored setting, because the rail is server-rendered and its own
+    /// live refresh fetches the list with no parameters at all: an order passed as
+    /// a query string would be forgotten after the next turn.
+    #[test]
+    fn the_rail_carries_its_own_order_control() {
+        let chrome = super::Chrome {
+            conversation_sort: crate::web::chat::ConversationSort::Day,
+            ..super::Chrome::default()
+        };
+        let page = super::shell(
+            "Chat",
+            crate::db::SetupState::Ready,
+            Some(super::Nav::Chat),
+            html! {},
+            &chrome,
+        )
+        .into_string();
+        let page = markup(&page);
+        assert!(
+            page.contains(&format!(r#"action="{}""#, crate::admin::ROUTE_CHAT_SORT)),
+            "the order is a form that posts the stored setting: {page}"
+        );
+        assert!(
+            page.contains(r#"<span class="rail-list-label">Conversations</span>"#),
+            "it sits beside the word it applies to: {page}"
+        );
+        // The control states the order it is in before it is opened, and each
+        // order is offered by the name an operator reads.
+        assert!(
+            page.contains(r#"<span class="rail-sort-label">By day</span>"#),
+            "the summary names the current order: {page}"
+        );
+        for label in ["Recently used", "Newest", "Title", "By day"] {
+            assert!(
+                page.contains(&format!(">{label}</option>")),
+                "every order is offered, {label} among them: {page}"
+            );
+        }
+        assert!(
+            page.contains(r#"value="day" selected"#),
+            "the stored order is the selected one: {page}"
+        );
+        // A disclosure, not a scripted menu: the rail may carry no script at all.
+        assert!(
+            page.contains(r#"<details class="rail-sort">"#),
+            "the control is the browser's own disclosure: {page}"
+        );
+    }
+
+    /// The tag that says a turn wrapped up instead of being cut off.
+    ///
+    /// S2 added the fact and S5 drew it, and neither left a test behind it: the
+    /// two tags can regress independently, and until now nothing would have said
+    /// so. The words differ on purpose, because the two things are not the same:
+    /// one turn stopped early and still answered, the other ran out.
+    #[test]
+    fn a_wrapped_turn_says_so_and_a_capped_one_says_something_else() {
+        let mut wrapped = a_line(false);
+        wrapped.body = "an answer, with the budget nearly gone".to_owned();
+        wrapped.rounds = Some(10);
+        wrapped.wrapped_up = true;
+        let page = super::chat_page(&a_view(vec![wrapped])).into_string();
+        let page = markup(&page);
+        assert!(
+            page.contains(r#"class="tag wrapped-up""#) && page.contains(">wrapped up</span>"),
+            "a turn that wrapped up is marked as one: {page}"
+        );
+        assert!(
+            !page.contains(r#"class="tag capped""#),
+            "and it is not marked as cut off, because it was not: {page}"
+        );
+
+        let mut capped = a_line(false);
+        capped.body = "an answer the budget forced out".to_owned();
+        capped.rounds = Some(10);
+        capped.capped = true;
+        let page = super::chat_page(&a_view(vec![capped])).into_string();
+        let page = markup(&page);
+        assert!(
+            page.contains(r#"class="tag capped""#),
+            "a forced turn keeps its own word: {page}"
+        );
+        assert!(
+            !page.contains("wrapped up"),
+            "and does not borrow the other one: {page}"
+        );
     }
 
     /// A turn that is still running and has written nothing. The live path does

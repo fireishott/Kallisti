@@ -5258,7 +5258,40 @@ pub async fn send_push(
     // makes the route usable from a phone without handing it a device id.
     let targets: Vec<crate::push::PushTarget> = if request.all {
         match store.all_active() {
-            Ok(rows) => rows,
+            // `all` is every paired device, not every token this host was ever
+            // handed. `push.db` outlives the `devices` rows it points at, so a
+            // deleted phone leaves an active registration behind. Filtering here
+            // keeps a broadcast's per-device report honest: a row whose device
+            // is gone would otherwise be counted as a delivery.
+            Ok(rows) => {
+                // `None` when the device list cannot be read: a broadcast that
+                // reached nobody because a lookup failed would be a worse lie
+                // than one that reached every registration, and the failure is
+                // logged rather than swallowed.
+                let live: Option<Vec<String>> = match crate::web::store::devices_list(
+                    service.engine().db(),
+                ) {
+                    Ok(rows) => Some(
+                        rows.into_iter()
+                            .filter(|device| device.paired && device.revoked_at.is_none())
+                            .map(|device| device.id)
+                            .collect(),
+                    ),
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "cannot read the device list; broadcasting without a paired-device filter"
+                        );
+                        None
+                    }
+                };
+                rows.into_iter()
+                    .filter(|row| match &live {
+                        Some(live) => live.iter().any(|device| device == &row.0),
+                        None => true,
+                    })
+                    .collect()
+            }
             Err(error) => {
                 return DeviceError::db_unavailable(format!(
                     "cannot read the push registrations: {error}"

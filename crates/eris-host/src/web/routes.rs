@@ -30,15 +30,15 @@ use crate::admin::{
     ROUTE_ACCOUNTS_VERIFY, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE,
     ROUTE_BACKUPS_RESTORE, ROUTE_CHAT, ROUTE_CHAT_ANSWER, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE,
     ROUTE_CHAT_FILE, ROUTE_CHAT_ID, ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW,
-    ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD,
+    ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_SORT, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD,
     ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_LOGOUT,
     ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS,
     ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS,
     ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
     ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
-    ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING,
-    ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS,
-    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
+    ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA,
+    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
+    ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
     ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
@@ -119,6 +119,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_QUOTA, post(save_quota))
         .route(ROUTE_SETTINGS_MEMORY, post(save_memory))
         .route(ROUTE_SETTINGS_TIMEZONE, post(save_timezone))
+        .route(ROUTE_SETTINGS_PUSH, post(save_push))
         .route(ROUTE_SIDEBAR, post(toggle_sidebar))
         .route(ROUTE_SETTINGS_TOOLS, post(save_tools))
         .route(ROUTE_SETTINGS_PROVIDERS, post(save_providers))
@@ -156,6 +157,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_CHAT_MODE, post(chat_mode))
         .route(ROUTE_CHAT_NEW, post(chat_new))
         .route(ROUTE_CHAT_SESSIONS, get(chat_sessions))
+        .route(ROUTE_CHAT_SORT, post(chat_sort))
         .route(ROUTE_CHAT_LIVE, get(chat_live))
         .route(ROUTE_CHAT_FILE, get(chat_file))
         .route(ROUTE_CHAT_WORKSPACE, get(chat_workspace_file))
@@ -338,7 +340,25 @@ async fn read_fields(
     headers: &HeaderMap,
     body: Body,
 ) -> Result<BTreeMap<String, String>, FormError> {
-    read_fields_within(headers, body, MAX_BODY_BYTES).await
+    let pairs = read_fields_all(headers, body, MAX_BODY_BYTES).await?;
+    // Last wins, which is what the map did when it was built one `insert` at a
+    // time: every form on this daemon names its fields once, and the one form
+    // that can name a field more than once reads the list instead.
+    Ok(pairs.into_iter().collect())
+}
+
+/// Every submitted pair, in order, repeated names kept.
+///
+/// A browser posts one name per ticked box, so a form with a checkbox list needs
+/// the repeats a map quietly drops. The push scope is that form: the devices it
+/// reaches are the boxes the operator ticked, and a reader that kept only the
+/// last one would store a single device and look like it had worked.
+async fn read_fields_all(
+    headers: &HeaderMap,
+    body: Body,
+    max_bytes: usize,
+) -> Result<Vec<(String, String)>, FormError> {
+    read_pairs_within(headers, body, max_bytes).await
 }
 
 /// Parse a form body with an explicit ceiling.
@@ -352,6 +372,18 @@ async fn read_fields_within(
     body: Body,
     max_bytes: usize,
 ) -> Result<BTreeMap<String, String>, FormError> {
+    Ok(read_pairs_within(headers, body, max_bytes)
+        .await?
+        .into_iter()
+        .collect())
+}
+
+/// The body as pairs, with the ceiling and both encodings handled.
+async fn read_pairs_within(
+    headers: &HeaderMap,
+    body: Body,
+    max_bytes: usize,
+) -> Result<Vec<(String, String)>, FormError> {
     let bytes = axum::body::to_bytes(body, max_bytes).await.map_err(|_| {
         FormError::new(
             None,
@@ -373,7 +405,7 @@ async fn read_fields_within(
         let object = value.as_object().ok_or_else(|| {
             FormError::new(None, "body_not_object", "the JSON body must be an object")
         })?;
-        let mut fields = BTreeMap::new();
+        let mut pairs = Vec::with_capacity(object.len());
         for (key, value) in object {
             let text = match value {
                 serde_json::Value::String(text) => text.clone(),
@@ -382,13 +414,13 @@ async fn read_fields_within(
                 serde_json::Value::Null => String::new(),
                 other => other.to_string(),
             };
-            fields.insert(key.clone(), text);
+            pairs.push((key.clone(), text));
         }
-        return Ok(fields);
+        return Ok(pairs);
     }
 
     // Form encoded, the browser default.
-    let mut fields = BTreeMap::new();
+    let mut pairs = Vec::new();
     for pair in text.split('&') {
         if pair.is_empty() {
             continue;
@@ -399,9 +431,9 @@ async fn read_fields_within(
         };
         let name = percent_decode(name)?;
         let value = percent_decode(value)?;
-        fields.insert(name, value);
+        pairs.push((name, value));
     }
-    Ok(fields)
+    Ok(pairs)
 }
 
 /// Percent-decode one form component, with `+` as a space.
@@ -662,6 +694,42 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .as_deref(),
     )
     .as_str();
+    // The clock shape and the time zone are one question to the operator - what
+    // time is it - so they are read together and answered on one form.
+    view.clock_format = crate::zone::ClockFormat::parse(
+        engine
+            .setting(crate::zone::SETTING_CLOCK_FORMAT)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
+    // The master switch, read through the same function the turn path uses, so
+    // the checkbox shows what the daemon would actually do rather than what a
+    // row happens to hold. Absent means on, and the page must say so.
+    view.notify_on_reply = crate::push::notify_on_reply_enabled(
+        engine
+            .setting(crate::push::SETTING_NOTIFY_ON_REPLY)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
+    view.notify_scope = crate::push::notify_scope(
+        engine
+            .setting(crate::push::SETTING_NOTIFY_SCOPE)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
+    view.notify_devices = engine
+        .setting(crate::push::SETTING_NOTIFY_DEVICES)
+        .map_err(|error| form_error(&error))?
+        .unwrap_or_default();
+    // The picker offers the devices a notification can actually reach: a revoked
+    // row is not a target, and a row that never redeemed a code has no token to
+    // push through. Offering one would be a checkbox that cannot do anything.
+    view.push_devices = store::devices_list(engine.db())
+        .map_err(|error| db_error(&error))?
+        .into_iter()
+        .filter(|device| device.paired && device.revoked_at.is_none())
+        .map(|device| (device.id, device.name))
+        .collect();
     let registry = chat::provider_registry(engine).unwrap_or_default();
     view.provider_ids = registry.iter().map(|p| p.id.clone()).collect();
     view.providers_json = crate::providers::to_json(&registry);
@@ -3398,6 +3466,10 @@ fn saved_group(uri: &Uri) -> Option<SettingsGroup> {
             "greeting" => Some(SettingsGroup::Greeting),
             "schedules" => Some(SettingsGroup::Schedules),
             "skills" => Some(SettingsGroup::Skills),
+            // The clock and the notification form save into the settings the
+            // greeting and provider groups also own, and there is no group that
+            // names them: a notice filed under the wrong card is worse than no
+            // notice, so these two save and redirect without one.
             _ => None,
         };
     }
@@ -3830,6 +3902,50 @@ async fn save_timezone(
     {
         return store_failure(&request_id.0, crate::zone::SETTING_TIMEZONE, error);
     }
+    // The clock shape rides the same form and the same route, because the two are
+    // one question to the operator. It is read only when the field is present, so
+    // a client that only knows about time zones keeps working unchanged.
+    if let Some(raw) = fields.get("clock_format") {
+        let wanted = crate::zone::ClockFormat::parse(Some(raw));
+        // The parser is lenient on purpose, because a stored row has to read
+        // back as something. A submitted value is not a stored row: it has to be
+        // one of the two spellings this form offers, or the operator is told so.
+        // Reading `swatch-beats` as 24 hour and answering 303 would be a form
+        // that silently ignored what was typed.
+        if wanted.as_str() != raw.trim() {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("clock_format"),
+                    "clock_format_invalid",
+                    format!(
+                        "{} is not a clock shape; accepted: {}",
+                        raw.trim(),
+                        // Spelled here rather than read off the enum: `zone.rs`
+                        // is S3's file and this card does not change it. Two
+                        // values is not a list worth a constant, and the parser
+                        // above is the one that decides what is accepted.
+                        "12h, 24h"
+                    ),
+                ),
+            );
+        }
+        let shape = wanted.as_str();
+        if let Err(error) =
+            store::settings_put(state.engine.db(), crate::zone::SETTING_CLOCK_FORMAT, shape)
+        {
+            return store_failure(&request_id.0, crate::zone::SETTING_CLOCK_FORMAT, error);
+        }
+        if let Err(error) =
+            state
+                .engine
+                .auth()
+                .audit("loopback", "settings.clock_format", Some(shape))
+        {
+            return audit_failure(&request_id.0, "settings.clock_format", error);
+        }
+    }
     if let Err(error) = state
         .engine
         .auth()
@@ -3839,6 +3955,181 @@ async fn save_timezone(
     }
 
     see_other(SAVED_TIMEZONE)
+}
+
+/// Where the notification form returns to.
+const SAVED_PUSH: &str = "/dashboard/settings?saved=devices";
+
+/// `POST /dashboard/settings/push` - which devices a finished turn reaches.
+///
+/// The scope is validated against the three the daemon knows, and the chosen ids
+/// are checked against the devices that are actually paired: a row naming a
+/// device that has been revoked or never finished pairing would be a scope that
+/// silently reaches nobody, which is the failure mode this setting exists to
+/// avoid.
+async fn save_push(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let pairs = match read_fields_all(&headers, body, MAX_BODY_BYTES).await {
+        Ok(pairs) => pairs,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let fields: BTreeMap<String, String> = pairs.iter().cloned().collect();
+    // The master switch. A body with neither the switch nor a scope is an
+    // older page that only knew about one of them; it leaves the stored value
+    // alone rather than reading "no field" as "off".
+    let master: Option<bool> = match fields.get("notify_on_reply") {
+        Some(raw) => {
+            let wanted = matches!(raw.trim(), "on" | "true" | "yes" | "1");
+            if !matches!(
+                raw.trim(),
+                "on" | "off" | "true" | "false" | "yes" | "no" | "1" | "0"
+            ) {
+                return fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(
+                        Some("notify_on_reply"),
+                        "notify_on_reply_invalid",
+                        format!("{} is not on or off; accepted: on, off", raw.trim()),
+                    ),
+                );
+            }
+            Some(wanted)
+        }
+        // A body with no switch at all is a page that does not know about it,
+        // or one mid-upgrade: the stored value is left alone rather than read
+        // as "off".
+        None => None,
+    };
+    let raw = field(&fields, "notify_scope");
+    let scope = crate::push::NotifyScope::ALL
+        .into_iter()
+        .find(|option| option.as_str() == raw.trim())
+        .or_else(|| {
+            // A body with no scope at all is an older page that only knew about
+            // the master switch: it leaves the stored scope alone.
+            (!fields.contains_key("notify_scope")).then(|| {
+                crate::push::notify_scope(
+                    state
+                        .engine
+                        .setting(crate::push::SETTING_NOTIFY_SCOPE)
+                        .ok()
+                        .flatten()
+                        .as_deref(),
+                )
+            })
+        });
+    let Some(scope) = scope else {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("notify_scope"),
+                "notify_scope_invalid",
+                format!(
+                    "{} is not a notification scope; accepted: origin, all, targeted",
+                    raw.trim()
+                ),
+            ),
+        );
+    };
+
+    // The ticked boxes, in the order the form posted them, tidied by the same
+    // reader the router uses so what is stored is what will be read.
+    let picked: Vec<String> = pairs
+        .iter()
+        .filter(|(name, _)| name == "notify_devices")
+        .map(|(_, value)| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .collect();
+    let known: Vec<String> = store::devices_list(state.engine.db())
+        .map_err(|error| db_error(&error))
+        .map(|rows| {
+            rows.into_iter()
+                .filter(|device| device.paired && device.revoked_at.is_none())
+                .map(|device| device.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(unknown) = picked.iter().find(|id| !known.contains(id)) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("notify_devices"),
+                "notify_devices_unknown",
+                format!(
+                    "{unknown} is not a paired device; accepted: {}",
+                    if known.is_empty() {
+                        "no device is paired".to_owned()
+                    } else {
+                        known.join(", ")
+                    }
+                ),
+            ),
+        );
+    }
+    let devices = crate::push::notify_devices(Some(&picked.join(","))).join(",");
+
+    if let Some(master) = master
+        && let Err(error) = store::settings_put(
+            state.engine.db(),
+            crate::push::SETTING_NOTIFY_ON_REPLY,
+            if master { "true" } else { "false" },
+        )
+    {
+        return store_failure(&request_id.0, crate::push::SETTING_NOTIFY_ON_REPLY, error);
+    }
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::push::SETTING_NOTIFY_SCOPE,
+        scope.as_str(),
+    ) {
+        return store_failure(&request_id.0, crate::push::SETTING_NOTIFY_SCOPE, error);
+    }
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::push::SETTING_NOTIFY_DEVICES,
+        &devices,
+    ) {
+        return store_failure(&request_id.0, crate::push::SETTING_NOTIFY_DEVICES, error);
+    }
+    // Device ids are not secrets: they are printed on the Devices page and on
+    // every push receipt. The scope and the count are what a later session needs
+    // to answer "why did that not ring".
+    // The switch is named first because it is the first question a later
+    // session asks of a silent phone.
+    let enabled = master.unwrap_or_else(|| {
+        crate::push::notify_on_reply_enabled(
+            state
+                .engine
+                .setting(crate::push::SETTING_NOTIFY_ON_REPLY)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+    });
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.push",
+        Some(&format!(
+            "enabled={}; scope={}; devices={devices}",
+            if enabled { "true" } else { "false" },
+            scope.as_str()
+        )),
+    ) {
+        return audit_failure(&request_id.0, "settings.push", error);
+    }
+
+    see_other(SAVED_PUSH)
 }
 
 /// `POST /dashboard/sidebar` - show or hide the conversation rail.
@@ -3886,6 +4177,20 @@ async fn toggle_sidebar(
         .filter(|path| path.starts_with('/') && !path.starts_with("//"))
         .unwrap_or_else(|| crate::admin::ROUTE_CHAT.to_owned());
     see_other_to(back)
+}
+
+/// The local path the browser came from, or `None`.
+///
+/// Only a same-origin path is honoured, so a crafted `Referer` cannot turn a
+/// redirect into a bounce anywhere else. The scheme and host are dropped and the
+/// path kept, which is what a form post's referer always is.
+fn local_path_from(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::REFERER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split_once("://").map(|(_scheme, rest)| rest))
+        .and_then(|rest| rest.find('/').map(|at| rest[at..].to_owned()))
+        .filter(|path| path.starts_with('/') && !path.starts_with("//"))
 }
 
 /// `POST /dashboard/settings/tools` - tool calling and its round budget.
@@ -4933,6 +5238,16 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
             .as_deref(),
     );
     let offset = crate::zone::offset_minutes(db, zone);
+    // The clock shape is resolved once per page, beside the offset, never inside
+    // the per-message loop: a transcript of forty turns costs one settings read.
+    let clock_format = crate::zone::ClockFormat::parse(
+        state
+            .engine
+            .setting(crate::zone::SETTING_CLOCK_FORMAT)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
     let conversation = chat::resolve_conversation(db, requested)
         .map_err(|error| FormError::new(None, "chat_unreadable", error.to_string()))?;
     let transcript = chat::load(db, &conversation)
@@ -5005,7 +5320,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                     assistant_name.clone()
                 },
                 body: message.body.clone(),
-                stamp: crate::zone::clock_in(&message.created_at, offset),
+                stamp: crate::zone::clock_in_format(&message.created_at, offset, clock_format),
                 failed: message.state == chat::State::Failed,
                 error_code: message.error_code.clone(),
                 pending: message.state == chat::State::Streaming,
@@ -5638,7 +5953,19 @@ async fn chat_sessions(
                 .as_deref(),
         ),
     );
-    match chat::conversations(state.engine.db(), chat::SESSION_LIMIT) {
+    // The order is stored, not passed: the page's own refresh fetches this route
+    // with no parameters, and a chart that had to remember to send the mode would
+    // re-sort itself back to the default after every turn.
+    let sort = state.chrome().conversation_sort;
+    let format = crate::zone::ClockFormat::parse(
+        state
+            .engine
+            .setting(crate::zone::SETTING_CLOCK_FORMAT)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    match chat::conversations_sorted(state.engine.db(), chat::SESSION_LIMIT, sort) {
         Ok(rows) => {
             // The rail draws the same headings the server does, so the payload
             // carries the grouping, not only the rows: a script that was handed a
@@ -5648,18 +5975,54 @@ async fn chat_sessions(
                 .into_iter()
                 .map(|project| serde_json::json!({ "id": project.id, "name": project.name }))
                 .collect();
+            // `day` carries its headings, because the script draws the same rail
+            // the server does: a flat list handed to a script could only ever
+            // paint a flat rail.
+            let days: Vec<serde_json::Value> = if sort == chat::ConversationSort::Day {
+                chat::group_by_day(rows.clone(), offset, chat::today_on(offset))
+                    .into_iter()
+                    .map(|day| {
+                        serde_json::json!({
+                            "key": day.key,
+                            "label": day.label,
+                            "sessions": day
+                                .conversations
+                                .into_iter()
+                                .map(|row| serde_json::json!({
+                                    "id": row.id,
+                                    "title": row.title,
+                                    "stamp": crate::zone::clock_in_format(
+                                        &row.updated_at,
+                                        offset,
+                                        format,
+                                    ),
+                                    "project_id": row.project_id,
+                                }))
+                                .collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let sessions: Vec<serde_json::Value> = rows
                 .into_iter()
                 .map(|row| {
                     serde_json::json!({
                         "id": row.id,
                         "title": row.title,
-                        "stamp": crate::zone::clock_in(&row.updated_at, offset),
+                        "stamp": crate::zone::clock_in_format(&row.updated_at, offset, format),
                         "project_id": row.project_id,
                     })
                 })
                 .collect();
-            ok_json(serde_json::json!({ "ok": true, "projects": projects, "sessions": sessions }))
+            ok_json(serde_json::json!({
+                "ok": true,
+                "sort": sort.as_str(),
+                "projects": projects,
+                "sessions": sessions,
+                "days": days,
+            }))
         }
         Err(error) => ApiError::internal(
             request_id.0,
@@ -5667,6 +6030,69 @@ async fn chat_sessions(
         )
         .into_response(),
     }
+}
+
+/// `POST /dashboard/chat/sort` - the rail's order, chosen from the rail.
+///
+/// One field, one stored row, then back to the page the select was on. The order
+/// is a setting rather than a query parameter so the page's own live refresh -
+/// which fetches `sessions.json` with no parameters at all - comes back in the
+/// order the operator picked instead of re-sorting itself after every turn.
+async fn chat_sort(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return refusal(error),
+    };
+    // An unknown value is refused rather than silently written: the reader falls
+    // back to the default, so a typo that were stored would show up as the rail
+    // quietly ignoring a choice the operator made twice.
+    let raw = field(&fields, "sort");
+    let sort = match chat::ConversationSort::ALL
+        .into_iter()
+        .find(|option| option.as_str() == raw)
+    {
+        Some(sort) => sort,
+        None => {
+            return refusal(FormError::new(
+                Some("sort"),
+                "sort_invalid",
+                format!(
+                    "{raw} is not a conversation order; accepted: {}",
+                    chat::ConversationSort::ALL
+                        .iter()
+                        .map(|option| option.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        }
+    };
+    let stored = sort.as_str();
+    if let Err(error) =
+        store::settings_put(state.engine.db(), chat::SETTING_CONVERSATION_SORT, stored)
+    {
+        return store_failure(&request_id.0, chat::SETTING_CONVERSATION_SORT, error);
+    }
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "chat.sort", Some(stored))
+    {
+        return audit_failure(&request_id.0, "chat.sort", error);
+    }
+    // Back where the control was, with the order in the query so a reload of the
+    // address bar states the same thing the rail just did.
+    let back = local_path_from(&headers).unwrap_or_else(|| crate::admin::ROUTE_CHAT.to_owned());
+    let sep = if back.contains('?') { '&' } else { '?' };
+    see_other_to(format!("{back}{sep}sorted={stored}"))
 }
 
 /// `POST /dashboard/chat/new` - start a conversation and go to it.

@@ -29,6 +29,8 @@ use super::harness::{Call, PURPLE_DENYLIST, block_on, encode, ready_app, ready_e
 
 /// The three settings posts.
 const PROVIDER_POST: &str = "/dashboard/settings/provider";
+const CLOCK_POST: &str = "/dashboard/settings/timezone";
+const PUSH_POST: &str = "/dashboard/settings/push";
 const GREETING_POST: &str = "/dashboard/settings/greeting";
 const WORKSPACE_POST: &str = "/dashboard/settings/workspace";
 const PERMISSIONS_POST: &str = "/dashboard/settings/permissions";
@@ -795,6 +797,371 @@ fn the_settings_page_needs_a_session() {
     ));
     assert_eq!(write.status, StatusCode::FORBIDDEN);
     assert!(!write.body.trim().is_empty());
+}
+
+#[test]
+fn the_clock_shape_rides_the_time_zone_form_and_reaches_every_stamp() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    let read = |key: &str| {
+        crate::web::store::settings_get(db, key)
+            .expect("read")
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        read(crate::zone::SETTING_CLOCK_FORMAT),
+        "",
+        "unwritten to begin with"
+    );
+
+    // One form, two answers: "what time is it" is one question.
+    let reply = block_on(send(
+        &app,
+        Call::post(CLOCK_POST, "timezone=-04:00&clock_format=12h")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(
+        reply.status,
+        StatusCode::SEE_OTHER,
+        "a clock save redirects: {}",
+        reply.body
+    );
+    assert_eq!(read(crate::zone::SETTING_TIMEZONE), "-04:00");
+    assert_eq!(read(crate::zone::SETTING_CLOCK_FORMAT), "12h");
+
+    // It reaches the transcript: a stamp stored at 20:04 UTC reads 4:04 PM at
+    // -04:00, and the same row read at 24 hour says 16:04.
+    crate::web::chat::append(
+        db,
+        crate::web::chat::CONVERSATION_ID,
+        crate::web::chat::Role::User,
+        "what time is it",
+        crate::web::chat::State::Complete,
+    )
+    .expect("append");
+    // Both columns, because the two surfaces show different ones: the transcript
+    // stamps a message's `created_at` and the rail stamps its conversation's
+    // `updated_at`, and a fixture that moved only one would read as a clock that
+    // worked on one page and not the other.
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_messages SET created_at = '2026-03-14T20:04:00.000Z'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE chat_conversations SET updated_at = '2026-03-14T20:04:00.000Z'",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("stamp");
+    let page = block_on(send(
+        &app,
+        Call::get(crate::admin::ROUTE_CHAT)
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains("4:04 PM"),
+        "the transcript follows the twelve hour setting: {}",
+        page.body
+    );
+    assert!(
+        !page.body.contains("16:04"),
+        "and stops writing the twenty four hour form: {}",
+        page.body
+    );
+
+    // The rail reads the same clock, from the same row.
+    let rail = block_on(send(
+        &app,
+        Call::get(crate::admin::ROUTE_CHAT_SESSIONS).cookie(Some(&cookie)),
+    ));
+    assert_eq!(rail.status, StatusCode::OK, "{}", rail.body);
+    let body = rail.json();
+    let stamp = body["sessions"][0]["stamp"].as_str().unwrap_or_default();
+    assert_eq!(
+        stamp, "4:04 PM",
+        "the rail agrees with the transcript: {body}"
+    );
+
+    // Back to 24 hour, and both surfaces follow.
+    let back = block_on(send(
+        &app,
+        Call::post(CLOCK_POST, "timezone=-04:00&clock_format=24h")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(back.status, StatusCode::SEE_OTHER, "{}", back.body);
+    let rail = block_on(send(
+        &app,
+        Call::get(crate::admin::ROUTE_CHAT_SESSIONS).cookie(Some(&cookie)),
+    ));
+    assert_eq!(
+        rail.json()["sessions"][0]["stamp"],
+        "16:04",
+        "the same row, read back on the twenty four hour clock"
+    );
+
+    // A shape that is not one of the two is refused by field and nothing is
+    // written: the stored row still says 24h.
+    let refused = block_on(send(
+        &app,
+        Call::post(CLOCK_POST, "timezone=-04:00&clock_format=swatch-beats")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(
+        refused.body.contains("clock_format"),
+        "the refusal names the field: {}",
+        refused.body
+    );
+    assert_eq!(read(crate::zone::SETTING_CLOCK_FORMAT), "24h");
+
+    // A body with no clock field at all is an older client: the zone is written
+    // and the shape is left alone.
+    let zone_only = block_on(send(
+        &app,
+        Call::post(CLOCK_POST, "timezone=UTC")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(
+        zone_only.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        zone_only.body
+    );
+    assert_eq!(read(crate::zone::SETTING_TIMEZONE), "UTC");
+    assert_eq!(read(crate::zone::SETTING_CLOCK_FORMAT), "24h");
+}
+
+#[test]
+fn the_push_scope_stores_the_comma_separated_shape_the_daemon_reads() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    let read = |key: &str| {
+        crate::web::store::settings_get(db, key)
+            .expect("read")
+            .unwrap_or_default()
+    };
+
+    // Two paired devices, and one revoked one that must not be offered or taken.
+    super::harness::seed_device(db, "dev-a", "iPhone", "ios", None, None, None);
+    super::harness::seed_redeemed_code(db, "dev-a");
+    super::harness::seed_device(db, "dev-b", "iPad", "ios", None, None, None);
+    super::harness::seed_redeemed_code(db, "dev-b");
+    super::harness::seed_device(
+        db,
+        "dev-gone",
+        "Old phone",
+        "ios",
+        None,
+        None,
+        Some("2026-01-01T00:00:00.000Z"),
+    );
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(&format!(r#"action="{PUSH_POST}""#)),
+        "the notification form renders: {}",
+        page.body
+    );
+    for device in ["dev-a", "dev-b"] {
+        assert!(
+            page.body.contains(&format!(r#"value="{device}""#)),
+            "a paired device is offered: {device}"
+        );
+    }
+    assert!(
+        !page.body.contains("dev-gone"),
+        "a revoked device is not a target and is not offered: {}",
+        page.body
+    );
+    for sentence in [
+        "Only the device that asked",
+        "Every paired device",
+        "Only the devices I pick",
+    ] {
+        assert!(
+            page.body.contains(sentence),
+            "the scope is offered in the operator's words: {sentence}"
+        );
+    }
+
+    // A browser posts one name per ticked box, repeated.
+    let reply = block_on(send(
+        &app,
+        Call::post(
+            PUSH_POST,
+            "notify_scope=targeted&notify_devices=dev-a&notify_devices=dev-b",
+        )
+        .html()
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(
+        reply.status,
+        StatusCode::SEE_OTHER,
+        "a notification save redirects: {}",
+        reply.body
+    );
+    assert_eq!(read(crate::push::SETTING_NOTIFY_SCOPE), "targeted");
+    assert_eq!(
+        read(crate::push::SETTING_NOTIFY_DEVICES),
+        "dev-a,dev-b",
+        "the stored row is the comma separated shape the router reads"
+    );
+    // The daemon's own reader agrees with what was written.
+    assert_eq!(
+        crate::push::notify_devices(Some(&read(crate::push::SETTING_NOTIFY_DEVICES))),
+        vec!["dev-a".to_owned(), "dev-b".to_owned()]
+    );
+
+    // A device that is not paired is refused by field, and the row is untouched.
+    let refused = block_on(send(
+        &app,
+        Call::post(PUSH_POST, "notify_scope=targeted&notify_devices=dev-gone")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(
+        refused.body.contains("notify_devices"),
+        "the refusal names the field: {}",
+        refused.body
+    );
+    assert_eq!(read(crate::push::SETTING_NOTIFY_DEVICES), "dev-a,dev-b");
+
+    // A scope that is not one of the three is refused by field too.
+    let bad_scope = block_on(send(
+        &app,
+        Call::post(PUSH_POST, "notify_scope=shout&notify_devices=dev-a")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(
+        bad_scope.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_scope.body
+    );
+    assert!(
+        bad_scope.body.contains("notify_scope"),
+        "the refusal names the scope: {}",
+        bad_scope.body
+    );
+    assert_eq!(read(crate::push::SETTING_NOTIFY_SCOPE), "targeted");
+
+    // The page comes back with the choice on it.
+    let after = block_on(send(
+        &app,
+        Call::get(ROUTE_SETTINGS).html().cookie(Some(&cookie)),
+    ));
+    assert!(
+        after.body.contains(r#"value="targeted" checked"#),
+        "the stored scope is the selected radio: {}",
+        after.body
+    );
+    assert!(
+        after.body.contains(r#"value="dev-a" checked"#),
+        "and the ticked device is ticked: {}",
+        after.body
+    );
+
+    // The master switch. Absent from the store means on, and the box shows it.
+    assert_eq!(
+        read(crate::push::SETTING_NOTIFY_ON_REPLY),
+        "",
+        "unwritten to begin with"
+    );
+    assert!(
+        after.body.contains(r#"name="notify_on_reply""#),
+        "the master switch is on this form, not on a tab that does not have it: {}",
+        after.body
+    );
+    assert!(
+        after.body.contains(r#"value="on" checked"#),
+        "an absent row reads as on, which is what the daemon does: {}",
+        after.body
+    );
+
+    // Posted off, with the scope unchanged: the switch is what changed.
+    let off = block_on(send(
+        &app,
+        Call::post(
+            PUSH_POST,
+            "notify_on_reply=off&notify_scope=targeted&notify_devices=dev-a",
+        )
+        .html()
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(off.status, StatusCode::SEE_OTHER, "{}", off.body);
+    assert_eq!(read(crate::push::SETTING_NOTIFY_ON_REPLY), "false");
+    assert_eq!(read(crate::push::SETTING_NOTIFY_SCOPE), "targeted");
+    // The daemon agrees, so the page and the turn path cannot disagree.
+    assert!(!crate::push::notify_on_reply_enabled(Some(&read(
+        crate::push::SETTING_NOTIFY_ON_REPLY
+    ))));
+
+    // A browser posting the unchecked box sends the hidden `off` and nothing
+    // else; a ticked box sends `off` then `on`, and the last one wins.
+    let ticked = block_on(send(
+        &app,
+        Call::post(
+            PUSH_POST,
+            "notify_on_reply=off&notify_on_reply=on&notify_scope=targeted&notify_devices=dev-a",
+        )
+        .html()
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(ticked.status, StatusCode::SEE_OTHER, "{}", ticked.body);
+    assert_eq!(
+        read(crate::push::SETTING_NOTIFY_ON_REPLY),
+        "true",
+        "a ticked box re-enables it"
+    );
+
+    // An older page that posts only a scope leaves the switch where it was.
+    let scope_only = block_on(send(
+        &app,
+        Call::post(PUSH_POST, "notify_scope=all&notify_devices=")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(
+        scope_only.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        scope_only.body
+    );
+    assert_eq!(
+        read(crate::push::SETTING_NOTIFY_ON_REPLY),
+        "true",
+        "a body with no switch is not a body that said off"
+    );
+    assert_eq!(read(crate::push::SETTING_NOTIFY_SCOPE), "all");
+
+    // A value that is neither is refused by field, and neither row moves.
+    let bad = block_on(send(
+        &app,
+        Call::post(PUSH_POST, "notify_on_reply=maybe&notify_scope=all")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.body);
+    assert!(
+        bad.body.contains("notify_on_reply"),
+        "the refusal names the switch: {}",
+        bad.body
+    );
+    assert_eq!(read(crate::push::SETTING_NOTIFY_ON_REPLY), "true");
 }
 
 #[test]

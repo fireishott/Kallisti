@@ -1970,8 +1970,35 @@ impl TurnHub {
             scope,
             devices,
         };
-        let outcome =
-            crate::device::notify::announce(sender, push.as_ref(), &announcement, enabled).await;
+        // Which devices still exist, so `all` and `targeted` reach phones rather
+        // than tokens. A registration outlives the device row it points at, and
+        // a scope that pushes into a deleted phone's token reports a delivery
+        // that nobody received. A failed read is not fatal to the turn: the
+        // announcement goes out unfiltered and the reason is logged, because a
+        // reply the operator was waiting for should not be silent over a lookup.
+        let live: Option<Vec<String>> = match crate::web::store::devices_list(self.store.db()) {
+            Ok(rows) => Some(
+                rows.into_iter()
+                    .filter(|device| device.paired && device.revoked_at.is_none())
+                    .map(|device| device.id)
+                    .collect::<Vec<String>>(),
+            ),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "cannot read the device list; announcing without a paired-device filter"
+                );
+                None
+            }
+        };
+        let outcome = crate::device::notify::announce(
+            sender,
+            push.as_ref(),
+            &announcement,
+            enabled,
+            live.as_deref(),
+        )
+        .await;
         match &outcome {
             crate::device::notify::Announced::Delivered(count) => {
                 tracing::info!(

@@ -117,6 +117,13 @@ pub const ROUTE_CHAT_ID: &str = "/dashboard/chat/{id}";
 /// open while conversations change underneath it.
 pub const ROUTE_CHAT_SESSIONS: &str = "/dashboard/chat/sessions.json";
 
+/// `POST /dashboard/chat/sort` - the rail's order, chosen from the rail.
+///
+/// The rail is server-rendered, so the choice is a stored setting rather than a
+/// query string: the live refresh re-reads the list with no parameters and still
+/// comes back in the order the operator picked.
+pub const ROUTE_CHAT_SORT: &str = "/dashboard/chat/sort";
+
 /// `GET /dashboard/chat/live` - watch the turn running in one conversation.
 ///
 /// The one dashboard route that answers with a stream rather than a page: the
@@ -185,6 +192,14 @@ pub const ROUTE_SETTINGS_PROVIDERS: &str = "/dashboard/settings/providers";
 
 /// `POST /dashboard/settings/providers/probe` - re-probe every configured provider now.
 pub const ROUTE_SETTINGS_PROVIDERS_PROBE: &str = "/dashboard/settings/providers/probe";
+
+/// `POST /dashboard/settings/push` - who a reply notification reaches.
+///
+/// Its own route rather than a field on the device-bind form: a bind is applied
+/// at the next start and a notification scope applies to the next turn, and a
+/// page that saved them together would have to explain a delay that belongs to
+/// only one of them.
+pub const ROUTE_SETTINGS_PUSH: &str = "/dashboard/settings/push";
 
 /// `POST /dashboard/settings/restart` - restart the daemon from settings.
 pub const ROUTE_SETTINGS_RESTART: &str = "/dashboard/settings/restart";
@@ -589,7 +604,9 @@ impl AppState {
             public_url: self.access.public_url.clone(),
             wallpaper_url: self.wallpaper_url(),
             projects: self.rail_projects(),
-            sessions: self.rail_sessions(),
+            conversation_sort: self.rail_sort(),
+            sessions: self.rail_sessions(self.rail_sort()),
+            rail_days: self.rail_days(),
             current_conversation: None,
             rail_hidden: self.rail_hidden(),
             subagents: self.bar_subagents(),
@@ -619,9 +636,111 @@ impl AppState {
     /// Read here rather than in a handler so every page that renders the rail
     /// shows the same list. A database that cannot answer is an empty rail, not a
     /// failed page: the chat surface still opens, it just cannot offer history.
-    fn rail_sessions(&self) -> Vec<crate::web::templates::ChatSession> {
+    /// How the rail orders its list, as stored.
+    ///
+    /// An absent or unreadable row is the documented default, not an empty rail:
+    /// the operator gets the order every conversation had before this existed.
+    #[must_use]
+    pub fn rail_sort(&self) -> crate::web::chat::ConversationSort {
+        crate::web::chat::ConversationSort::parse(
+            self.engine
+                .setting(crate::web::chat::SETTING_CONVERSATION_SORT)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+    }
+
+    /// The clock every rail stamp is written in, as stored.
+    #[must_use]
+    fn rail_clock(&self) -> crate::zone::ClockFormat {
+        crate::zone::ClockFormat::parse(
+            self.engine
+                .setting(crate::zone::SETTING_CLOCK_FORMAT)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+    }
+
+    /// The rail's list split into calendar days, when the operator chose `By
+    /// day`. Empty for every other order.
+    fn rail_days(&self) -> Vec<crate::web::templates::RailDay> {
+        if self.rail_sort() != crate::web::chat::ConversationSort::Day {
+            return Vec::new();
+        }
+        let offset = self.rail_offset();
+        let Ok(rows) = crate::web::chat::conversations_sorted(
+            self.engine.db(),
+            crate::web::chat::SESSION_LIMIT,
+            crate::web::chat::ConversationSort::Day,
+        ) else {
+            return Vec::new();
+        };
+        let projects = self.rail_projects();
+        let format = self.rail_clock();
+        crate::web::chat::group_by_day(rows, offset, crate::web::chat::today_on(offset))
+            .into_iter()
+            .map(|day| crate::web::templates::RailDay {
+                key: day.key,
+                label: day.label,
+                sessions: day
+                    .conversations
+                    .into_iter()
+                    .map(|row| self.rail_session(&row, &projects, offset, format))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// The operator's offset from UTC, read the one way every rail surface reads
+    /// it: the same setting, the same helper.
+    fn rail_offset(&self) -> i64 {
+        let zone = crate::zone::Zone::parse(
+            self.engine
+                .setting(crate::zone::SETTING_TIMEZONE)
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        crate::zone::offset_minutes(self.engine.db(), zone)
+    }
+
+    /// One row of the rail, from a stored conversation.
+    fn rail_session(
+        &self,
+        row: &crate::web::chat::Conversation,
+        projects: &[crate::projects::Project],
+        offset: i64,
+        format: crate::zone::ClockFormat,
+    ) -> crate::web::templates::ChatSession {
+        let project_name = row.project_id.as_deref().and_then(|id| {
+            projects
+                .iter()
+                .find(|project| project.id == id)
+                .map(|project| project.name.clone())
+        });
+        // A dangling id is not a group: the rail files it with the conversations
+        // that have no project at all.
+        let project_id = if project_name.is_some() {
+            row.project_id.clone()
+        } else {
+            None
+        };
+        crate::web::templates::ChatSession {
+            id: row.id.clone(),
+            title: row.title.clone(),
+            stamp: crate::zone::clock_in_format(&row.updated_at, offset, format),
+            project_id,
+            project_name,
+        }
+    }
+
+    fn rail_sessions(
+        &self,
+        sort: crate::web::chat::ConversationSort,
+    ) -> Vec<crate::web::templates::ChatSession> {
         use crate::web::chat;
-        use crate::web::templates::ChatSession;
         // The rail reads the same clock as the transcript. Two lists of the same
         // timestamps in two zones is how a product looks broken while both are
         // individually correct.
@@ -633,7 +752,15 @@ impl AppState {
                 .as_deref(),
         );
         let offset = crate::zone::offset_minutes(self.engine.db(), zone);
-        let Ok(rows) = chat::conversations(self.engine.db(), chat::SESSION_LIMIT) else {
+        let format = crate::zone::ClockFormat::parse(
+            self.engine
+                .setting(crate::zone::SETTING_CLOCK_FORMAT)
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        let Ok(rows) = chat::conversations_sorted(self.engine.db(), chat::SESSION_LIMIT, sort)
+        else {
             return Vec::new();
         };
         // One project read for the whole rail, not one per conversation: the name
@@ -641,30 +768,8 @@ impl AppState {
         // up, and a conversation filed under a project that is gone is grouped
         // with the unfiled ones rather than vanishing from the rail.
         let projects = self.rail_projects();
-        let name_of = |id: &str| {
-            projects
-                .iter()
-                .find(|project| project.id == id)
-                .map(|project| project.name.clone())
-        };
-        rows.into_iter()
-            .map(|row| {
-                let project_name = row.project_id.as_deref().and_then(name_of);
-                // A dangling id is not a group: the rail files it with the
-                // conversations that have no project at all.
-                let project_id = if project_name.is_some() {
-                    row.project_id.clone()
-                } else {
-                    None
-                };
-                ChatSession {
-                    id: row.id,
-                    title: row.title,
-                    stamp: crate::zone::clock_in(&row.updated_at, offset),
-                    project_id,
-                    project_name,
-                }
-            })
+        rows.iter()
+            .map(|row| self.rail_session(row, &projects, offset, format))
             .collect()
     }
 

@@ -471,6 +471,78 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
 .rail-new-project button:hover { background: var(--raise); filter: none; }
 .rail-hint { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.4; opacity: 0.85; }
 
+/* The rail's list head: the word over the list, and the order beside it.
+   The order was a field on the settings page, which meant that changing how the
+   rail reads required leaving the rail. It is a disclosure now, so it is one
+   press from the list, and the page it applies to is the page it is on. */
+.rail-list-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 -2px;
+  padding: 0 2px 0 12px;
+}
+.rail-list-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0.8;
+}
+/* Flush right, and quiet: an order is a preference about the list, not an
+   action on it, so it must not out-read the word it sits beside. */
+.rail-sort { margin-left: auto; }
+.rail-sort > summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  line-height: 1.6;
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+.rail-sort > summary::-webkit-details-marker { display: none; }
+.rail-sort > summary:hover { color: var(--text); border-color: var(--line-strong); }
+.rail-sort > summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
+.rail-sort[open] > summary { color: var(--text); border-color: var(--line-strong); }
+.rail-sort-glyph { font-size: 10px; line-height: 1; opacity: 0.8; }
+.rail-sort form {
+  /* The form opens under the pill and spans the rail: a select and a button
+     side by side in a 236px column is one control's worth of room. */
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.rail-sort select {
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: var(--raise);
+  color: var(--text);
+  font-size: 12.5px;
+  border: 1px solid var(--line-strong);
+}
+.rail-sort button {
+  justify-self: start;
+  padding: 5px 10px;
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 560;
+}
+.rail-sort button:hover { background: var(--raise); filter: none; }
+
 /* Project headings in the rail. A group is one heading and the rows under it, so
    the list reads as files rather than as one scroll with no landmarks. The head
    is the same muted uppercase as every other label in the product. */
@@ -762,6 +834,60 @@ p { margin: 0 0 14px; }
 /* Forms ------------------------------------------------------------------ */
 
 .field { margin: 0 0 18px; }
+/* The label of a field that is not a `label` element: a radio group and a
+   checkbox list are labelled by the word above them, and a field with no label
+   for its control is a control a screen reader has to guess at. */
+.field .label {
+  display: block;
+  font-size: 13px;
+  font-weight: 560;
+  margin-bottom: 7px;
+  color: var(--text);
+}
+/* Two or three choices on one line, wrapping only when the column cannot hold
+   them. The radio and its word are one target, so a thumb lands on either. */
+.radio-row { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  cursor: pointer;
+}
+.radio input { margin: 0; accent-color: var(--platinum); }
+/* The device picker: one row per device, its name in the reading position and
+   its id under it, because the id is what the setting stores and the operator
+   may want to match it against a device row elsewhere. */
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 4px;
+  background: var(--panel);
+}
+.check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 9px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.check:hover { background: var(--raise); }
+.check input { margin: 0; accent-color: var(--platinum); grid-row: 1 / span 2; }
+.check-name { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.check-id {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 fieldset.field { border: 0; padding: 0; margin: 0 0 22px; }
 .field label { display: block; font-size: 13px; font-weight: 560; margin-bottom: 7px; color: var(--text); }
 .field .hint { display: block; font-size: 12.5px; color: var(--muted); margin-top: 7px; line-height: 1.5; }
@@ -1373,6 +1499,8 @@ pre.code {
   /* Neither the bubble nor what it holds may widen the column it sits in. */
   max-width: 100%;
   min-width: 0;
+  /* The corner control is positioned against the bubble, not the page. */
+  position: relative;
   /* A long answer scrolls inside its own bubble instead of pushing the run log
      and the thinking bubble off the screen. Seventy percent of the viewport is
      the point where a reply stops being read and starts being scrolled: under
@@ -1383,6 +1511,52 @@ pre.code {
   max-height: 70vh;
   max-height: 70dvh;
   overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* The answer's own corner control, the thinking bubble's twin: the same glyph,
+   the same quiet frame, the same offer. The bubble is already bounded and
+   scrolls itself (above), so this is the request for the room instead of the
+   ceiling. It floats in the corner the way the frame control sits on a desktop
+   window, and it does not push the first line of the answer down.
+   
+   A control that could be reached only by tabbing past the whole answer would
+   not be a control, so it sits outside the text flow: absolute in a relative
+   bubble, first in the document order so a screen reader meets it before the
+   words it acts on. The answer takes a top padding only large enough to keep a
+   one-line reply from running under it. */
+.msg.assistant .bubble { padding-top: 30px; }
+.msg .bubble-max {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.msg .bubble-max:hover { color: var(--text); border-color: var(--line-strong); }
+.msg .bubble-max:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
+/* Expanded: the room instead of the ceiling. The same inset the thinking bubble
+   uses, so the two expansions land in the same place on the same page, and one
+   step under the whole-window reply so the two are never confused. */
+.msg .bubble.max {
+  position: fixed;
+  inset: 4vh 5vw;
+  z-index: 45;
+  max-height: none;
+  max-width: none;
+  margin: 0;
+  padding: 30px 18px 18px;
+  background: var(--bg);
+  border-color: var(--line-strong);
+  /* Both axes, exactly like the thinking bubble's expansion: a table wider than
+     the box is as much a reason to be here as a long answer is. */
+  overflow: auto;
   overscroll-behavior: contain;
 }
 /* A fenced block, a table and a picture are the three things in an answer that
@@ -2713,6 +2887,100 @@ mod tests {
         assert!(
             body.contains("max-width: 100%"),
             "and the window never widens the conversation: {body}"
+        );
+    }
+
+    /// The answer's expand control is the thinking bubble's twin.
+    ///
+    /// Same frame, same corner of the page, same glyph: two blocks that offer the
+    /// same thing must not look like two different features. The answer's is
+    /// positioned against its bubble and out of the text flow, so it costs the
+    /// transcript no line; the expanded answer lands in the inset the thinking
+    /// bubble already uses, one step under the whole-window reply.
+    #[test]
+    fn the_answer_expands_the_way_the_thinking_bubble_does() {
+        let control = rule(".msg .bubble-max");
+        let twin = rule(".msg .think-max");
+        for shared in ["border-radius: 6px", "border: 1px solid var(--line)"] {
+            assert!(
+                control.contains(shared) && twin.contains(shared),
+                "the two controls share {shared}: {control}"
+            );
+        }
+        assert!(
+            control.contains("position: absolute") && control.contains("right: 8px"),
+            "the answer's control sits in the corner of its bubble: {control}"
+        );
+        assert!(
+            rule(".msg .bubble").contains("position: relative"),
+            "and the bubble is its origin, not the page"
+        );
+        assert!(
+            rule(".msg .bubble-max:focus-visible").contains("outline: 2px solid var(--platinum)"),
+            "the control keeps a visible focus ring"
+        );
+        let expanded = rule(".msg .bubble.max");
+        let thinking = rule(".msg .think.max");
+        for shared in ["position: fixed", "inset: 4vh 5vw", "overflow: auto"] {
+            assert!(
+                expanded.contains(shared) && thinking.contains(shared),
+                "both expansions use {shared}: {expanded}"
+            );
+        }
+        assert!(
+            expanded.contains("max-height: none"),
+            "an expanded answer is out of the ceiling it was bounded by: {expanded}"
+        );
+        // The whole-window reply is the bigger gesture and keeps the higher
+        // stacking order, so the two are never confused for one another.
+        let z = |selector: &str| -> u32 {
+            rule(selector)
+                .split("z-index: ")
+                .nth(1)
+                .and_then(|rest| rest.split(';').next())
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or(0)
+        };
+        assert!(
+            z(".msg.assistant[data-reply-max]") > z(".msg .bubble.max"),
+            "the whole-window reply stays above an expanded answer"
+        );
+    }
+
+    /// The rail's order control is quiet, flush right, and never wider than the
+    /// list it sits over.
+    ///
+    /// It is a preference about the list, not an action on it, so it must not
+    /// out-read the label beside it; and the rail is 236px wide on a desktop and
+    /// narrower on a phone, so the pill may not wrap.
+    #[test]
+    fn the_rails_order_control_is_quiet_and_fits_the_rail() {
+        let head = rule(".rail-list-head");
+        assert!(
+            head.contains("display: flex") && head.contains("align-items: center"),
+            "the label and the order sit on one line: {head}"
+        );
+        assert!(
+            rule(".rail-sort").contains("margin-left: auto"),
+            "the order is flush right, away from the word it qualifies"
+        );
+        let summary = rule(".rail-sort > summary");
+        assert!(
+            summary.contains("white-space: nowrap"),
+            "the pill states one order on one line: {summary}"
+        );
+        assert!(
+            summary.contains("font-size: 10px"),
+            "and is the quietest thing in the rail: {summary}"
+        );
+        assert!(
+            rule(".rail-sort > summary:focus-visible")
+                .contains("outline: 2px solid var(--platinum)"),
+            "the disclosure keeps a visible focus ring"
+        );
+        assert!(
+            rule(".rail-sort form").contains("display: grid"),
+            "the form opens under the pill rather than beside it"
         );
     }
 

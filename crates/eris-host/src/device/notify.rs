@@ -85,7 +85,11 @@ enum Reachable {
 /// Pure routing: no network, no delivery, so the decision can be tested on its
 /// own. An empty result after a non-empty scope is [`Announced::NoRegistration`]
 /// at the call site, which is a phone that has not registered.
-fn reachable(store: &PushStore, announcement: &Announcement) -> Result<Reachable, String> {
+fn reachable(
+    store: &PushStore,
+    announcement: &Announcement,
+    live: Option<&[String]>,
+) -> Result<Reachable, String> {
     match announcement.scope {
         NotifyScope::Origin => {
             if announcement.device_id.trim().is_empty() {
@@ -108,10 +112,36 @@ fn reachable(store: &PushStore, announcement: &Announcement) -> Result<Reachable
             ))
         }
         NotifyScope::All => {
+            // `all` is every paired device, not every token this host has ever
+            // been handed. The push store outlives the `devices` rows it points
+            // at, so a phone that was deleted or revoked leaves an active
+            // registration behind, and reaching it would push into nothing
+            // while claiming to have told every device.
             let rows = store
                 .all_active()
                 .map_err(|error| format!("cannot read the registrations: {error}"))?;
-            Ok(Reachable::Targets(rows))
+            let before = rows.len();
+            let kept: Vec<Target> = rows
+                .into_iter()
+                .filter(|row| match live {
+                    Some(live) => live.iter().any(|device| device == &row.0),
+                    // The device list could not be read. Reaching nobody would
+                    // be a silent turn; reaching every registration is the
+                    // pre-filter behaviour, and the caller has already logged
+                    // why.
+                    None => true,
+                })
+                .collect();
+            if kept.is_empty() && before > 0 {
+                // Every token this host holds belongs to a device that has been
+                // deleted or revoked. Saying so is the difference between an
+                // operator who can fix it and one who wonders why the phone is
+                // quiet.
+                return Ok(Reachable::Nobody(
+                    "the notify scope is all and no registration belongs to a paired device",
+                ));
+            }
+            Ok(Reachable::Targets(kept))
         }
         NotifyScope::Targeted => {
             if announcement.devices.is_empty() {
@@ -124,12 +154,33 @@ fn reachable(store: &PushStore, announcement: &Announcement) -> Result<Reachable
             }
             let mut targets = Vec::new();
             for device in &announcement.devices {
+                // The same freshness check `all` makes. `save_push` refuses to
+                // store a device that is not paired, but a device revoked after
+                // it was chosen is still named in the setting, and a scope that
+                // silently reaches a retired phone is worse than one that
+                // reaches nobody.
+                if let Some(live) = live
+                    && !live.iter().any(|known| known == device)
+                {
+                    continue;
+                }
                 let rows = store
                     .active_registrations(device)
                     .map_err(|error| format!("cannot read the registrations: {error}"))?;
                 targets.extend(rows.into_iter().map(|(token, environment, bundle)| {
                     (device.clone(), token, environment, bundle)
                 }));
+            }
+            if targets.is_empty()
+                && let Some(live) = live
+                && !announcement
+                    .devices
+                    .iter()
+                    .any(|device| live.iter().any(|known| known == device))
+            {
+                return Ok(Reachable::Nobody(
+                    "the notify scope is targeted and no chosen device is still paired",
+                ));
             }
             Ok(Reachable::Targets(targets))
         }
@@ -173,11 +224,20 @@ pub fn worth_announcing(status: &str) -> bool {
 /// here, so the decision to notify is visible at the call site. The routing comes
 /// from [`Announcement::scope`] and [`Announcement::devices`], and an `origin`
 /// announcement reaches exactly the device it always did.
+///
+/// `live` is the paired, unrevoked device ids from the `devices` table, or
+/// `None` when that list could not be read. `Some(empty)` means every device was
+/// revoked or deleted, which is a scope that reaches nobody; `None` means the
+/// filter is unavailable and the registrations are used as they come. It is
+/// passed rather than read here because this module holds no handle on that
+/// database. It bounds `all` and `targeted`: a registration whose device row is
+/// gone is a token pointing at nothing.
 pub async fn announce(
     sender: Option<Arc<ApnsSender>>,
     store: Option<&PushStore>,
     announcement: &Announcement,
     enabled: bool,
+    live: Option<&[String]>,
 ) -> Announced {
     if !enabled {
         return Announced::Skipped("push.notify_on_reply is off");
@@ -188,7 +248,7 @@ pub async fn announce(
     let Some(store) = store else {
         return Announced::Skipped("the push store did not open");
     };
-    let targets = match reachable(store, announcement) {
+    let targets = match reachable(store, announcement, live) {
         Ok(Reachable::Targets(targets)) => targets,
         Ok(Reachable::Nobody(reason)) => {
             // Logged rather than silent: an operator who chose a scope that
@@ -374,7 +434,7 @@ mod tests {
     #[tokio::test]
     async fn no_sender_means_nothing_is_attempted() {
         let store = store();
-        let outcome = announce(None, Some(&store), &announcement(), true).await;
+        let outcome = announce(None, Some(&store), &announcement(), true, Some(&live())).await;
         assert_eq!(outcome, Announced::Skipped("no APNs sender is configured"));
         assert!(!outcome.delivered());
     }
@@ -382,7 +442,14 @@ mod tests {
     #[tokio::test]
     async fn the_setting_off_wins_over_everything_else() {
         let store = store();
-        let outcome = announce(sender().into(), Some(&store), &announcement(), false).await;
+        let outcome = announce(
+            sender().into(),
+            Some(&store),
+            &announcement(),
+            false,
+            Some(&live()),
+        )
+        .await;
         assert_eq!(outcome, Announced::Skipped("push.notify_on_reply is off"));
     }
 
@@ -391,7 +458,14 @@ mod tests {
         let store = store();
         let mut announcement = announcement();
         announcement.device_id.clear();
-        let outcome = announce(sender().into(), Some(&store), &announcement, true).await;
+        let outcome = announce(
+            sender().into(),
+            Some(&store),
+            &announcement,
+            true,
+            Some(&live()),
+        )
+        .await;
         assert_eq!(
             outcome,
             Announced::Skipped("the notify scope is origin and the turn belongs to no device")
@@ -401,7 +475,14 @@ mod tests {
     #[tokio::test]
     async fn a_device_with_no_active_registration_is_reported_as_such() {
         let store = store();
-        let outcome = announce(sender().into(), Some(&store), &announcement(), true).await;
+        let outcome = announce(
+            sender().into(),
+            Some(&store),
+            &announcement(),
+            true,
+            Some(&live()),
+        )
+        .await;
         assert_eq!(outcome, Announced::NoRegistration);
     }
 
@@ -410,7 +491,14 @@ mod tests {
         let store = store();
         register(&store, "token-1");
         assert_eq!(store.deactivate("device-1").expect("deactivate"), 1);
-        let outcome = announce(sender().into(), Some(&store), &announcement(), true).await;
+        let outcome = announce(
+            sender().into(),
+            Some(&store),
+            &announcement(),
+            true,
+            Some(&live()),
+        )
+        .await;
         assert_eq!(outcome, Announced::NoRegistration);
     }
 
@@ -432,7 +520,14 @@ mod tests {
                 None,
             )
             .expect("register");
-        let outcome = announce(sender().into(), Some(&store), &announcement(), true).await;
+        let outcome = announce(
+            sender().into(),
+            Some(&store),
+            &announcement(),
+            true,
+            Some(&live()),
+        )
+        .await;
         assert_eq!(
             outcome,
             Announced::Failed("no registration carried a token".to_owned())
@@ -454,8 +549,20 @@ mod tests {
         store
     }
 
+    /// The paired, unrevoked device ids the `devices` table would report for
+    /// [`routing_store`]. Every registered device is live except the retired
+    /// one, so a test that wants a stale registration has to say so.
+    fn live() -> Vec<String> {
+        vec![
+            "device-1".to_owned(),
+            "device-2".to_owned(),
+            "device-3".to_owned(),
+            "device-dead".to_owned(),
+        ]
+    }
+
     fn routed(announcement: &Announcement) -> Reachable {
-        reachable(&routing_store(), announcement).expect("the routing reads")
+        reachable(&routing_store(), announcement, Some(&live())).expect("the routing reads")
     }
 
     fn routed_devices(announcement: &Announcement) -> Vec<String> {
@@ -497,6 +604,77 @@ mod tests {
         );
     }
 
+    /// The live case this filter exists for: an active token whose device row
+    /// no longer exists. `push.db` and `eris.db` are separate files, so deleting
+    /// a phone leaves its registration behind, and `all` used to push into it.
+    #[test]
+    fn all_never_reaches_a_registration_whose_device_is_gone() {
+        let store = routing_store();
+        register_for(&store, "device-orphan", "token-orphan");
+        let mut announcement = announcement();
+        announcement.scope = NotifyScope::All;
+        let live = live();
+        assert!(
+            !live.iter().any(|device| device == "device-orphan"),
+            "the fixture's device list must not carry the orphan"
+        );
+        match reachable(&store, &announcement, Some(&live)).expect("the routing reads") {
+            Reachable::Targets(targets) => {
+                let devices: Vec<String> = targets.into_iter().map(|row| row.0).collect();
+                assert_eq!(devices, vec!["device-1", "device-2", "device-3"]);
+            }
+            Reachable::Nobody(reason) => panic!("expected targets: {reason}"),
+        }
+    }
+
+    /// A device revoked after it was chosen is still named in the stored
+    /// setting. `targeted` must not push at a phone the operator retired.
+    #[test]
+    fn targeted_skips_a_named_device_that_is_no_longer_paired() {
+        let mut announcement = announcement();
+        announcement.scope = NotifyScope::Targeted;
+        announcement.devices = vec!["device-2".to_owned(), "device-3".to_owned()];
+        let live = vec!["device-1".to_owned(), "device-2".to_owned()];
+        match reachable(&routing_store(), &announcement, Some(&live)).expect("the routing reads") {
+            Reachable::Targets(targets) => {
+                let devices: Vec<String> = targets.into_iter().map(|row| row.0).collect();
+                assert_eq!(devices, vec!["device-2"]);
+            }
+            Reachable::Nobody(reason) => panic!("expected targets: {reason}"),
+        }
+    }
+
+    /// Every device revoked is a scope that reaches nobody, not a reason to
+    /// fall back to the raw registration list.
+    #[test]
+    fn all_with_no_live_device_reaches_nobody() {
+        let mut announcement = announcement();
+        announcement.scope = NotifyScope::All;
+        let none: Vec<String> = Vec::new();
+        match reachable(&routing_store(), &announcement, Some(&none)).expect("the routing reads") {
+            Reachable::Targets(targets) => {
+                panic!("no paired device must reach nobody: {targets:?}")
+            }
+            Reachable::Nobody(_) => {}
+        }
+    }
+
+    /// A device list that could not be read is not the same fact as "no
+    /// devices": the announcement goes out rather than going silent.
+    #[test]
+    fn an_unreadable_device_list_falls_back_to_every_registration() {
+        let mut announcement = announcement();
+        announcement.scope = NotifyScope::All;
+        match reachable(&routing_store(), &announcement, None).expect("the routing reads") {
+            Reachable::Targets(targets) => {
+                assert_eq!(targets.len(), 3, "every active registration is a target");
+            }
+            Reachable::Nobody(reason) => {
+                panic!("an unreadable list must not reach nobody: {reason}")
+            }
+        }
+    }
+
     #[test]
     fn targeted_reaches_the_named_devices_and_only_those() {
         let mut announcement = announcement();
@@ -534,7 +712,13 @@ mod tests {
             .enable_all()
             .build()
             .expect("a runtime")
-            .block_on(announce(Some(sender()), Some(&store), &announcement, true));
+            .block_on(announce(
+                Some(sender()),
+                Some(&store),
+                &announcement,
+                true,
+                Some(&live()),
+            ));
         assert!(
             matches!(&outcome, Announced::Skipped(reason) if reason.contains("targeted")),
             "nothing is attempted: {outcome:?}"
@@ -576,7 +760,13 @@ mod tests {
             .enable_all()
             .build()
             .expect("a runtime")
-            .block_on(announce(Some(sender()), Some(&store), &announcement, false));
+            .block_on(announce(
+                Some(sender()),
+                Some(&store),
+                &announcement,
+                false,
+                Some(&live()),
+            ));
         assert_eq!(outcome, Announced::Skipped("push.notify_on_reply is off"));
     }
 
