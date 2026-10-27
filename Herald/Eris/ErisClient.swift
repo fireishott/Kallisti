@@ -631,6 +631,16 @@ actor ErisClient {
         return try decode(ErisSettingsUpdate.self, from: data).changed
     }
 
+    /// `POST /v1/settings` - write one field from the daemon's own record.
+    ///
+    /// The record names the key and the value's spelling, so a write is one
+    /// `key=value` pair and the daemon's parser does the judging. A refusal comes
+    /// back naming the field and the values it would have accepted.
+    func updateSetting(_ write: ErisSettingWrite) async throws -> [String] {
+        let data = try await send(route: .updateSettings, form: write.fields)
+        return try decode(ErisSettingsUpdate.self, from: data).changed
+    }
+
     /// `GET /v1/approvals` - the queue an admin device can answer.
     ///
     /// Needs the `admin` scope: a device paired from a code minted without the

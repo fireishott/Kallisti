@@ -5,6 +5,44 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.9] - 2026-10-27
+
+Settings, wired to the daemon instead of rebuilt beside it.
+
+### Added
+
+- **The daemon's own settings table, on the phone.** `GET /v1/settings` carries
+  `capabilities`: every operator-facing setting with its label, its tab, its type,
+  the value it currently reads and the closed list it accepts, in the same six
+  tabs the web UI renders (Models, Assistant, Memory, Devices, Automation,
+  System). Settings now draws that record. A field added to the daemon appears on
+  the phone with no app change, which is the only version of this that stays true;
+  six hand-written screens would have been a second copy of the table and the copy
+  is the half that goes stale. `build 104`.
+- **One control per type.** A flag is a switch, a closed list is a menu, an
+  integer is a stepper inside the range the daemon publishes, and text is a field
+  that commits on done. A field the daemon will not accept writes for renders
+  read-only with a line saying so, rather than offering a control that would fail.
+- **Refusals in the daemon's own words.** The route needs the `admin` scope, and a
+  device paired without administration gets the daemon's sentence about the
+  pairing code. That sentence is what the screen shows, because it names the fix.
+
+### Changed
+
+- **`Daemon settings` is one row under the host it belongs to**, and it opens the
+  whole table. There is no longer any part of Settings that is about a backend the
+  device is not talking to.
+
+### Verification
+
+- `KallistiTests/ErisSettingsCatalogueTests`: the record decodes into the daemon's
+  six tabs in its order, each kind carries what its control needs (options, range,
+  current value, writability), an unknown type costs one row rather than the whole
+  screen, a write spells each kind the way the daemon's parser reads it, and every
+  tab is populated.
+- Daemon 1.4.11 (120) publishes `min`/`max` for integer settings; the phase8
+  contract test asserts the exact member set per type through the real route.
+
 ## [1.4.8] - 2026-10-27
 
 The release that shows the work. A running turn used to read as the word

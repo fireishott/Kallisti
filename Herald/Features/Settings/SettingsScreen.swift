@@ -1572,6 +1572,40 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
+                // The daemon's own settings table. It is one screen because the
+                // daemon publishes it as one record: the six tabs the web UI
+                // renders, each field with its label, its type and the values it
+                // accepts. A phone screen per tab would be a second copy of that
+                // table, and the copy is the half that goes stale.
+                NavigationLink(value: Route.daemonSettings) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Colors.accent)
+                            .frame(width: 20, alignment: .center)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Daemon settings")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("Models, assistant, memory, devices, automation, system")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.daemonSettings")
+
+                sectionDivider
+
                 // Connector Version
                 settingsRow(
                     icon: "arrow.triangle.swap",

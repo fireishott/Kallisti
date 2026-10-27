@@ -27,6 +27,13 @@ struct ErisSettingsSnapshot: Equatable, Sendable {
     let approval: String
     /// The daemon's timezone label.
     let timezone: String
+    /// Every operator-facing setting the daemon holds, in its own tab order.
+    ///
+    /// This is the Settings screen: labels, types, current values and closed
+    /// option lists all arrive here, so the phone renders the daemon's table
+    /// rather than a second copy of it that goes stale the next time a setting
+    /// is added.
+    let fields: [ErisSettingField]
 
     init(
         model: String,
@@ -35,7 +42,8 @@ struct ErisSettingsSnapshot: Equatable, Sendable {
         toolsEnabled: Bool,
         toolRounds: Int,
         approval: String,
-        timezone: String
+        timezone: String,
+        fields: [ErisSettingField] = []
     ) {
         self.model = model
         self.sandbox = sandbox
@@ -44,6 +52,17 @@ struct ErisSettingsSnapshot: Equatable, Sendable {
         self.toolRounds = toolRounds
         self.approval = approval
         self.timezone = timezone
+        self.fields = fields
+    }
+
+    /// The catalogue, grouped into the daemon's tabs.
+    var groups: [ErisSettingsGroup] {
+        ErisSettingsGroup.groups(from: fields)
+    }
+
+    /// The field behind one key, when the record carries it.
+    func field(_ key: String) -> ErisSettingField? {
+        fields.first { $0.key == key }
     }
 
     /// The model id, or the honest placeholder when the daemon has none.
@@ -62,6 +81,7 @@ extension ErisSettingsSnapshot: Decodable {
         case toolRounds = "tool_rounds"
         case approval
         case timezone
+        case capabilities
     }
 
     init(from decoder: any Decoder) throws {
@@ -73,7 +93,9 @@ extension ErisSettingsSnapshot: Decodable {
             toolsEnabled: try container.decodeIfPresent(Bool.self, forKey: .toolsEnabled) ?? false,
             toolRounds: try container.decodeIfPresent(Int.self, forKey: .toolRounds) ?? 0,
             approval: try container.decodeIfPresent(String.self, forKey: .approval) ?? "",
-            timezone: try container.decodeIfPresent(String.self, forKey: .timezone) ?? ""
+            timezone: try container.decodeIfPresent(String.self, forKey: .timezone) ?? "",
+            fields: (try container.decodeIfPresent([FailableSettingField].self, forKey: .capabilities) ?? [])
+                .compactMap(\.field)
         )
     }
 }
@@ -224,6 +246,62 @@ enum ErisSettingsOption {
         }
     }
 
+    /// The label for one option of any field.
+    ///
+    /// The three lists above keep their own readers because the consequence
+    /// strings beside them are written for a specific choice; everything the
+    /// record grows uses this one, which falls back to the daemon's own spelling
+    /// rather than inventing a word for a value it has never seen.
+    static func displayLabel(key: String, value: String) -> String {
+        switch key {
+        case "sandbox": return sandboxLabel(value)
+        case "approval": return approvalLabel(value)
+        case "memory": return memoryLabel(value)
+        case "clock_format":
+            switch value {
+            case "24h": return "24-hour"
+            case "12h": return "12-hour"
+            default: return value
+            }
+        case "show_tool_log":
+            switch value {
+            case "full": return "Every call"
+            case "compact": return "Compact"
+            case "off": return "Off"
+            default: return value
+            }
+        case "reply_state":
+            switch value {
+            case "bubble": return "Bubble"
+            case "inline": return "Inline"
+            default: return value
+            }
+        case "greeting_refresh":
+            switch value {
+            case "morning": return "Each morning"
+            case "session": return "Each session"
+            case "manual": return "Manual"
+            default: return value
+            }
+        case "push_notify_scope":
+            switch value {
+            case "all": return "Every turn"
+            case "mentions": return "Only when named"
+            default: return value
+            }
+        case "conversation_sort":
+            switch value {
+            case "recent": return "Newest first"
+            case "title": return "By title"
+            case "day": return "By day"
+            default: return value
+            }
+        default:
+            // `workspace-write` reads as a word when it is spelled with spaces.
+            return value.replacingOccurrences(of: "-", with: " ")
+        }
+    }
+
     /// One line of plain English: what changes if this is picked.
     static func sandboxConsequence(_ value: String) -> String {
         switch value {
@@ -248,5 +326,223 @@ enum ErisSettingsOption {
         default:
             return ""
         }
+    }
+}
+
+// MARK: - The daemon's own catalogue
+//
+// `GET /v1/settings` carries `capabilities`: every operator-facing setting the
+// daemon holds, in the daemon's own tab order, with its label, its type, the
+// value it currently reads, and - for a closed set - the values it accepts.
+//
+// That record is the Settings screen. Building one screen per web tab by hand
+// would be a second copy of a table the daemon already publishes, and the copy
+// is what goes stale: a setting added to the daemon would be invisible on the
+// phone until somebody remembered to add it here too.
+//
+// So the phone renders the record, and the only thing it decides is which
+// control a type becomes.
+
+/// What kind of value a setting holds, as the record spells it.
+///
+/// Four types, because that is how many form controls the record chooses from.
+/// A zone is a `string` on the wire by the daemon's own choice, so it gets the
+/// text field it deserves rather than a fifth case nothing else uses.
+enum ErisSettingKind: String, Sendable, Equatable {
+    /// Free text.
+    case string
+    /// One of a closed list.
+    case enumeration
+    /// On or off.
+    case bool
+    /// A whole number inside `min`...`max`.
+    case int
+
+    /// Decode the record's `type`. A kind this build does not know is `nil`, so
+    /// a newer daemon's field is skipped instead of crashing the screen.
+    init?(wire: String) {
+        switch wire {
+        case "string": self = .string
+        case "enum": self = .enumeration
+        case "bool": self = .bool
+        case "int": self = .int
+        default: return nil
+        }
+    }
+}
+
+/// One setting, exactly as the daemon describes it.
+struct ErisSettingField: Identifiable, Equatable, Sendable {
+    /// The write body's field name.
+    let key: String
+    /// What a person reads beside it.
+    let label: String
+    /// Which tab it belongs to, one of the daemon's six.
+    let group: String
+    /// What kind of control it becomes.
+    let kind: ErisSettingKind
+    /// Whether the daemon accepts a write for it today.
+    let writable: Bool
+    /// The value it currently reads, as the daemon spells it.
+    var value: String
+    /// The closed list, empty for anything but an enum.
+    var options: [String] = []
+    /// The lowest value an `int` accepts, when the daemon publishes one.
+    var min: Int? = nil
+    /// The highest value an `int` accepts, when the daemon publishes one.
+    var max: Int? = nil
+
+    var id: String { key }
+
+    /// The stored value as a switch position.
+    var boolValue: Bool { value.lowercased() == "true" }
+
+    /// The stored value as a number, falling back to the low end of the range.
+    var intValue: Int { Int(value) ?? min ?? 0 }
+
+    /// The label for one of this field's options, when it is an enum.
+    func label(for option: String) -> String {
+        // The enum values are the daemon's spellings (`workspace-write`,
+        // `gbrain`) and several of them read as words rather than as keys.
+        ErisSettingsOption.displayLabel(key: key, value: option)
+    }
+
+    /// The option a person would pick for the stored value.
+    var selectedOption: String? {
+        guard kind == .enumeration else { return nil }
+        if options.contains(value) { return value }
+        return options.first
+    }
+}
+
+extension ErisSettingField: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case key, label, group, type, writable, value, options, min, max
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let key = try container.decodeIfPresent(String.self, forKey: .key) ?? ""
+        guard !key.isEmpty else {
+            throw ErisError.decoding("a setting in the record carried no key")
+        }
+        let wireType = try container.decodeIfPresent(String.self, forKey: .type) ?? ""
+        guard let kind = ErisSettingKind(wire: wireType) else {
+            throw ErisError.decoding("the setting `\(key)` is typed `\(wireType)`, which this build cannot draw")
+        }
+        self.init(
+            key: key,
+            label: try container.decodeIfPresent(String.self, forKey: .label) ?? key,
+            group: try container.decodeIfPresent(String.self, forKey: .group) ?? "system",
+            kind: kind,
+            writable: try container.decodeIfPresent(Bool.self, forKey: .writable) ?? false,
+            // The record's `value` is a string for every kind, including bools
+            // and numbers, because one reader serves all four.
+            value: try container.decodeIfPresent(String.self, forKey: .value) ?? "",
+            options: try container.decodeIfPresent([String].self, forKey: .options) ?? [],
+            min: try container.decodeIfPresent(Int.self, forKey: .min),
+            max: try container.decodeIfPresent(Int.self, forKey: .max)
+        )
+    }
+}
+
+/// One field, or nothing, so a record entry this build cannot draw does not take
+/// the whole screen with it.
+///
+/// The daemon publishes four types today. A future daemon that publishes a fifth
+/// is not a reason for a phone to show an empty Settings screen: the fields it
+/// does understand still have to render, and the one it does not is the field the
+/// person will notice is missing. The failure is in the log either way.
+private struct FailableSettingField: Decodable {
+    let field: ErisSettingField?
+
+    init(from decoder: any Decoder) throws {
+        field = try? ErisSettingField(from: decoder)
+    }
+}
+
+/// One tab of the settings screen: the daemon's group and the fields in it.
+struct ErisSettingsGroup: Identifiable, Equatable, Sendable {
+    /// The daemon's group key: `models`, `assistant`, `memory`, `devices`,
+    /// `automation`, `system`.
+    let id: String
+    /// The tab's heading.
+    let title: String
+    /// The fields that belong to it, in the daemon's order.
+    let fields: [ErisSettingField]
+
+    /// The heading for one of the daemon's six groups.
+    ///
+    /// Unknown groups are titled with their own key rather than dropped: a
+    /// daemon that grows a seventh tab should show it, not hide it.
+    static func title(for group: String) -> String {
+        switch group {
+        case "models": return "Models"
+        case "assistant": return "Assistant"
+        case "memory": return "Memory"
+        case "devices": return "Devices"
+        case "automation": return "Automation"
+        case "system": return "System"
+        default: return group.prefix(1).uppercased() + group.dropFirst()
+        }
+    }
+
+    /// Group the record, preserving the daemon's tab order.
+    ///
+    /// Order is the daemon's, not alphabetical and not a client-side list: the
+    /// two clients have to agree about what the tabs are, and the record already
+    /// says.
+    static func groups(from fields: [ErisSettingField]) -> [ErisSettingsGroup] {
+        var order: [String] = []
+        var byGroup: [String: [ErisSettingField]] = [:]
+        for field in fields {
+            if byGroup[field.group] == nil { order.append(field.group) }
+            byGroup[field.group, default: []].append(field)
+        }
+        return order.map { group in
+            ErisSettingsGroup(id: group, title: title(for: group), fields: byGroup[group] ?? [])
+        }
+    }
+}
+
+/// One field's new value, ready for `POST /v1/settings`.
+///
+/// The route takes a subset of the record's keys and reads a form, so a write is
+/// one `key=value` pair. `ErisSettingsPatch` stays for the four-field callers
+/// that predate the record; this is the general shape.
+struct ErisSettingWrite: Equatable, Sendable {
+    /// The record key to write.
+    let key: String
+    /// The value, spelled the way the daemon's parser wants it.
+    let value: String
+
+    /// The form body. `ErisClient.formEncode` sorts keys, so one field is stable.
+    var fields: [String: String] { [key: value] }
+
+    /// The write for a switch.
+    static func flag(_ key: String, _ on: Bool) -> ErisSettingWrite {
+        ErisSettingWrite(key: key, value: on ? "true" : "false")
+    }
+
+    /// The write for a number, clamped into the range the daemon published.
+    static func number(_ key: String, _ value: Int, min: Int?, max: Int?) -> ErisSettingWrite {
+        var clamped = value
+        if let min { clamped = Swift.max(min, clamped) }
+        if let max { clamped = Swift.min(max, clamped) }
+        return ErisSettingWrite(key: key, value: String(clamped))
+    }
+
+    /// The write for a closed list, refusing a value the field does not offer.
+    static func choice(_ field: ErisSettingField, _ option: String) -> ErisSettingWrite? {
+        guard field.options.contains(option) else { return nil }
+        return ErisSettingWrite(key: field.key, value: option)
+    }
+
+    /// The write for free text, refusing an empty one: the daemon treats an
+    /// empty value as "no setting", which is not what clearing a field means.
+    static func text(_ key: String, _ raw: String) -> ErisSettingWrite? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return ErisSettingWrite(key: key, value: trimmed)
     }
 }

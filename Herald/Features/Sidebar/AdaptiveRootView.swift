@@ -183,6 +183,8 @@ struct AdaptiveRootView: View {
             GatewayLogsScreen()
         case .configEditor:
             ConfigEditorScreen()
+        case .daemonSettings:
+            DaemonSettingsScreen()
         }
     }
 

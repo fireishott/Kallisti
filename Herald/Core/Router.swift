@@ -8,6 +8,9 @@ enum Route: Hashable {
     case gatewayStatus
     case gatewayLogs
     case configEditor
+    /// The daemon's own settings table: every operator-facing setting Eris
+    /// publishes, grouped by the daemon's tabs.
+    case daemonSettings
 }
 
 // MARK: - Sheet Destinations
