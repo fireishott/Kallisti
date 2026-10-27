@@ -168,6 +168,19 @@ fn read_models(engine: &SetupEngine) -> Result<serde_json::Value, DeviceError> {
         .map_err(settings_unavailable)?
         .unwrap_or_default();
     let (providers, primary) = registry(engine)?;
+    // The pin as a provider and a model, so a row is ticked by identity rather
+    // than by string. A pin is stored `provider/model` while a row's `id` is the
+    // bare id its own provider spells, so comparing the two strings could never
+    // match and no row was ever drawn as the selected one.
+    let pinned_choice = if pinned.trim().is_empty() {
+        None
+    } else {
+        Some(chat::split_model_value(
+            &pinned,
+            &providers,
+            primary.as_deref().unwrap_or_default(),
+        ))
+    };
     // Every provider the registry holds that a probe has actually published a
     // catalogue for, not only the primary.
     //
@@ -197,7 +210,9 @@ fn read_models(engine: &SetupEngine) -> Result<serde_json::Value, DeviceError> {
                 "context_window": contexts.get(id),
                 // The pin this daemon holds. A picker can draw its tick from
                 // this without comparing ids itself.
-                "is_default": id == &pinned,
+                "is_default": pinned_choice
+                    .as_ref()
+                    .is_some_and(|choice| choice.provider_id == provider.id && &choice.model == id),
             }));
         }
     }

@@ -3030,19 +3030,62 @@ pub(crate) fn model_write_refusal(error: OnboardingError) -> DeviceError {
     }
 }
 
-/// The value to store for a submitted model, checked against the list that would
-/// actually serve it.
+/// A catalogue short enough to quote inside a refusal.
 ///
-/// A picker submits `provider/model`, because a model id belongs to the endpoint
-/// that published it. The list it has to be checked against is therefore that
-/// provider's, and the split has to happen first: the old check compared the
-/// whole `provider/model` string against a catalogue keyed by bare ids, so a
-/// correct pin for a provider other than the legacy probe's owner could never
-/// match and was refused as though the endpoint had never offered it.
+/// Past this, the count and the route that lists the ids say more than the ids
+/// would: one provider publishes 93 models, and 93 ids is a wall a phone's error
+/// banner cannot show.
+const SHORT_CATALOGUE: usize = 8;
+
+/// Every configured provider whose probed catalogue publishes `model`.
+///
+/// A provider with no catalogue is not a candidate: nothing was measured there,
+/// so it can neither match nor rule the id out.
+fn publishers_of(
+    engine: &SetupEngine,
+    registry: &[crate::providers::Provider],
+    model: &str,
+) -> Result<Vec<String>, DeviceError> {
+    let mut found = Vec::new();
+    for provider in registry {
+        let catalog = engine
+            .provider_catalog(&provider.id)
+            .map_err(settings_unavailable)?;
+        if catalog.iter().any(|id| id == model) {
+            found.push(provider.id.clone());
+        }
+    }
+    Ok(found)
+}
+
+/// The value to store for a submitted model, checked against the list that would
+/// actually serve it, and returned in the one form a later turn can split again:
+/// `provider/model`.
+///
+/// Two shapes arrive here, and both are legal because both are something this
+/// daemon published itself.
+///
+/// - `provider/model` is the documented pin. The list it is checked against is
+///   that provider's catalogue, and the split has to happen first: the old check
+///   compared the whole `provider/model` string against a catalogue keyed by bare
+///   ids, so a correct pin for a provider other than the legacy probe's owner
+///   could never match and was refused as though the endpoint had never offered
+///   it.
+/// - A bare id is what `GET /v1/models` puts in each row's `id`, so it is exactly
+///   what a picker sends when it pins the row it drew. There is no split to lean
+///   on, so the provider is the one whose catalogue publishes the id. Falling
+///   back to the primary instead - what `split_model_value` does for an
+///   unrecognised head - is what refused `gemini-3-flash` on a daemon whose
+///   primary is `commandcode`: the id was published all along, by `antigravity`.
+///
+/// Whatever arrives, `provider/model` is what gets stored. A bare id stored bare
+/// would be split against the primary on every later turn, which is the same
+/// wrong provider, only silent and only at the point the turn fails.
 ///
 /// A provider that has never been probed has an empty list, and an empty list
 /// means no check rather than a refusal: the endpoint is the authority until it
-/// has said otherwise.
+/// has said otherwise. That rule survives here as "no catalogue anywhere means
+/// accept", so an install that has never completed a probe keeps working.
 pub(crate) fn resolve_model_value(engine: &SetupEngine, raw: &str) -> Result<String, DeviceError> {
     let value = raw.trim();
     if value.is_empty() {
@@ -3056,24 +3099,113 @@ pub(crate) fn resolve_model_value(engine: &SetupEngine, raw: &str) -> Result<Str
         .setting(crate::providers::SETTING_PRIMARY)
         .map_err(settings_unavailable)?
         .unwrap_or_default();
-    let choice = chat::split_model_value(value, &registry, &primary);
+
+    // An explicit `provider/model`, where the head is a provider this daemon
+    // knows. Anything else is a bare id, including `cmc/deepseek/...`: that is
+    // one model id on the primary, not a provider nobody configured.
+    let explicit = value.split_once('/').and_then(|(head, rest)| {
+        (!rest.trim().is_empty() && registry.iter().any(|provider| provider.id == head))
+            .then(|| (head.to_owned(), rest.trim().to_owned()))
+    });
+
+    let (provider_id, model) = match explicit {
+        Some(pair) => pair,
+        None => {
+            let mut publishers = publishers_of(engine, &registry, value)?;
+            match publishers.len() {
+                1 => {
+                    let only = publishers.remove(0);
+                    // When a split would land on that same provider - an install
+                    // with one provider, or a bare id the primary publishes -
+                    // the bare form already means the right thing, and it is
+                    // what every pin written before this check looks like. Only
+                    // a publisher the split would have missed is worth rewriting.
+                    if chat::split_model_value(value, &registry, &primary).provider_id == only {
+                        return Ok(value.to_owned());
+                    }
+                    (only, value.to_owned())
+                }
+                0 => {
+                    // What a probe actually measured, so a refusal from a small
+                    // install still names the ids it could have had. A large
+                    // catalogue is named by size: pasting 93 ids into a phone's
+                    // error banner is unreadable, and the picker is one tap away.
+                    let probed: Vec<(&str, Vec<String>)> = registry
+                        .iter()
+                        .filter_map(|provider| {
+                            let catalog = engine.provider_catalog(&provider.id).ok()?;
+                            (!catalog.is_empty()).then_some((provider.id.as_str(), catalog))
+                        })
+                        .collect();
+                    if probed.is_empty() {
+                        // Nothing has been probed at all: nothing can rule the id
+                        // out, and no provider can be claimed for it either. Stored
+                        // byte for byte, which is exactly what every pin written
+                        // before the registry could hold six providers looks like,
+                        // and what a later split still resolves against the primary.
+                        return Ok(value.to_owned());
+                    }
+                    let measured = if probed.len() == 1 && probed[0].1.len() <= SHORT_CATALOGUE {
+                        format!(
+                            ": {} publishes {} ({})",
+                            probed[0].0,
+                            probed[0].1.len(),
+                            probed[0].1.join(", ")
+                        )
+                    } else {
+                        format!(
+                            ": none of the {} probed providers publishes it, and no turn would answer",
+                            probed.len()
+                        )
+                    };
+                    return Err(DeviceError::bad_request(
+                        "model_invalid",
+                        format!(
+                            "model does not accept {}{measured}. Write `provider/model`, or \
+                             pin one of the ids `GET /v1/models` lists",
+                            shown_value(value)
+                        ),
+                    ));
+                }
+                _ => {
+                    // Several catalogues publish it. The primary wins, because
+                    // that is what a pin meant before providers were plural;
+                    // otherwise the caller has to say which one it meant.
+                    if publishers.iter().any(|id| id == &primary) {
+                        (primary.clone(), value.to_owned())
+                    } else {
+                        return Err(DeviceError::bad_request(
+                            "model_invalid",
+                            format!(
+                                "model does not accept {}: {} providers publish that id ({}), \
+                                 so name the one you mean as `provider/model`",
+                                shown_value(value),
+                                publishers.len(),
+                                publishers.join(", ")
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    };
+
     let known = engine
-        .provider_catalog(&choice.provider_id)
+        .provider_catalog(&provider_id)
         .map_err(settings_unavailable)?;
-    if !known.is_empty() && !known.iter().any(|candidate| candidate == &choice.model) {
+    if !known.is_empty() && !known.iter().any(|candidate| candidate == &model) {
         return Err(DeviceError::bad_request(
             "model_invalid",
             format!(
                 "model does not accept {}: {} publishes {} models and that id is not one of \
-                 them ({}), so no turn would answer",
+                 them, so no turn would answer",
                 shown_value(value),
-                choice.provider_id,
-                known.len(),
-                known.join(", ")
+                provider_id,
+                known.len()
             ),
         ));
     }
-    Ok(value.to_owned())
+    Ok(format!("{provider_id}/{model}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -7080,5 +7212,154 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["ok"], serde_json::json!(false));
         assert_eq!(body["code"], serde_json::json!("not_found"));
+    }
+
+    /// Two providers with catalogues, and the primary is the one that does *not*
+    /// publish the model the picker is about to pin. This is the shape that made
+    /// a phone's model tap a 400: `GET /v1/models` hands out `id` per row with the
+    /// provider beside it, the app posts that bare `id` back, and the old check
+    /// split a bare id against the primary.
+    fn two_providers(engine: &crate::onboarding::SetupEngine) {
+        let registry = r#"[
+            {"id":"commandcode","name":"CommandCode","base_url":"https://cc.test/v1","key_ref":"env:CC"},
+            {"id":"antigravity","name":"Antigravity","base_url":"https://ag.test","key_ref":"token:antigravity"}
+        ]"#;
+        engine
+            .set_setting(crate::providers::SETTING_REGISTRY, registry)
+            .expect("registry");
+        engine
+            .set_setting(crate::providers::SETTING_PRIMARY, "commandcode")
+            .expect("primary");
+        for (provider, models) in [
+            ("commandcode", r#"["MiniMax-M3"]"#),
+            ("antigravity", r#"["gemini-3-flash","gemini-3-pro"]"#),
+        ] {
+            engine
+                .set_setting(
+                    &crate::onboarding::SetupEngine::provider_catalog_key(provider),
+                    models,
+                )
+                .expect("catalogue");
+        }
+    }
+
+    #[test]
+    fn a_bare_model_id_is_pinned_on_the_provider_that_publishes_it() {
+        let fx = fixture();
+        let engine = fx.service.engine();
+        two_providers(engine);
+
+        assert_eq!(
+            resolve_model_value(engine, "gemini-3-flash").expect("the row's own id pins"),
+            "antigravity/gemini-3-flash",
+            "a bare id resolves to the catalogue that publishes it, not to the primary"
+        );
+        // The explicit form is unchanged, and is stored the same way.
+        assert_eq!(
+            resolve_model_value(engine, "antigravity/gemini-3-flash").expect("explicit pins"),
+            "antigravity/gemini-3-flash"
+        );
+        // A model the primary publishes stays bare: a split already lands on the
+        // primary, so rewriting it would change a value that is already right.
+        assert_eq!(
+            resolve_model_value(engine, "MiniMax-M3").expect("primary pins"),
+            "MiniMax-M3"
+        );
+
+        // An id nothing publishes is refused, and the refusal says what to do
+        // rather than dumping the catalogue into an error line.
+        let refusal = resolve_model_value(engine, "gemini-9-typo").expect_err("refused");
+        assert_eq!(refusal.code(), "model_invalid");
+        // `DeviceError` has no `Display`; its `Debug` carries the message.
+        let detail = format!("{refusal:?}");
+        assert!(
+            detail.contains("provider/model"),
+            "the refusal names the shape it wants: {detail}"
+        );
+        assert!(
+            !detail.contains("gemini-3-pro"),
+            "the refusal does not paste a 93-model catalogue: {detail}"
+        );
+    }
+
+    #[test]
+    fn a_bare_id_two_providers_publish_needs_the_provider_named() {
+        let fx = fixture();
+        let engine = fx.service.engine();
+        // Three providers, and the id lives in the two that are *not* the
+        // primary: the primary-wins rule below must not be what answers this.
+        let registry = r#"[
+            {"id":"commandcode","name":"CommandCode","base_url":"https://cc.test/v1","key_ref":"env:CC"},
+            {"id":"antigravity","name":"Antigravity","base_url":"https://ag.test","key_ref":"token:antigravity"},
+            {"id":"claude","name":"Claude","base_url":"https://api.anthropic.test/v1","key_ref":"token:claude"}
+        ]"#;
+        engine
+            .set_setting(crate::providers::SETTING_REGISTRY, registry)
+            .expect("registry");
+        engine
+            .set_setting(crate::providers::SETTING_PRIMARY, "commandcode")
+            .expect("primary");
+        for (provider, models) in [
+            ("commandcode", r#"["MiniMax-M3","shared-model"]"#),
+            ("antigravity", r#"["gemini-3-flash","shared-model"]"#),
+            ("claude", r#"["claude-opus-5","shared-model"]"#),
+        ] {
+            engine
+                .set_setting(
+                    &crate::onboarding::SetupEngine::provider_catalog_key(provider),
+                    models,
+                )
+                .expect("catalogue");
+        }
+
+        // The primary publishes it too, so the primary is what a pin means: that
+        // is the behaviour every pin written before the registry had six
+        // providers already relied on.
+        assert_eq!(
+            resolve_model_value(engine, "shared-model").expect("primary wins"),
+            "commandcode/shared-model"
+        );
+
+        // Take it out of the primary and two providers are left saying the same
+        // id. The pin has to name which endpoint it means instead of guessing.
+        engine
+            .set_setting(
+                &crate::onboarding::SetupEngine::provider_catalog_key("commandcode"),
+                r#"["MiniMax-M3"]"#,
+            )
+            .expect("catalogue");
+        let refusal = resolve_model_value(engine, "shared-model").expect_err("ambiguous");
+        assert_eq!(refusal.code(), "model_invalid");
+        let message = format!("{refusal:?}");
+        assert!(
+            message.contains("antigravity") && message.contains("claude"),
+            "both publishers are named: {message}"
+        );
+
+        // Naming the provider is the way through it.
+        assert_eq!(
+            resolve_model_value(engine, "antigravity/shared-model").expect("explicit wins"),
+            "antigravity/shared-model"
+        );
+    }
+
+    #[test]
+    fn a_daemon_with_no_probe_still_takes_a_model_at_face_value() {
+        let fx = fixture();
+        let engine = fx.service.engine();
+        // Registry written, catalogues never probed. The endpoint is the
+        // authority until it has said otherwise, so a pin is accepted and no
+        // provider can be invented for it.
+        let registry = r#"[
+            {"id":"commandcode","name":"CommandCode","base_url":"https://cc.test/v1","key_ref":"env:CC"}
+        ]"#;
+        engine
+            .set_setting(crate::providers::SETTING_REGISTRY, registry)
+            .expect("registry");
+        assert_eq!(
+            resolve_model_value(engine, "whatever-model").expect("accepted"),
+            "whatever-model",
+            "nothing was measured, so nothing is claimed: the value is stored as written"
+        );
     }
 }
