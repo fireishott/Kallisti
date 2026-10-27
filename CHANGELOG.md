@@ -105,6 +105,15 @@ observe; commit history carries the detail.
   `overflow-y` makes the other axis scrollable too, and a run log line that
   filled every fact about a turn could be wide enough to push the left edge of
   the conversation out of view. That line wraps now. `build 114`.
+- **The conversation is the window, so there is nothing left to pan.** Locking
+  the body was not enough: iOS Safari still pans the document, and a height on a
+  static box is only as good as the ancestor chain that has to keep it. When the
+  chain resolved to `auto` the transcript stopped being a scroller, the whole
+  conversation became one long document, and the start of a reply could not be
+  reached by scrolling because nothing inside the conversation scrolled. The
+  conversation is now a fixed box the size of the visual viewport, the root is
+  locked as well as the body, and the transcript is the only thing that moves.
+  `build 115`.
 
 ## 1.4.9
 

@@ -1304,6 +1304,10 @@ pre.code {
      bottom edge. */
   height: 100vh;
   height: 100dvh;
+  /* The shell above is a fixed box in a conversation, so this column takes the
+     box it was given rather than restating a viewport unit that could disagree
+     with it once a keyboard or a collapsing toolbar is involved. */
+  height: 100%;
   padding-left: 18px;
   padding-right: 18px;
   /* A gutter, not a tail. The prose rule's 72px bottom padding sat under a
@@ -1419,19 +1423,39 @@ pre.code {
  * the words instead of moving the words. Only the transcript may scroll: the
  * document that holds a conversation does not.
  *
- * `overflow-x: hidden` on the transcript is the second half. A grid row that
- * holds something wider than the column (an unwrapped terminal line, a table
- * with a min-width) turns `overflow-y: auto` into a sideways scroller too, and a
- * sideways scroller that has been nudged puts the left edge of every line out of
- * view. A wide child scrolls inside itself; the transcript never travels.
+ * `overflow: hidden` on the body alone is not a lock on iOS Safari, which still
+ * pans the document and still rubber-bands it. The lock needs the root element
+ * too, and the height chain has to be definite at every level, or a child falls
+ * back to its content height and the transcript stops being a scroller at all:
+ * it grows, the page pans, and the top of a reply cannot be reached by scrolling
+ * inside the conversation because nothing inside it scrolls.
  */
+html:has(.chat-shell),
 body:has(.chat-shell) {
-  height: 100vh;
-  height: 100dvh;
+  height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
 }
-body:has(.chat-shell) .app { height: 100vh; height: 100dvh; min-height: 0; }
+body:has(.chat-shell) .app {
+  /* Fixed, not merely tall.
+   *
+   * A height on a static box is a promise the rest of the chain has to keep, and
+   * if any ancestor resolves to `auto` the promise is dropped quietly: the
+   * transcript falls back to its content height, stops being a scroller, and the
+   * conversation becomes one long document that the browser pans. Panning moves
+   * the composer up over the answer, and the top of a reply is then unreachable,
+   * because nothing inside the conversation scrolls.
+   *
+   * A fixed box takes its size from the visual viewport, so the chain below it is
+   * definite without needing every level to restate a viewport unit, and a soft
+   * keyboard resizing that viewport moves the composer instead of hiding it.
+   */
+  position: fixed;
+  inset: 0;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+}
 
 /* A bubble is sized by the screen, not by its own text: every bubble takes the
    same share of the window, so a three-word answer and a table sit in one column
@@ -3513,10 +3537,28 @@ mod tests {
         // The document that holds a conversation does not scroll: it only
         // scrolls the transcript. A document that can scroll is a composer in
         // the middle of the page with the answer running behind it.
+        //
+        // The lock is on the root as well as the body, because `overflow: hidden`
+        // on the body alone does not stop iOS Safari panning the document, and
+        // the column is a fixed box rather than a tall one, so nothing below it
+        // has to restate a viewport unit for the chain to stay definite.
         let page = rule("body:has(.chat-shell)");
         assert!(
-            page.contains("overflow: hidden") && page.contains("height: 100dvh"),
-            "the conversation page is the window, not a document: {page}"
+            page.contains("overflow: hidden"),
+            "the conversation page cannot pan: {page}"
+        );
+        assert!(
+            rule("html:has(.chat-shell),\nbody:has(.chat-shell)").contains("overflow: hidden"),
+            "the root is locked too, or iOS still pans the document"
+        );
+        let pinned = rule("body:has(.chat-shell) .app");
+        assert!(
+            pinned.contains("position: fixed") && pinned.contains("inset: 0"),
+            "the conversation is a fixed box, not a tall one: {pinned}"
+        );
+        assert!(
+            !pinned.contains("min-height: 100dvh"),
+            "a floor is what let the column outgrow the screen: {pinned}"
         );
         // And the transcript never travels sideways. `overflow-y` alone makes the
         // other axis `auto`, so one wide child hid the left edge of every line.
