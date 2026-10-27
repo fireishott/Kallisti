@@ -4,6 +4,26 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.11
+
+- **A tool-heavy conversation opens instead of timing out.** The device
+  transcript endpoint bounded how many messages it returned and not how big they
+  were, and one conversation on this daemon held 41 messages and 9.2 MB of JSON
+  because every shell command's whole stdout is a stored tool record. It now also
+  bounds the bytes: the newest messages are kept inside a 512 KB read, each tool
+  output is cut to an 8 KB preview that says how much it left out, and the answer
+  reports both `omitted` and `elided_outputs` so a surface can say what it is not
+  showing. `build 119`.
+- **The phone can see a command running, and what it is printing.** The device
+  turn stream dropped three frames the browser has had since it grew a run log:
+  the round that is starting, the call that is about to run, and the bytes that
+  call writes while it writes them. It carries `round`, `tool_start` and
+  `tool_output` now, so a running turn reads as work in progress rather than as
+  the word "streaming", and a two-minute command is not two minutes of silence.
+  Output chunks are published live and never journalled: a reconnect reads the
+  finished `tool` frame, which already carries everything the turn stored.
+  `build 119`.
+
 ## 1.4.10
 
 - **A turn that is nearly out of budget answers instead of giving up.** The

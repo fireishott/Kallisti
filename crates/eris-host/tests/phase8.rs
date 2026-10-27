@@ -860,8 +860,11 @@ async fn last_event_id_resumes_with_only_the_missing_frames() {
         .next_frame(Duration::from_secs(5))
         .await
         .expect("the first frame arrives");
+    // The first frame of a turn is the round announcement, not a text fragment:
+    // a surface has to hear that a round started before the provider says
+    // anything, or "thinking" and "a command is running" read the same.
     assert_eq!(head.id, 1);
-    assert_eq!(head.event, "delta");
+    assert_eq!(head.event, "round");
     drop(first);
 
     // Let a few more frames land while nobody is listening.
@@ -883,8 +886,9 @@ async fn last_event_id_resumes_with_only_the_missing_frames() {
     let last = frames.last().expect("a terminal frame");
     assert_eq!(last.event, "done");
 
-    // The replayed deltas plus the first frame are the whole reply.
-    let mut text = head.data["text"].as_str().unwrap_or("").to_owned();
+    // The replayed deltas are the whole reply: the frame before the resume id is
+    // not replayed, and the round frame carried no text.
+    let mut text = String::new();
     for frame in &frames {
         if frame.event == "delta" {
             text.push_str(frame.data["text"].as_str().unwrap_or(""));
@@ -919,7 +923,11 @@ async fn a_resume_past_the_retention_window_is_a_409_buffer_miss() {
     let mut stream = Sse::open(harness.addr, &path, &token, None).await;
     let live = stream.frames_until_end(Duration::from_secs(10)).await;
     assert_eq!(live.last().expect("a terminal frame").event, "done");
-    assert_eq!(live.len(), 9, "eight deltas and a done frame");
+    assert_eq!(
+        live.iter().filter(|frame| frame.event == "delta").count(),
+        8,
+        "eight deltas"
+    );
 
     // Asking for everything from the start is now impossible, and the answer says
     // so rather than quietly streaming a suffix.
@@ -4779,11 +4787,19 @@ async fn the_daemon_says_what_it_is_without_a_credential() {
     assert_eq!(body["version"], eris_host::admin::VERSION);
     assert_eq!(body["build"], eris_host::admin::BUILD);
     let frames = body["frames"].as_array().expect("the frame vocabulary");
-    assert_eq!(frames.len(), 7, "every frame kind is named: {body}");
+    assert_eq!(frames.len(), 10, "every frame kind is named: {body}");
     assert!(
         frames.iter().any(|f| f == "reasoning") && frames.iter().any(|f| f == "tool"),
         "a client can learn that reasoning and tools exist: {body}"
     );
+    // A phone that shows what a command is printing has to be able to learn the
+    // vocabulary from the daemon rather than pinning a build number.
+    for kind in ["round", "tool_start", "tool_output"] {
+        assert!(
+            frames.iter().any(|f| f == kind),
+            "a client can learn that {kind} exists: {body}"
+        );
+    }
     // A phone has to know a turn can stop and wait for it, or a client that only
     // handles deltas will render a parked question as a turn that hung.
     assert!(

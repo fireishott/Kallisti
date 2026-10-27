@@ -460,7 +460,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "core-domain"
-version = "1.4.10"
+version = "1.4.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -486,7 +486,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "core-runtime"
-version = "1.4.10"
+version = "1.4.11"
 dependencies = [
  "core-domain",
  "eventsource-stream",
@@ -623,7 +623,7 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "eris-host"
-version = "1.4.10"
+version = "1.4.11"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1171,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "ios-host"
-version = "1.4.10"
+version = "1.4.11"
 dependencies = [
  "core-domain",
  "uniffi",

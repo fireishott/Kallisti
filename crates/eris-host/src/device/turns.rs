@@ -83,12 +83,34 @@ pub enum FrameKind {
     /// same kind is written again with the answer filled in. A client that missed
     /// the first frame can read the second one and still draw the card.
     Asked,
+    /// A round is starting, before the model has said anything.
+    ///
+    /// The longest silence in a turn is the model call. Without this frame a
+    /// surface can only say "streaming", which is the same thing it says while a
+    /// command runs, while a turn waits on a person, and while nothing at all is
+    /// happening. The count is the round about to run and whether it may still
+    /// call tools, so a reader can tell thinking from working.
+    Round,
+    /// A tool call is about to run.
+    ///
+    /// [`FrameKind::Tool`] is a receipt: it lands after the call returned. A
+    /// surface that wants to say "running `pytest`" while pytest runs needs to
+    /// hear about the call first, otherwise the only trace of a two-minute
+    /// command is the silence before its output.
+    ToolStart,
+    /// Output from a call that is still running.
+    ///
+    /// Live only, never journalled: a command can print megabytes, and a reader
+    /// that reconnects reads the finished [`FrameKind::Tool`] frame, which
+    /// carries the whole output the turn stored. This is the streaming view, not
+    /// a second copy of the record.
+    ToolOutput,
 }
 
 impl FrameKind {
     /// Every kind, so a client can learn the vocabulary from `/v1/version`
     /// instead of pinning a build number.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 10] = [
         Self::Delta,
         Self::Reasoning,
         Self::Tool,
@@ -96,6 +118,9 @@ impl FrameKind {
         Self::Error,
         Self::Cancelled,
         Self::Asked,
+        Self::Round,
+        Self::ToolStart,
+        Self::ToolOutput,
     ];
 
     /// The storage and wire spelling.
@@ -109,6 +134,9 @@ impl FrameKind {
             Self::Error => "error",
             Self::Cancelled => "cancelled",
             Self::Asked => "asked",
+            Self::Round => "round",
+            Self::ToolStart => "tool_start",
+            Self::ToolOutput => "tool_output",
         }
     }
 
@@ -123,6 +151,9 @@ impl FrameKind {
             "error" => Some(Self::Error),
             "cancelled" => Some(Self::Cancelled),
             "asked" => Some(Self::Asked),
+            "round" => Some(Self::Round),
+            "tool_start" => Some(Self::ToolStart),
+            "tool_output" => Some(Self::ToolOutput),
             _ => None,
         }
     }
@@ -133,14 +164,26 @@ impl FrameKind {
     pub const fn is_terminal(self) -> bool {
         !matches!(
             self,
-            Self::Delta | Self::Reasoning | Self::Tool | Self::Asked
+            Self::Delta
+                | Self::Reasoning
+                | Self::Tool
+                | Self::Asked
+                | Self::Round
+                | Self::ToolStart
+                | Self::ToolOutput
         )
     }
 
     /// The job status a terminal frame moves the job to.
     const fn terminal_status(self) -> Option<&'static str> {
         match self {
-            Self::Delta | Self::Reasoning | Self::Tool | Self::Asked => None,
+            Self::Delta
+            | Self::Reasoning
+            | Self::Tool
+            | Self::Asked
+            | Self::Round
+            | Self::ToolStart
+            | Self::ToolOutput => None,
             Self::Done => Some("succeeded"),
             Self::Error => Some("failed"),
             Self::Cancelled => Some("cancelled"),
@@ -204,6 +247,29 @@ enum Signal {
     Asked {
         /// What the model asked.
         request: crate::web::clarify::Request,
+    },
+    /// A round is starting, before the model has said anything.
+    Round {
+        /// Which round is starting, one-based.
+        round: usize,
+        /// The turn's tool budget.
+        max_rounds: usize,
+        /// Whether that round may still call tools.
+        tools_allowed: bool,
+    },
+    /// A tool call is about to run, before it has produced anything.
+    ToolStart {
+        /// The tool name.
+        name: String,
+        /// The arguments it was called with, as JSON.
+        arguments: String,
+    },
+    /// Output from a call that is still running. Live only.
+    ToolOutput {
+        /// The tool that is writing.
+        name: String,
+        /// What it wrote, this chunk.
+        chunk: String,
     },
     /// The question was settled, by this device or by another surface.
     Answered {
@@ -1461,6 +1527,47 @@ impl TurnHub {
                                 publish(&sender, seq, FrameKind::Tool, data);
                             }
                         }
+                        // The round about to run. Stored: a reader that joins a
+                        // long turn mid-way wants to know which round it walked
+                        // in on, and there are a handful of these per turn.
+                        Signal::Round {
+                            round,
+                            max_rounds,
+                            tools_allowed,
+                        } => {
+                            let data = serde_json::json!({
+                                "round": round,
+                                "max_rounds": max_rounds,
+                                "tools_allowed": tools_allowed,
+                            });
+                            if let Ok(Some(seq)) =
+                                store.append(&writer_job, FrameKind::Round, &data)
+                            {
+                                publish(&sender, seq, FrameKind::Round, data);
+                            }
+                        }
+                        // The call about to run. Stored, for the same reason: a
+                        // surface that reconnects mid-command has to be able to
+                        // see that a command is running.
+                        Signal::ToolStart { name, arguments } => {
+                            let data = serde_json::json!({
+                                "name": name,
+                                "arguments": arguments,
+                            });
+                            if let Ok(Some(seq)) =
+                                store.append(&writer_job, FrameKind::ToolStart, &data)
+                            {
+                                publish(&sender, seq, FrameKind::ToolStart, data);
+                            }
+                        }
+                        // Output as it arrives. Deliberately NOT journalled: a
+                        // command can print megabytes, and the finished `tool`
+                        // frame already carries what the turn stored. Seq 0 is
+                        // the contract for "live only, nothing to resume from".
+                        Signal::ToolOutput { name, chunk } => {
+                            let data = serde_json::json!({ "name": name, "chunk": chunk });
+                            publish(&sender, 0, FrameKind::ToolOutput, data);
+                        }
                         // The question, written before the turn blocks on it. A
                         // client that was not watching when the frame went out can
                         // read it back from the log, which is the whole reason a
@@ -1759,11 +1866,22 @@ impl TurnHub {
                         let _ = tx.send(Signal::Reasoning(fragment.to_owned()));
                     }
                 }
-                crate::web::chat::StreamPart::Round { round, .. } => {
-                    // The count the row stores is rounds completed. The frame is
-                    // not forwarded: the phone reads its job status instead.
+                crate::web::chat::StreamPart::Round {
+                    round,
+                    max_rounds,
+                    tools_allowed,
+                } => {
+                    // The count the row stores is rounds completed.
                     rounds = round.saturating_sub(1);
                     flush(false, &streamed, &records, rounds);
+                    // And the round is announced: it is the only signal that
+                    // separates "the model is thinking" from "a command is
+                    // running", which used to look identical on the phone.
+                    let _ = tx.send(Signal::Round {
+                        round,
+                        max_rounds,
+                        tools_allowed,
+                    });
                 }
                 crate::web::chat::StreamPart::Tool {
                     name,
@@ -1803,11 +1921,15 @@ impl TurnHub {
                         });
                     }
                 }
-                // A call that has started but not finished. The phone draws no
-                // live status line from the turn loop - it reads its job status -
-                // so this frame needs no signal of its own, and inventing one
-                // would be a listener with no reader.
-                crate::web::chat::StreamPart::ToolStart { .. } => {}
+                // A call that has started but not finished. Announced, because a
+                // two-minute command is otherwise a silence that reads exactly
+                // like a turn that died.
+                crate::web::chat::StreamPart::ToolStart { name, arguments } => {
+                    let _ = tx.send(Signal::ToolStart {
+                        name: name.to_owned(),
+                        arguments: arguments.to_owned(),
+                    });
+                }
                 // The question, out before the turn blocks on it, exactly as the
                 // browser sends it. The frame is also written to the job log, so a
                 // client that reconnects reads it back rather than missing the one
@@ -1822,11 +1944,15 @@ impl TurnHub {
                 // is here so the surface states where it goes rather than being
                 // silently wrong about a frame it never expected.
                 crate::web::chat::StreamPart::Elided { .. } => {}
-                // The finished call already carries the whole output. The device
-                // stream does not carry a second frame for the chunks that built
-                // it, because the browser's `tool_output` frames exist to fill a
-                // terminal window this surface does not render.
-                crate::web::chat::StreamPart::ToolOutput { .. } => {}
+                // The chunks that build that output, as they arrive. The
+                // finished call still carries the whole of it, so a reader that
+                // reconnects reads one frame instead of a hundred.
+                crate::web::chat::StreamPart::ToolOutput { name, chunk } => {
+                    let _ = tx.send(Signal::ToolOutput {
+                        name: name.to_owned(),
+                        chunk: chunk.to_owned(),
+                    });
+                }
             };
             let messages = vec![core_runtime::provider::ChatMessage::text(
                 core_runtime::provider::ChatRole::User,
@@ -2204,26 +2330,38 @@ mod tests {
     }
 
     #[test]
-    fn the_frame_vocabulary_is_the_browsers_and_round_trips_through_storage() {
+    fn the_frame_vocabulary_carries_the_progress_frames_and_round_trips() {
+        // `ALL` is what `/v1/version` advertises, so every kind has to survive the
+        // round trip through its own spelling or a client learns a word it cannot
+        // parse back.
+        for kind in FrameKind::ALL {
+            assert_eq!(FrameKind::parse(kind.as_str()), Some(kind));
+        }
+        assert!(FrameKind::parse("not_a_frame").is_none());
+        // The device stream now carries the browser's per-chunk output frame. It
+        // deliberately did not while the phone drew no run log: a frame with no
+        // reader is a listener with nothing to say. The phone shows what a
+        // command is printing, so the chunks have a reader.
+        assert_eq!(
+            FrameKind::parse("tool_output"),
+            Some(FrameKind::ToolOutput),
+            "the device stream carries the live output of a running command"
+        );
+        // Progress frames are progress, not endings: only the three settlement
+        // kinds can move a job to a terminal status. The three observed kinds
+        // below are exactly the ones a surface needs to tell thinking from working
+        // from finished.
         for kind in [
             FrameKind::Delta,
             FrameKind::Reasoning,
             FrameKind::Tool,
-            FrameKind::Done,
-            FrameKind::Error,
-            FrameKind::Cancelled,
+            FrameKind::Asked,
+            FrameKind::Round,
+            FrameKind::ToolStart,
+            FrameKind::ToolOutput,
         ] {
-            assert_eq!(FrameKind::parse(kind.as_str()), Some(kind));
+            assert!(!kind.is_terminal(), "{} must not end a turn", kind.as_str());
         }
-        assert!(
-            FrameKind::parse("tool_output").is_none(),
-            "the device stream does not carry the browser's per-chunk output frame"
-        );
-        // Reasoning and tool frames are progress, not endings: only the three
-        // settlement kinds can move a job to a terminal status.
-        assert!(!FrameKind::Reasoning.is_terminal());
-        assert!(!FrameKind::Tool.is_terminal());
-        assert!(!FrameKind::Delta.is_terminal());
         assert!(FrameKind::Done.is_terminal());
         assert!(FrameKind::Error.is_terminal());
         assert!(FrameKind::Cancelled.is_terminal());

@@ -298,18 +298,31 @@ fn synthetic_terminal(kind: FrameKind, text: String) -> serde_json::Value {
         // because a parked question is the opposite of an ending - the turn is
         // alive and waiting on a person, and inventing a question nobody asked
         // would be worse than leaving the stream short.
-        FrameKind::Delta | FrameKind::Reasoning | FrameKind::Tool | FrameKind::Asked => {
-            serde_json::Value::Null
-        }
+        FrameKind::Delta
+        | FrameKind::Reasoning
+        | FrameKind::Tool
+        | FrameKind::Asked
+        | FrameKind::Round
+        | FrameKind::ToolStart
+        | FrameKind::ToolOutput => serde_json::Value::Null,
     }
 }
 
 /// One SSE frame: `id`, `event`, `data`, in that order.
+///
+/// A frame with seq 0 is live-only: it was never written to the job log, so it
+/// carries no `id`. That is the honest spelling for it - a reader that reconnects
+/// must resume from the last *stored* frame, and handing it the id of something
+/// that cannot be replayed would make the resume skip real events.
 fn frame_event(frame: &TurnFrame) -> Event {
-    Event::default()
-        .id(frame.seq.to_string())
+    let event = Event::default()
         .event(frame.kind.as_str())
-        .data(frame.data.to_string())
+        .data(frame.data.to_string());
+    if frame.seq == 0 {
+        event
+    } else {
+        event.id(frame.seq.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,7 +1279,18 @@ pub async fn conversation(
                 .into_response();
             }
         };
-    let messages: Vec<serde_json::Value> = messages
+    // The count bound above is not a size bound, and this is the surface that has
+    // to live with the difference: a tool-heavy conversation is megabytes of
+    // stdout, and a phone that cannot finish reading it opens the chat blank.
+    // Both bounds are reported, so a client can say what it is not showing
+    // instead of quietly answering from a partial transcript.
+    let bounded = chat::bound_transcript(
+        messages,
+        chat::TRANSCRIPT_BYTE_BUDGET,
+        chat::TOOL_OUTPUT_PREVIEW,
+    );
+    let messages: Vec<serde_json::Value> = bounded
+        .messages
         .into_iter()
         .map(|message| {
             serde_json::json!({
@@ -1290,7 +1314,12 @@ pub async fn conversation(
         "id": row.id,
         "title": row.title,
         "messages": messages,
-        "truncated": truncated,
+        "truncated": truncated || bounded.omitted > 0,
+        // Older messages left out to fit the read, and tool outputs cut to their
+        // preview. Additive keys: a client that does not know them reads exactly
+        // what it read before.
+        "omitted": bounded.omitted,
+        "elided_outputs": bounded.elided_outputs,
     }))
     .into_response()
 }
@@ -1452,7 +1481,10 @@ pub async fn events(
         match (replay_ended, receiver) {
             (false, Some(receiver)) => {
                 let live = BroadcastStream::new(receiver).filter_map(move |item| match item {
-                    Ok(frame) if frame.seq > replay_last => {
+                    // A live-only frame (seq 0) has nothing to resume from, so the
+                    // resume boundary does not apply to it: dropping it would hide
+                    // the output a reconnecting reader is waiting for.
+                    Ok(frame) if frame.seq == 0 || frame.seq > replay_last => {
                         Some(Ok::<_, Infallible>(frame_event(&frame)))
                     }
                     // A lagged subscriber missed frames in this process. The ids

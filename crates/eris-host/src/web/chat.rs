@@ -1393,6 +1393,106 @@ pub fn load_bounded(
     Ok((messages, truncated))
 }
 
+/// What one transcript read is allowed to cost on the wire, in bytes.
+///
+/// A message count is not a size bound. One measured conversation on this daemon
+/// held 41 messages and 9.2 MB of JSON, because a turn that runs shell commands
+/// stores every command's whole stdout as a tool record. A phone that asked for
+/// that transcript and then moved on could not finish the read in the time the
+/// surface allowed, so the chat opened blank - intermittently, and only for the
+/// conversations that had done real work.
+pub const TRANSCRIPT_BYTE_BUDGET: usize = 512 * 1024;
+
+/// How much of one tool's output a transcript read carries.
+///
+/// The full record stays in the database; this is the preview a reader is given,
+/// and it says how much it left behind, so an answer that came from a 140 KB
+/// stdout is not presented as one that came from all of it.
+pub const TOOL_OUTPUT_PREVIEW: usize = 8 * 1024;
+
+/// A transcript cut to something a phone can read.
+pub struct BoundedTranscript {
+    /// The messages that survived, oldest first.
+    pub messages: Vec<Message>,
+    /// How many of the oldest messages were dropped to fit the budget.
+    pub omitted: usize,
+    /// How many tool outputs were cut down to [`TOOL_OUTPUT_PREVIEW`].
+    pub elided_outputs: usize,
+}
+
+/// Cut a transcript to a byte budget and a per-tool preview.
+///
+/// Two bounds rather than one, because they answer different questions. The
+/// preview stops a single command owning the whole read; the budget bounds the
+/// read however many commands a turn ran. The newest messages are the ones kept:
+/// a transcript that has to drop something drops the part nobody is scrolling
+/// back to, and `omitted` says how much went.
+#[must_use]
+pub fn bound_transcript(
+    messages: Vec<Message>,
+    budget: usize,
+    preview: usize,
+) -> BoundedTranscript {
+    let mut elided_outputs = 0;
+    let mut kept: Vec<Message> = messages;
+    for message in &mut kept {
+        for tool in &mut message.tools {
+            if tool.output.len() > preview {
+                let cut = floor_char_boundary(&tool.output, preview);
+                let left = tool.output.len() - cut;
+                tool.output.truncate(cut);
+                tool.output
+                    .push_str(&format!("\n... {left} bytes of output not shown"));
+                elided_outputs += 1;
+            }
+        }
+    }
+    // Walk from the newest backwards, so the budget is spent on the messages a
+    // reader is actually looking at.
+    let mut total = 0usize;
+    let mut keep_from = 0usize;
+    for (index, message) in kept.iter().enumerate().rev() {
+        let cost = wire_cost(message);
+        // Always keep the newest message, however large it is: a transcript with
+        // nothing in it is not a bounded read, it is an empty one.
+        if total + cost > budget && index + 1 != kept.len() {
+            keep_from = index + 1;
+            break;
+        }
+        total += cost;
+    }
+    if keep_from > 0 {
+        kept.drain(..keep_from);
+    }
+    BoundedTranscript {
+        messages: kept,
+        omitted: keep_from,
+        elided_outputs,
+    }
+}
+
+/// What one message costs once it is JSON on the wire, near enough to bound it by.
+fn wire_cost(message: &Message) -> usize {
+    let tools: usize = message
+        .tools
+        .iter()
+        .map(|tool| tool.name.len() + tool.arguments.len() + tool.output.len())
+        .sum();
+    256 + message.body.len() + message.reasoning.as_ref().map_or(0, String::len) + tools
+}
+
+/// The largest index at or below `max` that is a UTF-8 char boundary.
+fn floor_char_boundary(text: &str, max: usize) -> usize {
+    if max >= text.len() {
+        return text.len();
+    }
+    let mut index = max;
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
 fn collect(
     conn: &mut Connection,
     conversation: &str,
@@ -6938,5 +7038,106 @@ mod tests {
         assert_eq!(day_label((2026, 3, 14), (2026, 3, 14)), "Today");
         assert_eq!(day_label((2026, 2, 14), (2026, 3, 14)), "Feb 14");
         assert_eq!(day_label((2025, 12, 31), (2026, 1, 1)), "Yesterday");
+    }
+}
+
+#[cfg(test)]
+mod transcript_bound_tests {
+    use super::*;
+
+    fn message(index: usize, body: &str, outputs: &[&str]) -> Message {
+        Message {
+            id: format!("m{index}"),
+            role: if index % 2 == 0 { Role::User } else { Role::Assistant },
+            body: body.to_owned(),
+            state: State::Complete,
+            error_code: None,
+            created_at: format!("2026-10-27T00:00:{index:02}.000Z"),
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+            context_tokens: None,
+            context_window: None,
+            duration_ms: None,
+            reasoning: None,
+            tools: outputs
+                .iter()
+                .map(|output| ToolRecord {
+                    name: "run_command".to_owned(),
+                    arguments: "{\"command\":\"ls\"}".to_owned(),
+                    output: (*output).to_owned(),
+                    is_error: false,
+                    asked: None,
+                })
+                .collect(),
+            client_message_id: None,
+            job_id: None,
+            rounds: None,
+            capped: None,
+            wrapped_up: None,
+            quota: None,
+        }
+    }
+
+    /// The defect this exists for: one measured conversation was 41 messages and
+    /// 9.2 MB of JSON because each tool call stored a whole stdout. A reader that
+    /// asks for that transcript has to get something bounded instead.
+    #[test]
+    fn a_transcript_of_huge_tool_outputs_fits_the_budget() {
+        let huge = "x".repeat(140_000);
+        let messages: Vec<Message> = (0..8)
+            .map(|index| message(index, "a short line", &[huge.as_str()]))
+            .collect();
+        let bounded = bound_transcript(messages, TRANSCRIPT_BYTE_BUDGET, TOOL_OUTPUT_PREVIEW);
+
+        let bytes: usize = bounded.messages.iter().map(wire_cost).sum();
+        assert!(
+            bytes <= TRANSCRIPT_BYTE_BUDGET,
+            "bounded transcript is {bytes} bytes, over the {TRANSCRIPT_BYTE_BUDGET} budget"
+        );
+        assert!(!bounded.messages.is_empty(), "a bounded read keeps something");
+        assert_eq!(bounded.elided_outputs, bounded.messages.len());
+        // The newest message survives: the reader is looking at the bottom.
+        assert_eq!(
+            bounded.messages.last().expect("a last message").id,
+            "m7",
+            "the newest message must be the one kept"
+        );
+    }
+
+    /// The preview is what a reader is given, and it says what it left behind.
+    #[test]
+    fn an_elided_output_says_how_much_it_left_out() {
+        let huge = "y".repeat(20_000);
+        let bounded = bound_transcript(vec![message(0, "q", &[huge.as_str()])], 1 << 20, 4096);
+        let output = &bounded.messages[0].tools[0].output;
+        assert!(output.starts_with(&"y".repeat(4096)));
+        assert!(output.contains("15904 bytes of output not shown"), "got: {output}");
+        assert_eq!(bounded.elided_outputs, 1);
+        assert_eq!(bounded.omitted, 0);
+    }
+
+    /// A short transcript is passed through untouched, so the bound costs a
+    /// healthy chat nothing.
+    #[test]
+    fn a_short_transcript_is_untouched() {
+        let messages: Vec<Message> = (0..4).map(|i| message(i, "hello", &["ls"])).collect();
+        let bounded = bound_transcript(messages, TRANSCRIPT_BYTE_BUDGET, TOOL_OUTPUT_PREVIEW);
+        assert_eq!(bounded.messages.len(), 4);
+        assert_eq!(bounded.omitted, 0);
+        assert_eq!(bounded.elided_outputs, 0);
+    }
+
+    /// Elision must not split a UTF-8 scalar in half: the preview is a byte
+    /// budget, and the output is whatever the command printed.
+    #[test]
+    fn elision_respects_char_boundaries() {
+        let emoji = "\u{1F600}".repeat(4000); // four bytes each, 16000 total
+        let bounded = bound_transcript(vec![message(0, "q", &[emoji.as_str()])], 1 << 20, 4095);
+        let output = &bounded.messages[0].tools[0].output;
+        assert!(output.chars().count() > 0);
+        // If a scalar were split, the string could not round-trip through chars.
+        assert!(output.starts_with('\u{1F600}'));
     }
 }
