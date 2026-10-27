@@ -3322,9 +3322,9 @@ fn providers_group(view: &SettingsView) -> Markup {
             ))
             (text_field(
                 "provider_key_ref",
-                "Key reference",
+                "Key",
                 editing.map_or("", |row| row.key_ref.as_str()),
-                Some("env:NAME for a variable in this daemon's environment, or token:NAME for an account connected above. Never a key value."),
+                Some("Paste the API key and it is written to eris.env at 0600 and stored here as env:NAME, or write env:NAME / token:NAME yourself. A pasted key is never shown again, and never stored in this row."),
                 error,
                 first == Some("provider_key_ref"),
                 false,

@@ -137,7 +137,7 @@ pub fn resolve_credential(
     let reference = SecretRef::try_from(trimmed).map_err(|error| LlmError::Auth {
         detail: format!("`{trimmed}` is not a key reference: {error}"),
     })?;
-    core_runtime::provider::resolve_api_key(&reference)
+    core_runtime::provider::resolve_api_key_with(&reference, super::credential::env_value)
 }
 
 /// Render a token error as a detail line. No value, ever.

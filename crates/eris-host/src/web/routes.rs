@@ -4557,7 +4557,19 @@ async fn add_provider(
         Ok(fields) => fields,
         Err(error) => return fail_settings(&state, as_html, error),
     };
-    let candidate = provider_from_fields(&fields);
+    let mut candidate = provider_from_fields(&fields);
+    // A key pasted into the form is sealed into `eris.env` here, before the entry
+    // is validated: the registry still holds only a reference, so `check_entry`
+    // sees `env:NAME` whether the operator wrote one or pasted the key itself.
+    if let Err(problem) =
+        crate::providers::adopt_submitted_key(&mut candidate, &state.engine.paths().env_file)
+    {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(Some(problem.field), "providers_invalid", problem.message),
+        );
+    }
     if let Err(problem) = crate::providers::check_entry(&candidate) {
         return fail_settings(
             &state,
@@ -4630,7 +4642,19 @@ async fn edit_provider(
         Ok(fields) => fields,
         Err(error) => return fail_settings(&state, as_html, error),
     };
-    let candidate = provider_from_fields(&fields);
+    let mut candidate = provider_from_fields(&fields);
+    // A key pasted into the form is sealed into `eris.env` here, before the entry
+    // is validated: the registry still holds only a reference, so `check_entry`
+    // sees `env:NAME` whether the operator wrote one or pasted the key itself.
+    if let Err(problem) =
+        crate::providers::adopt_submitted_key(&mut candidate, &state.engine.paths().env_file)
+    {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(Some(problem.field), "providers_invalid", problem.message),
+        );
+    }
     if let Err(problem) = crate::providers::check_entry(&candidate) {
         return fail_settings(
             &state,

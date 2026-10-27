@@ -97,6 +97,48 @@ pub fn installed() -> bool {
     SOURCE.get().is_some()
 }
 
+/// Values this process was handed after it started.
+///
+/// A key pasted into the provider form is written to `eris.env`, which is a
+/// *startup* mechanism: systemd reads it once, at exec. The running daemon's own
+/// environment does not change when the file does, so without this the first turn
+/// after a paste would fail with "not set in the process environment" until the
+/// service was restarted. The overlay is the same value the file now holds, so a
+/// restart and a live process answer identically.
+static LATE_ENV: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::BTreeMap<String, String>>,
+> = std::sync::OnceLock::new();
+
+fn late_env() -> &'static std::sync::RwLock<std::collections::BTreeMap<String, String>> {
+    LATE_ENV.get_or_init(Default::default)
+}
+
+/// Remember a variable whose value was just written to the environment file.
+///
+/// The value is never logged and never returned to a caller: this function exists
+/// so the resolver can find it, not so anything can read it back out.
+pub fn remember_env(name: &str, value: &str) {
+    if let Ok(mut map) = late_env().write() {
+        map.insert(name.to_owned(), value.to_owned());
+    }
+}
+
+/// One environment lookup for every `env:` reference this process resolves.
+///
+/// The late overlay first - a value this process was handed after it started -
+/// and the process environment second, which is what systemd already loaded. A
+/// variable the operator set in the unit's environment keeps working: the overlay
+/// only ever holds names this daemon minted itself.
+#[must_use]
+pub fn env_value(name: &str) -> Option<String> {
+    if let Ok(map) = late_env().read()
+        && let Some(value) = map.get(name)
+    {
+        return Some(value.clone());
+    }
+    std::env::var(name).ok()
+}
+
 /// Resolve one reference to a usable credential.
 ///
 /// # Errors
@@ -106,8 +148,12 @@ pub fn installed() -> bool {
 /// the reason and never a value.
 pub fn resolve_key(reference: &SecretRef, now: i64) -> Result<SecretKey, LlmError> {
     match reference {
-        // The build-109 path, byte for byte.
-        SecretRef::Env(_) => core_runtime::provider::resolve_api_key(reference),
+        // The build-109 path, byte for byte, plus the overlay a provider form
+        // fills when an operator pastes a key: `env_value` only adds names this
+        // process minted, so a unit-set variable resolves exactly as before.
+        SecretRef::Env(name) => {
+            core_runtime::provider::resolve_api_key_with(reference, |_| env_value(name))
+        }
         SecretRef::Token(name) => {
             let Some(source) = SOURCE.get() else {
                 return Err(LlmError::Auth {

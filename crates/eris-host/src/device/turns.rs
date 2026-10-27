@@ -1105,10 +1105,13 @@ pub struct TurnHub {
 }
 
 impl TurnHub {
-    /// The real key resolution: the daemon's own environment.
+    /// The real key resolution: the daemon's own environment, plus the values a
+    /// provider form minted into `eris.env` after this process started. Without
+    /// the second half a key pasted into the dashboard would need a service
+    /// restart before the first turn could use it.
     #[must_use]
     pub fn new(db: Db, buffer: usize) -> Self {
-        Self::with_key_lookup(db, buffer, Arc::new(|name| std::env::var(name).ok()))
+        Self::with_key_lookup(db, buffer, Arc::new(crate::oauth::credential::env_value))
     }
 
     /// A hub with an injected environment lookup, so tests can prove a turn path

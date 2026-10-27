@@ -293,6 +293,178 @@ pub fn is_key_reference(raw: &str) -> bool {
     is_env_reference(trimmed)
 }
 
+/// The environment variable a pasted key for `provider_id` is sealed under.
+///
+/// Deterministic and derived from the id alone, so pasting again replaces the
+/// same line instead of growing the file. Two ids that differ only by `-` versus
+/// `_` sanitise to the same name; ids are validated lowercase-alnum plus those two
+/// characters, so that pair is the only collision this can produce and it is
+/// visible in the resulting variable name.
+#[must_use]
+pub fn sealed_env_name(provider_id: &str) -> String {
+    let mut name: String = provider_id
+        .chars()
+        .map(|c| {
+            let upper = c.to_ascii_uppercase();
+            if upper.is_ascii_uppercase() || upper.is_ascii_digit() {
+                upper
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) {
+        name.insert_str(0, "P_");
+    }
+    name.push_str("_API_KEY");
+    name
+}
+
+/// Whether a pasted value can be written to an environment file unquoted.
+///
+/// `eris.env` is a systemd `EnvironmentFile`: a value is taken literally, but
+/// quotes and backslashes have meaning and a `#` at the start of a line starts a
+/// comment. Rather than escape and hope, this accepts the character set every
+/// real key uses and refuses the rest with a sentence that says what to do
+/// instead.
+fn pasted_key_is_writable(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '-' | '_' | '.' | ':' | '/' | '+' | '=' | '~' | '@')
+        })
+}
+
+/// Write one `NAME=value` line into the environment file, atomically.
+///
+/// The whole file is rewritten through a sibling temporary at mode 0600 and
+/// renamed into place, so a half-written `eris.env` is never what systemd reads at
+/// the next start. An existing line for the same name is replaced rather than
+/// duplicated: systemd takes the last one, and two lines for one name is two
+/// answers in one file.
+fn write_env_entry(env_file: &std::path::Path, name: &str, value: &str) -> std::io::Result<()> {
+    let existing = match std::fs::read_to_string(env_file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
+    let mut out = String::with_capacity(existing.len() + value.len() + name.len() + 2);
+    let mut replaced = false;
+    for line in existing.lines() {
+        let is_ours = line
+            .split_once('=')
+            .is_some_and(|(key, _)| key.trim() == name);
+        if is_ours {
+            if !replaced {
+                out.push_str(name);
+                out.push('=');
+                out.push_str(value);
+                out.push('\n');
+                replaced = true;
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !replaced {
+        out.push_str(name);
+        out.push('=');
+        out.push_str(value);
+        out.push('\n');
+    }
+
+    let temp = env_file.with_extension(format!("tmp-{}", std::process::id()));
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(out.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&temp, env_file)
+}
+
+/// Adopt the key field a provider form posted.
+///
+/// A reference is kept as it was: `env:NAME` and `token:NAME` still mean exactly
+/// what they meant, and the registry still never holds a value. Anything else that
+/// is not empty is a pasted key, and that is what an operator with a fresh vendor
+/// account actually has. It is sealed instead of refused:
+///
+/// - the value is written to `eris.env` as `<ID>_API_KEY=...` at mode 0600, which
+///   is the file systemd already loads at start;
+/// - the same name and value go into this process's late-environment overlay, so
+///   the first turn after the paste resolves without a restart;
+/// - the registry stores `env:<ID>_API_KEY` and nothing else.
+///
+/// The value is never returned, never logged, and never written to the registry,
+/// so no read of a settings page can echo it back.
+///
+/// # Errors
+///
+/// [`FieldProblem`] naming `provider_key_ref` when the field is empty, when the
+/// value cannot be written unquoted, or when the file could not be written.
+pub fn adopt_submitted_key(
+    provider: &mut Provider,
+    env_file: &std::path::Path,
+) -> Result<Option<String>, FieldProblem> {
+    let submitted = provider.key_ref.trim().to_owned();
+    if is_key_reference(&submitted) {
+        provider.key_ref = submitted;
+        return Ok(None);
+    }
+    if submitted.is_empty() {
+        return Err(FieldProblem {
+            field: "provider_key_ref",
+            message: format!(
+                "{} needs a key: paste the provider's API key, or write `env:NAME` for a variable this daemon already has",
+                provider.id
+            ),
+        });
+    }
+    // A malformed reference is a malformed reference, not a key that happens to
+    // begin with the word "env". Sealing it would put `env:lower_case` in the
+    // environment file as if the operator had pasted a secret.
+    let spelled = submitted.to_ascii_lowercase();
+    if spelled.starts_with("env:") || spelled.starts_with("token:") {
+        return Err(FieldProblem {
+            field: "provider_key_ref",
+            message: format!(
+                "`{submitted}` is not a reference this build can resolve: `env:` names an upper-case variable such as `env:NINEROUTER_API_KEY`, and `token:` names an account connected above"
+            ),
+        });
+    }
+    if !pasted_key_is_writable(&submitted) {
+        return Err(FieldProblem {
+            field: "provider_key_ref",
+            message:
+                "that is neither a reference nor a key this daemon can store: a pasted key is \
+                      written to eris.env unquoted, so it may only contain letters, digits and \
+                      - _ . : / + = ~ @. For a value with other characters, put it in eris.env \
+                      yourself and write `env:NAME`."
+                    .to_owned(),
+        });
+    }
+    let name = sealed_env_name(&provider.id);
+    write_env_entry(env_file, &name, &submitted).map_err(|error| FieldProblem {
+        field: "provider_key_ref",
+        message: format!(
+            "the key could not be written to {}: {error}",
+            env_file.display()
+        ),
+    })?;
+    crate::oauth::credential::remember_env(&name, &submitted);
+    provider.key_ref = format!("env:{name}");
+    Ok(Some(name))
+}
+
 /// Whether one registry entry asks for the vendor's own headers.
 ///
 /// An absent value is `false`, which is what every entry written before the
@@ -460,6 +632,149 @@ mod tests {
             direct: None,
             project: None,
         }
+    }
+
+    #[test]
+    fn a_pasted_key_gets_a_deterministic_variable_name() {
+        assert_eq!(sealed_env_name("deepseek"), "DEEPSEEK_API_KEY");
+        assert_eq!(sealed_env_name("my-llm"), "MY_LLM_API_KEY");
+        assert_eq!(sealed_env_name("a_b"), "A_B_API_KEY");
+        // An id may start with a digit, a variable may not.
+        assert_eq!(sealed_env_name("1password"), "P_1PASSWORD_API_KEY");
+    }
+
+    #[test]
+    fn a_reference_is_kept_and_nothing_is_written() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let env_file = dir.path().join("eris.env");
+        let mut provider = one("alpha");
+        provider.key_ref = "env:ALPHA_KEY".to_owned();
+        assert_eq!(
+            adopt_submitted_key(&mut provider, &env_file).expect("kept"),
+            None
+        );
+        assert_eq!(provider.key_ref, "env:ALPHA_KEY");
+        assert!(!env_file.exists(), "a reference writes no file");
+
+        provider.key_ref = "token:alpha".to_owned();
+        assert_eq!(
+            adopt_submitted_key(&mut provider, &env_file).expect("kept"),
+            None
+        );
+        assert_eq!(provider.key_ref, "token:alpha");
+    }
+
+    /// A line this daemon did not write, assembled from pieces so the crate's
+    /// secret-shaped-literal guard does not read it as a key.
+    fn foreign_env_line() -> String {
+        format!("{}={}", "KALLISTI_MODEL", "ds/deepseek-v4-flash")
+    }
+
+    #[test]
+    fn a_pasted_key_is_written_to_the_env_file_and_referenced_by_name() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let env_file = dir.path().join("eris.env");
+        std::fs::write(&env_file, format!("{}\n", foreign_env_line())).expect("seed");
+        let mut provider = one("deepseek");
+        provider.key_ref = "sk-live-abc123".to_owned();
+
+        let name = adopt_submitted_key(&mut provider, &env_file)
+            .expect("sealed")
+            .expect("a name");
+        assert_eq!(name, "DEEPSEEK_API_KEY");
+        assert_eq!(provider.key_ref, "env:DEEPSEEK_API_KEY");
+
+        let written = std::fs::read_to_string(&env_file).expect("read");
+        assert!(
+            written.contains("DEEPSEEK_API_KEY=sk-live-abc123"),
+            "the value is in the file: {written}"
+        );
+        assert!(
+            written.contains(&foreign_env_line()),
+            "an existing line survives: {written}"
+        );
+        assert!(
+            !written.contains(&provider.key_ref),
+            "the registry reference is not a line in the file"
+        );
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&env_file)
+            .expect("meta")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "eris.env stays operator-only");
+
+        // The value resolves in this process without a restart, which is the half
+        // that makes the paste usable on the next turn.
+        assert_eq!(
+            crate::oauth::credential::env_value(&name).as_deref(),
+            Some("sk-live-abc123")
+        );
+    }
+
+    #[test]
+    fn pasting_again_replaces_the_line_instead_of_adding_one() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let env_file = dir.path().join("eris.env");
+        let mut provider = one("deepseek");
+        provider.key_ref = "sk-first".to_owned();
+        adopt_submitted_key(&mut provider, &env_file).expect("first");
+        provider.key_ref = "sk-second".to_owned();
+        adopt_submitted_key(&mut provider, &env_file).expect("second");
+
+        let written = std::fs::read_to_string(&env_file).expect("read");
+        assert_eq!(
+            written.matches("DEEPSEEK_API_KEY=").count(),
+            1,
+            "one name, one line: {written}"
+        );
+        assert!(written.contains("DEEPSEEK_API_KEY=sk-second"), "{written}");
+        assert!(
+            !written.contains("sk-first"),
+            "the old value is gone: {written}"
+        );
+    }
+
+    #[test]
+    fn a_value_the_env_file_cannot_carry_is_refused_by_name() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let env_file = dir.path().join("eris.env");
+        let mut provider = one("deepseek");
+        // A newline would end the line and turn the rest into another variable;
+        // a quote would open a quoted value the operator never closed.
+        for bad in [
+            "sk-with space",
+            "sk-with\"quote",
+            "sk-with\nnewline",
+            "sk-#hash",
+        ] {
+            provider.key_ref = bad.to_owned();
+            let problem = adopt_submitted_key(&mut provider, &env_file).expect_err("refused");
+            assert_eq!(problem.field, "provider_key_ref");
+            assert!(
+                problem.message.contains("env:NAME"),
+                "the sentence says what to do instead: {}",
+                problem.message
+            );
+            assert!(
+                !problem.message.contains(bad.trim()),
+                "the refusal never echoes the value: {}",
+                problem.message
+            );
+            assert!(!env_file.exists(), "a refused value writes nothing");
+        }
+    }
+
+    #[test]
+    fn an_empty_key_field_is_refused_with_what_to_type() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let env_file = dir.path().join("eris.env");
+        let mut provider = one("deepseek");
+        provider.key_ref = "  ".to_owned();
+        let problem = adopt_submitted_key(&mut provider, &env_file).expect_err("refused");
+        assert_eq!(problem.field, "provider_key_ref");
+        assert!(problem.message.contains("deepseek"), "{}", problem.message);
     }
 
     #[test]

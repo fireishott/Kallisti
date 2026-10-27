@@ -3,10 +3,10 @@
 > **To the Most Beautiful.** The most beautiful way to meet your agent.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/daemon-1.4.12-C8CCD2?style=flat-square&labelColor=0C0C10" alt="daemon 1.4.12"/>
+  <img src="https://img.shields.io/badge/daemon-1.4.13-C8CCD2?style=flat-square&labelColor=0C0C10" alt="daemon 1.4.13"/>
   <img src="https://img.shields.io/badge/iOS-1.4.15-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 1.4.15"/>
   <img src="https://img.shields.io/badge/Rust-1.99-F74C00?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99"/>
-  <img src="https://img.shields.io/badge/tests-1170-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1170 tests"/>
+  <img src="https://img.shields.io/badge/tests-1177-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1177 tests"/>
   <img src="https://img.shields.io/badge/device_api-no_relay-C8CCD2?style=flat-square&labelColor=0C0C10" alt="no relay"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
@@ -323,7 +323,7 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 
-Shipped and running: **Kallisti-Eris 1.4.12, build 125**, with the cron scheduler and
+Shipped and running: **Kallisti-Eris 1.4.13, build 126**, with the cron scheduler and
 the skills library switched on. The web client is server-rendered HTML with an inlined
 stylesheet and one script, so a transcript renders on a browser with no scripting and a
 turn that is already running can be reattached to.

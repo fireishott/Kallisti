@@ -1570,16 +1570,6 @@ fn a_bad_provider_is_refused_by_field_and_nothing_is_written() {
         ),
         (
             "provider_key_ref",
-            provider_form_body(
-                "beta",
-                "Beta",
-                "http://127.0.0.1:3/v1",
-                "sk-live-1234567890",
-            ),
-            "a pasted key value is never accepted",
-        ),
-        (
-            "provider_key_ref",
             provider_form_body("beta", "Beta", "http://127.0.0.1:3/v1", "env:lower_case"),
             "a reference names an upper-case variable",
         ),
@@ -1610,6 +1600,81 @@ fn a_bad_provider_is_refused_by_field_and_nothing_is_written() {
             "a refusal writes nothing ({why})"
         );
     }
+}
+
+/// A key pasted into the provider form is sealed into `eris.env` and the row
+/// keeps only its name. The value never reaches the registry and never comes back
+/// out of a page, which is what makes pasting one safe to offer.
+#[test]
+fn a_pasted_key_is_sealed_into_the_env_file_and_never_echoed() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+    let secret = "sk-live-1234567890abcdef";
+
+    let added = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PROVIDERS_ADD,
+            &provider_form_body("beta", "Beta", "http://127.0.0.1:3/v1", secret),
+        )
+        .html()
+        .cookie(cookie),
+    ));
+    assert_eq!(
+        added.status,
+        StatusCode::SEE_OTHER,
+        "a pasted key saves rather than refusing: {}",
+        added.body
+    );
+
+    // The row holds a reference and nothing else.
+    let rows = registry_rows(&engine);
+    let beta = rows
+        .iter()
+        .find(|entry| entry.id == "beta")
+        .expect("the entry was added");
+    assert_eq!(beta.key_ref, "env:BETA_API_KEY");
+
+    // The stored document cannot leak it: it does not contain the value.
+    let stored = crate::web::store::settings_get(engine.db(), crate::providers::SETTING_REGISTRY)
+        .expect("read")
+        .unwrap_or_default();
+    assert!(
+        !stored.contains(secret),
+        "the registry never carries a key value: {stored}"
+    );
+
+    // The value is in the environment file, at operator-only permissions.
+    let env_file = engine.paths().env_file.clone();
+    let written = std::fs::read_to_string(&env_file).expect("eris.env was written");
+    assert!(
+        written.contains(&format!("BETA_API_KEY={secret}")),
+        "the env file carries the key: {written}"
+    );
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = std::fs::metadata(&env_file)
+        .expect("meta")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "eris.env stays 0600");
+
+    // And the page that lists providers shows the reference, not the key.
+    let page = block_on(send(
+        &app,
+        Call::get(crate::admin::ROUTE_SETTINGS)
+            .html()
+            .cookie(cookie),
+    ));
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(
+        !page.body.contains(secret),
+        "no rendered page echoes a sealed key"
+    );
+    assert!(
+        page.body.contains("env:BETA_API_KEY"),
+        "the page shows the reference instead"
+    );
 }
 
 /// The primary cannot be deleted, and the refusal says what to do instead.

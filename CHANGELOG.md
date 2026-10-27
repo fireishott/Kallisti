@@ -4,6 +4,22 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.13
+
+- **A key can be pasted, and it is stored where a key belongs.** The provider form
+  only took a reference, so an operator holding a fresh key had to know to write it
+  into `eris.env` first and get the variable name right; pasting the key itself was
+  refused with "needs a key reference, and never the key itself". The field now
+  takes either. A pasted key is written to `eris.env` as `<ID>_API_KEY=...` at mode
+  0600 (the file systemd already loads at start), the running process is handed the
+  same name and value so the next turn resolves without a restart, and the registry
+  stores `env:<ID>_API_KEY` and nothing else. The value is never returned, never
+  logged and never written to a settings row, so no page can echo it back - the
+  provider list shows the reference. A reference is still kept exactly as written,
+  a malformed one (`env:lower_case`) is still refused by the field that is wrong,
+  and a value the environment file cannot carry (quotes, whitespace, a leading `#`)
+  is refused with the instruction to use `env:NAME` instead. `build 126`.
+
 ## 1.4.12
 
 - **A Google login stops expiring an hour after it is made.** `oauth.auto_refresh`
