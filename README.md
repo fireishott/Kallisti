@@ -175,11 +175,13 @@ curl -fsSL https://raw.githubusercontent.com/fireishott/Kallisti/main/install.sh
 
 That is the whole install. What it does:
 
-- Installs a **prebuilt binary** for `linux/x86_64` or `linux/aarch64` from the
-  newest release, verifying the published `.sha256`.
+- Installs a **prebuilt binary** from the newest release, verifying the published
+  `.sha256`. A release carries whatever architectures were built for it: this one
+  carries `linux/x86_64`.
 - Falls back to **building from source** on the pinned toolchain when there is no
-  asset for the machine. It installs `rustup` itself if Rust is absent, and tells
-  you the one `apt` line if the C toolchain is missing.
+  asset for the machine, which is how an `aarch64` box installs today. It installs
+  `rustup` itself if Rust is absent, and tells you the one `apt` line if the C
+  toolchain is missing.
 - Puts the binary at `~/.local/opt/kallisti/bin/eris`, symlinked to
   `~/.local/bin/eris`.
 - Creates `~/.config/kallisti` (`eris.env` and `keys.env`, both mode 0600),
