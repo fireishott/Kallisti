@@ -1,15 +1,17 @@
 //! The refresh decision, and the one place a refresh may ever happen.
 //!
-//! **No refresh runs in build 108.** `oauth.auto_refresh` defaults to false and
-//! nothing turns it on, so the shipped path is: a stale grant is reported as
-//! stale and the operator is told to log in again. That is deliberate. A
-//! refresh token copied out of another program's database may rotate when it is
-//! spent, and spending it would break the program that still owns it.
+//! **A refresh only ever spends a grant this daemon logged in for itself.**
+//! `oauth.auto_refresh` is on by default, so a login grant inside its refresh
+//! lead is refreshed on use: the measured alternative was an Antigravity turn
+//! failing with "inside its refresh lead" every time the hour rolled over, with a
+//! manual login as the only remedy. The property that matters is structural, not
+//! configurable: a refresh token copied out of another program's database is
+//! [`core_domain::TokenOrigin::Migrated`], [`refresh_now`] refuses it before any
+//! network call, and spending it would rotate a grant the owning program still
+//! needs.
 //!
-//! The code below exists anyway, because the day the flag is turned on it has to
-//! be right, and code that has never run is code nobody can trust. It is tested
-//! against a **local mock HTTP server bound to 127.0.0.1 on an ephemeral port**.
-//! No test in this module can reach `api.anthropic.com` or
+//! The code is tested against a **local mock HTTP server bound to 127.0.0.1 on an
+//! ephemeral port**. No test in this module can reach `api.anthropic.com` or
 //! `oauth2.googleapis.com`: the only URL any test passes in is the mock's, and
 //! [`RefreshSpec::claude`] / [`RefreshSpec::antigravity`] are only ever
 //! constructed with a URL a caller supplied.

@@ -10,12 +10,13 @@
 //! | [`refresh`] | the refresh decision and the one place a refresh may happen |
 //! | [`migrate`] | a read-only copy of an account out of another program's database |
 //!
-//! The rule the whole module is built around: **no token is refreshed in build
-//! 108.** `oauth.auto_refresh` defaults to false in the parser, and while it is
-//! false nothing leaves the process. A grant copied out of another program is
-//! [`core_domain::TokenOrigin::Migrated`] and is never refreshed even when the
-//! flag is on, because spending its refresh token would break the program that
-//! still owns it.
+//! The rule the whole module is built around: **a refresh only ever spends a
+//! grant this daemon logged in for itself.** `oauth.auto_refresh` is on by
+//! default, so a login grant inside its refresh lead is refreshed on use instead
+//! of sending the operator back to a login screen every hour. A grant copied out
+//! of another program is [`core_domain::TokenOrigin::Migrated`] and is never
+//! refreshed even with the flag on, because spending its refresh token would
+//! break the program that still owns it.
 //!
 //! A token is never rendered. [`core_domain::TokenRecord`] has a redacted `Debug`
 //! and no `Serialize`, errors name the provider and the reason, and the one place

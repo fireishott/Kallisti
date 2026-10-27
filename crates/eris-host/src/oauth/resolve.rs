@@ -25,18 +25,19 @@ use super::refresh::{HttpTransport, RefreshSpec, refresh_decision};
 
 /// Whether a stored credential may be refreshed on use.
 ///
-/// Comes from `oauth.auto_refresh` in `config.toml` and defaults to **false**.
-/// While it is false nothing refreshes, ever: a login grant that is inside its
+/// Comes from `oauth.auto_refresh` in `config.toml` and is **on** by default.
+/// While it is off nothing refreshes, ever: a login grant that is inside its
 /// lead returns [`TokenError::NeedsRefresh`] and a migrated grant past its expiry
 /// returns [`TokenError::Expired`], and the caller reports that to the operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RefreshPolicy {
-    /// `oauth.auto_refresh`. Default false, and nothing in build 108 turns it on.
+    /// `oauth.auto_refresh`. On unless the operator writes `false`, and only
+    /// `RefreshPolicy::never` switches it off inside a test.
     pub auto_refresh: bool,
 }
 
 impl RefreshPolicy {
-    /// The shipped policy: never refresh.
+    /// The read-only policy: never refresh. What a status panel or a test uses.
     #[must_use]
     pub const fn never() -> Self {
         Self {

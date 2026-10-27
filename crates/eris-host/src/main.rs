@@ -579,11 +579,14 @@ fn run_serve(
     //
     // Every `token:` reference in the registry resolves through it, and the store
     // it reads is the encrypted one under the same root the rest of the daemon
-    // uses. `oauth.auto_refresh` comes from `config.toml` and is false unless the
-    // operator wrote true, so a shipped host never spends a refresh token. A host
-    // whose store cannot be opened says so and keeps serving: an `env:` provider
-    // is unaffected, and the one thing worse than a broken account is a daemon
-    // that will not start because of one.
+    // uses. `oauth.auto_refresh` comes from `config.toml` and is on unless the
+    // operator wrote false, so a login grant that has reached its refresh lead is
+    // renewed on use instead of failing the turn. What it cannot ever do is spend
+    // a migrated grant: the refresher refuses one that came out of another
+    // program's database before it sends anything. A host whose store cannot be
+    // opened says so and keeps serving: an `env:` provider is unaffected, and the
+    // one thing worse than a broken account is a daemon that will not start
+    // because of one.
     // The same store is handed to two owners: the resolver, which turns a
     // reference into a credential for a turn, and the callback listener, which
     // seals a grant a login just produced. Both must be the *same* store - a

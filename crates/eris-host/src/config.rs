@@ -566,19 +566,31 @@ struct OAuthRaw {
 
 /// The `[oauth]` table: whether a stored token may be refreshed on use.
 ///
-/// **Defaults to false, in the parser and not only in the file on disk.** A
-/// missing key means false. While it is false nothing refreshes, ever: a grant
-/// that is inside its refresh lead is reported as needing a login, and a grant
-/// copied out of another program is reported as expired. Build 108 never turns
-/// it on.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// **Defaults to true in the parser, and an operator can write `false` to stop
+/// it.** A grant this daemon logged in for itself carries a refresh token, and a
+/// login that expires every hour is not a login an operator can keep up with; the
+/// measured consequence of the old false default was an Antigravity turn failing
+/// with "inside its refresh lead" roughly as often as the token rolled over, and
+/// the only remedy was to log in again by hand.
+///
+/// What the old default was protecting is still protected, one layer lower: a
+/// grant copied out of another program (`TokenOrigin::Migrated`) is refused by
+/// `refresh_now` before any network call, so turning this on cannot spend a
+/// refresh token this daemon does not own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OAuthTable {
-    /// False unless the operator wrote `true`. This is the shipped default.
+    /// True unless the operator wrote `false`. This is the shipped default.
     auto_refresh: bool,
 }
 
+impl Default for OAuthTable {
+    fn default() -> Self {
+        Self { auto_refresh: true }
+    }
+}
+
 impl OAuthTable {
-    /// `oauth.auto_refresh`, false unless the operator wrote true.
+    /// `oauth.auto_refresh`, true unless the operator wrote false.
     #[must_use]
     pub const fn auto_refresh(&self) -> bool {
         self.auto_refresh
@@ -719,7 +731,7 @@ impl TomlConfig {
             oauth: match raw.oauth {
                 None => OAuthTable::default(),
                 Some(oauth) => OAuthTable {
-                    auto_refresh: oauth.auto_refresh.unwrap_or(false),
+                    auto_refresh: oauth.auto_refresh.unwrap_or(true),
                 },
             },
             source: Some(path.to_path_buf()),
@@ -1235,39 +1247,42 @@ KALLISTI_API_KEY_REF=sk-not-a-reference
     }
 
     #[test]
-    fn auto_refresh_is_false_unless_the_operator_writes_true() {
+    fn auto_refresh_is_on_unless_the_operator_writes_false() {
         // The parser's default, not the file's: a missing table, a missing key,
-        // and an empty document all mean no refresh.
-        assert!(!TomlConfig::defaults().oauth().auto_refresh());
+        // and an empty document all mean refresh, because the grant is one this
+        // daemon logged in for itself and it expires every hour.
+        assert!(TomlConfig::defaults().oauth().auto_refresh());
         assert!(
-            !TomlConfig::parse("", &toml_path())
+            TomlConfig::parse("", &toml_path())
                 .expect("empty document")
                 .oauth()
                 .auto_refresh()
         );
         assert!(
-            !TomlConfig::parse("log_level = \"debug\"\n", &toml_path())
+            TomlConfig::parse("log_level = \"debug\"\n", &toml_path())
                 .expect("no oauth table")
                 .oauth()
                 .auto_refresh()
         );
         assert!(
-            !TomlConfig::parse("[oauth]\n", &toml_path())
+            TomlConfig::parse("[oauth]\n", &toml_path())
                 .expect("empty oauth table")
                 .oauth()
                 .auto_refresh()
         );
 
-        // Only the explicit value turns it on, and build 108 writes no such file.
+        // Only an explicit false turns it off, and that is the operator's call.
+        // A migrated grant is refused by the refresher itself, so this key is
+        // never the thing standing between somebody else's token and a refresh.
         assert!(
-            TomlConfig::parse("[oauth]\nauto_refresh = true\n", &toml_path())
-                .expect("explicit")
+            !TomlConfig::parse("[oauth]\nauto_refresh = false\n", &toml_path())
+                .expect("explicit false")
                 .oauth()
                 .auto_refresh()
         );
         assert!(
-            !TomlConfig::parse("[oauth]\nauto_refresh = false\n", &toml_path())
-                .expect("explicit false")
+            TomlConfig::parse("[oauth]\nauto_refresh = true\n", &toml_path())
+                .expect("explicit true")
                 .oauth()
                 .auto_refresh()
         );

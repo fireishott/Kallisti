@@ -21,9 +21,10 @@
 //!
 //! - a token is never returned in an error, and [`core_runtime::provider::SecretKey`]
 //!   cannot be printed, so no call site can leak one by formatting a failure;
-//! - `oauth.auto_refresh` defaults to **false**, so a grant past its refresh lead
-//!   is reported as stale and the operator is told to reconnect rather than
-//!   having its refresh token spent;
+//! - `oauth.auto_refresh` is **on** by default, so a login grant inside its
+//!   refresh lead is refreshed on use instead of sending the operator to a login
+//!   screen every hour; a `Migrated` grant is refused by the refresher before any
+//!   network call, so the flag can never spend somebody else's refresh token;
 //! - a `token:` reference with no installed source is a typed failure naming the
 //!   provider, never a silent fall back to an environment variable that happens
 //!   to share the name.
