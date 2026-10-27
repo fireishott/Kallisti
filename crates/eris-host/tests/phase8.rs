@@ -3009,12 +3009,19 @@ async fn settings_require_a_bearer_and_the_admin_scope() {
             .map(String::as_str)
             .collect();
         members.sort_unstable();
-        assert_eq!(
-            members,
-            vec![
-                "group", "key", "label", "options", "type", "value", "writable"
+        // Seven members describe a field. An integer adds `min` and `max`,
+        // because a form control cannot offer a range the record does not
+        // publish - and nothing else may be added: a member a client does not
+        // know is a member it will not draw.
+        let expected: Vec<&str> = match entry["type"].as_str() {
+            Some("int") => vec![
+                "group", "key", "label", "max", "min", "options", "type", "value", "writable",
             ],
-            "a capability is the documented seven members: {entry}"
+            _ => vec!["group", "key", "label", "options", "type", "value", "writable"],
+        };
+        assert_eq!(
+            members, expected,
+            "a capability carries its documented members: {entry}"
         );
         let group = entry["group"].as_str().expect("a group");
         assert!(

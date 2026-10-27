@@ -2466,7 +2466,7 @@ pub fn capability_record(engine: &SetupEngine) -> Result<Vec<serde_json::Value>,
     for group in SETTING_GROUPS {
         for spec in SETTING_SPECS.iter().filter(|spec| spec.group == group) {
             let value = (spec.read)(engine)?;
-            entries.push(serde_json::json!({
+            let mut entry = serde_json::json!({
                 "key": spec.key,
                 "label": spec.label,
                 "group": spec.group,
@@ -2474,7 +2474,18 @@ pub fn capability_record(engine: &SetupEngine) -> Result<Vec<serde_json::Value>,
                 "writable": spec.writable,
                 "value": value,
                 "options": spec.kind.options(),
-            }));
+            });
+            // An integer field published its type but not the range it accepts,
+            // so a form control had to hardcode a ceiling the daemon refuses to
+            // read past - two places to change and one of them wrong. The bounds
+            // ride with the type now; absent min/max means the field has none.
+            if let SettingKind::Int(min, max) = spec.kind
+                && let Some(object) = entry.as_object_mut()
+            {
+                object.insert("min".to_owned(), serde_json::json!(min));
+                object.insert("max".to_owned(), serde_json::json!(max));
+            }
+            entries.push(entry);
         }
     }
     Ok(entries)
@@ -6283,10 +6294,30 @@ mod tests {
                         "{key} holds `{value}`, which is not one of its options"
                     );
                 }
-                _ => assert!(
-                    entry["options"].is_null(),
-                    "{key} is a {kind} and carries no options"
-                ),
+                "int" => {
+                    // A form control needs the range it may offer, and it cannot
+                    // read the daemon's ceiling from anywhere else.
+                    assert!(entry["options"].is_null(), "{key} is an int with no options");
+                    let min = entry["min"].as_i64().unwrap_or_else(|| panic!("{key} has a min"));
+                    let max = entry["max"].as_i64().unwrap_or_else(|| panic!("{key} has a max"));
+                    assert!(min <= max, "{key} has min {min} above max {max}");
+                    let value: i64 = entry["value"]
+                        .as_str()
+                        .and_then(|text| text.parse().ok())
+                        .unwrap_or_else(|| panic!("{key} holds a number"));
+                    assert!(
+                        (min..=max).contains(&value),
+                        "{key} holds {value}, outside {min}..={max}"
+                    );
+                }
+                _ => {
+                    assert!(
+                        entry["options"].is_null(),
+                        "{key} is a {kind} and carries no options"
+                    );
+                    assert!(entry["min"].is_null(), "{key} is a {kind} with no min");
+                    assert!(entry["max"].is_null(), "{key} is a {kind} with no max");
+                }
             }
         }
         // The six groups, and no field outside them.
