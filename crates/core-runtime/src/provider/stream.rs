@@ -100,6 +100,18 @@ impl ToolAccumulator {
             self.arguments.push_str(fragment);
             return;
         }
+        // The buffer is already a whole JSON value and this fragment is neither a
+        // repeat of it nor a new whole object, so appending could only ever
+        // produce two values in one buffer, which is not JSON. That happens when
+        // a gateway restarts its serialisation mid-object - the new spelling is
+        // still incomplete, so it is not `looks_complete` yet - and the newest
+        // fragment is the beginning of what the sender means. Later deltas extend
+        // it normally because they start with it.
+        if looks_complete(&self.arguments) {
+            self.arguments.clear();
+            self.arguments.push_str(fragment);
+            return;
+        }
         self.arguments.push_str(fragment);
     }
 
@@ -1149,5 +1161,39 @@ mod argument_assembly_tests {
         assert!(!looks_complete("deck"));
         assert!(looks_complete(r#"{"a":1}"#
         ));
+    }
+
+    /// A gateway that restarts its serialisation mid-object: one finished
+    /// snapshot, then the first half of a new spelling that is not valid JSON on
+    /// its own, then the rest of it. Appending the unfinished half onto the
+    /// finished object is what produced `expected value at line 1 column 14` on a
+    /// 473-byte `clarify` buffer, and the turn died with the call assembled
+    /// around a corrupt middle.
+    #[test]
+    fn a_restarted_serialisation_replaces_a_finished_object() {
+        let acc = accumulator(&[
+            r#"{"questions":[{"question":"which deck"}]}"#,
+            r#"{"title":"deck","quest"#,
+            r#"{"title":"deck","questions":[{"question":"which deck"}]}"#,
+        ]);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(call.arguments["title"], "deck");
+        assert_eq!(call.arguments["questions"][0]["question"], "which deck");
+    }
+
+    /// The same restart when the stream ends before the new spelling completes:
+    /// the buffer is a real truncation of the newest serialisation, and the
+    /// finished object before it is stale, so the refusal keeps its message
+    /// instead of building a call out of glue.
+    #[test]
+    fn a_restarted_serialisation_that_ends_early_is_still_refused() {
+        let acc = accumulator(&[r#"{"questions":[]}"#, r#"{"title":"deck","quest"#]);
+        let error = acc.finish().expect_err("a refusal");
+        assert!(
+            error
+                .to_string()
+                .contains("never completed into valid JSON"),
+            "{error}"
+        );
     }
 }
