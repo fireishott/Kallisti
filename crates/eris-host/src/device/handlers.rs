@@ -2690,6 +2690,16 @@ fn read_settings(service: &DeviceService) -> Result<serde_json::Value, DeviceErr
     let scope = crate::push::notify_scope(stored(crate::push::SETTING_NOTIFY_SCOPE)?.as_deref());
     let devices =
         crate::push::notify_devices(stored(crate::push::SETTING_NOTIFY_DEVICES)?.as_deref());
+    // Where the listener binds, and the origin a paired phone should call. Both
+    // are read-only here on purpose: a bind cannot be moved under a live phone,
+    // and a phone locking itself out of its own daemon is not a setting, it is an
+    // outage. They are reported so the phone can show what the host holds rather
+    // than sending a person to the dashboard for two strings.
+    let listen = stored(crate::device::SETTING_LISTEN)?
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .map(|list| list.join(", "))
+        .unwrap_or_else(|| crate::device::DEVICE_ADDR.to_owned());
+    let relay = stored(crate::device::SETTING_RELAY)?.unwrap_or_default();
     // The switch that decides whether `full` is a sandbox a save may pick. It is
     // not in the capability record because it is not a plain setting: turning it
     // on needs the word typed, and disabling it demotes the mode with it.
@@ -2711,6 +2721,8 @@ fn read_settings(service: &DeviceService) -> Result<serde_json::Value, DeviceErr
         "timezone": timezone.as_str(),
         "clock_format": clock.as_str(),
         "full_access": full_access,
+        "listen": listen,
+        "relay": relay,
         "push": {
             "notify_on_reply": notify_on_reply,
             "scope": scope.as_str(),
