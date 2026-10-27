@@ -4,6 +4,33 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.12
+
+- **A Google login stops expiring an hour after it is made.** `oauth.auto_refresh`
+  shipped off, so an Antigravity grant that reached its five-minute refresh lead
+  was refused with "inside its refresh lead" and the only remedy was to log in
+  again by hand - which on this daemon happened roughly hourly. Refresh is on by
+  default now. What the old default protected is still protected one layer lower:
+  a grant copied out of another program (`TokenOrigin::Migrated`) is refused by
+  the refresher before any network call, so the flag can never spend a refresh
+  token this daemon does not own. Write `[oauth] auto_refresh = false` to get the
+  old behaviour back. `build 125`.
+- **A model the phone picked is a model the daemon accepts.** `GET /v1/models`
+  publishes each row as `{id, provider}`, so a picker sends back the bare `id` it
+  drew - and `POST /v1/models` split a bare id against the primary, which refused
+  `gemini-3-flash` on a daemon whose primary is `commandcode` even though
+  `antigravity` published it all along. A bare id now resolves to the catalogue
+  that actually publishes it, the pin is stored `provider/model` so every later
+  turn is served by that provider, and a refusal no longer pastes a 93-model
+  catalogue into a phone's error banner. `build 125`.
+- **A tool call survives a gateway that restarts its serialisation.** The
+  assembler replaced the buffer when a fragment was a whole object, but a
+  re-serialisation that arrives in pieces (one finished snapshot, then the first
+  half of the new spelling) was appended onto the finished object and died as
+  `expected value at line 1 column 14`. A buffer that is already valid JSON can
+  never be extended into valid JSON, so the newest fragment replaces it. `build
+  125`.
+
 ## 1.4.11
 
 - **A tool-heavy conversation opens instead of timing out.** The device
