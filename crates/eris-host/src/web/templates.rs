@@ -753,46 +753,64 @@ fn new_project_control(chrome: &Chrome) -> Markup {
     }
 }
 
-/// The rail's order, as a small disclosure beside the list.
+/// The rail's order, as a menu beside the list.
 ///
-/// A `details` element rather than a scripted menu: the summary is the button,
-/// the form inside it posts the order, and the whole thing works with every
-/// script blocked. The summary states the current order, so the control says
-/// what it is doing before it is opened.
+/// A menu, not a form. It used to be a select, a submit button and a second
+/// press to confirm a choice the operator had already made, which is three
+/// actions for one preference. Now it is what a platform menu is: one row per
+/// order, a checkmark on the one in force, and the press is the change. A row is
+/// a `button` inside one `form` that carries nothing else, so the whole thing
+/// still posts with every script blocked, and a row that is already current
+/// simply writes the value it already had.
+///
+/// The summary states the current order, so the control answers "which one" and
+/// "what is it now" before it is opened, and `aria-current` carries the check to
+/// a reader instead of leaving it as a tick in a glyph.
 fn rail_sort_control(chrome: &Chrome) -> Markup {
     use crate::web::chat::ConversationSort;
     let current = chrome.conversation_sort;
     html! {
-        details .rail-sort {
+        details .rail-sort .menu {
             summary title="Sort conversations"
                 aria-label=(format!("Sort conversations, currently {}", current.label())) {
                 span .rail-sort-glyph aria-hidden="true" { "\u{2195}" }
                 span .rail-sort-label { (current.label()) }
             }
-            form method="post" action=(crate::admin::ROUTE_CHAT_SORT) {
-                label .sr-only for="rail-sort-order" { "Conversation order" }
-                select id="rail-sort-order" name="sort" {
-                    @for option in ConversationSort::ALL {
-                        option value=(option.as_str()) selected[option == current] {
-                            (option.label())
+            form .menu-panel method="post" action=(crate::admin::ROUTE_CHAT_SORT) {
+                @for option in ConversationSort::ALL {
+                    @let chosen = option == current;
+                    button .menu-row type="submit" name="sort" value=(option.as_str())
+                        aria-current=[chosen.then_some("true")] {
+                        span .menu-check aria-hidden="true" {
+                            @if chosen { "\u{2713}" }
+                        }
+                        span .menu-name { (option.label()) }
+                        @if chosen {
+                            span .sr-only { " (current)" }
                         }
                     }
                 }
-                button type="submit" { "Sort" }
             }
         }
     }
 }
 
-/// One conversation in the rail, with the menu that files it.
+/// One conversation in the rail, with the menu that acts on it.
 ///
-/// The menu is a `details` element as well, for the same reason: the select and
-/// its submit post a plain form, so "add to project" works with every script
-/// blocked. The menu only shows about its own row, which is why it sits inside
-/// the row rather than in one list-wide control.
+/// The menu is the platform shape: rows, a checkmark on the project the
+/// conversation is already filed under, one press to move it, and a destructive
+/// row at the bottom behind a separator. It used to be a select and a Move
+/// button, which asked for two presses, and it put the destructive action
+/// outside the menu as its own glyph - so the rail carried a menu and a second
+/// unlabelled control for the same row.
+///
+/// Everything is still a plain form post: the panel is one form, each row is a
+/// submit button carrying the value, and the destructive row overrides the
+/// action with `formaction`, which the browser honours with no script at all.
+/// `aria-current` carries the checkmark to a reader as well as to the eye.
 fn rail_session_row(chrome: &Chrome, session: &ChatSession) -> Markup {
     let open = chrome.current_conversation.as_deref() == Some(session.id.as_str());
-    let field_id = format!("project-{}", slug(&session.id));
+    let filed = session.project_id.as_deref();
     html! {
         div .session-row .open[open] {
             a href=(format!("/dashboard/chat/{}", session.id))
@@ -801,30 +819,47 @@ fn rail_session_row(chrome: &Chrome, session: &ChatSession) -> Markup {
                 span .session-title { (session.title) }
                 span .session-stamp { (session.stamp) }
             }
-            details .session-menu {
-                summary title="Add to a project"
-                    aria-label=(format!("Add {} to a project", session.title)) {
+            details .session-menu .menu {
+                summary title="Conversation actions"
+                    aria-label=(format!("Actions for {}", session.title)) {
                     "\u{2026}"
                 }
-                form .session-menu-form method="post"
+                form .menu-panel method="post"
                     action=(crate::admin::ROUTE_PROJECTS_ASSIGN) {
                     input type="hidden" name="conversation" value=(session.id.as_str());
-                    label .sr-only for=(field_id.as_str()) { "Project" }
-                    select id=(field_id.as_str()) name="project" aria-label="Project" {
-                        option value="" selected[session.project_id.is_none()] { "No project" }
-                        @for project in &chrome.projects {
-                            @let current = session.project_id.as_deref() == Some(project.id.as_str());
-                            option value=(project.id.as_str()) selected[current] { (project.name) }
+                    /* The clear is a row like any other, and it is the one
+                       checked when nothing has been filed: "No project" is a
+                       state, not an absence of one. */
+                    @let loose = filed.is_none();
+                    button .menu-row type="submit" name="project" value=""
+                        aria-current=[loose.then_some("true")] {
+                        span .menu-check aria-hidden="true" {
+                            @if loose { "\u{2713}" }
+                        }
+                        span .menu-name { "No project" }
+                        @if loose { span .sr-only { " (current)" } }
+                    }
+                    @for project in &chrome.projects {
+                        @let chosen = filed == Some(project.id.as_str());
+                        button .menu-row type="submit" name="project"
+                            value=(project.id.as_str())
+                            aria-current=[chosen.then_some("true")] {
+                            span .menu-check aria-hidden="true" {
+                                @if chosen { "\u{2713}" }
+                            }
+                            span .menu-name { (project.name) }
+                            @if chosen { span .sr-only { " (current)" } }
                         }
                     }
-                    button type="submit" { "Move" }
-                }
-            }
-            @if open {
-                form .session-delete method="post"
-                    action=(format!("/dashboard/chat/{}/delete", session.id)) {
-                    button type="submit" title="Delete this conversation"
-                        aria-label="Delete this conversation" { "×" }
+                    /* The destructive row lives at the bottom, behind a rule, in
+                       the refusal colour: the one thing here that cannot be
+                       undone does not sit beside the things that can. */
+                    div .menu-sep aria-hidden="true" {}
+                    button .menu-row .danger type="submit"
+                        formaction=(format!("/dashboard/chat/{}/delete", session.id)) {
+                        span .menu-check aria-hidden="true" {}
+                        span .menu-name { "Delete conversation" }
+                    }
                 }
             }
         }
@@ -2374,11 +2409,18 @@ impl SettingsTab {
     }
 }
 
-/// The tab strip.
+/// The settings segments, and the line that says what the chosen one holds.
 ///
-/// `aria-current="page"` marks the active tab for a screen reader, and the active
-/// tab is also heavier and underscored, so it is not marked by colour alone. The
-/// strip scrolls sideways on a phone; the page does not.
+/// A segmented control rather than a row of chips: the section row above this
+/// page is already a row of chips, and two rows of the same-looking thing at the
+/// top of one screen is what made this page read as duplicated buttons. One
+/// track, equal segments, the chosen one raised, which is the shape iOS uses when
+/// a control switches between views of the same thing.
+///
+/// `aria-current="page"` marks the active segment for a reader, the label is
+/// heavier, and the segment is raised, so nothing here depends on colour alone.
+/// The track wraps to two rows on a phone instead of scrolling sideways: six
+/// segments are all reachable without a gesture nobody knows about.
 fn tab_strip(current: SettingsTab) -> Markup {
     html! {
         nav class="tabs" aria-label="Settings sections" {
@@ -3816,31 +3858,28 @@ pub fn settings_page(view: &SettingsView) -> Markup {
         SettingsTab::System => tab_system(view),
     };
     let body = html! {
+        /* One title, one set of segments, the cards. The page used to open with
+           an identity card carrying a second copy of the section nav the shell
+           already draws above it, which read as two rows of the same buttons and
+           pushed the settings the operator came for below the fold. The section
+           row is the shell's job; the segments below belong to this page. */
         h1 { "Settings" }
-        p .lede {
-            "Each group is its own form and its own route. A save redirects and says so; "
-            "a refusal re-renders this page with the reason next to the field that caused it."
-        }
-        (alert_region(page_error, None))
 
-        section .card aria-labelledby="sections-heading" {
-            h2 id="sections-heading" { "Where everything lives" }
-            p .small {
-                "The rail is the conversation list. The surfaces that configure this daemon are here, "
-                "and the cog in the rail comes back to this page from anywhere."
-            }
-            (nav_bar(Nav::Settings))
-            p .small {
-                "The sign-in credential lives on " a href=(crate::admin::ROUTE_SECURITY) { "its own page" }
-                ", because this one is never allowed to ask for a secret."
-            }
-        }
-
-        /* The tab strip sits under the identity card and above the cards it
-           switches between. It is a nav of links, so a tab works with no script,
+        /* The segments sit directly under the title and above the cards they
+           switch between. A segment is an anchor, so it works with no script,
            survives a bookmark, and is what the back button steps through. */
         (tab_strip(tab))
+        (alert_region(page_error, None))
         (cards)
+
+        /* The one thing this page must never do is ask for a secret, so the page
+           that may is linked from every segment rather than from a card that
+           only one of them shows. */
+        p .small .settings-foot {
+            "The sign-in credential lives on "
+            a href=(crate::admin::ROUTE_SECURITY) { "its own page" }
+            ", because this one never asks for a secret."
+        }
     };
     shell(
         "Settings",
@@ -7531,35 +7570,18 @@ const CHAT_JS: &str = r##"(function () {
       article.insertBefore(bubble, metaLive);
       bubbleShown = true;
     }
-    // The answer scrolls itself, and follows its own stream the way the thinking
-    // bubble does: the newest words arrive in view instead of the box sitting at
-    // its first line while the turn talks past the bottom of it. A reply is
-    // bounded (70dvh) rather than unbounded, so without this the end of a long
-    // answer is only reachable by hand.
+    // The answer has no scroll box of its own: it is as tall as it is, and the
+    // transcript is the scroller. It used to keep its own ceiling and follow its
+    // own tail, which meant three scrollbars for one reply and a page that
+    // insisted every answer fit on one screen. What follows the answer now is
+    // the transcript's one follow (toBottom), which already yields while the
+    // operator is reading above or typing a draft.
     //
-    // It yields to the operator: scrolling up inside an answer unpins it, the
-    // same bargain the transcript's own follow makes, and it is re-pinned by
-    // reaching the bottom again. At most once per frame, because a fragment is
-    // not worth a layout.
-    var bubblePinned = true;
-    var bubbleQueued = false;
-    bubble.addEventListener("scroll", function () {
-      bubblePinned = bubble.scrollHeight - bubble.scrollTop - bubble.clientHeight <= 48;
-    });
+    // Kept as a named no-op rather than deleted call sites: every write of
+    // answer text still asks the transcript to stay at the bottom, and that is
+    // the cheapest thing to keep correct in one place.
     function bubbleFollow() {
-      if (bubbleShown === false) { return; }
-      if (bubblePinned === false) { return; }
-      if (bubbleQueued) { return; }
-      bubbleQueued = true;
-      var run = function () {
-        bubbleQueued = false;
-        bubble.scrollTop = bubble.scrollHeight;
-      };
-      if (typeof window.requestAnimationFrame === "function") {
-        window.requestAnimationFrame(run);
-        return;
-      }
-      run();
+      toBottom();
     }
 
     // Every write of answer text goes through here, so the one place that knows
@@ -8722,18 +8744,20 @@ const CHAT_JS: &str = r##"(function () {
     return link;
   }
 
-  // The same select the server renders: one option per project, plus the empty
-  // "No project" entry a clear sends.
+  // The same menu the server renders: one row per project plus the "No project"
+  // clear, a checkmark on the one the conversation is filed under, and the
+  // destructive row at the bottom behind a rule. A row is a submit button
+  // carrying the value, so the panel posts with no script involved anywhere.
   function railMenu(session, projects) {
     var menu = document.createElement("details");
-    menu.className = "session-menu";
+    menu.className = "session-menu menu";
     var summary = document.createElement("summary");
-    summary.title = "Add to a project";
-    summary.setAttribute("aria-label", "Add " + session.title + " to a project");
+    summary.title = "Conversation actions";
+    summary.setAttribute("aria-label", "Actions for " + session.title);
     summary.textContent = "\u2026";
     menu.appendChild(summary);
     var form = document.createElement("form");
-    form.className = "session-menu-form";
+    form.className = "menu-panel";
     form.method = "post";
     form.action = "/dashboard/projects/assign";
     var hidden = document.createElement("input");
@@ -8741,26 +8765,58 @@ const CHAT_JS: &str = r##"(function () {
     hidden.name = "conversation";
     hidden.value = session.id;
     form.appendChild(hidden);
-    var field = document.createElement("select");
-    field.name = "project";
-    field.setAttribute("aria-label", "Project");
-    var none = document.createElement("option");
-    none.value = "";
-    none.textContent = "No project";
-    if (session.project_id === null) { none.selected = true; }
-    field.appendChild(none);
-    for (var index = 0; index < projects.length; index += 1) {
-      var option = document.createElement("option");
-      option.value = projects[index].id;
-      option.textContent = projects[index].name;
-      if (session.project_id === projects[index].id) { option.selected = true; }
-      field.appendChild(option);
+
+    function row(label, value, current, formaction, danger) {
+      var button = document.createElement("button");
+      button.type = "submit";
+      button.className = danger ? "menu-row danger" : "menu-row";
+      if (value === null) {
+        button.removeAttribute("name");
+      } else {
+        button.name = "project";
+        button.value = value;
+      }
+      if (formaction) { button.setAttribute("formaction", formaction); }
+      if (current) { button.setAttribute("aria-current", "true"); }
+      var check = document.createElement("span");
+      check.className = "menu-check";
+      check.setAttribute("aria-hidden", "true");
+      check.textContent = current ? "\u2713" : "";
+      var name = document.createElement("span");
+      name.className = "menu-name";
+      name.textContent = label;
+      button.appendChild(check);
+      button.appendChild(name);
+      if (current) {
+        var only = document.createElement("span");
+        only.className = "sr-only";
+        only.textContent = " (current)";
+        button.appendChild(only);
+      }
+      return button;
     }
-    form.appendChild(field);
-    var submit = document.createElement("button");
-    submit.type = "submit";
-    submit.textContent = "Move";
-    form.appendChild(submit);
+
+    form.appendChild(row("No project", "", session.project_id === null, "", false));
+    for (var index = 0; index < projects.length; index += 1) {
+      form.appendChild(row(
+        projects[index].name,
+        projects[index].id,
+        session.project_id === projects[index].id,
+        "",
+        false
+      ));
+    }
+    var separator = document.createElement("div");
+    separator.className = "menu-sep";
+    separator.setAttribute("aria-hidden", "true");
+    form.appendChild(separator);
+    form.appendChild(row(
+      "Delete conversation",
+      null,
+      false,
+      "/dashboard/chat/" + session.id + "/delete",
+      true
+    ));
     menu.appendChild(form);
     return menu;
   }
@@ -9262,19 +9318,32 @@ mod tests {
             page.contains(r#"<span class="rail-sort-label">By day</span>"#),
             "the summary names the current order: {page}"
         );
+        // Each order is one row of the menu, by the name an operator reads.
         for label in ["Recently used", "Newest", "Title", "By day"] {
             assert!(
-                page.contains(&format!(">{label}</option>")),
+                page.contains(&format!(r#"<span class="menu-name">{label}</span>"#)),
                 "every order is offered, {label} among them: {page}"
             );
         }
+        // The row in force carries the check, and the check is on the row whose
+        // value is the one stored.
         assert!(
-            page.contains(r#"value="day" selected"#),
-            "the stored order is the selected one: {page}"
+            page.contains(&format!(r#"value="day" aria-current="true">"#)),
+            "the stored order is the row marked current: {page}"
+        );
+        assert!(
+            !page.contains(r#"value="updated" aria-current"#),
+            "and no other row claims to be the one in force: {page}"
+        );
+        // The menu is a row per order, so it is one press rather than a pick and
+        // a confirm. There is no submit control of its own.
+        assert!(
+            !page.contains(">Sort</button>"),
+            "the menu has no separate confirm: {page}"
         );
         // A disclosure, not a scripted menu: the rail may carry no script at all.
         assert!(
-            page.contains(r#"<details class="rail-sort">"#),
+            page.contains(r#"<details class="rail-sort menu">"#),
             "the control is the browser's own disclosure: {page}"
         );
     }

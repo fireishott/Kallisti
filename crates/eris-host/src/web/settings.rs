@@ -1967,8 +1967,8 @@ fn the_rail_order_is_a_setting_the_rail_itself_writes() {
         );
         assert!(
             page.body
-                .contains(&format!(r#"option value="{sort}" selected"#)),
-            "the select has {sort} selected"
+                .contains(&format!(r#"value="{sort}" aria-current="true">"#)),
+            "the menu marks {sort} as the order in force"
         );
     }
 

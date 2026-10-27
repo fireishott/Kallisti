@@ -31,6 +31,12 @@ pub const APP_CSS: &str = r#"
   --warn: #d8b57c;
   --bad: #d98a8a;
   --black: #000000;
+  /* The one ceiling in a reply. The thinking bubble's body and a collapsed
+     answer both stop here, because they are the same thing: a block that is
+     open enough to be read and short enough to be skipped. It was two numbers -
+     320px for the bubble and 7.5rem for the answer - and the answer, at 120px,
+     showed two lines and a fade where the bubble showed a paragraph. */
+  --fold: 320px;
 }
 
 * { box-sizing: border-box; }
@@ -292,23 +298,40 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   padding: 6px 0 10px;
   background: linear-gradient(to bottom, var(--bg) 70%, transparent);
 }
-.sections { display: flex; flex-wrap: wrap; gap: 8px; }
+/*
+ * The section row.
+ *
+ * Seven outlined pills in a row read as seven buttons, and a page that also
+ * carries its own row of pills above them read as duplicate controls. This is
+ * the quieter shape a system app uses for a top-level switch: plain labels in
+ * one line, the current one in the text colour with a rule under it. It is a
+ * place you are, not a button you press, and there is exactly one row of them.
+ *
+ * The rule under the current label is `box-shadow` rather than `border` so it
+ * does not move the label by two pixels and shift the whole row when the
+ * current section changes.
+ */
+.sections {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 18px;
+}
 .sections a {
   display: inline-flex;
   align-items: center;
-  padding: 7px 13px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  font-size: 12.5px;
+  padding: 5px 1px 6px;
   color: var(--muted);
-  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+  transition: color 0.12s ease;
 }
-.sections a:hover { color: var(--text); background: var(--raise); text-decoration: none; }
+.sections a:hover { color: var(--text); text-decoration: none; }
 .sections a[aria-current=page] {
   color: var(--text);
-  background: var(--raise);
-  border-color: var(--platinum);
   font-weight: 620;
+  box-shadow: inset 0 -2px 0 0 var(--platinum);
 }
 
 /* The subagents control --------------------------------------------------- */
@@ -513,35 +536,100 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
 .rail-sort > summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
 .rail-sort[open] > summary { color: var(--text); border-color: var(--line-strong); }
 .rail-sort-glyph { font-size: 10px; line-height: 1; opacity: 0.8; }
-.rail-sort form {
-  /* The form opens under the pill and spans the rail: a select and a button
-     side by side in a 236px column is one control's worth of room. */
-  display: grid;
-  gap: 6px;
+
+/* The menus, as a platform draws them.
+ *
+ * Every menu in this app is the same object, because there is only one thing a
+ * menu is: a list of rows where the press is the change. A `details` element is
+ * the button and the panel, so the whole thing opens with no script at all, and
+ * the form inside carries the rows.
+ *
+ * The shape is Apple's, from the HIG's Menus page: a raised panel, one row per
+ * choice, a checkmark in its own column on the row that is in force, the
+ * destructive row last and behind a rule, and no chrome inside the panel - no
+ * nested buttons, no borders on the rows, no submit control at the foot. The
+ * row is the control; a menu that makes you pick and then press again is three
+ * actions for one decision.
+ *
+ * Title case, no ellipsis: nothing in these menus asks a second question, and an
+ * ellipsis is a promise that it will.
+ */
+.menu > summary { list-style: none; cursor: pointer; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   margin: 6px 0 0;
-  padding: 8px 10px 10px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--panel);
-}
-.rail-sort select {
-  padding: 5px 8px;
-  border-radius: 7px;
-  background: var(--raise);
-  color: var(--text);
-  font-size: 12.5px;
+  padding: 5px;
   border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--raise);
+  /* Above the row it was opened from, and above the rows under it: a menu that
+     is painted under the next conversation is a menu you cannot use. */
+  position: relative;
+  z-index: 12;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
 }
-.rail-sort button {
-  justify-self: start;
-  padding: 5px 10px;
-  border-color: var(--line-strong);
+.menu-row {
+  /* The global `button` rule is a platinum slab with a 9px/16px padding box.
+     A row is none of that: it is a line of text on the panel, full width, and
+     its weight is the label rather than the plate. */
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
-  font-weight: 560;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s ease;
 }
-.rail-sort button:hover { background: var(--raise); filter: none; }
+.menu-row:hover, .menu-row:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  filter: none;
+  text-decoration: none;
+}
+/* The check column is always there, so a checkmark never shifts its row's label
+   sideways and the labels line up down the panel. */
+.menu-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  color: var(--platinum);
+  font-size: 11px;
+  line-height: 1;
+}
+.menu-row[aria-current] .menu-name { color: var(--platinum); font-weight: 620; }
+.menu-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The one row that cannot be undone does not sit beside the ones that can. Apple
+   puts it last, under a rule; the refusal colour is this product's own. */
+.menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line-strong);
+}
+.menu-row.danger { color: var(--bad); }
+.menu-row.danger:hover, .menu-row.danger:focus-visible { background: rgba(217, 138, 138, 0.12); }
+/* The rail's own menu opens under its pill and spans the rail: 236px is not
+   room for a panel that hugs a 60px glyph. */
+.rail-sort .menu-panel { margin-top: 6px; }
+/* A per-row menu is one glyph in a 236px row, so its panel is opened by the grid
+   rule in `.session-menu[open]` above and only the rows live here. */
+.session-menu .menu-panel { margin-top: 6px; }
 
 /* Project headings in the rail. A group is one heading and the rows under it, so
    the list reads as files rather than as one scroll with no landmarks. The head
@@ -591,17 +679,6 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   column-gap: 2px;
 }
 .session-row a { min-width: 0; }
-.session-delete { margin: 0; justify-self: end; }
-.session-delete button {
-  padding: 2px 7px;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 15px;
-  line-height: 1;
-  border-radius: 6px;
-}
-.session-delete button:hover { color: var(--bad); background: var(--raise); filter: none; }
 
 /* The per-session menu: the "add to project" affordance, in the row it acts on.
    A summary glyph while it is closed, so forty rows are forty glyphs rather than
@@ -626,30 +703,13 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
 .session-menu summary:hover { color: var(--text); background: var(--raise); }
 .session-menu summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 1px; }
 .session-menu[open] {
+  /* Open, the whole row belongs to the menu: at 236px a panel that hugs its
+     glyph would be one word wide. The panel's own frame comes from
+     `.menu-panel`, so this rule only moves the grid item. */
   grid-column: 1 / -1;
   margin: 4px 0 6px;
-  padding: 8px 10px 10px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--panel);
 }
 .session-menu[open] summary { color: var(--text); background: var(--raise); }
-.session-menu-form { display: grid; gap: 6px; margin: 6px 0 0; }
-.session-menu-form select {
-  padding: 6px 9px;
-  border-radius: 7px;
-  font-size: 12.5px;
-}
-.session-menu-form button {
-  justify-self: start;
-  padding: 5px 10px;
-  border-color: var(--line-strong);
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 560;
-}
-.session-menu-form button:hover { background: var(--raise); filter: none; }
 .sessions a {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1450,9 +1510,13 @@ pre.code {
 /* Collapsed: the opening lines under a fade that states there is more. The fade
    is the palette's own ground, so the bubble does not grow a second colour. */
 .msg[data-reply-state="collapsed"] .bubble {
-  max-height: 7.5rem;
+  /* The same ceiling the thinking bubble's body uses: folding an answer puts it
+     in the same class of object as the reasoning beside it, so the two read as
+     one size and a fold lands where the operator already looks. `--fold` is the
+     single number both rules read. */
+  max-height: var(--fold);
   overflow: hidden;
-  mask-image: linear-gradient(to bottom, var(--black) 62%, transparent 100%);
+  mask-image: linear-gradient(to bottom, var(--black) 78%, transparent 100%);
 }
 /* The whole reply in the whole window. Not a fourth fold size: the reply leaves
    the column and takes the viewport, which is what a table, a long answer or a
@@ -1501,17 +1565,15 @@ pre.code {
   min-width: 0;
   /* The corner control is positioned against the bubble, not the page. */
   position: relative;
-  /* A long answer scrolls inside its own bubble instead of pushing the run log
-     and the thinking bubble off the screen. Seventy percent of the viewport is
-     the point where a reply stops being read and starts being scrolled: under
-     that, a normal answer never needs the scrollbar. `dvh` follows a mobile URL
-     bar; the `vh` line is the fallback for a browser that does not know it. The
-     maximized window below re-states both as `none`, so the whole-window reply
-     still scrolls the window and not a box inside it. */
-  max-height: 70vh;
-  max-height: 70dvh;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* The answer is as tall as it is. It used to be capped at seventy percent of
+     the viewport and scroll inside itself, which put one scrollbar in the
+     answer, one in the transcript and one on the page for a single reply - and
+     read, correctly, as an attempt to make every response fit on one screen.
+     The ceiling is gone: the transcript is the only scroller in the column, the
+     answer flows through it, and the run log and the thinking bubble scroll
+     their own boxes so a long one cannot push them away. The whole-window
+     control is still the way to read a table or a diff with the transcript
+     behind it. */
 }
 /* The answer's own corner control, the thinking bubble's twin: the same glyph,
    the same quiet frame, the same offer. The bubble is already bounded and
@@ -1950,7 +2012,9 @@ pre.code {
   font-style: italic;
   white-space: pre-wrap;
   opacity: 0.72;
-  max-height: 320px;
+  /* The token, not a number: a collapsed answer is folded to this same ceiling,
+     so the two blocks are one size and a single edit moves both. */
+  max-height: var(--fold);
   overflow-y: auto;
 }
 /* What the turn is doing right now, above the settle line and under the bubble.
@@ -2669,53 +2733,63 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
 }
 
 /*
- * The settings tabs.
+ * The settings segments.
  *
- * A tab is an anchor, so the strip works with no script, and the active one is
- * marked with `aria-current=page` as well as weight, an underline and a border:
- * nothing here depends on colour alone.
+ * A segmented control, not another row of pills. The section row above this page
+ * is already a row of labels, and the first build of this page drew its six
+ * sections as six outlined chips under an outlined chip row - the same control
+ * twice, at the top of one screen, which is what "why so many duplicate buttons"
+ * was looking at.
  *
- * The strip itself scrolls sideways on a narrow screen. Six tabs do not fit on
- * a 393px phone, and the one thing that must never happen is the page growing a
- * sideways scrollbar because of a row that can scroll its own, so the overflow
- * lives here and `overscroll-behavior-x` keeps a flick from escaping into the
- * page behind it.
+ * So: one track, segments that share its width, and the chosen one raised on the
+ * track the way a system segmented control does it. A segment is still an anchor,
+ * so the whole thing works with no script and survives a bookmark. The current
+ * one is marked with `aria-current=page`, a heavier label and a raised plate, so
+ * nothing depends on colour alone.
+ *
+ * Six segments do not fit one line at 393px, so the track wraps to two rows on a
+ * narrow screen rather than scrolling sideways: a control nobody can see all of
+ * is a control somebody has to guess at.
  */
 .tabs {
   display: flex;
-  gap: 6px;
-  margin: 18px 0 10px;
-  padding: 0 0 2px;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 14px 0 10px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--raise);
 }
 .tab {
-  flex: 0 0 auto;
-  padding: 7px 12px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  flex: 1 1 auto;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   color: var(--muted);
   font-size: 13px;
+  font-weight: 500;
   line-height: 1.4;
+  text-align: center;
   white-space: nowrap;
 }
-.tab:hover {
-  color: var(--text);
-  border-color: var(--line-strong);
-  text-decoration: none;
-}
+.tab:hover { color: var(--text); text-decoration: none; }
 .tab[aria-current=page] {
   color: var(--text);
-  background: var(--raise);
-  border-color: var(--platinum);
-  font-weight: 600;
-  text-decoration: underline;
-  text-underline-offset: 4px;
+  background: var(--panel);
+  border-color: var(--line-strong);
+  font-weight: 620;
 }
 .tab:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
 .tab-blurb { margin: 0 0 14px; }
+/* The one line under the cards: the page that may ask for a secret is linked
+   from every segment instead of from a card only one of them shows. */
+.settings-foot {
+  margin: 4px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
 
 /* The provider table and its form ----------------------------------------- */
 
@@ -2883,24 +2957,25 @@ mod tests {
         );
     }
 
-    /// Three bounded scrollers in one reply: the thinking bubble, the run log and
-    /// the answer. A long answer used to push the log off the screen, and the log
-    /// had a ceiling that only bit when the browser felt like shrinking a flex
-    /// child - which it does not do without a zero minimum.
+    /// One scroller in the column, and two bounded boxes beside it.
+    ///
+    /// The answer used to carry a ceiling of seventy percent of the viewport and
+    /// scroll inside itself. Three scrollers for one reply - the bubble, the run
+    /// log and the transcript - is what made every response look like it was
+    /// being squeezed onto one screen. The answer now flows through the
+    /// transcript; the two blocks that are machinery rather than prose keep
+    /// their own ceilings so a long one cannot push an answer away.
     #[test]
-    fn the_answer_the_log_and_the_thinking_bubble_each_scroll_on_their_own() {
+    fn the_answer_flows_and_the_machinery_beside_it_scrolls_on_its_own() {
         let bubble = rule(".msg .bubble");
         assert!(
-            bubble.contains("max-height: 70vh") && bubble.contains("max-height: 70dvh"),
-            "the answer is bounded by the viewport, with the dvh unit behind the vh one: {bubble}"
+            !bubble.contains("max-height") && !bubble.contains("overflow-y"),
+            "the answer has no ceiling and no scrollbar of its own: {bubble}"
         );
+        let thread = rule(".thread");
         assert!(
-            bubble.contains("overflow-y: auto"),
-            "and scrolls itself rather than growing the conversation: {bubble}"
-        );
-        assert!(
-            bubble.contains("overscroll-behavior: contain"),
-            "reaching the end of an answer must not start scrolling the page: {bubble}"
+            thread.contains("overflow-y: auto") && thread.contains("overscroll-behavior: contain"),
+            "the transcript is the one scroller in the column: {thread}"
         );
         // The maximized reply is the whole window, so the box inside it must not
         // keep a ceiling of its own: the window scrolls, not the bubble.
@@ -2997,6 +3072,88 @@ mod tests {
         );
     }
 
+    /// A folded answer is the size of the thinking bubble.
+    ///
+    /// The two blocks are the same kind of object: machinery you can read and
+    /// skip. They had two ceilings - 320px for the bubble's body, 120px for a
+    /// collapsed answer - so folding a reply showed two lines under a fade while
+    /// the reasoning beside it showed a paragraph. One token, read by both rules,
+    /// is what stops the pair drifting apart again.
+    #[test]
+    fn a_folded_answer_and_the_thinking_bubble_fold_to_the_same_height() {
+        let root = rule(":root");
+        assert!(
+            root.contains("--fold: 320px"),
+            "there is one fold height, declared once: {root}"
+        );
+        let answer = rule(".msg[data-reply-state=\"collapsed\"] .bubble");
+        let thinking = rule(".msg .think .think-body");
+        assert!(
+            answer.contains("max-height: var(--fold)"),
+            "a collapsed answer folds to the token: {answer}"
+        );
+        assert!(
+            thinking.contains("max-height: var(--fold)"),
+            "and so does the thinking bubble: {thinking}"
+        );
+        // Neither may carry a number of its own again: a literal here is how the
+        // two got out of step in the first place.
+        for (name, block) in [("the answer", answer), ("the bubble", thinking)] {
+            assert!(
+                !block.contains("max-height: 7.5rem") && !block.contains("max-height: 320px"),
+                "{name} has no ceiling of its own outside the token: {block}"
+            );
+        }
+    }
+
+    /// The menus are menus, in the shape a platform draws them.
+    ///
+    /// Apple's HIG for menus: one row per choice, a checkmark on the one in
+    /// force, related rows grouped, the destructive action last and behind a
+    /// rule, and the press is the change. A row that looks like the app's big
+    /// platinum submit button would be a button in a menu, which is the thing
+    /// this replaced.
+    #[test]
+    fn the_menus_are_rows_with_a_check_and_no_plate() {
+        let panel = rule(".menu-panel");
+        assert!(
+            panel.contains("display: flex") && panel.contains("flex-direction: column"),
+            "a menu is a column of rows: {panel}"
+        );
+        assert!(
+            panel.contains("background: var(--raise)"),
+            "the panel is raised off the page it covers: {panel}"
+        );
+        let row = rule(".menu-row");
+        assert!(
+            row.contains("background: transparent") && row.contains("border: 0"),
+            "a row is not a plate with a border, which is what a button is: {row}"
+        );
+        assert!(
+            row.contains("grid-template-columns: 16px minmax(0, 1fr)"),
+            "the check has its own column, so a label never shifts: {row}"
+        );
+        assert!(
+            row.contains("text-align: left"),
+            "a menu row reads as a line, not as a centred button: {row}"
+        );
+        // The check column exists on every row, occupied or not: that is what
+        // keeps the labels aligned down the panel.
+        assert!(
+            rule(".menu-check").contains("justify-content: flex-start"),
+            "the check column is always there"
+        );
+        // And the one row that cannot be undone is separated from the rest.
+        assert!(
+            rule(".menu-sep").contains("background: var(--line-strong)"),
+            "the destructive row sits behind a rule"
+        );
+        assert!(
+            rule(".menu-row.danger").contains("color: var(--bad)"),
+            "and it is drawn in the refusal colour"
+        );
+    }
+
     /// The answer's expand control is the thinking bubble's twin.
     ///
     /// Same frame, same corner of the page, same glyph: two blocks that offer the
@@ -3086,8 +3243,8 @@ mod tests {
             "the disclosure keeps a visible focus ring"
         );
         assert!(
-            rule(".rail-sort form").contains("display: grid"),
-            "the form opens under the pill rather than beside it"
+            rule(".rail-sort .menu-panel").contains("margin-top: 6px"),
+            "the menu opens under the pill rather than beside it"
         );
     }
 

@@ -2371,7 +2371,7 @@ fn a_project_is_created_from_the_rail_and_files_a_conversation() {
     // The menu is a details element with a form in it: the whole affordance works
     // with no script at all.
     assert!(
-        body.contains(r#"<details class="session-menu">"#),
+        body.contains(r#"<details class="session-menu menu">"#),
         "each session row carries the add-to-project menu: {body}"
     );
     assert!(
@@ -2379,14 +2379,22 @@ fn a_project_is_created_from_the_rail_and_files_a_conversation() {
         "the menu posts the assignment form: {body}"
     );
     assert!(
-        body.contains(r#"<option value="" selected>No project</option>"#),
-        "the select offers the clear: {body}"
+        body.contains(r#"<span class="menu-name">No project</span>"#),
+        "the menu offers the clear as a row like any other: {body}"
     );
     assert!(
         body.contains(&format!(
-            r#"<option value="{project_id}" selected>Work</option>"#
+            r#"<span class="menu-name">Work</span><span class="sr-only"> (current)</span>"#
         )),
-        "the select marks the project the conversation is in: {body}"
+        "the menu marks the project the conversation is in: {body}"
+    );
+    assert!(
+        body.contains(&format!(r#"value="{project_id}" aria-current="true">"#)),
+        "and it is the row marked current rather than a selected option: {body}"
+    );
+    assert!(
+        body.contains(r#"<span class="menu-name">Delete conversation</span>"#),
+        "the destructive row is last, in the menu, not a glyph beside it: {body}"
     );
     // The new-project control is a disclosure above the list.
     assert!(
