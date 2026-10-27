@@ -124,6 +124,44 @@ enum ErisFrameBridge {
                 )
             )
 
+        case "round":
+            // The round about to run, sent before the model call. It is the only
+            // signal that separates "the model is thinking" from "a command is
+            // running": without it both are the word "streaming" and the operator
+            // cannot tell work from a hang.
+            let object = try ErisJSON.object(data)
+            return .round(
+                ErisFrameRound(
+                    round: object["round"] as? Int ?? 0,
+                    maxRounds: object["max_rounds"] as? Int ?? 0,
+                    toolsAllowed: object["tools_allowed"] as? Bool ?? true
+                )
+            )
+
+        case "tool_start":
+            // The call about to run. The finished `tool` frame is a receipt that
+            // lands after the fact, so a surface that only had that one could say
+            // what had already happened and never what is happening.
+            let object = try ErisJSON.object(data)
+            return .toolStart(
+                ErisFrameToolStart(
+                    name: object["name"] as? String ?? "",
+                    arguments: text(of: object["arguments"])
+                )
+            )
+
+        case "tool_output":
+            // What the running command printed, as it printed it. Live only: the
+            // daemon does not journal these, and a reconnect reads the finished
+            // `tool` frame that carries the whole output instead.
+            let object = try ErisJSON.object(data)
+            return .toolOutput(
+                ErisFrameToolOutput(
+                    name: object["name"] as? String ?? "",
+                    chunk: object["chunk"] as? String ?? ""
+                )
+            )
+
         case .some(let known):
             // Everything else is the existing decoder's business, including its
             // `nil` for a name neither of us knows, which is now `.ignored` -
@@ -168,21 +206,69 @@ enum ErisFrameOutcome: Equatable, Sendable {
     case tool(ErisFrameTool)
     /// A turn parked on a question. Mid-turn news, never terminal.
     case asked(ErisAsked)
+    /// A round is starting, before the model has said anything.
+    case round(ErisFrameRound)
+    /// A tool call is about to run. The receipt lands later as `.tool`.
+    case toolStart(ErisFrameToolStart)
+    /// Output from a call that is still running. Live only.
+    case toolOutput(ErisFrameToolOutput)
     /// One of the four the current `ErisFrame` already models.
     case existing(ErisFrame)
     /// A name this client does not know. Skip it; do not fail the stream.
     case ignored
 }
 
+/// The round about to run: which one, out of how many, and whether it may still
+/// call tools.
+struct ErisFrameRound: Equatable, Sendable {
+    /// One-based round number.
+    let round: Int
+    /// The turn's tool budget.
+    let maxRounds: Int
+    /// Whether this round may still call tools.
+    let toolsAllowed: Bool
+
+    /// What a surface shows while the model is thinking.
+    ///
+    /// The closing round says so plainly: a turn that cannot call tools any more
+    /// is about to answer, and calling it another "thinking" round would make the
+    /// budget look spent twice.
+    var phaseLabel: String {
+        guard maxRounds > 0 else { return "Thinking" }
+        if !toolsAllowed {
+            return "Writing the answer (round \(round) of \(maxRounds))"
+        }
+        return "Thinking (round \(round) of \(maxRounds))"
+    }
+}
+
+/// A tool call that is about to run.
+struct ErisFrameToolStart: Equatable, Sendable {
+    /// The tool name.
+    let name: String
+    /// The arguments, as JSON.
+    let arguments: String
+}
+
+/// A chunk of output from a call that is still running.
+struct ErisFrameToolOutput: Equatable, Sendable {
+    /// The tool that is writing.
+    let name: String
+    /// What it wrote, this chunk.
+    let chunk: String
+}
+
 /// Whether an outcome ends the stream.
 ///
-/// Only the four frames `ErisFrame` models can be terminal: a reasoning fragment
-/// and a finished tool call are both mid-turn news. `ignored` never is, or an
-/// unrecognised frame from a newer daemon would truncate a stream that is fine.
+/// Only the four frames `ErisFrame` models can be terminal: a reasoning fragment,
+/// a finished tool call, a round announcement and a chunk of a running command's
+/// output are all mid-turn news. `ignored` never is, or an unrecognised frame
+/// from a newer daemon would truncate a stream that is fine.
 extension ErisFrameOutcome {
     var isTerminal: Bool {
         switch self {
-        case .reasoning, .tool, .asked, .ignored: return false
+        case .reasoning, .tool, .asked, .ignored, .round, .toolStart, .toolOutput:
+            return false
         case .existing(let frame): return frame.isTerminal
         }
     }

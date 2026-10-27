@@ -20,6 +20,17 @@ struct SettingsScreen: View {
     private var auxService: AuxModelService? { container.auxService }
     // Build 135.40: aux models are Hermes-only; DSH handles routing itself.
     private var isDSHMode: Bool { container.dshClient != nil }
+    /// Whether the backend in use is an Eris daemon. Eris is the only backend
+    /// this build ships, so this is what tells Settings to stop drawing the
+    /// legacy Hermes relay and gateway surfaces.
+    private var isErisBacked: Bool { chatStore.heraldClient is ErisHeraldClient }
+    /// A relay host is worth a section only when one is really paired and the
+    /// app is really talking to it. A leftover pairing in an install that
+    /// predates the Eris port is exactly how two device menus ended up stacked
+    /// on one screen, both of them describing a backend that was not serving.
+    private var usesRelayBackend: Bool {
+        !isErisBacked && pairingStore.pairedRelayConfiguration != nil
+    }
     @State private var showAPIKey: Bool = false
     @State private var isTestingTTS: Bool = false
     @State private var safariURL: URL?
@@ -49,7 +60,11 @@ struct SettingsScreen: View {
                         // the harness phone API directly, so these rows either
                         // do nothing or report a backend that is not serving the
                         // request. Infrastructure below is the DSH-aware view.
-                        if !isDSHMode {
+                        // Only for a device that is actually paired to a relay.
+                        // The Eris daemon answers neither of these, and rendering
+                        // controls that can only report a stale backend is how
+                        // Settings ended up with two competing device menus.
+                        if !isDSHMode, usesRelayBackend {
                             relaySection
                             gatewaySection
                         }
@@ -296,36 +311,6 @@ struct SettingsScreen: View {
                 )
 
                 sectionDivider
-
-                if pairingStore.pairedRelayConfiguration != nil {
-                    NavigationLink(value: Route.connectHost) {
-                        HStack(spacing: Design.Spacing.sm) {
-                            Image(systemName: hostStatusRowIcon)
-                                .font(.system(size: 14))
-                                .foregroundStyle(hostStatusRowColor)
-                                .frame(width: 20, alignment: .center)
-
-                            Text("Agent Host")
-                                .font(Design.Typography.callout)
-                                .foregroundStyle(Design.Colors.foreground)
-
-                            Spacer()
-
-                            Text(hostStatusRowValue)
-                                .font(Design.Typography.callout)
-                                .foregroundStyle(Design.Colors.secondaryForeground)
-
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(Design.Colors.secondaryForeground)
-                        }
-                        .frame(minHeight: Design.Size.minTapTarget)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("settings.heraldHost")
-
-                    sectionDivider
-                }
 
                 settingsToggle(
                     icon: "bolt.fill",
@@ -1547,31 +1532,43 @@ struct SettingsScreen: View {
     private var infrastructureSection: some View {
         SettingsSectionView(title: "Infrastructure") {
             VStack(spacing: 0) {
-                // Hermes Host
-                HStack(spacing: Design.Spacing.sm) {
-                    Image(systemName: hostStatusRowIcon)
-                        .font(.system(size: 14))
-                        .foregroundStyle(hostStatusRowColor)
-                        .frame(width: 20, alignment: .center)
+                // The one device surface. This row used to exist twice - a
+                // navigable twin in Connection and this informational one - so
+                // Settings offered two readings of the same host and only one of
+                // them could be tapped. The reading and the way in are the same
+                // row now.
+                NavigationLink(value: Route.connectHost) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: hostStatusRowIcon)
+                            .font(.system(size: 14))
+                            .foregroundStyle(hostStatusRowColor)
+                            .frame(width: 20, alignment: .center)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Agent Host")
-                            .font(Design.Typography.callout)
-                            .foregroundStyle(Design.Colors.foreground)
-                        if let host = hostStore.currentHost {
-                            Text(host.resolvedDisplayName)
-                                .font(Design.Typography.caption)
-                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Agent Host")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            if let host = hostStore.currentHost {
+                                Text(host.resolvedDisplayName)
+                                    .font(Design.Typography.caption)
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                            }
                         }
+
+                        Spacer()
+
+                        Text(hostStatusRowValue)
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
                     }
-
-                    Spacer()
-
-                    Text(hostStatusRowValue)
-                        .font(Design.Typography.callout)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+                    .frame(minHeight: Design.Size.minTapTarget)
                 }
-                .frame(minHeight: Design.Size.minTapTarget)
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.heraldHost")
 
                 sectionDivider
 
@@ -1588,7 +1585,7 @@ struct SettingsScreen: View {
                 // Hermes Agent Version
                 settingsRow(
                     icon: "brain.head.profile",
-                    iconColor: .purple,
+                    iconColor: Design.Colors.accent,
                     title: "Agent",
                     value: hostStore.currentHost?.heraldVersion ?? "—"
                 )
@@ -2321,7 +2318,7 @@ struct SettingsScreen: View {
                         HStack(spacing: Design.Spacing.sm) {
                             Image(systemName: "person.wave.2.fill")
                                 .font(.system(size: 14))
-                                .foregroundStyle(.purple)
+                                .foregroundStyle(Design.Colors.accent)
                                 .frame(width: 20, alignment: .center)
 
                             Text("Voice")
@@ -2434,7 +2431,7 @@ struct SettingsScreen: View {
                         HStack(spacing: Design.Spacing.sm) {
                             Image(systemName: "person.wave.2")
                                 .font(.system(size: 14))
-                                .foregroundStyle(.purple)
+                                .foregroundStyle(Design.Colors.accent)
                                 .frame(width: 20, alignment: .center)
 
                             Text("Apple TTS Voice")

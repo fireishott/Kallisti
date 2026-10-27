@@ -87,6 +87,17 @@ final class ErisHeraldClient: HeraldClientProtocol {
     private let defaults: UserDefaults
     private static let bindingsKey = "eris.conversation.bindings"
 
+    /// The tool call the turn is running right now, as the row it opened.
+    ///
+    /// The daemon runs one tool at a time and its frames carry no call id, so the
+    /// client mints one per start. That is what lets the stream's start, its live
+    /// output and its receipt land on ONE row instead of three, and it is why a
+    /// command's stdout can be appended without guessing which call it belongs to.
+    private var activeToolRunID: String?
+    /// Counts tool runs within this client, so two calls to the same tool are two
+    /// rows rather than one that keeps reopening.
+    private var toolRunSequence = 0
+
     init(store: ErisDaemonStore = ErisDaemonStore(), defaults: UserDefaults = .standard) {
         self.store = store
         self.defaults = defaults
@@ -190,6 +201,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
             continuation.yield(.messageSent(jobID: jobID))
 
             var text = ""
+            self.activeToolRunID = nil
             let stream = await client.events(turnID: turn.jobID)
             for try await outcome in stream {
                 // Reasoning and tool frames are carried, not dropped. The two
@@ -200,11 +212,56 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     switch outcome {
                     case .reasoning(let reasoning):
                         continuation.yield(.reasoningDelta(reasoning.text))
+                    case .round(let round):
+                        // Which round is running, before the model says anything.
+                        // Without it "thinking" covers a model call, a bash
+                        // command and a dead turn alike.
+                        continuation.yield(.started(phase: round.phaseLabel))
+                    case .toolStart(let start):
+                        // A row appears while the command runs, not after it.
+                        // The daemon runs one tool at a time, so the run's own
+                        // id is enough to tie the start, its output and its
+                        // receipt together.
+                        self.openToolRun(named: start.name)
+                        continuation.yield(
+                            .toolStarted(
+                                ToolActivity(
+                                    label: start.name,
+                                    isActive: true,
+                                    toolCallID: self.activeToolRunID,
+                                    name: start.name,
+                                    argsPreview: start.arguments.isEmpty ? nil : start.arguments
+                                )
+                            )
+                        )
+                    case .toolOutput(let output):
+                        // What the command printed, as it printed it. This is the
+                        // stdout the phone had no view of at all: the daemon sent
+                        // it, the bridge dropped it as an unknown event name.
+                        if let runID = self.activeToolRunID {
+                            continuation.yield(
+                                .toolOutput(toolCallID: runID, chunk: output.chunk)
+                            )
+                        }
                     case .tool(let tool):
-                        // The daemon publishes a tool frame once, on completion,
-                        // so it arrives with its output attached and is rendered
-                        // as one finished row rather than a start/finish pair.
-                        continuation.yield(.toolStarted(tool.activity))
+                        // The receipt, with the whole output attached. It closes
+                        // the row the start opened rather than drawing a second
+                        // one for the same call.
+                        if let runID = self.activeToolRunID {
+                            continuation.yield(
+                                .toolCompleted(
+                                    toolCallID: runID,
+                                    resultPreview: tool.output.isEmpty ? nil : tool.output,
+                                    isError: tool.isError,
+                                    durationMs: nil
+                                )
+                            )
+                            self.activeToolRunID = nil
+                        } else {
+                            // A daemon that sent no start frame: draw the finished
+                            // call as one row, exactly as before.
+                            continuation.yield(.toolStarted(tool.activity))
+                        }
                     case .asked(let asked):
                         // The turn is parked on a person, not on a model. The card
                         // is what makes it answerable; without this the stream sat
@@ -244,16 +301,19 @@ final class ErisHeraldClient: HeraldClientProtocol {
                         )
                     }
                     self.activeTurnID = nil
+                    self.activeToolRunID = nil
                     continuation.yield(.finished(final, tokenUsage, nil, nil))
                     continuation.finish()
                     return
                 case .error(let error):
                     self.activeTurnID = nil
+                    self.activeToolRunID = nil
                     continuation.yield(.failed(error.errorDescription ?? "turn failed", category: error.code))
                     continuation.finish()
                     return
                 case .cancelled:
                     self.activeTurnID = nil
+                    self.activeToolRunID = nil
                     continuation.yield(.cancelled)
                     continuation.finish()
                     return
@@ -756,6 +816,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
             connectionStatus = .connected
         }
         return store.clientForPairedDaemon()
+    }
+
+    /// Open a row for the tool call about to run, and remember its id.
+    private func openToolRun(named name: String) {
+        toolRunSequence += 1
+        activeToolRunID = "eris-tool-\(toolRunSequence)-\(name)"
     }
 
     private func currentConversationID() -> String? {

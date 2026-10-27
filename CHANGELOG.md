@@ -5,6 +5,52 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.8] - 2026-10-27
+
+The release that shows the work. A running turn used to read as the word
+"streaming" whatever it was actually doing, and a command's output existed only
+in the transcript afterwards.
+
+### Added
+
+- **The turn says which round it is in.** The daemon announces each round before
+  the model call, and the phone now decodes it. Stillness during a long model
+  call and stillness during a dead turn were the same picture; they are not the
+  same thing, and the status line says which one you are looking at. `build 103`.
+- **A command appears while it runs.** `tool_start` opens the row the call will
+  finish into, so a two-minute command is a visible two minutes instead of a
+  silence that reads like a hang. `build 103`.
+- **The phone shows stdout as it arrives.** `tool_output` frames were sent by the
+  daemon, named in its vocabulary and dropped by the client as an unknown event.
+  They now land in the row that opened the call, capped at 256 KB per row, and the
+  finished `tool` frame closes that same row instead of drawing a second one.
+  `build 103`.
+
+### Fixed
+
+- **A tool-heavy chat opens instead of timing out.** The transcript endpoint
+  bounded message count and not size; one conversation was 9.2 MB of JSON because
+  every shell command's stdout is a stored tool record. The daemon now also
+  bounds the bytes (512 KB read, 8 KB per tool preview, reporting `omitted` and
+  `elided_outputs`), and the same conversation arrives as 283 KB. Loading is no
+  longer a function of how much work a chat has done. `build 103`.
+- **One device surface in Settings, not two.** Settings drew an Agent Host button
+  in Connection and an Agent Host row in Infrastructure, both describing the same
+  host, only one of them tappable. There is one row now, and it is the way in.
+  The Hermes relay and gateway sections no longer render against an Eris backend,
+  which is what put two competing device menus on one screen. `build 103`.
+- **Purple is gone from Settings.** The Agent row's icon and two status glyphs
+  used a system purple against the app's own accent.
+
+### Verification
+
+- `KallistiTests/ErisLiveToolFramesTests`: the three frames decode, a round says
+  whether it may still call tools, a turn streams its round, its running command,
+  its stdout and a receipt that closes the same row, and a daemon that sends no
+  start frame still renders its finished calls.
+- Daemon 1.4.11 (119) serves the bounded transcript and advertises ten frame
+  kinds on `/v1/version`.
+
 ## [1.4.7] - 2026-10-27
 
 The release that gives a conversation one identity. Until now a chat had three
