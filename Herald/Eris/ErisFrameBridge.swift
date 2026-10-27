@@ -95,6 +95,19 @@ enum ErisFrameBridge {
             let object = try ErisJSON.object(data)
             return .reasoning(ErisFrameReasoning(text: object["text"] as? String ?? ""))
 
+        case "asked":
+            // Not terminal, and deliberately so: a question arrives mid-turn and
+            // the turn keeps running after the answer. Treating it as a terminal
+            // frame would end the stream on the very frame that needs a reply.
+            let object = try ErisJSON.object(data)
+            guard let id = object["id"] as? String else {
+                // The second `asked` frame a job sees carries the decision rather
+                // than the question. It is the log's acknowledgement, not news, so
+                // it decodes to nothing rather than to an empty card.
+                return .ignored
+            }
+            return .asked(try ErisAsked.decode(id: id, request: object["request"]))
+
         case "tool":
             let object = try ErisJSON.object(data)
             let name = object["name"] as? String ?? ""
@@ -153,6 +166,8 @@ enum ErisFrameOutcome: Equatable, Sendable {
     /// One of the two frames the current `ErisFrame` does not model.
     case reasoning(ErisFrameReasoning)
     case tool(ErisFrameTool)
+    /// A turn parked on a question. Mid-turn news, never terminal.
+    case asked(ErisAsked)
     /// One of the four the current `ErisFrame` already models.
     case existing(ErisFrame)
     /// A name this client does not know. Skip it; do not fail the stream.
@@ -167,7 +182,7 @@ enum ErisFrameOutcome: Equatable, Sendable {
 extension ErisFrameOutcome {
     var isTerminal: Bool {
         switch self {
-        case .reasoning, .tool, .ignored: return false
+        case .reasoning, .tool, .asked, .ignored: return false
         case .existing(let frame): return frame.isTerminal
         }
     }

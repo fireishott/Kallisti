@@ -248,6 +248,67 @@ struct ErisUsage: Equatable, Sendable {
     }
 }
 
+// MARK: - Clarify
+
+/// One option on a question the daemon asked.
+struct ErisAskedChoice: Equatable, Sendable {
+    /// What the button says.
+    let label: String
+    /// What picking it means, when the model said more than the label.
+    let detail: String?
+}
+
+/// One question, with its options and whether more than one may be picked.
+struct ErisAskedQuestion: Equatable, Sendable {
+    let question: String
+    let choices: [ErisAskedChoice]
+    let multi: Bool
+}
+
+/// A turn parked on a question, as `GET /v1/turns/{id}/asked` returns it and as
+/// the `asked` frame carries it.
+///
+/// `id` is the gate: the daemon's own name for this question. It is what a client
+/// quotes back so the settled answer can be matched to what was asked, and it is
+/// stable across the read-back route and the live frame.
+struct ErisAsked: Equatable, Sendable {
+    let id: String
+    let title: String?
+    let questions: [ErisAskedQuestion]
+
+    /// The first question, or empty for a request with none.
+    var headline: String { questions.first?.question ?? "" }
+
+    /// The first question's labels, for a card that shows one question at a time.
+    var labels: [String] { questions.first?.choices.map(\.label) ?? [] }
+
+    /// Whether the first question allows more than one pick.
+    var multiSelect: Bool { questions.first?.multi ?? false }
+
+    /// Decode the `{id, request}` shape both surfaces use.
+    static func decode(id: String, request: Any?) throws -> ErisAsked {
+        guard let object = request as? [String: Any] else {
+            throw ErisError.decoding("an asked payload has no request object")
+        }
+        let title = object["title"] as? String
+        let rawQuestions = object["questions"] as? [[String: Any]] ?? []
+        let questions: [ErisAskedQuestion] = rawQuestions.map { question in
+            let choices = (question["choices"] as? [[String: Any]] ?? []).map { choice in
+                ErisAskedChoice(
+                    label: choice["label"] as? String ?? "",
+                    detail: choice["detail"] as? String
+                )
+            }
+            return ErisAskedQuestion(
+                question: question["question"] as? String ?? "",
+                choices: choices,
+                multi: question["multi"] as? Bool ?? false
+            )
+        }
+        return ErisAsked(id: id, title: title, questions: questions)
+    }
+}
+
 // MARK: - Frames
 
 /// One server-sent event from `GET /v1/turns/{id}/events`.

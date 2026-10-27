@@ -21,6 +21,14 @@ enum ErisRoute: Equatable, Sendable {
     case events(turnID: String)
     /// `POST /v1/turns/{id}/cancel` - stop a running turn.
     case cancel(turnID: String)
+    /// `GET /v1/turns/{id}/asked` - the question a turn is parked on, if any.
+    ///
+    /// The read-back half of `asked`: a phone whose stream dropped, or that opened
+    /// the job after the frame went out, asks this instead of waiting for a frame
+    /// that has already been and gone.
+    case asked(turnID: String)
+    /// `POST /v1/turns/{id}/answer` - settle the question and resume the turn.
+    case answer(turnID: String)
     /// `GET /v1/sessions/{id}` - the snapshot a `buffer_miss` points at.
     case session(sessionID: String)
     /// `GET /v1/conversations` - the newest conversations, newest first.
@@ -120,6 +128,10 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/turns/\(Self.segment(turnID))/events"
         case .cancel(let turnID):
             return "/v1/turns/\(Self.segment(turnID))/cancel"
+        case .asked(let turnID):
+            return "/v1/turns/\(Self.segment(turnID))/asked"
+        case .answer(let turnID):
+            return "/v1/turns/\(Self.segment(turnID))/answer"
         case .session(let sessionID):
             return "/v1/sessions/\(Self.segment(sessionID))"
         case .conversations, .createConversation:
@@ -194,14 +206,15 @@ enum ErisRoute: Equatable, Sendable {
         switch self {
         case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
-             .models, .cron, .skills, .aux, .noteRun, .noteRunEvents, .gwHealth, .gwPreflight:
+             .models, .cron, .skills, .aux, .noteRun, .noteRunEvents, .gwHealth, .gwPreflight,
+             .asked:
             return "GET"
         case .skill:
             return "GET"
         case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings,
              .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote,
              .setModel, .createCron, .setAux,
-             .noteRecognition, .noteRuns, .cancelNoteRun, .gwRestart:
+             .noteRecognition, .noteRuns, .cancelNoteRun, .gwRestart, .answer:
             return "POST"
         case .cronJob(_, let verb):
             return verb
@@ -390,6 +403,43 @@ actor ErisClient {
     /// `ErisError.server(status: 409, code: "turn_not_cancellable", ...)`.
     func cancel(turnID: String) async throws {
         _ = try await send(route: .cancel(turnID: turnID), form: nil)
+    }
+
+    /// `GET /v1/turns/{id}/asked` - the question this turn is waiting on.
+    ///
+    /// `nil` means nothing is waiting, which is a normal answer rather than an
+    /// error: the turn either never asked, was already answered, or has ended.
+    /// The route distinguishes all three from "waiting" by not pretending a
+    /// question exists when none does.
+    func asked(turnID: String) async throws -> ErisAsked? {
+        let data = try await send(route: .asked(turnID: turnID), form: nil)
+        // The device surface wraps successes in `{data, meta}` and this route's
+        // body is `{ok, waiting, asked}` inside it, so both are unwrapped here.
+        let outer = try ErisJSON.object(String(decoding: data, as: UTF8.self))
+        let body = (outer["data"] as? [String: Any]) ?? outer
+        guard body["waiting"] as? Bool == true else { return nil }
+        guard let asked = body["asked"] as? [String: Any],
+              let id = asked["id"] as? String
+        else { return nil }
+        return try ErisAsked.decode(id: id, request: asked["request"])
+    }
+
+    /// `POST /v1/turns/{id}/answer` - settle the question, resuming the turn.
+    ///
+    /// At least one label, or some words. Both is allowed and means "these
+    /// options, and this note about them". An empty answer is refused by the
+    /// daemon as `answer_empty` rather than silently leaving the turn parked.
+    func answer(turnID: String, labels: [String], note: String?, text: String?, question: String?) async throws {
+        var form: [String: String] = [:]
+        // The unit separator is the daemon's wire shape for a label list, the same
+        // one the browser's card posts, so one script-shaped answer serves both.
+        if !labels.isEmpty {
+            form["labels"] = labels.joined(separator: "\u{1f}")
+        }
+        if let note, !note.isEmpty { form["note"] = note }
+        if let text, !text.isEmpty { form["text"] = text }
+        if let question, !question.isEmpty { form["question"] = question }
+        _ = try await send(route: .answer(turnID: turnID), form: form)
     }
 
     /// `GET /v1/sessions/{id}` - the session snapshot.
