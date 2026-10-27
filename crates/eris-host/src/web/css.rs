@@ -1220,6 +1220,10 @@ pre.code {
   width: min(100%, 78%);
   max-width: 52rem;
   min-width: 0;
+  /* A flex child with taller content will not shrink below it without this, so
+     the bounded scrollers inside a message would size to their content and the
+     ceilings above them would never bite. */
+  min-height: 0;
 }
 
 /* A reply with no thinking bubble has nothing to align against, so it takes the
@@ -1312,6 +1316,11 @@ pre.code {
 }
 .msg[data-reply-state="minimized"] .reply-peek { display: block; }
 .msg[data-reply-state="minimized"] .bubble { display: none; }
+/* A question the turn is blocked on takes the answer's place. The operator has
+   one thing to do, and an empty bubble underneath it is a second answer that
+   does not exist yet. The card keeps its own border and background, so it reads
+   as a question rather than as an answer. */
+.msg.assistant[data-asked="open"] .bubble { display: none; }
 /* Collapsed: the opening lines under a fade that states there is more. The fade
    is the palette's own ground, so the bubble does not grow a second colour. */
 .msg[data-reply-state="collapsed"] .bubble {
@@ -1364,10 +1373,30 @@ pre.code {
   /* Neither the bubble nor what it holds may widen the column it sits in. */
   max-width: 100%;
   min-width: 0;
+  /* A long answer scrolls inside its own bubble instead of pushing the run log
+     and the thinking bubble off the screen. Seventy percent of the viewport is
+     the point where a reply stops being read and starts being scrolled: under
+     that, a normal answer never needs the scrollbar. `dvh` follows a mobile URL
+     bar; the `vh` line is the fallback for a browser that does not know it. The
+     maximized window below re-states both as `none`, so the whole-window reply
+     still scrolls the window and not a box inside it. */
+  max-height: 70vh;
+  max-height: 70dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+/* A fenced block, a table and a picture are the three things in an answer that
+   can be wider than the column, and each one scrolls inside itself rather than
+   widening the conversation and giving the page a sideways scrollbar. A `pre`
+   needs the rule of its own: `white-space: pre` makes the box as wide as the
+   longest line no matter what `max-width` says about the box it sits in. */
 .msg .bubble pre,
 .msg .bubble pre.code,
-.msg .bubble table { max-width: 100%; }
+.msg .bubble table,
+.msg .bubble img {
+  max-width: 100%;
+  overflow-x: auto;
+}
 .msg.user .bubble {
   border-radius: 14px 14px 5px 14px;
   border-color: var(--line-strong);
@@ -1515,6 +1544,16 @@ pre.code {
 
 /* The run log: what the turn actually executed. Monospace and full-width so a
    command reads like a command and its output reads like output. */
+/* Both of these are flex children of a column that aligns them to the start,
+   which sizes a child to its own content. A run log holding one 400px terminal
+   line was then 400px wide inside a 311px message and gave the whole page a
+   sideways scrollbar - on a phone, before anything was even read. The ceiling
+   and the zero minimum keep every block in a message inside the message. */
+.msg .exec,
+.msg .think {
+  max-width: 100%;
+  min-width: 0;
+}
 .msg .exec {
   margin: 0 0 8px;
   border: 1px solid var(--line);
@@ -1644,7 +1683,14 @@ pre.code {
 .msg .exec-head { display: flex; gap: 8px; min-width: 0; }
 /* The body of the log scrolls, so twenty calls cost one window rather than the
    whole conversation. */
-.msg .exec-body { max-height: 46vh; overflow-y: auto; }
+.msg .exec-body {
+  max-height: 60vh;
+  overflow-y: auto;
+  /* Scrolling the log to its end must not start scrolling the page behind it.
+     Sixty percent of the viewport is more log than the echo of one turn needs,
+     and the ceiling stays a ceiling: the conversation does not move. */
+  overscroll-behavior: contain;
+}
 .msg .exec-name { color: var(--text); }
 .msg .exec-args { color: var(--muted); overflow-wrap: anywhere; }
 .msg .exec-call.failed .exec-name { color: var(--bad); }
@@ -1783,7 +1829,12 @@ pre.code {
   border-color: currentColor;
 }
 
-.msg.pending .bubble::after {
+/* The caret on a turn that is still running lives on the status line, not in the
+   answer. An empty bubble with a blinking cursor grew as the turn ran and read
+   as a broken page: there was nothing in it because there was no answer yet. The
+   status line always has a word in it, so the living thing is the thing that can
+   say what is happening. */
+.msg.pending .meta-live::after {
   content: "";
   display: inline-block;
   width: 8px;
@@ -2520,6 +2571,122 @@ mod tests {
         assert!(
             !APP_CSS.contains(".composer-send { width: 100%"),
             "the send group is not forced onto a full-width line"
+        );
+    }
+
+    /// A turn that is still running says so on the status line, and the answer
+    /// box is not drawn until it has something in it. An empty bubble with a
+    /// blinking caret grew as the turn ran and read as a broken page: there was
+    /// nothing in it because there was no answer yet, and the thing that was
+    /// actually happening was in the status line all along.
+    #[test]
+    fn the_pending_caret_lives_on_the_status_line_not_in_an_empty_bubble() {
+        assert!(
+            !APP_CSS.contains(".msg.pending .bubble::after"),
+            "an empty answer box never gets a caret to blink in"
+        );
+        let status = rule(".msg.pending .meta-live::after");
+        assert!(
+            status.contains("animation: caret"),
+            "the status line is where the turn is alive: {status}"
+        );
+        assert!(
+            status.contains("background: var(--platinum)"),
+            "the caret is a palette entry, not a colour of its own: {status}"
+        );
+        // The status line has a pulse from the classes above; both are motion, so
+        // both must answer the reduced-motion query that already exists.
+        assert!(
+            APP_CSS.contains("@media (prefers-reduced-motion: reduce)"),
+            "the caret is animation, and the stylesheet already respects the setting"
+        );
+    }
+
+    /// Three bounded scrollers in one reply: the thinking bubble, the run log and
+    /// the answer. A long answer used to push the log off the screen, and the log
+    /// had a ceiling that only bit when the browser felt like shrinking a flex
+    /// child - which it does not do without a zero minimum.
+    #[test]
+    fn the_answer_the_log_and_the_thinking_bubble_each_scroll_on_their_own() {
+        let bubble = rule(".msg .bubble");
+        assert!(
+            bubble.contains("max-height: 70vh") && bubble.contains("max-height: 70dvh"),
+            "the answer is bounded by the viewport, with the dvh unit behind the vh one: {bubble}"
+        );
+        assert!(
+            bubble.contains("overflow-y: auto"),
+            "and scrolls itself rather than growing the conversation: {bubble}"
+        );
+        assert!(
+            bubble.contains("overscroll-behavior: contain"),
+            "reaching the end of an answer must not start scrolling the page: {bubble}"
+        );
+        // The maximized reply is the whole window, so the box inside it must not
+        // keep a ceiling of its own: the window scrolls, not the bubble.
+        let window = rule(".msg.assistant[data-reply-max] .bubble");
+        assert!(
+            window.contains("max-height: none") && window.contains("overflow: visible"),
+            "a maximized reply scrolls the window and not a box inside it: {window}"
+        );
+        let log = rule(".msg .exec-body");
+        assert!(
+            log.contains("max-height: 60vh"),
+            "the run log holds more than it did without the page moving: {log}"
+        );
+        assert!(
+            log.contains("overscroll-behavior: contain"),
+            "and reaching its end does not scroll the page behind it: {log}"
+        );
+        assert!(
+            rule(".msg").contains("min-height: 0"),
+            "a flex child with taller content will not shrink below it without this, so the \
+             ceilings inside it would never bite"
+        );
+    }
+
+    /// A fenced block, a table and a picture are the three things in an answer
+    /// that can be wider than the column. Each scrolls inside itself, so nothing
+    /// in a reply can give the page a sideways scrollbar. `pre` needs the rule for
+    /// itself: `white-space: pre` sizes the box to its longest line whatever
+    /// `max-width` says about the parent.
+    #[test]
+    fn nothing_inside_an_answer_widens_the_page() {
+        // A selector list, so this reads the whole rule rather than the first
+        // header: `rule()` finds a single selector and would stop at `pre`.
+        let start = APP_CSS
+            .find("\n.msg .bubble pre,")
+            .expect("the answer's wide-content rule exists");
+        let rest = &APP_CSS[start..];
+        let wide = &rest[..rest.find('}').expect("the rule closes")];
+        for part in ["pre", "pre.code", "table", "img"] {
+            assert!(
+                wide.contains(part),
+                "{part} in an answer is covered by the rule: {wide}"
+            );
+        }
+        assert!(
+            wide.contains("max-width: 100%") && wide.contains("overflow-x: auto"),
+            "the three wide things in an answer are bounded and scroll themselves: {wide}"
+        );
+        assert!(
+            rule(".msg .win-body").contains("overflow: auto"),
+            "the terminal window keeps its two-axis scroll: output has to be reachable"
+        );
+    }
+
+    /// A question the turn is blocked on takes the answer's place. The operator
+    /// has one thing to do, and an empty bubble underneath it is a second answer
+    /// that does not exist yet.
+    #[test]
+    fn an_open_question_stands_the_answer_down() {
+        let asked = rule(".msg.assistant[data-asked=\"open\"] .bubble");
+        assert!(
+            asked.contains("display: none"),
+            "the answer's slot belongs to the question while it is open: {asked}"
+        );
+        assert!(
+            !APP_CSS.contains(".msg[data-asked=\"open\"] .asked"),
+            "the card is not hidden by the same rule that hides the bubble"
         );
     }
 

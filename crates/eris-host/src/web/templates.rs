@@ -4480,14 +4480,17 @@ impl ChatLine {
     pub fn usage_line(&self) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
         if let Some(rounds) = self.rounds.filter(|rounds| *rounds > 0) {
+            // The operator's word for it is a turn, not a round: a round is one
+            // provider call inside a turn, and the number here is how many of
+            // them this turn spent. The row's column is still `rounds`.
             let ran = if rounds == 1 {
-                "1 round".to_owned()
+                "1 turn".to_owned()
             } else {
-                format!("{rounds} rounds")
+                format!("{rounds} turns")
             };
             // The count says how much it did; this says whether it finished.
-            // Only a capped turn carries the second half, because a round count
-            // on its own was being read as the answer to both questions.
+            // Only a capped turn carries the second half, because a count on
+            // its own was being read as the answer to both questions.
             parts.push(if self.capped {
                 format!("{ran}, then forced")
             } else {
@@ -4982,11 +4985,12 @@ fn run_log_controls() -> Markup {
 fn run_log_calls(tools: &[crate::web::chat::ToolRecord]) -> Markup {
     html! {
         @for tool in tools {
-            @if let Some(asked) = tool.asked.as_ref() {
-                // A question is not a receipt. Rendering it inside the run log's
-                // own window would hide the one thing the operator has to act on
-                // behind a disclosure they have to open first, so the card sits
-                // above the call it belongs to and the call is not drawn at all.
+            @if let Some(asked) = tool.asked.as_ref().filter(|asked| asked.answer.is_some()) {
+                // A settled question is a record, and the run log is where the
+                // record of a turn belongs. An unsettled one is not a record, it
+                // is a control: it renders in the reply's own slot, from
+                // `open_questions()`, so the operator answers it where the answer
+                // would have been. One card, one place.
                 (asked_card(asked, tool))
             } @else {
                 details .exec-call .failed[tool.is_error] {
@@ -5020,7 +5024,13 @@ fn asked_card(asked: &crate::web::chat::Asked, tool: &crate::web::chat::ToolReco
                 } @else {
                     div .asked-choices {
                         @for choice in &question.choices {
-                            span .asked-choice {
+                            // A choice that exists only until a reload is half a
+                            // control. The two data attributes are what the page's
+                            // own handler reads, and they say exactly what the
+                            // live card posts: the question and the label.
+                            span .asked-choice
+                                data-question=(question.question)
+                                data-label=(choice.label) {
                                 span .asked-label { (choice.label) }
                                 @if let Some(detail) = choice.detail.as_ref().filter(|d| !d.trim().is_empty()) {
                                     span .asked-detail { (detail) }
@@ -5036,6 +5046,25 @@ fn asked_card(asked: &crate::web::chat::Asked, tool: &crate::web::chat::ToolReco
             div .asked-raw { (tool.arguments) }
         }
     }
+}
+
+/// Every question one reply is still waiting on, with the call that asked it.
+///
+/// The reply's own slot renders these, and the run log skips them: a question the
+/// turn is blocked on is a control, and a control belongs where the answer would
+/// have been rather than inside the log the operator has to open first. A settled
+/// question stays in the log, because by then it is a record.
+#[must_use]
+fn open_questions(
+    line: &ChatLine,
+) -> Vec<(&crate::web::chat::Asked, &crate::web::chat::ToolRecord)> {
+    line.tools
+        .iter()
+        .filter_map(|tool| {
+            let asked = tool.asked.as_ref()?;
+            asked.answer.is_none().then_some((asked, tool))
+        })
+        .collect()
 }
 
 /// How many characters of an answer a minimized reply keeps.
@@ -5157,8 +5186,10 @@ pub fn chat_page(view: &ChatView) -> Markup {
                     if line.pending { " pending" } else { "" },
                 );
                 @let reply = reply_state_for(crate::web::chat::reply_state(Some(&view.reply_state)), line);
+                @let waiting = open_questions(line);
                 article class=(klass)
-                    data-reply-state=[(!line.user).then_some(reply)] {
+                    data-reply-state=[(!line.user).then_some(reply)]
+                    data-asked=[(!waiting.is_empty()).then_some("open")] {
                     div .who {
                         span .who-name { (line.who) }
                         @if !line.user {
@@ -5212,7 +5243,7 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                     summary {
                                         span .exec-label { "Run log" }
                                         @if let Some(turn) = line.turn {
-                                            span .exec-turn { "reply " (turn) }
+                                            span .exec-turn { "Turn " (turn) }
                                         }
                                         span .exec-count {
                                             (line.tools.len())
@@ -5235,7 +5266,7 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                     summary {
                                         span .exec-label { "Run log" }
                                         @if let Some(turn) = line.turn {
-                                            span .exec-turn { "reply " (turn) }
+                                            span .exec-turn { "Turn " (turn) }
                                         }
                                         span .exec-count {
                                             (line.tools.len())
@@ -5248,6 +5279,19 @@ pub fn chat_page(view: &ChatView) -> Markup {
                             }
                         }
                     }
+                    @if !waiting.is_empty() {
+                        // The question takes the answer's place rather than sitting
+                        // above the run log: the operator has one thing to do, and
+                        // it is where their eye already is. The reply bubble stands
+                        // down while this is open, from `data-asked` on the article.
+                        div .asked-slot {
+                            @for (asked, tool) in &waiting {
+                                (asked_card(asked, tool))
+                            }
+                        }
+                    }
+                    @let streaming = !line.user && line.pending && line.body.trim().is_empty();
+                    @if !streaming {
                     div .bubble .failed[line.failed] {
                         (blocks(&line.body))
                         @if !line.files.is_empty() {
@@ -5289,12 +5333,23 @@ pub fn chat_page(view: &ChatView) -> Markup {
                             }
                         }
                     }
+                    }
                     @if !line.user {
-                        // What the turn is doing right now, while it is doing it.
-                        // Rendered hidden and empty on a settled page, and filled
-                        // only by a running turn's own status frames: a reloaded
-                        // transcript has nothing running, so it shows nothing.
-                        div .meta-live hidden aria-live="polite" {}
+                        @if streaming {
+                            // A turn that has not written a word yet. A reload in
+                            // the middle of one draws exactly what the live path
+                            // draws: no bubble, and the status line carrying the
+                            // caret. A fix that only touched the live path would
+                            // come back on every refresh.
+                            div .meta-live aria-live="polite" { "thinking" }
+                        } @else {
+                            // What the turn is doing right now, while it is doing
+                            // it. Rendered hidden and empty on a settled page, and
+                            // filled only by a running turn's own status frames: a
+                            // reloaded transcript has nothing running, so it shows
+                            // nothing.
+                            div .meta-live hidden aria-live="polite" {}
+                        }
                     }
                     div .meta {
                         span .mono { (line.stamp) }
@@ -6014,11 +6069,14 @@ const CHAT_JS: &str = r##"(function () {
     return 0;
   }
 
+  // A turn, not a round. A round is one provider call; the label was counting
+  // calls and calling them rounds, which read as a count of the operator's own
+  // messages and was off by whatever the tools spent.
   function roundLabel(round, max, toolsAllowed) {
     if (toolsAllowed === false) {
-      return "round " + round + " of " + max + " \u00b7 answering without tools";
+      return "turn " + round + " of " + max + " \u00b7 answering without tools";
     }
-    return "round " + round + " of " + max;
+    return "turn " + round + " of " + max;
   }
 
   function closeLive() {
@@ -6041,7 +6099,8 @@ const CHAT_JS: &str = r##"(function () {
     // whatever the row last flushed. The row is only ever behind, never ahead.
     var incoming = typeof snapshot.body === "string" ? snapshot.body : "";
     if (incoming.length >= liveAnswer.length) { liveAnswer = incoming; }
-    target.text.textContent = liveAnswer;
+    if (typeof target.setAnswer === "function") { target.setAnswer(liveAnswer); }
+    else { target.text.textContent = liveAnswer; }
     if (target.think && target.thinkBody && typeof snapshot.reasoning === "string") {
       target.thinkBody.textContent = snapshot.reasoning;
       if (snapshot.reasoning.length > 0) { thinkToBottom(target.think, target.thinkBody); }
@@ -6050,7 +6109,7 @@ const CHAT_JS: &str = r##"(function () {
       snapshot.tools.forEach(function (tool) { target.addTool(tool); });
     }
     if (typeof snapshot.rounds === "number" && snapshot.rounds > 0 && status) {
-      status.textContent = snapshot.rounds === 1 ? "1 round run" : snapshot.rounds + " rounds run";
+      status.textContent = snapshot.rounds === 1 ? "1 turn run" : snapshot.rounds + " turns run";
     }
     toBottom();
   }
@@ -6065,7 +6124,7 @@ const CHAT_JS: &str = r##"(function () {
     if (typeof target.setLive === "function") { target.setLive(""); }
     if (snapshot && typeof snapshot.body === "string") {
       liveAnswer = snapshot.body;
-      target.text.textContent = liveAnswer;
+      target.settleAnswer(liveAnswer);
     }
     if (snapshot && target.meta) {
       target.meta.textContent = metaFor({
@@ -6140,7 +6199,9 @@ const CHAT_JS: &str = r##"(function () {
       var frame = {};
       try { frame = JSON.parse(event.data); } catch (error) { return; }
       liveAnswer += frame.text;
-      target.text.textContent = liveAnswer;
+      // Through the answer's own writer: a delta with nothing in it does not
+      // bring the bubble into the page, and the first real one does.
+      target.setAnswer(liveAnswer);
       toBottom();
     });
 
@@ -6212,7 +6273,7 @@ const CHAT_JS: &str = r##"(function () {
       try { final = JSON.parse(event.data); } catch (error) { return; }
       if (typeof final.text === "string") {
         liveAnswer = final.text;
-        target.text.textContent = liveAnswer;
+        target.settleAnswer(liveAnswer);
       }
       if (target.meta) { target.meta.textContent = metaFor(final); }
       if (typeof final.reasoning === "string" && final.reasoning.trim().length > 0
@@ -6245,6 +6306,9 @@ const CHAT_JS: &str = r##"(function () {
       }
       var failure = {};
       try { failure = JSON.parse(event.data); } catch (error) { return; }
+      // Put the bubble in the page first, then say what failed in it: a failure
+      // with nowhere to land is the worst version of the blank bubble.
+      target.showBubble();
       target.bubble.className = "bubble failed";
       target.text.textContent = failure.message || "that turn failed";
       if (target.meta) {
@@ -6501,7 +6565,7 @@ const CHAT_JS: &str = r##"(function () {
     // that never hears the number leaves the pill hidden.
     function setTurn(turn) {
       if (typeof turn === "number" && turn >= 1) {
-        execTurn.textContent = "reply " + turn;
+        execTurn.textContent = "Turn " + turn;
         execTurn.hidden = false;
         return;
       }
@@ -6647,16 +6711,50 @@ const CHAT_JS: &str = r##"(function () {
     var metaLive = document.createElement("div");
     metaLive.className = "meta-live";
     metaLive.setAttribute("aria-live", "polite");
-    metaLive.hidden = true;
+    // Something in it from the first frame: the caret on a pending turn lives
+    // here now, and a status line with nothing in it is a caret with nowhere to
+    // be. A `working` frame replaces this word with the tool's own phrase.
+    metaLive.textContent = "thinking";
+    metaLive.hidden = false;
     var meta = document.createElement("div");
     meta.className = "meta";
     article.appendChild(label);
     if (present(replyPeek)) { article.appendChild(replyPeek); }
     article.appendChild(think);
     article.appendChild(exec);
-    article.appendChild(bubble);
+    // The bubble is built here and put in the page only when there is something
+    // to put in it. A turn that is thinking or calling tools used to show an
+    // empty bubble with a blinking caret, growing as the turn ran: it read as a
+    // broken page because there was nothing in it and nothing to read. The
+    // status line carries the pending state instead, and it is in the page from
+    // the first frame.
     article.appendChild(metaLive);
     article.appendChild(meta);
+    var bubbleShown = false;
+    // Put the answer's bubble in its slot, once. The slot is between the run log
+    // and the status line, which is where the server renders it too.
+    function showBubble() {
+      if (bubbleShown) { return; }
+      article.insertBefore(bubble, metaLive);
+      bubbleShown = true;
+    }
+    // Every write of answer text goes through here, so the one place that knows
+    // whether there is an answer is also the one place that decides whether the
+    // bubble exists. An empty string is not an answer: it is the turn still
+    // working, and the status line says so.
+    function setAnswer(value) {
+      var next = typeof value === "string" ? value : "";
+      if (next.length > 0) { showBubble(); }
+      text.textContent = next;
+      return next;
+    }
+    // A settled turn's answer, even an empty one. An empty answer is still an
+    // answer: the failure sentence, the "Streaming" placeholder the server
+    // renders and the blank reply of a turn that produced nothing all need a box.
+    function settleAnswer(value) {
+      showBubble();
+      text.textContent = typeof value === "string" ? value : "";
+    }
 
     // The status line. It replaces the composer hint as the answer to "what is it
     // doing": the hint was carrying a control message, a round count and a tool
@@ -6675,33 +6773,41 @@ const CHAT_JS: &str = r##"(function () {
     // the turn is blocked on, and a card that failed to land stays on screen with
     // the reason rather than disappearing.
     function askCard(frame) {
-      var slot = article.querySelector(".asked");
+      var slot = article.querySelector(".asked-slot");
       if (slot === null) {
         slot = document.createElement("div");
-        slot.className = "asked";
-        // Above the run log when there is one, and above the bubble otherwise:
-        // the question is what the operator has to act on, so it does not sit
-        // under the answer that is still being written. `bubble` is declared
-        // below and hoisted, so it is already assigned by the time a frame
-        // arrives.
-        var log = article.querySelector(".exec");
-        article.insertBefore(slot, log === null ? bubble : log);
+        slot.className = "asked-slot";
+        // In the reply's own slot: after the run log and the thinking bubble,
+        // where the answer would have gone. Curtis asked for this - the question
+        // is what the operator has to act on, and their eye is already in the
+        // answer's position, not at the top of a log they have to scroll back to
+        // find. `bubble` is hoisted, so it is assigned by the time a frame
+        // arrives, and the slot goes in front of it whether or not it is in the
+        // page yet.
+        article.insertBefore(slot, bubble);
       }
+      // The answer stands down while the question is open. Built here as a class
+      // and an attribute rather than inline styles, so the stylesheet stays the
+      // one place that decides what a hidden bubble is.
+      article.setAttribute("data-asked", "open");
       var request = (frame && frame.request) || {};
       var conversation = (frame && frame.conversation) || "";
       while (slot.firstChild) { slot.removeChild(slot.firstChild); }
+      var card = document.createElement("div");
+      card.className = "asked";
+      slot.appendChild(card);
       if (typeof request.title === "string" && request.title.length > 0) {
         var title = document.createElement("div");
         title.className = "asked-title";
         title.textContent = request.title;
-        slot.appendChild(title);
+        card.appendChild(title);
       }
       var questions = Array.isArray(request.questions) ? request.questions : [];
       questions.forEach(function (question) {
         var ask = document.createElement("div");
         ask.className = "asked-question";
         ask.textContent = question.question || "";
-        slot.appendChild(ask);
+        card.appendChild(ask);
         var choices = document.createElement("div");
         choices.className = "asked-choices";
         var picked = [];
@@ -6731,7 +6837,7 @@ const CHAT_JS: &str = r##"(function () {
           });
           choices.appendChild(button);
         });
-        slot.appendChild(choices);
+        card.appendChild(choices);
         // Free text is always offered, after the buttons: a card of choices with
         // no way to say something else is the one shape an operator cannot work
         // around when none of the choices is right.
@@ -6752,7 +6858,7 @@ const CHAT_JS: &str = r##"(function () {
         });
         row.appendChild(field);
         row.appendChild(send);
-        slot.appendChild(row);
+        card.appendChild(row);
         if (multi && picked.length > 0) {
           var commit = document.createElement("button");
           commit.type = "button";
@@ -6761,7 +6867,7 @@ const CHAT_JS: &str = r##"(function () {
           commit.addEventListener("click", function () {
             sendAnswer(conversation, question.question || "", picked, field.value.trim());
           });
-          slot.appendChild(commit);
+          card.appendChild(commit);
         }
       });
       return slot;
@@ -6792,16 +6898,49 @@ const CHAT_JS: &str = r##"(function () {
           return;
         }
         if (status) { status.textContent = "answered - the turn is carrying on"; }
+        // The question is answered, so the answer's slot goes back to being the
+        // answer's: the card out of the page, the bubble back in it. The turn is
+        // still running and whatever it writes next lands where the card was.
+        var answeredSlot = article.querySelector(".asked-slot");
+        if (present(answeredSlot)) { answeredSlot.parentNode.removeChild(answeredSlot); }
+        article.removeAttribute("data-asked");
       } catch (error) {
         if (status) { status.textContent = "that answer did not reach the turn"; }
       }
     }
+
+    // The same card, after a reload. A page opened on a turn that is parked on a
+    // question renders the choices as spans with the question and the label on
+    // them, so they are answerable without waiting for another frame. One
+    // listener on the article, because the card is rebuilt on every frame.
+    // Written without a bang, like the rest of the page: the two comparisons are
+    // the same predicate spelled out, because an exclamation mark anywhere on
+    // this page fails the house test that keeps the copy calm.
+    article.addEventListener("click", function (event) {
+      var node = event.target;
+      var climbing = true;
+      while (climbing) {
+        if (present(node) === false) { climbing = false; }
+        else if (node === article) { climbing = false; }
+        else if (node.classList && node.classList.contains("asked-choice")) { climbing = false; }
+        else { node = node.parentNode; }
+      }
+      if (present(node) === false || node === article) { return; }
+      if ((node.classList && node.classList.contains("asked-choice")) === false) { return; }
+      var question = node.getAttribute("data-question");
+      var label = node.getAttribute("data-label");
+      if (present(question) === false || present(label) === false) { return; }
+      sendAnswer(conversationId(), question, [label], "");
+    });
 
     thread.appendChild(article);
     return {
       article: article,
       bubble: bubble,
       text: text,
+      showBubble: showBubble,
+      setAnswer: setAnswer,
+      settleAnswer: settleAnswer,
       meta: meta,
       think: think,
       thinkBody: thinkBody,
@@ -6870,7 +7009,7 @@ const CHAT_JS: &str = r##"(function () {
       // Same words as the server's usage line. A round count alone was being
       // read as "how many turns this session has", which is a different number
       // in a different place, and the two were three digits apart.
-      var ran = payload.rounds === 1 ? "1 round" : payload.rounds + " rounds";
+      var ran = payload.rounds === 1 ? "1 turn" : payload.rounds + " turns";
       parts.push(payload.capped === true ? ran + ", then forced" : ran);
     }
     if (typeof payload.prompt_tokens === "number") {
@@ -7558,7 +7697,7 @@ const CHAT_JS: &str = r##"(function () {
           var parsed = parseFrame(frames[index]);
           if (parsed.event === "delta") {
             answer += JSON.parse(parsed.data).text;
-            target.text.textContent = answer;
+            target.setAnswer(answer);
             toBottom();
           }
           if (parsed.event === "working") {
@@ -7593,6 +7732,7 @@ const CHAT_JS: &str = r##"(function () {
             sawDone = true;
             var final = JSON.parse(parsed.data);
             answer = final.text;
+            target.settleAnswer(answer);
             target.setLive("");
             target.meta.textContent = metaFor(final);
             if (typeof final.reasoning === "string" && final.reasoning.trim().length > 0) {
@@ -7603,6 +7743,7 @@ const CHAT_JS: &str = r##"(function () {
           if (parsed.event === "error") {
             var failure = JSON.parse(parsed.data);
             target.setLive("");
+            target.showBubble();
             target.bubble.className = "bubble failed";
             target.text.textContent = failure.message;
             var tail = [failure.code];
@@ -7627,7 +7768,7 @@ const CHAT_JS: &str = r##"(function () {
       renderAnswerFiles(target.text, answer);
     } catch (error) {
       if (controller && controller.signal.aborted) {
-        target.text.textContent = answer + " [stopped]";
+        target.settleAnswer(answer + " [stopped]");
       } else if (error && error.fromServer) {
         // The daemon answered and refused. Its sentence is the useful one, and
         // it goes where the operator is already looking rather than into a
@@ -7656,6 +7797,11 @@ const CHAT_JS: &str = r##"(function () {
     }
     controller = null;
     target.article.className = "msg assistant";
+    // A turn that ends without ever writing a word still gets its box: the reply
+    // exists and it is empty, which is a fact the footer and the transcript both
+    // state. An empty bubble here is the answer, not the placeholder that was
+    // being drawn before there was one.
+    target.settleAnswer(answer);
     // The same rule the reattached path follows: a finished answer takes the size
     // the operator chose, and a failed one or one waiting on a question stays
     // open in full.
@@ -7937,11 +8083,16 @@ const CHAT_JS: &str = r##"(function () {
 
 #[cfg(test)]
 mod tests {
-    /// A round count and a "was it forced" flag are two facts. The footer used
-    /// to print only the first, so a reply cut off at a hundred rounds read
-    /// exactly like a reply that chose to stop at a hundred rounds.
+    /// A count of the work and a "was it forced" flag are two facts. The footer
+    /// used to print only the first, so a reply cut off at a hundred calls read
+    /// exactly like a reply that chose to stop at a hundred calls.
+    ///
+    /// The word is `turn`, not `round`: a round is one provider call inside a
+    /// turn, and the number here is how many of them one turn of the operator's
+    /// spent. The column is still called `rounds` and this test pins the word an
+    /// operator reads, which is the thing that was wrong.
     #[test]
-    fn a_forced_reply_says_so_beside_its_round_count() {
+    fn a_forced_reply_says_so_beside_its_count() {
         use super::ChatLine;
         let line = |rounds: Option<u64>, capped: bool| ChatLine {
             user: false,
@@ -7968,22 +8119,31 @@ mod tests {
         };
         assert_eq!(
             line(Some(100), false).usage_line().as_deref(),
-            Some("100 rounds")
+            Some("100 turns")
         );
         assert_eq!(
             line(Some(100), true).usage_line().as_deref(),
-            Some("100 rounds, then forced"),
+            Some("100 turns, then forced"),
             "the same count, and the thing the operator cannot otherwise see"
         );
         assert_eq!(
             line(Some(1), true).usage_line().as_deref(),
-            Some("1 round, then forced")
+            Some("1 turn, then forced"),
+            "the singular, because `1 turns` is the kind of thing that makes a page "
         );
         assert_eq!(
             line(None, true).usage_line(),
             None,
-            "no round count and no line: a bare \"forced\" with nothing to attach to is noise"
+            "no count and no line: a bare \"forced\" with nothing to attach to is noise"
         );
+        // The word cannot come back without this going red.
+        for rounds in [1_u64, 7, 100] {
+            let word = line(Some(rounds), false).usage_line().unwrap_or_default();
+            assert!(
+                !word.contains("round"),
+                "the footer says turn, not round: {word}"
+            );
+        }
     }
 
     #[test]
@@ -8042,6 +8202,199 @@ mod tests {
         // An empty answer has no preview line, not a fabricated one.
         assert_eq!(reply_peek(""), "");
         assert_eq!(reply_peek("   \n\n  "), "");
+    }
+
+    /// The rendered markup only: no stylesheet, no script.
+    ///
+    /// Both carry the selectors these tests assert about, as CSS rules and as
+    /// strings the script builds its own DOM from. A markup assertion that ran
+    /// over either would pass or fail on the source of the thing it is checking
+    /// against, which is the opposite of what these tests are for.
+    fn markup(page: &str) -> String {
+        let body = page.split("<script").next().unwrap_or(page);
+        match (body.find("<style"), body.find("</style>")) {
+            (Some(start), Some(end)) => format!("{}{}", &body[..start], &body[end + 8..]),
+            _ => body.to_owned(),
+        }
+    }
+
+    /// A line with nothing set but what a test says, so the transcript tests
+    /// below read as one fact each rather than as a wall of `None`.
+    fn a_line(user: bool) -> ChatLine {
+        ChatLine {
+            user,
+            who: if user { "You" } else { "Ignyte" }.to_owned(),
+            body: String::new(),
+            stamp: "20:04".to_owned(),
+            failed: false,
+            error_code: None,
+            pending: false,
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+            duration_ms: None,
+            context_window: None,
+            turn: Some(1),
+            rounds: None,
+            capped: false,
+            wrapped_up: false,
+            quota: None,
+            reasoning: None,
+            tools: Vec::new(),
+            files: Vec::new(),
+        }
+    }
+
+    /// A view holding exactly the lines a test passes, so the transcript can be
+    /// rendered and read as HTML rather than only reasoned about in the source.
+    fn a_view(messages: Vec<ChatLine>) -> crate::web::templates::ChatView {
+        crate::web::templates::ChatView {
+            chrome: super::Chrome::default(),
+            state: crate::db::SetupState::Ready,
+            version: "1.4.10".to_owned(),
+            model: "deepseek/test".to_owned(),
+            conversation: "conv".to_owned(),
+            conversation_title: "Test".to_owned(),
+            messages,
+            provider_ready: true,
+            error: None,
+            stats: crate::web::chat::Stats::default(),
+            models: vec![("deepseek/test".to_owned(), "DeepSeek - test".to_owned())],
+            selected_model: "deepseek/test".to_owned(),
+            show_reasoning: false,
+            streaming: true,
+            show_tool_log: true,
+            tool_log_mode: "full".to_owned(),
+            reply_state: "expanded".to_owned(),
+            greeting: "Good evening".to_owned(),
+            hint: String::new(),
+            line: None,
+            assistant_name: "Ignyte".to_owned(),
+            sandbox_mode: "full".to_owned(),
+            allow_full: true,
+            context_window: None,
+            queued: 0,
+        }
+    }
+
+    /// A clarify call, answered or not, for the transcript tests.
+    fn a_clarify(answered: bool) -> crate::web::chat::ToolRecord {
+        crate::web::chat::ToolRecord {
+            name: "clarify".to_owned(),
+            arguments: "{\"questions\":[]}".to_owned(),
+            output: String::new(),
+            is_error: false,
+            asked: Some(crate::web::chat::Asked {
+                request: crate::web::clarify::Request {
+                    title: Some("Which lane?".to_owned()),
+                    questions: vec![crate::web::clarify::Question {
+                        question: "Which lane should this land on?".to_owned(),
+                        choices: vec![crate::web::clarify::Choice {
+                            label: "Sports".to_owned(),
+                            detail: None,
+                        }],
+                        multi: false,
+                    }],
+                },
+                answer: answered.then(|| crate::web::clarify::Answer::Typed {
+                    question: "Which lane should this land on?".to_owned(),
+                    text: "Sports".to_owned(),
+                }),
+            }),
+        }
+    }
+
+    /// A turn that is still running and has written nothing. The live path does
+    /// not draw an answer box for it, and neither may a reload: a fix that only
+    /// touched the script comes back on every refresh.
+    #[test]
+    fn a_pending_turn_with_no_answer_draws_no_answer_box() {
+        let mut line = a_line(false);
+        line.pending = true;
+        // Only the answer is on the page, so `class="bubble"` can only be the
+        // answer's box: the operator's own message has one too and it is not the
+        // one this test is about.
+        let page = super::chat_page(&a_view(vec![line])).into_string();
+        assert!(
+            !page.contains(r#"<div class="bubble"#),
+            "a pending answer with an empty body draws no bubble: {page}"
+        );
+        assert!(
+            page.contains(r#"<div class="meta-live" aria-live="polite">thinking</div>"#),
+            "the status line carries the turn instead, with the word the live path uses: {page}"
+        );
+    }
+
+    /// The same row once it has a word in it: the bubble comes back, because now
+    /// there is something to read.
+    #[test]
+    fn a_pending_turn_that_has_written_a_word_draws_its_answer() {
+        let mut line = a_line(false);
+        line.pending = true;
+        line.body = "Working on it".to_owned();
+        let page = super::chat_page(&a_view(vec![a_line(true), line])).into_string();
+        assert!(
+            page.contains(r#"<div class="bubble">"#),
+            "a pending answer with text draws the box it is writing into: {page}"
+        );
+        assert!(page.contains("Working on it"), "{page}");
+    }
+
+    /// An unsettled question is a control, and it sits in the answer's slot, after
+    /// the run log, with the answer standing down. A settled one is a record and
+    /// stays in the log.
+    #[test]
+    fn an_open_question_takes_the_answers_slot_and_a_settled_one_stays_in_the_log() {
+        let mut open = a_line(false);
+        open.tools.push(a_clarify(false));
+        open.body = "one moment".to_owned();
+        let page = super::chat_page(&a_view(vec![a_line(true), open])).into_string();
+        let open_page = markup(&page);
+        let open_page = open_page.as_str();
+        assert!(
+            open_page.contains(r#"data-asked="open""#),
+            "the article says the question is open, which is what hides the bubble: {page}"
+        );
+        let slot = open_page
+            .find(r#"<div class="asked-slot">"#)
+            .unwrap_or_else(|| panic!("the card renders in the reply's slot: {page}"));
+        let log = open_page
+            .find(r#"<details class="exec""#)
+            .unwrap_or_else(|| panic!("the run log is on the page: {page}"));
+        assert!(
+            slot > log,
+            "the card is after the run log, not above it: {page}"
+        );
+        assert!(
+            open_page.contains(r#"data-question="Which lane should this land on?""#),
+            "a server-rendered choice is answerable without waiting for a frame: {page}"
+        );
+        assert!(
+            !open_page.contains(r#"<span class="asked-waiting">"#),
+            "the card is the live control here, not a settled record read out of the log {page}"
+        );
+
+        // Settled: the card is a record, so it renders inside the log and the
+        // reply has its answer back.
+        let mut settled = a_line(false);
+        settled.tools.push(a_clarify(true));
+        settled.body = "one moment".to_owned();
+        let page = super::chat_page(&a_view(vec![a_line(true), settled])).into_string();
+        let settled_page = markup(&page);
+        let settled_page = settled_page.as_str();
+        assert!(
+            !settled_page.contains(r#"data-asked="open""#),
+            "an answered question does not hide the answer: {page}"
+        );
+        assert!(
+            !settled_page.contains(r#"asked-slot"#),
+            "and it is not in the reply's slot: {page}"
+        );
+        assert!(
+            page.contains(r#"<div class="asked settled">"#),
+            "it stays in the run log as the record it now is: {page}"
+        );
     }
 
     fn line_for(state: &mut ChatLine, body: &str) -> &'static str {
