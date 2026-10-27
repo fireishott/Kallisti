@@ -24,6 +24,29 @@ observe; commit history carries the detail.
   finished `tool` frame, which already carries everything the turn stored.
   `build 119`.
 
+- **The full-host switch is reachable from a paired phone.**
+  `POST /v1/settings/full-access` exists on the device API behind the `admin`
+  scope, with the dashboard's own three rules: enabling needs the word `full`
+  typed, disabling needs nothing, and turning it off demotes a `full` sandbox to
+  the default so the stored tuple cannot name a mode the switch that allowed it
+  no longer permits. Before this, `sandbox=full` was a value a phone could pick
+  from the settings record and never set. `GET /v1/settings` reports
+  `full_access`. `build 121`.
+- **The phone can see where the daemon is reachable.** `GET /v1/settings` now
+  carries `listen` (the addresses the device listener binds) and `relay` (the
+  origin the pairing QR carries), read exactly the way the dashboard reads them
+  including the shipped default. They are reported rather than writable: a bind
+  cannot be moved under a live phone, and a phone that could rewrite its own
+  daemon's bind is one typo away from losing the daemon it is talking to.
+  `build 122`.
+- **Every probed provider is in the model list.** `GET /v1/models` reported the
+  primary provider's catalogue alone, which was right while the daemon had one
+  provider and became a lie once the registry could hold six: a phone's picker
+  showed one provider's models and called the other five absent. Each provider
+  whose catalogue a probe published now contributes its own rows, attributed to
+  itself, and a provider nobody probed contributes nothing - the same distinction
+  the `probed` flag draws for the whole answer. `build 123`.
+
 ## 1.4.10
 
 - **A turn that is nearly out of budget answers instead of giving up.** The

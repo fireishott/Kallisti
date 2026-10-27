@@ -163,39 +163,51 @@ pub async fn models(State(service): State<DeviceService>, headers: HeaderMap) ->
 
 /// The snapshot `GET /v1/models` answers with.
 fn read_models(engine: &SetupEngine) -> Result<serde_json::Value, DeviceError> {
-    // The primary provider's own catalogue: this route reports the models the
-    // endpoint a turn resolves to has published, keyed by that provider.
-    let catalog = engine
-        .primary_provider_catalog()
-        .map_err(settings_unavailable)?;
-    let contexts = engine
-        .primary_provider_contexts()
-        .map_err(settings_unavailable)?;
     let pinned = engine
         .model()
         .map_err(settings_unavailable)?
         .unwrap_or_default();
     let (providers, primary) = registry(engine)?;
-    let rows: Vec<serde_json::Value> = catalog
-        .iter()
-        .map(|id| {
-            serde_json::json!({
+    // Every provider the registry holds that a probe has actually published a
+    // catalogue for, not only the primary.
+    //
+    // This route reported the primary's catalogue alone, which was right while
+    // the daemon had one provider and became a lie the moment the registry could
+    // hold six: a phone's picker showed one provider's models and called the
+    // other five absent. Each catalogue here was written by a probe that ran
+    // against that provider, so a row is still a statement that somebody measured
+    // the model rather than a claim about an endpoint nobody has tried. A
+    // provider with no published catalogue contributes nothing, which is the same
+    // distinction the `probed` flag draws for the whole answer.
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for provider in &providers {
+        let catalog = engine
+            .provider_catalog(&provider.id)
+            .map_err(settings_unavailable)?;
+        if catalog.is_empty() {
+            continue;
+        }
+        let contexts = engine
+            .provider_contexts_for(&provider.id)
+            .map_err(settings_unavailable)?;
+        for id in &catalog {
+            rows.push(serde_json::json!({
                 "id": id,
-                "provider": primary,
+                "provider": provider.id,
                 "context_window": contexts.get(id),
                 // The pin this daemon holds. A picker can draw its tick from
                 // this without comparing ids itself.
                 "is_default": id == &pinned,
-            })
-        })
-        .collect();
+            }));
+        }
+    }
     Ok(serde_json::json!({
         "ok": true,
         "model": pinned,
         // `false` means no probe has published a list, which is a different
         // state from a probe that published an empty one. A client that showed
         // "no models" for both would send an operator looking in the wrong place.
-        "probed": !catalog.is_empty(),
+        "probed": !rows.is_empty(),
         "providers": providers_json(&providers, primary.as_deref()),
         "models": rows,
     }))
@@ -883,6 +895,90 @@ pub async fn set_aux(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The phone's picker showed one provider's models and called the rest
+    /// absent, because this route only ever read the primary's catalogue. Six
+    /// providers held a probed catalogue on a real daemon; the picker showed one.
+    /// Each catalogue here was written by a probe against that provider, so a row
+    /// is a measured claim, and a provider nobody probed contributes nothing.
+    #[test]
+    fn every_probed_provider_is_in_the_model_list() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = crate::config::Paths::for_root(dir.path());
+        let db = crate::db::Db::open(&paths.db_file).expect("db");
+        let engine = crate::onboarding::SetupEngine::new(db, paths);
+
+        let registry = r#"[
+            {"id":"alpha","name":"Alpha","base_url":"https://alpha.test/v1","key_ref":"env:ALPHA"},
+            {"id":"beta","name":"Beta","base_url":"https://beta.test/v1","key_ref":"env:BETA"},
+            {"id":"gamma","name":"Gamma","base_url":"https://gamma.test/v1","key_ref":"env:GAMMA"}
+        ]"#;
+        engine
+            .set_setting(crate::providers::SETTING_REGISTRY, registry)
+            .expect("registry");
+        engine
+            .set_setting(crate::providers::SETTING_PRIMARY, "alpha")
+            .expect("primary");
+        for (provider, models) in [
+            ("alpha", r#"["alpha-1","alpha-2"]"#),
+            ("beta", r#"["beta-1"]"#),
+            // Gamma was never probed: nothing to publish, and nothing invented.
+            ("gamma", "[]"),
+        ] {
+            engine
+                .set_setting(
+                    &crate::onboarding::SetupEngine::provider_catalog_key(provider),
+                    models,
+                )
+                .expect("catalogue");
+        }
+        engine
+            .set_setting(
+                &crate::onboarding::SetupEngine::provider_contexts_key("beta"),
+                r#"{"beta-1":128000}"#,
+            )
+            .expect("contexts");
+        // Written straight to the row: this test is about the list, and the
+        // pin's own validation is `check_model`'s job, tested where it lives.
+        engine
+            .set_setting(crate::onboarding::SETTING_MODEL, "alpha-1")
+            .expect("pin");
+
+        let body = read_models(&engine).expect("the snapshot");
+        let rows = body["models"].as_array().expect("rows");
+        let mut seen: Vec<(String, String)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row["provider"].as_str().unwrap_or_default().to_owned(),
+                    row["id"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                ("alpha".to_owned(), "alpha-1".to_owned()),
+                ("alpha".to_owned(), "alpha-2".to_owned()),
+                ("beta".to_owned(), "beta-1".to_owned()),
+            ],
+            "every probed provider is listed, and an unprobed one is not: {body}"
+        );
+
+        // The pin is still one row, on the provider that holds it.
+        let defaults: Vec<&serde_json::Value> =
+            rows.iter().filter(|row| row["is_default"] == true).collect();
+        assert_eq!(defaults.len(), 1, "exactly one row carries the tick");
+        assert_eq!(defaults[0]["provider"], "alpha");
+
+        // A context window travels with the provider it was measured for.
+        let beta = rows
+            .iter()
+            .find(|row| row["id"] == "beta-1")
+            .expect("the beta row");
+        assert_eq!(beta["context_window"], 128000);
+    }
 
     #[test]
     fn every_cron_edit_field_is_named_in_the_empty_body_refusal() {

@@ -3,32 +3,55 @@
 > **To the Most Beautiful.** The most beautiful way to meet your agent.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.10-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/daemon-1.4.11-C8CCD2?style=flat-square&labelColor=0C0C10" alt="daemon 1.4.11"/>
+  <img src="https://img.shields.io/badge/iOS-1.4.14-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 1.4.14"/>
   <img src="https://img.shields.io/badge/Rust-1.99-F74C00?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99"/>
-  <img src="https://img.shields.io/badge/tests-908-C8CCD2?style=flat-square&labelColor=0C0C10" alt="908 tests"/>
+  <img src="https://img.shields.io/badge/tests-1159-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1159 tests"/>
   <img src="https://img.shields.io/badge/device_api-no_relay-C8CCD2?style=flat-square&labelColor=0C0C10" alt="no relay"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
 
-Kallisti is a complete package built from two halves. **Kallisti for iOS** is the
-frontend - a native Swift 6 / SwiftUI app for iPhone and iPad. **Kallisti-Eris** is
-the backend - a Rust daemon that holds the brain, the tools and the memory, on
-hardware you own. The app talks to the daemon over its device API; there is no
+Kallisti is a complete package built from three parts that ship together.
+**Kallisti for iOS** is the frontend - a native Swift 6 / SwiftUI app for iPhone
+and iPad. **Kallisti-Eris** is the backend - a Rust daemon that holds the brain,
+the tools and the memory, on hardware you own. **The Kallisti-Eris Web UI** is the
+daemon's own dashboard, served by that same binary, for the times the phone is not
+in your hand. The app talks to the daemon over its device API; there is no
 third-party relay, and nothing leaves your infrastructure.
 
-**Private TestFlight beta in progress.** MIT licensed.
+**Private TestFlight beta in progress.** MIT licensed: the source is open, and it
+stays free to compile from source.
 
 ---
 
-## The two halves
+## The three parts
 
-| Half | What it is |
+| Part | Where it lives | What it is |
+|---|---|---|
+| **Kallisti for iOS** | branch `restore/kallisti-identity-on-eris` | The front. The literal Kallisti 0.4.0 UI - rich chat, the full sidebar (Chat, Inbox, Talk, Notes, Settings), health and sensors - as a native Swift 6 / SwiftUI app for iPhone and iPad. |
+| **Kallisti-Eris** | branch `main` | The back. The Rust daemon: turns, tools, memory, MCP, approvals, sensors, inbox, notes, push, backups and device pairing. |
+| **Kallisti-Eris Web UI** | branch `main`, `crates/eris-host/src/web` | The same daemon's dashboard: chat, sessions, settings, schedules, skills, approvals, backups and the onboarding wizard. Server-rendered HTML with one inlined stylesheet and one script, so it works with no build step and no JavaScript bundle. |
+
+Eris is the backend; the phone and the dashboard are its two frontends. They are
+the same product: a setting changed in the browser is the setting the phone reads
+on its next load, because both read the daemon's own table rather than a copy.
+The daemon keeps the state, the credentials, the sandbox and the tools. Neither
+frontend ever holds your model keys.
+
+### Repository layout
+
+One repository, two branches, because the app and the daemon are one product with
+two toolchains:
+
+| Branch | Holds |
 |---|---|
-| **Kallisti for iOS** | The front. The literal Kallisti 0.4.0 UI - rich chat, the full sidebar (Chat, Inbox, Talk, Notes, Settings), health and sensors - as a native Swift 6 / SwiftUI app for iPhone and iPad. |
-| **Kallisti-Eris** | The back. A Rust daemon and a web UI on your hardware: turns, tools, memory, MCP, approvals, sensors, inbox, notes, push and device pairing. |
+| `main` | the Rust workspace (daemon + web UI), `install.sh`, the release workflow |
+| `restore/kallisti-identity-on-eris` | `Herald.xcodeproj` and the Swift sources for the iOS app |
+| `nightly`, `release/*`, `backup/*` | historical and retained lines; not current |
 
-Eris is the backend; Kallisti is the frontend. The daemon keeps the state, the
-credentials, the sandbox and the tools. The phone never holds your model keys.
+Releases are tagged on `main` (`v<daemon version>-build.<n>`). App builds are
+tagged `ios-v<app version>-build.<n>` on the app branch, because an app artifact is
+a TestFlight build rather than a downloadable binary.
 
 ## What the iOS app does
 
@@ -99,8 +122,10 @@ The app talks to the daemon's own device API - there is no relay in between. Tod
 
 `/v1/pair` · `/v1/token/refresh` · `/v1/turns` · `/v1/turns/{id}/events` ·
 `/v1/turns/{id}/cancel` · `/v1/sessions/{id}` · `/v1/conversations` ·
-`/v1/approvals` · `/v1/settings` · `/v1/devices` · `/v1/mcp` · `/v1/projects` ·
-`/v1/persona` · `/v1/audit` · `/v1/version` · `/v1/device/sensor/*` ·
+`/v1/conversations/{id}` · `/v1/conversations/{id}/clear` ·
+`/v1/approvals` · `/v1/settings` · `/v1/settings/full-access` · `/v1/devices` ·
+`/v1/mcp` · `/v1/projects` · `/v1/persona` · `/v1/audit` · `/v1/version` ·
+`/v1/backups` · `/v1/backups/{name}/restore` · `/v1/device/sensor/*` ·
 `/v1/device/health/latest` · `/v1/device/location` · `/v1/inbox` · `/v1/notes` ·
 `/v1/note-runs` · `/v1/push/*` · `/v1/talk/*` (placeholder)
 
@@ -127,11 +152,24 @@ answers `403 host_revoke_unsupported` because this host is the only one.
 Pairing codes expire, device tokens are opaque and stored as salted verifiers, and a
 stolen state directory yields no usable credential.
 
-A device turn streams text and reasoning. A few `HeraldClientProtocol` members are
-still typed-stubbed pending their device routes (session delete/archive/pin/rename,
-title generation, job status, cancel/interrupt, voice transcript), and attachments are
-text-only. Note sync is no longer on that list: a note is created, enriched through a
-real run, and polled for its events. That remainder is the current backlog.
+A device turn streams more than its answer. The stream carries `delta`, `reasoning`,
+`round` (which round is starting, and whether it may still call tools),
+`tool_start` (the call about to run), `tool_output` (what a running command prints,
+live and never journalled), `tool` (the finished call with its whole output), `asked`
+(a question the turn is parked on), and the three terminal kinds. A client that knows
+only `delta` still works; the vocabulary is advertised on `/v1/version` so a client
+can learn it rather than pin a build number.
+
+A transcript read is bounded by bytes as well as by message count: the newest
+messages inside 512 KB, each tool output cut to an 8 KB preview that says how much it
+left out, and `omitted` / `elided_outputs` on the wire. A conversation that ran a
+hundred shell commands is not allowed to make a phone time out.
+
+A few `HeraldClientProtocol` members are still typed-stubbed pending their device
+routes (session delete/archive/pin/rename, title generation, job status, voice
+transcript), and attachments are text-only. Cancel and interrupt are no longer on
+that list: Stop reaches `/v1/turns/{id}/cancel`. That remainder is the current
+backlog.
 
 ## Security model, enforced rather than asserted
 
@@ -157,7 +195,7 @@ hostname that points at a private address.
 | `ios-host` | on-device surface stub: a UniFFI export with no I/O of its own, so the core never imports a device framework and every permission prompt belongs to the Swift shell. |
 
 ```sh
-cargo test --workspace        # 857 tests, 0 failures
+cargo test --workspace        # 1159 tests across the unit and integration suites, 0 failures
 cargo clippy --workspace --all-targets
 cargo fmt --check
 ```
@@ -228,7 +266,10 @@ prints it, and writes it to `~/.config/kallisti/first-run.txt` at mode 0600. The
 dashboard is at `http://127.0.0.1:7340`; the device listener is loopback-only on
 `:7341` and off until the dashboard switch or `--device-listen` turns it on.
 
-## Install `gh` (GitHub CLI)
+<details>
+<summary>Install <code>gh</code> (GitHub CLI) - for tags, releases and PRs</summary>
+
+### Install `gh` (GitHub CLI)
 
 Releases, tags and PRs are one command with `gh`. Linux, no root, no keyring, one
 line:
@@ -278,9 +319,11 @@ block points at GitHub's own repo. And on a headless box,
 `gh auth login --with-token` can block on a keyring that is not there; if it hangs,
 add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
+</details>
+
 ## Status
 
-Shipped and running: **Kallisti-Eris 1.4.10, build 118**, with the cron scheduler and
+Shipped and running: **Kallisti-Eris 1.4.11, build 123**, with the cron scheduler and
 the skills library switched on. The web client is server-rendered HTML with an inlined
 stylesheet and one script, so a transcript renders on a browser with no scripting and a
 turn that is already running can be reattached to.
@@ -294,13 +337,30 @@ in the whole window sits above the composer and the rail, and its controls trave
 A tool call survives a gateway that re-sends the whole `arguments` object instead of only
 the new fragment, which used to fail the turn at the parser before any tool ran.
 
-In private beta: the Kallisti iOS app on the Eris daemon, TestFlight **1.4.6 (101)**. The
-daemon has moved on to 1.4.10 since; the app release that catches up is its own build.
+In private beta: the Kallisti iOS app on the Eris daemon, TestFlight **1.4.14 (109)**.
+The app and the daemon are separate version lines - the daemon's build number moves
+when the daemon ships, the app's when the app does - so a report of a problem should
+name both, and `GET /v1/version` is where the daemon's answer comes from.
+
+What the phone does with the daemon, as of this pair: chat with reasoning and a live
+run log (the round, the command running, its stdout as it arrives), conversations that
+load and stay loadable, Stop that stops the turn on the daemon rather than only on the
+screen, and Settings that renders the daemon's own settings table - all six of its
+tabs - with the full-host switch and the backups screen behind their guards.
 
 In development: Voice Mode, Plugin Engine, watchOS.
 
 ## Licence
 
-MIT. See [`LICENSE`](LICENSE). Design constraints from before the first line of code
-live in [`docs/amendments.md`](docs/amendments.md), decisions in [`docs/adr/`](docs/adr),
-changes in [`CHANGELOG.md`](CHANGELOG.md).
+MIT. See [`LICENSE`](LICENSE).
+
+Kallisti is open source and stays that way. Every build this project ships is built
+from the source in this repository, and anyone can clone it and compile the daemon
+themselves - that path is documented above, it needs only a Rust toolchain, and it
+will keep working. The `main` branch is the binary's source of truth, not a mirror
+of it. Design constraints from before the first line of code live in
+[`docs/amendments.md`](docs/amendments.md), decisions in [`docs/adr/`](docs/adr),
+changes in [`CHANGELOG.md`](CHANGELOG.md), and the app in its own branch.
+
+Contributions and forks are welcome. If you build something with it, the licence
+already says everything you need.
