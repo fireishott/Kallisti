@@ -3,9 +3,9 @@
 > **To the Most Beautiful.** The most beautiful way to meet your agent.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.8-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/version-1.4.10-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/Rust-1.99-F74C00?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99"/>
-  <img src="https://img.shields.io/badge/tests-857-C8CCD2?style=flat-square&labelColor=0C0C10" alt="857 tests"/>
+  <img src="https://img.shields.io/badge/tests-908-C8CCD2?style=flat-square&labelColor=0C0C10" alt="908 tests"/>
   <img src="https://img.shields.io/badge/device_api-no_relay-C8CCD2?style=flat-square&labelColor=0C0C10" alt="no relay"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
@@ -278,14 +278,23 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 
-Shipped and running: Kallisti-Eris 1.4.8 and the web UI, with the cron scheduler and
-the skills library switched on. A dropped chat stream resumes where it stopped rather
-than silently skipping the frames that arrived while the page was away, and a reply on
-a phone keeps a share of the column instead of running edge to edge. A message sent
-twice is one turn, and the fifteen legacy relay paths an older phone build still
-calls are answered from real state instead of a typed 404.
-In private beta: the Kallisti iOS app on the Eris daemon, TestFlight 1.4.6 (101) - the
-first build where the app and the daemon carry the same number.
+Shipped and running: **Kallisti-Eris 1.4.10, build 118**, with the cron scheduler and
+the skills library switched on. The web client is server-rendered HTML with an inlined
+stylesheet and one script, so a transcript renders on a browser with no scripting and a
+turn that is already running can be reattached to.
+
+The last eight builds are mostly the transcript. A conversation is a fixed box the size
+of the viewport with the transcript as its only scroller, so the composer cannot end up
+in the middle of a document. A message is a flex item that cannot shrink, so a folded
+answer is always the 320px `--fold` block it says it is, it scrolls to its own last line,
+and the fade that says "more below" stops saying it once there is no more. A reply opened
+in the whole window sits above the composer and the rail, and its controls travel with it.
+A tool call survives a gateway that re-sends the whole `arguments` object instead of only
+the new fragment, which used to fail the turn at the parser before any tool ran.
+
+In private beta: the Kallisti iOS app on the Eris daemon, TestFlight **1.4.6 (101)**. The
+daemon has moved on to 1.4.10 since; the app release that catches up is its own build.
+
 In development: Voice Mode, Plugin Engine, watchOS.
 
 ## Licence
