@@ -46,6 +46,12 @@ enum ErisRoute: Equatable, Sendable {
     case settings
     /// `POST /v1/settings` - change a subset of those settings.
     case updateSettings
+    /// `GET /v1/backups` - the archives the daemon holds.
+    case backups
+    /// `POST /v1/backups` - write one verified archive.
+    case createBackup
+    /// `POST /v1/backups/{name}/restore` - replace the live state from one.
+    case restoreBackup(name: String)
     /// `POST /v1/settings/full-access` - the switch that decides whether `full`
     /// is a sandbox a save may pick. Enabling needs the word typed; disabling
     /// needs nothing and demotes a `full` sandbox with it.
@@ -148,6 +154,10 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/settings"
         case .fullAccess:
             return "/v1/settings/full-access"
+        case .backups, .createBackup:
+            return "/v1/backups"
+        case .restoreBackup(let name):
+            return "/v1/backups/\(Self.segment(name))/restore"
         case .projects:
             return "/v1/projects"
         case .approvals:
@@ -211,6 +221,7 @@ enum ErisRoute: Equatable, Sendable {
     var method: String {
         switch self {
         case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
+             .backups,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .cron, .skills, .aux, .noteRun, .noteRunEvents, .gwHealth, .gwPreflight,
              .asked:
@@ -218,7 +229,7 @@ enum ErisRoute: Equatable, Sendable {
         case .skill:
             return "GET"
         case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings,
-             .fullAccess,
+             .fullAccess, .createBackup, .restoreBackup,
              .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote,
              .setModel, .createCron, .setAux,
              .noteRecognition, .noteRuns, .cancelNoteRun, .gwRestart, .answer:
@@ -636,6 +647,33 @@ actor ErisClient {
         }
         let data = try await send(route: .updateSettings, form: patch.fields)
         return try decode(ErisSettingsUpdate.self, from: data).changed
+    }
+
+    /// `GET /v1/backups` - the archives on the daemon, newest first.
+    func backups() async throws -> ErisBackupPage {
+        let data = try await send(route: .backups, form: nil)
+        return try decode(ErisBackupPage.self, from: data)
+    }
+
+    /// `POST /v1/backups` - write one verified archive.
+    ///
+    /// The body is empty on purpose: the daemon then writes a generated
+    /// `kallisti-<stamp>.bk` in its own archive directory, which is where a
+    /// person would look for it. A phone has nothing better to say about where
+    /// the daemon keeps its own backups.
+    func createBackup() async throws -> ErisBackupCreated {
+        let data = try await send(route: .createBackup, form: nil)
+        return try decode(ErisBackupCreated.self, from: data)
+    }
+
+    /// `POST /v1/backups/{name}/restore` - replace the live state from one.
+    ///
+    /// The daemon verifies every member before it writes, and keeps a safety
+    /// copy. It cannot take effect while it holds the database open, so the
+    /// restored state is live on the next service start and the answer says so.
+    func restoreBackup(name: String) async throws -> ErisBackupRestored {
+        let data = try await send(route: .restoreBackup(name: name), form: nil)
+        return try decode(ErisBackupRestored.self, from: data)
     }
 
     /// `POST /v1/settings/full-access` - turn full host access on or off.

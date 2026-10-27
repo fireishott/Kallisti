@@ -5,6 +5,36 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.11] - 2026-10-27
+
+Backups, which finish the System tab.
+
+### Added
+
+- **The daemon's archives, from the phone.** The device API has had list, create
+  and restore since the backup format landed; the phone had no screen for any of
+  them, which is the last tab in the web UI with nothing behind it here. Settings
+  now has a Backups row under the daemon: the archives with size, member count and
+  date, a button that takes a verified archive, and a restore per archive behind a
+  confirmation. `build 106`.
+- **"Unreadable" is not "zero members".** A file that does not open as an archive
+  has no member count, and the row says so rather than showing a number that would
+  read as an empty backup.
+- **A restore says what has actually happened.** The daemon verifies every member
+  and puts them in place, but it holds the live database open, so the restored
+  state is what the next start reads. The confirmation says that instead of
+  stopping at "restored".
+
+### Verification
+
+- `KallistiTests/ErisBackupsTests`: the list decodes including the unreadable
+  archive, a create reports the name it wrote, a restore reports whether it
+  landed (and `false` is not success), and the restore path survives a filename
+  with a space in it as one URL segment.
+- The daemon's own side was already covered: phase8 exercises create with no
+  body, list and restore against a real router and database, so this round
+  changed no Rust.
+
 ## [1.4.10] - 2026-10-27
 
 The one setting a phone could pick and never set.

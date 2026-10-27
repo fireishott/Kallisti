@@ -185,6 +185,8 @@ struct AdaptiveRootView: View {
             ConfigEditorScreen()
         case .daemonSettings:
             DaemonSettingsScreen()
+        case .backups:
+            BackupsScreen()
         }
     }
 

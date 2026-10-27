@@ -1606,6 +1606,37 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
+                // Archive state is daemon state, so it lives with the daemon
+                // rather than under a general "about" heading.
+                NavigationLink(value: Route.backups) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "archivebox")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Colors.accent)
+                            .frame(width: 20, alignment: .center)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Backups")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("Take a verified archive, or go back to one")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.backups")
+
+                sectionDivider
+
                 // Connector Version
                 settingsRow(
                     icon: "arrow.triangle.swap",

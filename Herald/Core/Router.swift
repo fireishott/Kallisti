@@ -11,6 +11,8 @@ enum Route: Hashable {
     /// The daemon's own settings table: every operator-facing setting Eris
     /// publishes, grouped by the daemon's tabs.
     case daemonSettings
+    /// The daemon's archives: take one, or go back to one.
+    case backups
 }
 
 // MARK: - Sheet Destinations

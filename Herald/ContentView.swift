@@ -144,6 +144,8 @@ struct MainTabView: View {
             GatewayLogsScreen()
         case .daemonSettings:
             DaemonSettingsScreen()
+        case .backups:
+            BackupsScreen()
         case .configEditor:
             ConfigEditorScreen()
         }

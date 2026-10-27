@@ -303,6 +303,7 @@ C9F0A1B2D3E4F5A6B7C8D9E1 /* ClarifyCardView.swift in Sources */ = {isa = PBXBuil
 		D52051FC91E077E4DBE8F930 /* SkillDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8512BFE6A2C8FF7E3CFF91A9 /* SkillDetailView.swift */; };
 		D52969A62978FA9B91EC4A9C /* NativeGatewayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE693FCC35AF80B560A7CCAC /* NativeGatewayClient.swift */; };
 		D5C8CD2BBF5C4270FA5BFA35 /* SettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4EF3A954FAF696E52505ABC /* SettingsScreen.swift */; };
+		3B6E1B5F2C4F92252CBEDBD0 /* BackupsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3208BC7834DD53B00BDD9DF /* BackupsScreen.swift */; };
 		F6D7E8F9012345678A9B0C1D /* DaemonSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5C6D7E8F9012345678A9B0C /* DaemonSettingsScreen.swift */; };
 		594395AE17B144028A216CD9 /* YamlEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2DC4A6E70095E79FAAAC54D /* YamlEditorView.swift */; };
 		B2581941A21D04EA2BCC10E8 /* ConfigEditorScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FD4F14ED93E60616ED30771 /* ConfigEditorScreen.swift */; };
@@ -449,8 +450,10 @@ DDC099A73FCBCAB2EB5EE04B /* ChatScreen.swift in Sources */ = {isa = PBXBuildFile
 		76AA74771CF329113E5E9DF1 /* ErisDaemonStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A36F980B409E8A22C87E25CA /* ErisDaemonStore.swift */; };
 		5CC1968D4A7573FC91F1903E /* ErisConversationTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5766F6EB0C39C6326BBF9E07 /* ErisConversationTypes.swift */; };
 		3E022BD3AC79A20F3F709387 /* ErisSettingsTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */; };
+		9366D66F275C15E99EBF6D8F /* ErisBackupTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 186DEA68894AE2BE2E775AEC /* ErisBackupTypes.swift */; };
 		CFCECCB2B85F9532BA9B58A1 /* ErisApprovalTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41D3A8C48FF2C628386C2F81 /* ErisApprovalTypes.swift */; };
 		DB7F4B9C2236D4A617B9F9DB /* ErisTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA6E3A8B1125C39506A8E8CA /* ErisTransportTests.swift */; };
+		3547F5757846301F92A16B5B /* ErisBackupsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A85D617C980B4D01ACC2BE2E /* ErisBackupsTests.swift */; };
 		80671DC907D8689837EE8FCD /* ErisSettingsCatalogueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68B0F58505F95888C3050164 /* ErisSettingsCatalogueTests.swift */; };
 		C9E3F4A546273849506B7C8D /* ErisLiveToolFramesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE4F5B65738495A617C8D9E /* ErisLiveToolFramesTests.swift */; };
 		A7C1D2E3F405162738495A6B7C /* ErisConversationIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8D2E3F405162738495A6B7C /* ErisConversationIdentityTests.swift */; };
@@ -858,6 +861,7 @@ DDC099A73FCBCAB2EB5EE04B /* ChatScreen.swift in Sources */ = {isa = PBXBuildFile
 		A41BAD0607E25A2A92A7EC81 /* InboxActionResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxActionResult.swift; sourceTree = "<group>"; };
 		A48B9834AB39B26D1AC88AFE /* MockNotesRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockNotesRepository.swift; sourceTree = "<group>"; };
 		A4EF3A954FAF696E52505ABC /* SettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreen.swift; sourceTree = "<group>"; };
+		C3208BC7834DD53B00BDD9DF /* BackupsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupsScreen.swift; sourceTree = "<group>"; };
 		E5C6D7E8F9012345678A9B0C /* DaemonSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonSettingsScreen.swift; sourceTree = "<group>"; };
 		B2DC4A6E70095E79FAAAC54D /* YamlEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YamlEditorView.swift; sourceTree = "<group>"; };
 		6FD4F14ED93E60616ED30771 /* ConfigEditorScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigEditorScreen.swift; sourceTree = "<group>"; };
@@ -1004,8 +1008,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 		A36F980B409E8A22C87E25CA /* ErisDaemonStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisDaemonStore.swift; sourceTree = "<group>"; };
 		5766F6EB0C39C6326BBF9E07 /* ErisConversationTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisConversationTypes.swift; sourceTree = "<group>"; };
 		1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSettingsTypes.swift; sourceTree = "<group>"; };
+		186DEA68894AE2BE2E775AEC /* ErisBackupTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisBackupTypes.swift; sourceTree = "<group>"; };
 		41D3A8C48FF2C628386C2F81 /* ErisApprovalTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisApprovalTypes.swift; sourceTree = "<group>"; };
 		CA6E3A8B1125C39506A8E8CA /* ErisTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisTransportTests.swift; sourceTree = "<group>"; };
+		A85D617C980B4D01ACC2BE2E /* ErisBackupsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisBackupsTests.swift; sourceTree = "<group>"; };
 		68B0F58505F95888C3050164 /* ErisSettingsCatalogueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSettingsCatalogueTests.swift; sourceTree = "<group>"; };
 		DAE4F5B65738495A617C8D9E /* ErisLiveToolFramesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisLiveToolFramesTests.swift; sourceTree = "<group>"; };
 		B8D2E3F405162738495A6B7C /* ErisConversationIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisConversationIdentityTests.swift; sourceTree = "<group>"; };
@@ -1368,6 +1374,7 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				6ADA0FD3C551D728D7AB9C24 /* GatewayLogsScreen.swift */,
 				98D7B13A1FCB0BC4E2ECCE5D /* GatewayStatusScreen.swift */,
 				A4EF3A954FAF696E52505ABC /* SettingsScreen.swift */,
+				C3208BC7834DD53B00BDD9DF /* BackupsScreen.swift */,
 				E5C6D7E8F9012345678A9B0C /* DaemonSettingsScreen.swift */,
 				B2DC4A6E70095E79FAAAC54D /* YamlEditorView.swift */,
 				6FD4F14ED93E60616ED30771 /* ConfigEditorScreen.swift */,
@@ -1385,6 +1392,7 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				6CCC3719B4208AAB5BE25BED /* Mocks */,
 				98D3F32D3E5255536CC268D1 /* NativeGateway */,
 				CA6E3A8B1125C39506A8E8CA /* ErisTransportTests.swift */,
+				A85D617C980B4D01ACC2BE2E /* ErisBackupsTests.swift */,
 				68B0F58505F95888C3050164 /* ErisSettingsCatalogueTests.swift */,
 				DAE4F5B65738495A617C8D9E /* ErisLiveToolFramesTests.swift */,
 				B8D2E3F405162738495A6B7C /* ErisConversationIdentityTests.swift */,
@@ -1900,6 +1908,7 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				A36F980B409E8A22C87E25CA /* ErisDaemonStore.swift */,
 				5766F6EB0C39C6326BBF9E07 /* ErisConversationTypes.swift */,
 				1318F3CF9936AE51A1A3F5DE /* ErisSettingsTypes.swift */,
+				186DEA68894AE2BE2E775AEC /* ErisBackupTypes.swift */,
 				41D3A8C48FF2C628386C2F81 /* ErisApprovalTypes.swift */,
 				B3B3C4D5E6F708192A3B4C60 /* ErisNotesTypes.swift */,
 				B2B3C4D5E6F708192A3B4C5E /* ErisInboxTypes.swift */,
@@ -2257,6 +2266,7 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				76AA74771CF329113E5E9DF1 /* ErisDaemonStore.swift in Sources */,
 				5CC1968D4A7573FC91F1903E /* ErisConversationTypes.swift in Sources */,
 				3E022BD3AC79A20F3F709387 /* ErisSettingsTypes.swift in Sources */,
+				9366D66F275C15E99EBF6D8F /* ErisBackupTypes.swift in Sources */,
 				CFCECCB2B85F9532BA9B58A1 /* ErisApprovalTypes.swift in Sources */,
 				A3B3C4D5E6F708192A3B4C5F /* ErisNotesTypes.swift in Sources */,
 				A2B3C4D5E6F708192A3B4C5D /* ErisInboxTypes.swift in Sources */,
@@ -2522,6 +2532,7 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				00B7D464C0B0FC2006656D81 /* SessionListStore.swift in Sources */,
 				A6205ED0807251DED1AD3A1E /* SessionSummary.swift in Sources */,
 				D5C8CD2BBF5C4270FA5BFA35 /* SettingsScreen.swift in Sources */,
+				3B6E1B5F2C4F92252CBEDBD0 /* BackupsScreen.swift in Sources */,
 				F6D7E8F9012345678A9B0C1D /* DaemonSettingsScreen.swift in Sources */,
 				594395AE17B144028A216CD9 /* YamlEditorView.swift in Sources */,
 				B2581941A21D04EA2BCC10E8 /* ConfigEditorScreen.swift in Sources */,
@@ -2613,6 +2624,7 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildActionMask = 2147483647;
 			files = (
 				DB7F4B9C2236D4A617B9F9DB /* ErisTransportTests.swift in Sources */,
+				3547F5757846301F92A16B5B /* ErisBackupsTests.swift in Sources */,
 				80671DC907D8689837EE8FCD /* ErisSettingsCatalogueTests.swift in Sources */,
 				C9E3F4A546273849506B7C8D /* ErisLiveToolFramesTests.swift in Sources */,
 				A7C1D2E3F405162738495A6B7C /* ErisConversationIdentityTests.swift in Sources */,
@@ -2767,10 +2779,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2788,10 +2800,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2810,11 +2822,11 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2846,12 +2858,12 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				OTHER_SWIFT_FLAGS = "-Xfrontend -strict-concurrency=minimal";
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kallisti;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2868,10 +2880,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
 				SDKROOT = watchos;
@@ -2887,10 +2899,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2988,10 +3000,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3009,10 +3021,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3030,10 +3042,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3052,11 +3064,11 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3074,10 +3086,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
 				SDKROOT = watchos;
@@ -3112,12 +3124,12 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				OTHER_SWIFT_FLAGS = "-Xfrontend -strict-concurrency=minimal";
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kallisti;
-				MARKETING_VERSION = 1.4.10;
+				MARKETING_VERSION = 1.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
