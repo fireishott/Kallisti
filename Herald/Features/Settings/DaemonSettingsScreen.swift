@@ -44,6 +44,8 @@ struct DaemonSettingsScreen: View {
     @State private var listen = ""
     /// The origin a paired phone should call, when one is set.
     @State private var relay = ""
+    /// Which number field has the keyboard, so leaving it commits what was typed.
+    @FocusState private var focusedKey: String?
 
     var body: some View {
         ZStack {
@@ -177,34 +179,63 @@ struct DaemonSettingsScreen: View {
         .frame(minHeight: Design.Size.minTapTarget)
     }
 
+    /// A number is typed, not stepped.
+    ///
+    /// The range starts at 1 and the ceiling is in the thousands, so a stepper was
+    /// the wrong instrument: reaching 91 meant ninety taps. The field commits when
+    /// the keyboard leaves it or Done is tapped, which is why there is no Save
+    /// button - a value that needed a second tap to take effect is a value this
+    /// screen would let you walk away from unsaved.
     private func numberRow(_ field: ErisSettingField) -> some View {
-        HStack(spacing: Design.Spacing.sm) {
+        let binding = Binding(
+            get: { drafts[field.key] ?? "\(field.intValue)" },
+            set: { drafts[field.key] = $0 }
+        )
+        return HStack(spacing: Design.Spacing.sm) {
             label(for: field)
             Spacer()
-            Text("\(field.intValue)")
-                .font(Design.Typography.callout)
-                .foregroundStyle(Design.Colors.secondaryForeground)
+            TextField("\(field.intValue)", text: binding)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
                 .monospacedDigit()
-            Stepper(
-                "",
-                value: Binding(
-                    get: { field.intValue },
-                    set: { newValue in
-                        Task {
-                            await write(
-                                .number(field.key, newValue, min: field.min, max: field.max),
-                                label: field.label,
-                                on: "\(newValue)"
-                            )
-                        }
-                    }
-                ),
-                in: (field.min ?? 0)...(field.max ?? max(field.intValue, 1))
-            )
-            .labelsHidden()
-            .disabled(!field.writable || writingKey == field.key)
+                .font(Design.Typography.callout)
+                .foregroundStyle(Design.Colors.foreground)
+                .frame(maxWidth: 120)
+                .focused($focusedKey, equals: field.key)
+                .disabled(!field.writable || writingKey == field.key)
+                .onSubmit { commitNumber(field) }
         }
         .frame(minHeight: Design.Size.minTapTarget)
+        .onChange(of: focusedKey) { _, nowFocused in
+            // The number pad has no Return key on some keyboards, so leaving the
+            // field has to mean the same thing as Done.
+            if nowFocused != field.key, drafts[field.key] != nil {
+                commitNumber(field)
+            }
+        }
+    }
+
+    /// Store what was typed, or say why it was not.
+    private func commitNumber(_ field: ErisSettingField) {
+        guard let typed = drafts[field.key] else { return }
+        drafts[field.key] = nil
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Int(trimmed) else {
+            notice = "\(field.label) needs a whole number."
+            return
+        }
+        // The daemon clamps too; saying so here means a typed 0 does not silently
+        // become 1 with the field snapping back and no explanation.
+        let low = field.min ?? Int.min
+        let high = field.max ?? Int.max
+        let applied = Swift.min(Swift.max(value, low), high)
+        Task {
+            await write(
+                .number(field.key, applied, min: field.min, max: field.max),
+                label: field.label,
+                on: applied == value ? "\(applied)" : "\(applied) (clamped from \(value))"
+            )
+        }
     }
 
     private func textRow(_ field: ErisSettingField) -> some View {

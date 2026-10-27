@@ -5,6 +5,29 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.14] - 2026-10-27
+
+Two things the phone was making harder than they are.
+
+### Changed
+
+- **Tool turns is typed, not stepped.** The range starts at 1 and the ceiling is
+  in the thousands, so a stepper meant ninety taps to reach 91. The field takes a
+  number, commits when the keyboard leaves it or Done is tapped, and says so when
+  a value was clamped to the range the daemon publishes. There is no Save button:
+  a value that needed a second tap to take effect is a value this screen would
+  let you walk away from unsaved. `build 109`.
+
+### Fixed (with daemon 1.4.11 build 123)
+
+- **Every provider's models show up.** The model picker showed one provider -
+  `commandcode` - and called the rest absent. The daemon's `GET /v1/models`
+  reported only the primary provider's catalogue; it now reports every provider
+  whose catalogue a probe published, each attributed to itself. Six providers held
+  probed catalogues on this daemon and the picker showed one. No app change was
+  needed once the daemon answered honestly, which is the right shape for this: the
+  list is the daemon's, and the app draws what it is given.
+
 ## [1.4.13] - 2026-10-27
 
 The Devices tab's last two facts.
