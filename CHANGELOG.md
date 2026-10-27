@@ -5,6 +5,54 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.7] - 2026-10-27
+
+The release that gives a conversation one identity. Until now a chat had three
+names: the session list rendered a deterministic UUID it never registered, a new
+chat minted a random one the daemon had never heard of, and the send path looked
+both up in a map that only the second one was ever written to. Every symptom the
+phone reported came from that single seam.
+
+### Fixed
+
+- **Opening another chat shows that chat.** A session row carried
+  `stableUUID(from:)` of the daemon's conversation id and registered nothing, so
+  `loadConversation(id:)` missed the map and answered with an empty "New Chat".
+  The miss was indistinguishable from a successful load, which is why the chat
+  looked like it had lost its messages. The row now resolves through the same
+  binding the loader uses, so tapping a conversation loads its transcript.
+- **A chat started on the phone comes back.** `createNewSession` minted a local
+  UUID and the client then bound the daemon's new conversation to a second,
+  different UUID, so the row the operator was looking at named nothing. The id
+  the composer already opened is now the id that gets bound, and the bindings are
+  written to `defaults` and restored on launch, so reopening the last chat after
+  a relaunch no longer starts blind.
+- **One conversation per new chat, not two.** `ensureConversation` created a
+  conversation whenever the map had no entry, so a fresh chat minted a second
+  empty "New chat" on the daemon and the transcript landed in the one the sidebar
+  row did not name. It now heals the binding from the conversation list first and
+  only creates when the id really is unknown. The leftover empty rows in earlier
+  databases are the fossil record of that bug.
+- **A turn is always filed in a conversation.** A send with no resolvable
+  conversation created a conversation-less turn, which the daemon keeps as a
+  session of its own: the answer streamed back once and was then unreachable from
+  the session list. Both send paths now bind before they post.
+
+### Added
+
+- **`ErisHeraldError.unknownSession`.** Resolving an id the daemon does not hold
+  is now an error the store can surface, instead of a blank conversation that
+  looks like a successful read.
+- **`KallistiTests/ErisConversationIdentityTests.swift`**, which holds the rule
+  in six cases through the production client and a stubbed transport: a listed
+  chat loads its transcript, a chat started on the phone reopens after a
+  relaunch, a listed chat reopens by the id the list gave it, starting a chat
+  binds the opener's id, ensuring an existing chat mints nothing, and one
+  conversation is minted per new chat. Four of the six fail against the previous
+  behaviour, which is what makes them a gate rather than a description.
+- `ErisHeraldClient` takes its `ErisDaemonStore` and `UserDefaults` in an
+  initialiser, so a test drives the real client instead of a copy of its logic.
+
 ## [1.4.6] - 2026-10-23
 
 The release that stops the app and the daemon from being different versions of the

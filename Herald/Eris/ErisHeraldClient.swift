@@ -10,6 +10,12 @@ import Foundation
 enum ErisHeraldError: Error, LocalizedError {
     case notBackedYet(String)
     case notConnected
+    /// The local id names no conversation the daemon holds any more.
+    ///
+    /// A load has to say this out loud. The earlier code answered a miss with an
+    /// empty "New Chat", which is indistinguishable from a conversation whose
+    /// messages were dropped - the operator saw their chat come back blank.
+    case unknownSession
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +23,8 @@ enum ErisHeraldError: Error, LocalizedError {
             return "\(feature) is not backed by Eris yet."
         case .notConnected:
             return "No Eris daemon is paired."
+        case .unknownSession:
+            return "That conversation is no longer on the daemon."
         }
     }
 }
@@ -27,9 +35,24 @@ final class ErisHeraldClient: HeraldClientProtocol {
     private(set) var currentConversation: Conversation?
 
     /// Owns pairing and the sensor pipeline; the transport is pulled from it.
-    private let store = ErisDaemonStore()
+    ///
+    /// Injectable so a test can drive the real client against a stubbed
+    /// transport and exercise the exact path the app takes (list the sessions,
+    /// open one, send into it) instead of a copy of that logic.
+    private let store: ErisDaemonStore
 
     /// Local conversation UUID <-> Eris conversation id (opaque string).
+    ///
+    /// One conversation has exactly ONE local id, and it is derived from the
+    /// daemon's own id (`localID(forConversation:)`), never minted fresh. The
+    /// three paths that name a conversation - the session list, the transcript
+    /// loader, and the turn that files a message - all resolve through this map,
+    /// so an id the sidebar renders is the id the chat can load and send into.
+    ///
+    /// Bindings are written to `defaults` on the way in and restored on launch,
+    /// and `resolveConversationID(for:client:)` heals anything still missing
+    /// from the conversation list. A relaunch therefore neither forgets the chat
+    /// that was open nor needs the sidebar to have loaded first.
     private var conversationIDByLocalID: [UUID: String] = [:]
     private var localIDByConversationID: [String: UUID] = [:]
 
@@ -37,6 +60,15 @@ final class ErisHeraldClient: HeraldClientProtocol {
     /// Eris: it is a note with runs against it, so the mapping is resolved from
     /// `GET /v1/notes` and cached rather than minted locally.
     private var erisNoteIDByLocalID: [UUID: String] = [:]
+
+    /// The turn this client is currently streaming, and the last one it streamed.
+    ///
+    /// A clarify answer has to name the turn it is settling, because that is the
+    /// resource the daemon resumes. Kept after the stream ends so an answer that
+    /// arrives just after a reconnect still names the right job rather than
+    /// throwing away the question.
+    private var activeTurnID: String?
+    private var lastTurnID: String?
 
     /// Local note UUID -> the newest run opened for it. This is what
     /// `nativeSessionKey` reports, so the note records the key of the run that
@@ -50,6 +82,16 @@ final class ErisHeraldClient: HeraldClientProtocol {
     /// daemon keeps working; this is the client's own patience, matching the
     /// 180s the sync engine's watchdog allows.
     private static let noteRunTimeout = Duration.seconds(170)
+
+    /// Where the local UUID <-> conversation bindings outlive a launch.
+    private let defaults: UserDefaults
+    private static let bindingsKey = "eris.conversation.bindings"
+
+    init(store: ErisDaemonStore = ErisDaemonStore(), defaults: UserDefaults = .standard) {
+        self.store = store
+        self.defaults = defaults
+        restoreBindings()
+    }
 
     // MARK: - Connection
 
@@ -123,6 +165,18 @@ final class ErisHeraldClient: HeraldClientProtocol {
         }
 
         do {
+            // A turn that names no conversation is a turn the transcript can
+            // never show: the daemon keeps it as a session of its own, so the
+            // answer streams back once and is then unreachable from the session
+            // list. Bind the open chat first, and only send once it has a
+            // conversation to be filed under.
+            if let local = currentConversation?.id, conversationIDByLocalID[local] == nil {
+                guard await ensureConversation(id: local) else {
+                    continuation.yield(.failed("This chat could not be bound to the daemon. Try again once the host answers."))
+                    continuation.finish()
+                    return
+                }
+            }
             // Eris turns carry text only; attachments have no route yet and are
             // dropped (the composer's text still reaches the model).
             let turn = try await client.createTurn(
@@ -131,6 +185,8 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 clientMessageID: clientMessageID
             )
             let jobID = Self.stableUUID(from: turn.jobID)
+            self.activeTurnID = turn.jobID
+            self.lastTurnID = turn.jobID
             continuation.yield(.messageSent(jobID: jobID))
 
             var text = ""
@@ -149,6 +205,18 @@ final class ErisHeraldClient: HeraldClientProtocol {
                         // so it arrives with its output attached and is rendered
                         // as one finished row rather than a start/finish pair.
                         continuation.yield(.toolStarted(tool.activity))
+                    case .asked(let asked):
+                        // The turn is parked on a person, not on a model. The card
+                        // is what makes it answerable; without this the stream sat
+                        // on a spinner until the daemon's own hour ran out.
+                        continuation.yield(
+                            .clarifyRequest(
+                                question: asked.headline,
+                                choices: asked.labels.isEmpty ? nil : asked.labels,
+                                requestID: asked.id,
+                                multiSelect: asked.multiSelect
+                            )
+                        )
                     case .existing, .ignored:
                         break
                     }
@@ -175,14 +243,17 @@ final class ErisHeraldClient: HeraldClientProtocol {
                             totalTokens: ($0.inputTokens ?? 0) + ($0.outputTokens ?? 0)
                         )
                     }
+                    self.activeTurnID = nil
                     continuation.yield(.finished(final, tokenUsage, nil, nil))
                     continuation.finish()
                     return
                 case .error(let error):
+                    self.activeTurnID = nil
                     continuation.yield(.failed(error.errorDescription ?? "turn failed", category: error.code))
                     continuation.finish()
                     return
                 case .cancelled:
+                    self.activeTurnID = nil
                     continuation.yield(.cancelled)
                     continuation.finish()
                     return
@@ -193,6 +264,39 @@ final class ErisHeraldClient: HeraldClientProtocol {
             continuation.yield(.failed((error as? ErisError)?.errorDescription ?? error.localizedDescription))
             continuation.finish()
         }
+    }
+
+    // MARK: - Clarify
+
+    /// Answer the question the running turn is parked on.
+    ///
+    /// `requestID` is the gate id the card carries, and the daemon matches it
+    /// against what it is waiting on rather than trusting the answer's content.
+    /// The turn id comes from this client's own record, because the phone is the
+    /// device that opened the turn and is the only party allowed to settle it.
+    func respondToClarify(requestID: String, answer: String) async throws {
+        _ = requestID
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        guard let turnID = activeTurnID ?? lastTurnID else {
+            throw ErisHeraldError.notBackedYet("no turn to answer")
+        }
+        try await client.answer(turnID: turnID, labels: [], note: nil, text: answer, question: nil)
+    }
+
+    /// Read back the question the turn is parked on, for a phone that missed the
+    /// live frame: a dropped stream, or a job opened after the card went out.
+    func fetchPendingClarify() async -> PendingClarify? {
+        guard let client = await pairedClient(),
+              let turnID = activeTurnID ?? lastTurnID
+        else { return nil }
+        guard let asked = try? await client.asked(turnID: turnID) else { return nil }
+        guard !asked.headline.isEmpty else { return nil }
+        return PendingClarify(
+            question: asked.headline,
+            choices: asked.labels.isEmpty ? nil : asked.labels,
+            requestID: asked.id,
+            multiSelect: asked.multiSelect
+        )
     }
 
     // MARK: - Conversation (transcript)
@@ -209,9 +313,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     func loadConversation(id: UUID) async throws -> Conversation {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
-        guard let conversationID = conversationIDByLocalID[id] else {
-            return Conversation(id: id, title: "New Chat")
-        }
+        // Resolve, do not guess. A session the operator tapped has to end up at
+        // the daemon's own conversation, or the transcript arrives empty and the
+        // app reports a chat that vanished. A missing binding heals through the
+        // list; an id the daemon really does not hold is an error, not a blank
+        // "New Chat" that looks like a successful load.
+        let conversationID = try await resolveConversationID(for: id, client: client)
         let detail = try await client.conversation(id: conversationID)
         let conversation = Conversation(
             id: id,
@@ -236,10 +343,17 @@ final class ErisHeraldClient: HeraldClientProtocol {
     func ensureConversation(id: UUID) async -> Bool {
         if conversationIDByLocalID[id] != nil { return true }
         guard let client = await pairedClient() else { return false }
+        // A session that already exists on the daemon only needs its binding
+        // restored. Minting a conversation here instead is what left a second
+        // empty "New chat" behind on every new chat, and put the turn in a
+        // conversation the row the operator was looking at did not name.
+        if let existing = try? await resolveConversationID(for: id, client: client) {
+            bind(localID: id, to: existing)
+            return true
+        }
         do {
             let created = try await client.createConversation()
-            conversationIDByLocalID[id] = created.id
-            localIDByConversationID[created.id] = id
+            bind(localID: id, to: created.id)
             store.noteSession(created.id)
             return true
         } catch {
@@ -258,7 +372,9 @@ final class ErisHeraldClient: HeraldClientProtocol {
     func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
         let page = try await client.conversations()
-        let sessions = page.conversations.map { Self.summary(from: $0) }
+        // Every row is registered on the way out, so the id the sidebar renders
+        // is already the id the loader and the send path resolve.
+        let sessions = page.conversations.map { summary(from: $0) }
         return SessionListResponse(sessions: sessions, total: sessions.count)
     }
 
@@ -271,11 +387,34 @@ final class ErisHeraldClient: HeraldClientProtocol {
     }
 
     func createSession(title: String) async throws -> SessionSummary {
+        try await createSession(title: title, conversationID: nil)
+    }
+
+    /// Start a conversation for an id the UI has already opened.
+    ///
+    /// The protocol default delegates to the single-argument overload, which
+    /// mints its own local UUID from the daemon's new id - so the sidebar row
+    /// and the chat the operator is looking at ended up naming two different
+    /// ids for one conversation, and neither could load the other's history
+    /// (nor send into it: the turn resolved to nothing and was filed as a
+    /// conversation of its own). Binding the caller's id is the whole fix.
+    func createSession(title: String, conversationID: UUID?) async throws -> SessionSummary {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        if let conversationID, let bound = conversationIDByLocalID[conversationID] {
+            // Already bound - a retry, not a second conversation.
+            let detail = try await client.conversation(id: bound)
+            return SessionSummary(
+                id: conversationID,
+                title: detail.displayTitle,
+                sessionKey: bound
+            )
+        }
         let created = try await client.createConversation()
-        let localID = localID(forConversation: created.id)
+        let local = conversationID ?? localID(forConversation: created.id)
+        bind(localID: local, to: created.id)
+        store.noteSession(created.id)
         return SessionSummary(
-            id: localID,
+            id: local,
             title: created.title.isEmpty ? "New Chat" : created.title,
             sessionKey: created.id
         )
@@ -314,6 +453,14 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        // Same rule as the streaming path: bind before sending, so the turn is
+        // filed in the conversation this id names instead of becoming a session
+        // of its own that the transcript can never show.
+        if conversationIDByLocalID[conversationID] == nil {
+            guard await ensureConversation(id: conversationID) else {
+                throw ErisHeraldError.notConnected
+            }
+        }
         let erisConversationID = conversationIDByLocalID[conversationID]
         let turn = try await client.createTurn(
             text: text,
@@ -616,12 +763,69 @@ final class ErisHeraldClient: HeraldClientProtocol {
         return conversationIDByLocalID[currentConversation.id]
     }
 
+    /// The local UUID for a daemon conversation.
+    ///
+    /// Derived from the daemon's id rather than minted, so one conversation has
+    /// one identity no matter which path names it and no matter how many times
+    /// the app relaunches. The daemon issues UUID-shaped ids, so this is the id
+    /// itself; anything else falls back to `stableUUID`.
     private func localID(forConversation conversationID: String) -> UUID {
         if let existing = localIDByConversationID[conversationID] { return existing }
-        let local = UUID()
-        localIDByConversationID[conversationID] = local
-        conversationIDByLocalID[local] = conversationID
+        let local = Self.stableUUID(from: conversationID)
+        bind(localID: local, to: conversationID)
         return local
+    }
+
+    /// Record both directions of one binding, so `currentConversationID()` and
+    /// `loadConversation(id:)` cannot disagree about which conversation a local
+    /// id means, and remember it, so the agreement survives a relaunch.
+    private func bind(localID: UUID, to conversationID: String) {
+        conversationIDByLocalID[localID] = conversationID
+        localIDByConversationID[conversationID] = localID
+        persistBindings()
+    }
+
+    /// Recover the bindings the last launch recorded.
+    ///
+    /// The map used to be memory-only: a chat started before a relaunch had no
+    /// binding to resolve against, so the app opened it blank and reported the
+    /// conversation as gone. Restoring it means the id the app persisted as the
+    /// open session still names its conversation on the next launch.
+    private func restoreBindings() {
+        guard let raw = defaults.dictionary(forKey: Self.bindingsKey) as? [String: String] else {
+            return
+        }
+        for (conversationID, localText) in raw {
+            guard let localID = UUID(uuidString: localText) else { continue }
+            conversationIDByLocalID[localID] = conversationID
+            localIDByConversationID[conversationID] = localID
+        }
+    }
+
+    private func persistBindings() {
+        var raw: [String: String] = [:]
+        raw.reserveCapacity(localIDByConversationID.count)
+        for (conversationID, localID) in localIDByConversationID {
+            raw[conversationID] = localID.uuidString
+        }
+        defaults.set(raw, forKey: Self.bindingsKey)
+    }
+
+    /// Resolve a local id to the daemon's conversation id, healing a binding the
+    /// client does not hold yet.
+    ///
+    /// The conversation list is the authority on which conversations exist, and
+    /// every row on it resolves to a stable local id, so a miss is answered from
+    /// the list instead of becoming an empty chat. An id that is not on the list
+    /// is genuinely gone, and says so.
+    private func resolveConversationID(for localID: UUID, client: ErisClient) async throws -> String {
+        if let known = conversationIDByLocalID[localID] { return known }
+        let page = try await client.conversations()
+        for row in page.conversations where Self.stableUUID(from: row.id) == localID {
+            bind(localID: localID, to: row.id)
+            return row.id
+        }
+        throw ErisHeraldError.unknownSession
     }
 
     /// A deterministic UUID for an opaque Eris id (job/session/conversation).
@@ -684,9 +888,17 @@ final class ErisHeraldClient: HeraldClientProtocol {
         )
     }
 
-    static func summary(from s: ErisConversationSummary) -> SessionSummary {
+    /// One row of the session list, keyed by the SAME local id the transcript
+    /// loader and the turn path resolve.
+    ///
+    /// This used to be a static `stableUUID` projection that never registered
+    /// the binding, so a row rendered here named an id nothing else knew: tapping
+    /// it loaded an empty chat, and sending from it filed the turn in a
+    /// conversation of its own. Registering through `localID(forConversation:)`
+    /// is what makes the row, the transcript and the send one identity.
+    func summary(from s: ErisConversationSummary) -> SessionSummary {
         SessionSummary(
-            id: stableUUID(from: s.id),
+            id: localID(forConversation: s.id),
             title: s.displayTitle,
             previewText: "",
             lastActivity: ErisTimestamp.date(from: s.updatedAt) ?? .now,
