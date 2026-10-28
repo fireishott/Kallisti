@@ -4,6 +4,25 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.14
+
+- **A question the model asks now survives the stream that carries it.** Every
+  `clarify` call from the phone died with `TOOL CALL 'CLARIFY' ARGUMENTS NEVER
+  COMPLETED INTO VALID JSON`, reported at 535 bytes as `EXPECTED VALUE AT LINE 1
+  COLUMN 62`, so no question card was ever drawn and the turn failed before it could wait for
+  an answer - on the phone, on the web, anywhere the tool was offered. The cause
+  was the argument assembler, not the model: a fragment whose bytes were already a
+  prefix of the buffer was read as "the sender repeated itself" and thrown away.
+  A token-level stream sends a nested object's opener as its own fragment, so `{"`
+  arriving inside `"questions": [` was dropped because the buffer also begins with
+  `{"`, and the buffer was left reading `[{"question"...`. Replay detection is now
+  positional and nothing else: a fragment that begins with everything buffered
+  contributes only its suffix, an exact re-send contributes nothing at all, and a
+  fragment is never judged by its content. Whitespace after a finished call no
+  longer replaces it either. A real truncation is still refused with the same
+  message, and the captured 9router stream that failed every question now
+  assembles into the card it was meant to draw. `build 127`.
+
 ## 1.4.13
 
 - **A key can be pasted, and it is stored where a key belongs.** The provider form

@@ -188,6 +188,43 @@ async fn a_resend_of_the_whole_arguments_object_assembles_into_one_call() {
     assert_no_partial_tool_call(&replay, "\"arguments\"");
 }
 
+/// A token-level stream that puts a nested object's opening brace on a frame of
+/// its own. `{"` is byte-identical to the head of the buffer, and reading that as
+/// a repeat dropped it, leaving `[{"question"...` and `expected value at line 1
+/// column 62` on a real 535-byte `clarify` call - so no question card was ever
+/// drawn. This is the captured 9router stream, not a hand-built shape.
+#[tokio::test]
+async fn a_nested_object_opener_on_its_own_frame_still_assembles() {
+    let replay = replay_fixture("9router-clarify-nested-object-opener.sse").await;
+    let completion = &replay.completion;
+
+    assert_eq!(completion.finish_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(
+        completion.tool_calls.len(),
+        1,
+        "one call, and it has to parse: {:?}",
+        completion.tool_calls
+    );
+
+    let call = &completion.tool_calls[0];
+    assert_eq!(call.name, "clarify");
+    let questions = call.arguments["questions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("questions is an array: {}", call.arguments));
+    assert_eq!(questions.len(), 1);
+    assert_eq!(
+        questions[0]["question"],
+        "Which of these three title directions should the new deck name follow?"
+    );
+    assert_eq!(
+        questions[0]["choices"].as_array().map(Vec::len),
+        Some(3),
+        "all three buttons, not a truncated card"
+    );
+
+    assert_no_partial_tool_call(&replay, "\"arguments\"");
+}
+
 #[tokio::test]
 async fn anthropic_input_json_deltas_assemble_into_one_complete_call() {
     let replay = replay_fixture("anthropic-input-json-delta-stream.sse").await;

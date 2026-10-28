@@ -61,15 +61,27 @@ impl ToolAccumulator {
     ///
     /// The documented sender appends only new bytes. A gateway in front of
     /// 9router can instead send the whole object again on a later delta, and it
-    /// can send the whole object growing, the same three shapes the text path
-    /// guards against in `antigravity_delta`. Appending blind turned
-    /// `{...}` into `{...}{...}`, which fails as `trailing characters` or as
-    /// `EOF while parsing a list` depending on where the cut fell, and the turn
-    /// dies at the parser before any tool runs. So: a fragment that begins with
-    /// everything already buffered contributes only its new suffix, a fragment
-    /// already contained in the buffer contributes nothing, and anything else is
-    /// a genuine continuation. A real truncation still ends short of valid JSON
-    /// and is still refused in `finish`.
+    /// can send the whole object growing, the same shapes the text path guards
+    /// against in `antigravity_delta`. Appending blind turned `{...}` into
+    /// `{...}{...}`, which fails as `trailing characters` or as `EOF while
+    /// parsing a list` depending on where the cut fell, and the turn dies at the
+    /// parser before any tool runs.
+    ///
+    /// A replay is recognised by position, never by content: the only fragment
+    /// that can be a re-send is one that begins with everything already
+    /// buffered, and its new suffix is the rest. Two earlier rules were content
+    /// checks and both were wrong. "A fragment already contained in the buffer
+    /// contributes nothing" dropped a legitimate continuation whenever the bytes
+    /// happened to match the buffer's opening: a token-level stream sends a
+    /// nested object's opener as its own fragment, so `{"` arrived inside
+    /// `"questions": [` and was eaten because the buffer also starts with `{"`,
+    /// leaving `[{"question"...` and `expected value` at the first question. That
+    /// is the 535-byte `clarify` failure. A fragment that repeats a *short* run
+    /// of bytes is indistinguishable from the next token, so nothing below is
+    /// allowed to look at a fragment's content to decide whether it is new.
+    ///
+    /// A real truncation still ends short of valid JSON and is still refused in
+    /// `finish`.
     fn push_arguments(&mut self, fragment: &str) {
         if fragment.is_empty() {
             return;
@@ -78,13 +90,15 @@ impl ToolAccumulator {
             self.arguments.push_str(fragment);
             return;
         }
-        if fragment.starts_with(self.arguments.as_str()) {
-            let fresh = fragment[self.arguments.len()..].to_owned();
-            self.arguments.push_str(&fresh);
+        if let Some(fresh) = fragment.strip_prefix(self.arguments.as_str()) {
+            // A growing re-send: only the suffix is new. An exact re-send strips
+            // to empty and adds nothing, which is the whole-object replay case.
+            self.arguments.push_str(fresh);
             return;
         }
-        if self.arguments.starts_with(fragment) {
-            // The sender repeated a fragment it already sent: nothing new.
+        if fragment.trim().is_empty() {
+            // Whitespace after a complete call is not a new serialisation, and
+            // treating it as one would throw the call away.
             return;
         }
         // A fragment that is a complete JSON value on its own is a whole object,
@@ -1195,5 +1209,45 @@ mod argument_assembly_tests {
                 .contains("never completed into valid JSON"),
             "{error}"
         );
+    }
+
+    /// The bug that failed every `clarify` question on the phone: a token-level
+    /// stream sends a nested object's opener as its own fragment, so `{"` arrives
+    /// in the middle of `"questions": [` and is byte-identical to the prefix the
+    /// buffer already starts with. Reading that as "the sender repeated itself"
+    /// dropped it and left `[{"question"...`, which is `expected value at line 1
+    /// column 62` on a 535-byte buffer. Every question object opener was eaten,
+    /// so every clarify card died before the card was shown.
+    #[test]
+    fn a_nested_object_opener_is_a_continuation_not_a_repeat() {
+        let acc = accumulator(&[
+            r#"{"title": "Pick a title", "questions": ["#,
+            r#"{"#,
+            r#""question": "Which one?", "choices": [{"label": "A"}, {"label": "B"}]"#,
+            r#"}]}"#,
+        ]);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(call.arguments["questions"][0]["question"], "Which one?");
+        assert_eq!(call.arguments["questions"][0]["choices"][1]["label"], "B");
+    }
+
+    /// The replay this rule exists for still works: the same whole object twice,
+    /// byte for byte, contributes the second copy not at all.
+    #[test]
+    fn an_exact_whole_object_resend_adds_nothing() {
+        let one = r#"{"title":"deck","questions":[]}"#;
+        let acc = accumulator(&[one, one, one]);
+        assert_eq!(acc.arguments, one, "one copy, not three");
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(call.arguments["title"], "deck");
+    }
+
+    /// Whitespace after a finished call is a frame boundary, not a new
+    /// serialisation, and must not throw the call away.
+    #[test]
+    fn trailing_whitespace_does_not_replace_the_buffer() {
+        let acc = accumulator(&[r#"{"title":"deck","questions":[]}"#, "\n", "  "]);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(call.arguments["title"], "deck");
     }
 }

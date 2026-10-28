@@ -323,7 +323,7 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 
-Shipped and running: **Kallisti-Eris 1.4.13, build 126**, with the cron scheduler and
+Shipped and running: **Kallisti-Eris 1.4.14, build 127**, with the cron scheduler and
 the skills library switched on. The web client is server-rendered HTML with an inlined
 stylesheet and one script, so a transcript renders on a browser with no scripting and a
 turn that is already running can be reattached to.
@@ -335,7 +335,9 @@ answer is always the 320px `--fold` block it says it is, it scrolls to its own l
 and the fade that says "more below" stops saying it once there is no more. A reply opened
 in the whole window sits above the composer and the rail, and its controls travel with it.
 A tool call survives a gateway that re-sends the whole `arguments` object instead of only
-the new fragment, which used to fail the turn at the parser before any tool ran.
+the new fragment, which used to fail the turn at the parser before any tool ran. So does a
+nested one: a question the model asks arrives as a `clarify` card now, even when the
+gateway puts a nested object's opening brace on a frame of its own.
 
 In private beta: the Kallisti iOS app on the Eris daemon, TestFlight **1.4.14 (109)**.
 The app and the daemon are separate version lines - the daemon's build number moves
