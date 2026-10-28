@@ -97,8 +97,20 @@ impl ToolAccumulator {
             return;
         }
         if fragment.trim().is_empty() {
-            // Whitespace after a complete call is not a new serialisation, and
-            // treating it as one would throw the call away.
+            // Whitespace after a *complete* call is a frame boundary, not a new
+            // serialisation, and treating it as one would throw the call away.
+            // Whitespace before that is content: this provider streams token by
+            // token, so a line of indentation, a blank line or the space between
+            // two words arrives as its own fragment. Dropping those stripped
+            // every script the model wrote down to one space of indent and turned
+            // `defaults to 993` into `defaults to993`, which is why a written
+            // Python file did not compile and the turn spent forty calls
+            // rewriting it. The buffer has to be a whole value before this
+            // fragment can be the whitespace between values.
+            if looks_complete(&self.arguments) {
+                return;
+            }
+            self.arguments.push_str(fragment);
             return;
         }
         // A fragment that is a complete JSON value on its own is a whole object,
@@ -174,8 +186,22 @@ impl ToolAccumulator {
                     match newest_object(buffered) {
                         Some(value) => value,
                         None => {
+                            // The refusal carries one structural fact that costs
+                            // nothing to compute and names the failure: a buffer
+                            // with no object opener in it never got its first
+                            // fragment. That is a different fault from a call cut
+                            // short mid-object, and telling them apart from the
+                            // phone is what stops this being diagnosed from the
+                            // outside for the third time. No bytes of the payload
+                            // are quoted: they can be file content.
+                            let missing_opener = !buffered.contains('{');
+                            let hint = if missing_opener {
+                                "; the opening brace never arrived, so the call resumed mid-value"
+                            } else {
+                                ""
+                            };
                             return Err(classify::protocol(format!(
-                                "tool call `{}` arguments never completed into valid JSON after {} byte(s): {error}",
+                                "tool call `{}` arguments never completed into valid JSON after {} byte(s): {error}{hint}",
                                 self.name,
                                 buffered.len()
                             )));
@@ -698,9 +724,7 @@ impl ChatStreamParser {
         let name = function
             .and_then(|function| function.get("name"))
             .and_then(serde_json::Value::as_str);
-        let arguments = function
-            .and_then(|function| function.get("arguments"))
-            .and_then(serde_json::Value::as_str);
+        let arguments = function.and_then(|function| function.get("arguments"));
 
         let accumulator = self.accumulator(index);
         if let Some(id) = id {
@@ -709,8 +733,20 @@ impl ChatStreamParser {
         if let Some(name) = name {
             accumulator.push_name(name);
         }
-        if let Some(arguments) = arguments {
-            accumulator.push_arguments(arguments);
+        // The documented shape is a string, appended fragment by fragment. A
+        // gateway in front of the provider can instead materialise the whole
+        // object on a delta, and reading only strings silently dropped that
+        // frame: the opener `{"` never reached the buffer, every later fragment
+        // was a continuation of nothing, and the turn died with `expected value
+        // at line 1 column 1` on a call the model had written correctly. An
+        // object is therefore taken as the whole call, the same way the
+        // Anthropic block path already treats a materialised `input`.
+        match arguments {
+            Some(serde_json::Value::String(text)) => accumulator.push_arguments(text),
+            Some(value @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) => {
+                accumulator.push_arguments(&value.to_string());
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -1249,5 +1285,53 @@ mod argument_assembly_tests {
         let acc = accumulator(&[r#"{"title":"deck","questions":[]}"#, "\n", "  "]);
         let call = acc.finish().expect("a call").expect("a tool call");
         assert_eq!(call.arguments["title"], "deck");
+    }
+
+    /// A token-level stream sends a line of indentation as its own fragment. It
+    /// is content inside the value, not a frame boundary: dropping it is what
+    /// stripped a written script down to one space of indent and turned
+    /// `defaults to 993` into `defaults to993` on the way to disk.
+    #[test]
+    fn whitespace_inside_a_value_is_content() {
+        let acc = accumulator(&[
+            r#"{"command":"def decode(value):\n"#,
+            "    ",
+            r#"return value"}"#,
+        ]);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(
+            call.arguments["command"], "def decode(value):\n    return value",
+            "the indentation is part of the command, not a frame to throw away"
+        );
+    }
+
+    /// A gateway that materialises `arguments` as an object instead of streaming
+    /// a string. Reading only strings silently dropped the frame that carried the
+    /// opening brace, and every later fragment became a continuation of nothing.
+    #[test]
+    fn a_materialised_object_arguments_frame_is_accepted() {
+        let mut parser = ChatStreamParser::new(Capabilities::openai_compatible());
+        let frame = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"run_command","arguments":{"command":"ls -la"}}}]}}]}"#;
+        std::mem::drop(parser.push(frame).expect("the frame parses"));
+        std::mem::drop(
+            parser
+                .push(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
+                .expect("the finish frame parses"),
+        );
+        let completion = parser.finish().expect("the stream finishes");
+        assert_eq!(completion.tool_calls.len(), 1, "one call, assembled");
+        assert_eq!(completion.tool_calls[0].arguments["command"], "ls -la");
+    }
+
+    /// A refusal names the one structural fact that tells the two failures
+    /// apart: a buffer with no object opener in it never got its first fragment.
+    #[test]
+    fn a_buffer_with_no_opener_says_so() {
+        let acc = accumulator(&[r#"command":"ls -la"}"#]);
+        let text = acc.finish().expect_err("a refusal").to_string();
+        assert!(
+            text.contains("the opening brace never arrived"),
+            "the refusal has to name the lost opener: {text}"
+        );
     }
 }

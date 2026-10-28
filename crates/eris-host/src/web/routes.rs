@@ -8326,7 +8326,9 @@ fn spawn_turn(
             Ok(text) => text,
             Err(error) => {
                 let message = error.to_string();
-                let _ = chat::fail(&db, &answer_id, error.code(), "");
+                // The row says why. An empty body leaves the bubble with no text
+                // in it, and the page that reloads later never saw the frame.
+                let _ = chat::fail(&db, &answer_id, error.code(), &message);
                 emit(
                     "error",
                     serde_json::json!({

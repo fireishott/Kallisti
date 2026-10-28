@@ -699,3 +699,70 @@ async fn the_reasoning_channel_is_what_the_sink_sees_not_only_the_result() {
         "the thinking reaches the reasoning stream as it arrives: {streamed_reasoning:?}"
     );
 }
+
+/// The captured token-level stream from 2026-10-28, replayed frame by frame.
+///
+/// One `run_command` carrying a heredoc, split into 1,163 argument fragments -
+/// 39 of them pure whitespace inside the command string. The assembler dropped
+/// those, which took 474 bytes of indentation out of the file the model wrote,
+/// turned `defaults to 993` into `defaults to993`, and left a Python file that
+/// would not compile; the model then spent its turn rewriting it. The command
+/// has to come out of the assembler exactly as it was sent.
+#[test]
+fn whitespace_fragments_inside_a_command_are_kept() {
+    let raw = fixture("arguments-whitespace-fragments.json");
+    let recorded: serde_json::Value = serde_json::from_slice(&raw).expect("the fixture parses");
+    let fragments = recorded["fragments"]
+        .as_array()
+        .expect("the fixture carries a fragment list");
+
+    let mut parser = ChatStreamParser::new(Capabilities::openai_compatible());
+    let opener = serde_json::json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "run_command"}
+        }]}}]
+    });
+    std::mem::drop(parser.push(&opener.to_string()).expect("the opener parses"));
+
+    for fragment in fragments {
+        let text = fragment.as_str().expect("a string fragment");
+        let frame = serde_json::json!({
+            "choices": [{"delta": {"tool_calls": [{
+                "index": 0,
+                "function": {"arguments": text}
+            }]}}]
+        });
+        std::mem::drop(
+            parser
+                .push(&frame.to_string())
+                .unwrap_or_else(|error| panic!("the fragment must parse: {error}")),
+        );
+    }
+    std::mem::drop(
+        parser
+            .push(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
+            .expect("the finish frame parses"),
+    );
+
+    let completion = parser.finish().expect("the stream finishes");
+    assert_eq!(completion.tool_calls.len(), 1, "one call, assembled");
+    let command = completion.tool_calls[0].arguments["command"]
+        .as_str()
+        .expect("the command is a string");
+    assert_eq!(
+        command.len(),
+        4173,
+        "the whole command, byte for byte: the whitespace fragments are content"
+    );
+    assert!(
+        command.contains("defaults to 993"),
+        "the space inside a sentence survives"
+    );
+    assert!(
+        command.contains("    python3 getmail.py"),
+        "the indentation survives"
+    );
+}

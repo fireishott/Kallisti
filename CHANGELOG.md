@@ -6,6 +6,25 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The argument assembler keeps the spaces it was given, and says which failure
+  it hit.** Two faults from one turn on the phone. First, a fragment that was
+  pure whitespace was dropped unless it came after a finished call - but this
+  provider streams tokens, so indentation, blank lines and the space between two
+  words arrive as fragments of their own. A 4 KB command lost 474 bytes of
+  whitespace on the way in, which is why a written `getmail.py` came out at one
+  space of indent with `defaults to993` in its docstring and would not compile;
+  the model then spent its turn rewriting it. A whitespace-only fragment is now
+  content unless the buffer is already a whole value. Second, a gateway that
+  materialises `arguments` as an object instead of a string had that frame
+  silently ignored, so the opening brace never reached the buffer and every later
+  fragment was a continuation of nothing - the `expected value at line 1 column
+  1` refusal, on calls the model had written correctly. The object is accepted as
+  the whole call, the same way the Anthropic block path already treated a
+  materialised `input`, and a refusal now says when the opening brace never
+  arrived. A turn that fails before it streams anything also writes the failure
+  into its transcript row, so the dashboard shows why instead of an empty bubble.
+  `build 129`.
+
 - **A file can ride with a turn from the phone.** The device listener had no
   attachment path at all, so the app dropped every picture and log it was handed
   and said so in a comment; the browser's composer had carried files for months.

@@ -1674,12 +1674,22 @@ impl TurnHub {
                                         // The partial text is kept, as the browser
                                         // keeps it: a message that failed mid-answer
                                         // is worth more with the fragment that
-                                        // arrived than with nothing at all.
+                                        // arrived than with nothing at all. A turn
+                                        // that failed before it streamed anything -
+                                        // a protocol refusal, a provider that never
+                                        // answered - has only the failure itself to
+                                        // show, so the row says that. An empty body
+                                        // is a bubble with no text in it.
+                                        let body = if streamed.trim().is_empty() {
+                                            &message
+                                        } else {
+                                            &streamed
+                                        };
                                         let _ = crate::web::chat::fail(
                                             store.db(),
                                             &write.answer_id,
                                             &code,
-                                            &streamed,
+                                            body,
                                         );
                                     }
                                     publish(&sender, seq, FrameKind::Error, data);
