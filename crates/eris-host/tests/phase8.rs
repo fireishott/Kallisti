@@ -40,6 +40,9 @@ const JSON: &str = "application/json";
 /// The body type a form request sends.
 const FORM: &str = "application/x-www-form-urlencoded";
 
+/// What a phone uploads a file as: the bytes, nothing wrapped around them.
+const OCTETS: &str = "application/octet-stream";
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
@@ -225,6 +228,17 @@ impl Harness {
         body: Option<&str>,
     ) -> HttpResponse {
         http(self.addr, method, path, headers, body, JSON).await
+    }
+
+    /// A raw-byte upload, which is what the phone sends a file as.
+    async fn request_octets(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        body: &str,
+    ) -> HttpResponse {
+        http(self.addr, method, path, headers, Some(body), OCTETS).await
     }
 
     /// A form-encoded body, which is what a `curl --data-urlencode` run sends.
@@ -5750,6 +5764,93 @@ async fn a_file_that_is_not_an_archive_lists_without_invented_numbers() {
         row["members"],
         serde_json::Value::Null,
         "a file that does not open as an archive has no member count to report: {row}"
+    );
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Attachments: the phone's four steps
+// ---------------------------------------------------------------------------
+
+/// Upload, name on a turn, read back from the conversation, read the bytes from
+/// the id. This is the exact sequence the app runs, over the real listener.
+#[tokio::test]
+async fn a_file_uploads_rides_with_the_turn_and_reads_back() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let created = harness
+        .request("POST", "/v1/conversations", &auth, None)
+        .await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let conversation = created.json()["id"]
+        .as_str()
+        .expect("a conversation id")
+        .to_owned();
+
+    let bytes = "hello from the phone\n";
+    let mut headers = auth.to_vec();
+    headers.push(("x-kallisti-filename", "notes.txt".to_owned()));
+    headers.push(("x-kallisti-conversation", conversation.clone()));
+    let uploaded = harness
+        .request_octets("POST", "/v1/attachments", &headers, bytes)
+        .await;
+    assert_eq!(uploaded.status, 201, "{}", uploaded.body);
+    let attachment = uploaded.json()["attachment"].clone();
+    let id = attachment["id"]
+        .as_str()
+        .expect("an attachment id")
+        .to_owned();
+    assert_eq!(attachment["name"], "notes.txt");
+    assert_eq!(attachment["size"], bytes.len() as u64);
+    assert_eq!(attachment["media_type"], "text/plain");
+
+    let body = serde_json::json!({
+        "text": "what is in the file?",
+        "conversation": conversation.clone(),
+        "attachments": id,
+    })
+    .to_string();
+    let turn = harness
+        .request("POST", "/v1/turns", &auth, Some(&body))
+        .await;
+    assert_eq!(turn.status, 202, "{}", turn.body);
+
+    let read = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let transcript = read.json();
+    let question = transcript["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|message| message["role"] == "user")
+        .expect("the question row");
+    let files = question["attachments"]
+        .as_array()
+        .expect("an array on every row");
+    assert_eq!(files.len(), 1, "{question}");
+    assert_eq!(files[0]["id"], id);
+    assert_eq!(files[0]["name"], "notes.txt");
+
+    let fetched = harness
+        .request_octets("GET", &format!("/v1/attachments/{id}"), &auth, "")
+        .await;
+    assert_eq!(fetched.status, 200, "{}", fetched.body);
+    assert_eq!(fetched.body, bytes);
+    assert!(
+        fetched.headers.to_ascii_lowercase().contains("text/plain"),
+        "{}",
+        fetched.headers
     );
 
     harness.stop();

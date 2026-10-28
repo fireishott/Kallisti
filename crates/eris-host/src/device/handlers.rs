@@ -29,7 +29,7 @@ use crate::auth::{
 use crate::device::turns::{ConversationTurn, FrameKind, TurnFrame, TurnPolicy};
 use crate::device::{
     APPROVAL_LIST_LIMIT, AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT, CONVERSATION_LIST_LIMIT,
-    CONVERSATION_MESSAGE_LIMIT, DEVICE_LIST_LIMIT, DeviceError, DeviceService,
+    CONVERSATION_MESSAGE_LIMIT, DEVICE_LIST_LIMIT, DeviceError, DeviceService, attachments,
 };
 use crate::inbox::{InboxActionRequest, InboxStore, InternalInboxCreateRequest};
 use crate::notes::{
@@ -133,7 +133,7 @@ pub(crate) fn require_admin(token: &VerifiedToken) -> Result<(), DeviceError> {
 }
 
 /// The not-ready gate: a device surface on a daemon with no provider is a trap.
-fn require_ready(service: &DeviceService) -> Result<(), DeviceError> {
+pub(crate) fn require_ready(service: &DeviceService) -> Result<(), DeviceError> {
     match service.engine().is_ready() {
         Ok(true) => Ok(()),
         Ok(false) => Err(DeviceError::new(
@@ -517,6 +517,15 @@ pub async fn create_turn(
         return DeviceError::bad_request("text_required", "the turn text must not be empty")
             .into_response();
     }
+    // Files this turn carries. Ids only: the bytes were uploaded first and are
+    // already rows, so a turn never carries a body that can fail halfway.
+    let attachment_ids =
+        match attachments::parse_ids(field(&fields, attachments::ATTACHMENTS_FIELD)) {
+            Ok(ids) => ids,
+            Err(message) => {
+                return DeviceError::bad_request("attachments_invalid", message).into_response();
+            }
+        };
 
     // A conversation is optional. Naming one makes this turn a transcript row
     // pair, so a client can read history after the stream closes; leaving it out
@@ -540,6 +549,14 @@ pub async fn create_turn(
             }
         }
     };
+
+    if conversation.is_none() && !attachment_ids.is_empty() {
+        return DeviceError::bad_request(
+            "conversation_required",
+            "a turn that carries files has to name the conversation they belong to",
+        )
+        .into_response();
+    }
 
     let idempotency_key = headers
         .get(IDEMPOTENCY_HEADER)
@@ -609,11 +626,12 @@ pub async fn create_turn(
         }
     };
 
+    let mut attachment_files: Vec<chat::Attachment> = Vec::new();
     let conversation_turn = match &conversation {
         None => None,
         Some(conversation_id) => {
             let db = service.engine().db();
-            if let Err(error) = chat::append_identified(
+            let question_row = match chat::append_identified(
                 db,
                 conversation_id,
                 chat::Role::User,
@@ -621,11 +639,29 @@ pub async fn create_turn(
                 chat::State::Complete,
                 client_message_id.as_deref(),
             ) {
-                return DeviceError::db_unavailable(format!(
-                    "cannot write the question into the conversation: {error}"
-                ))
-                .into_response();
-            }
+                Ok(id) => id,
+                Err(error) => {
+                    return DeviceError::db_unavailable(format!(
+                        "cannot write the question into the conversation: {error}"
+                    ))
+                    .into_response();
+                }
+            };
+            // The files were uploaded against this conversation and are waiting
+            // unclaimed. Claiming them for the row just written is what puts them
+            // in the transcript and takes them out of the sweeper's reach.
+            attachment_files = match attachments::claim_for_turn(
+                db,
+                conversation_id,
+                &question_row,
+                &attachment_ids,
+            ) {
+                Ok(files) => files,
+                Err(message) => {
+                    return DeviceError::bad_request("attachments_invalid", message)
+                        .into_response();
+                }
+            };
             // The model this conversation is on, and the window that belongs to
             // the provider serving it. Asking the primary for the window is right
             // only while the pin is on the primary: a conversation the composer
@@ -697,7 +733,16 @@ pub async fn create_turn(
                 .into_response();
         }
     };
-    let job_id = match store.create_job(token.device_id(), &session_id, idempotency_key, text) {
+    // What the worker reads. The operator's words, plus what came with them: the
+    // files by name, and an image described by the pinned vision role, because
+    // the model serving the turn may be one that cannot see. The transcript row
+    // keeps the words alone - the description is a prompt, not a thing that was
+    // said.
+    let vision = chat::aux_pinned_config(service.engine(), "vision")
+        .ok()
+        .flatten();
+    let prompt = attachments::prompt_with_attachments(text, &attachment_files, vision.as_ref());
+    let job_id = match store.create_job(token.device_id(), &session_id, idempotency_key, &prompt) {
         Ok(job_id) => job_id,
         Err(error) => {
             return DeviceError::db_unavailable(format!("cannot queue the turn: {error}"))
@@ -1289,10 +1334,15 @@ pub async fn conversation(
         chat::TRANSCRIPT_BYTE_BUDGET,
         chat::TOOL_OUTPUT_PREVIEW,
     );
+    // Files that came with each row. One query for the conversation, not one per
+    // message, and a failure to read them costs the attachments rather than the
+    // transcript: a chat that cannot list its pictures still opens.
+    let files_by_message = chat::attachments_by_message(db, &conversation_id).unwrap_or_default();
     let messages: Vec<serde_json::Value> = bounded
         .messages
         .into_iter()
         .map(|message| {
+            let files = files_by_message.get(&message.id);
             serde_json::json!({
                 "id": message.id,
                 "role": message.role.as_str(),
@@ -1306,6 +1356,20 @@ pub async fn conversation(
                 // "this row predates the column" from "the daemon forgot".
                 "client_message_id": message.client_message_id,
                 "job_id": message.job_id,
+                // Additive: a client that does not know the key reads exactly
+                // what it read before. An empty array rather than an omission,
+                // so a phone can tell "no files" from "the daemon forgot".
+                "attachments": files
+                    .map(|files| files
+                        .iter()
+                        .map(|file| serde_json::json!({
+                            "id": file.id,
+                            "name": file.name,
+                            "size": file.size,
+                            "media_type": file.media_type,
+                        }))
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default(),
             })
         })
         .collect();

@@ -42,6 +42,7 @@
 //! behaviour rather than a bug: rebinding a listener to signal "off" would drop
 //! the SSE streams of turns that are already running.
 
+pub mod attachments;
 pub mod control;
 pub mod gateway;
 pub mod handlers;
@@ -150,6 +151,12 @@ pub const ROUTE_PROJECTS_ASSIGN: &str = "/v1/projects/assign";
 pub const ROUTE_CONVERSATIONS: &str = "/v1/conversations";
 
 /// `GET /v1/conversations/{id}` - one conversation and its messages.
+/// `POST /v1/attachments` - upload one file, get an id back.
+pub const ROUTE_ATTACHMENTS: &str = "/v1/attachments";
+
+/// `GET /v1/attachments/{id}` - the bytes behind an id a transcript names.
+pub const ROUTE_ATTACHMENT: &str = "/v1/attachments/{id}";
+
 pub const ROUTE_CONVERSATION: &str = "/v1/conversations/{id}";
 
 /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
@@ -1034,6 +1041,8 @@ pub fn router(service: DeviceService) -> Router {
             ROUTE_CONVERSATIONS,
             get(handlers::list_conversations).post(handlers::create_conversation),
         )
+        .route(ROUTE_ATTACHMENTS, post(attachments::upload))
+        .route(ROUTE_ATTACHMENT, get(attachments::bytes))
         .route(ROUTE_CONVERSATION, get(handlers::conversation))
         .route(ROUTE_CONVERSATION_CLEAR, post(handlers::clear_conversation))
         .route(

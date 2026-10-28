@@ -9190,7 +9190,10 @@ async fn upload_wallpaper(
 }
 
 /// Write a file beside its destination and rename it into place.
-fn write_atomically(target: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+pub(crate) fn write_atomically(
+    target: &std::path::Path,
+    bytes: &[u8],
+) -> Result<(), std::io::Error> {
     let temporary = target.with_extension("upload");
     std::fs::write(&temporary, bytes)?;
     std::fs::rename(&temporary, target)?;

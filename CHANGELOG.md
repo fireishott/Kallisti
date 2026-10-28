@@ -4,6 +4,24 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.4.15
+
+- **A file can ride with a turn from the phone.** The device listener had no
+  attachment path at all, so the app dropped every picture and log it was handed
+  and said so in a comment; the browser's composer had carried files for months.
+  Three routes and one claim later, both lanes are the same feature: `POST
+  /v1/attachments` takes the raw bytes with a filename header and the
+  conversation they belong to and answers with an id, `POST /v1/turns` names
+  those ids in an `attachments` field and the turn claims them for the question
+  row it writes, and `GET /v1/attachments/{id}` serves the bytes back for
+  history. The rules are the dashboard's own, not a second set: the row decides
+  what may be read, the path has to resolve inside `workspace/uploads`, the read
+  is bounded again on the way out, and the type comes from the bytes rather than
+  the filename. What the model gets is a prompt that names each file and, for an
+  image, a description from the pinned vision role - because the model serving
+  the turn may be one that cannot see. The transcript row keeps the operator's
+  words alone. `build 128`.
+
 ## 1.4.14
 
 - **A question the model asks now survives the stream that carries it.** Every
