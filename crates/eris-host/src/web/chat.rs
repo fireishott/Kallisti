@@ -2183,7 +2183,6 @@ pub const MAX_VISION_BYTES: u64 = 8 * 1024 * 1024;
 pub fn describe_images(config: &TurnConfig, files: &[Attachment]) -> Option<String> {
     use base64::Engine as _;
 
-
     let mut urls: Vec<String> = Vec::new();
     for file in files.iter().filter(|file| is_image(file)) {
         if file.size > MAX_VISION_BYTES {
