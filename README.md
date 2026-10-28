@@ -323,7 +323,7 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 
-Shipped and running: **Kallisti-Eris 1.4.15, build 130**, with the cron scheduler and
+Shipped and running: **Kallisti-Eris 1.4.15, build 131**, with the cron scheduler and
 the skills library switched on. The web client is server-rendered HTML with an inlined
 stylesheet and one script, so a transcript renders on a browser with no scripting and a
 turn that is already running can be reattached to.

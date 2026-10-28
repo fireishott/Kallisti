@@ -6,6 +6,16 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The picture guard that refused the one thread it was meant to allow.** Build
+  130 added a `Handle::try_current` check in front of the two blocking roles, on
+  the theory that it would catch a caller on an async worker. It does not: a
+  closure handed to `spawn_blocking` still sees the runtime's handle, so the
+  check refused the description on exactly the thread the fix had moved it to.
+  Vision and web-extract went silently unavailable on every turn that ran in a
+  blocking task. The check is gone; `spawn_blocking` is the contract, and the
+  property it depends on - a blocking thread can build a runtime of its own - is
+  now a test rather than a comment. `build 131`.
+
 - **A picture from the phone no longer kills the turn that carried it.** Every
   turn sent from the app with an image attached died before it was queued: the
   handler asked the pinned vision role to describe the picture on the async

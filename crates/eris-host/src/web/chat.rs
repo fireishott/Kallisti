@@ -2163,16 +2163,6 @@ pub fn is_image(file: &Attachment) -> bool {
 /// The largest image handed to a vision model in one turn, in bytes.
 pub const MAX_VISION_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Whether a tokio runtime is driving this thread.
-///
-/// The blocking roles below build a runtime of their own, and a runtime thread
-/// cannot do that: `Builder::build` panics with "cannot start a runtime from
-/// within a runtime". `Handle::try_current` is the cheap, allocation-free
-/// question, and it answers `Ok` exactly when one is present here.
-fn on_a_runtime_thread() -> bool {
-    tokio::runtime::Handle::try_current().is_ok()
-}
-
 /// Ask a vision model what is in the attached images.
 ///
 /// This is the one role whose output is not a side effect: the operator attached
@@ -2180,24 +2170,19 @@ fn on_a_runtime_thread() -> bool {
 /// and nothing more. Best effort like every role - a provider that cannot see
 /// leaves the turn with the same filename description it had before.
 ///
-/// Blocking. The call builds a runtime of its own and waits on it, so a caller
-/// has to be on a thread that is not driving async tasks, which is why both
-/// entry points wrap it in `spawn_blocking`. On a runtime thread the runtime
-/// cannot be built at all, and the panic that used to follow took down the whole
-/// handler - a turn that never ran, a 502 with no body on the phone, and an
-/// orphaned question row. Refusing here instead leaves the turn running with the
-/// filename, and the warning says which caller needs fixing.
+/// Blocking. The call builds a runtime of its own and waits on it, which is legal
+/// on a blocking thread and is not legal on a runtime worker: `block_on` there
+/// panics with "cannot start a runtime from within a runtime". `spawn_blocking`
+/// is therefore the contract, not a preference - the phone's turn handler built
+/// its prompt on the worker and every picture-bearing turn died before it was
+/// queued. A caller that gets this wrong again panics, which is visible in the
+/// journal; do not paper over it with a `Handle::try_current` check, because a
+/// blocking thread sees a handle too and that check refuses the one place the
+/// call is allowed.
 #[must_use]
 pub fn describe_images(config: &TurnConfig, files: &[Attachment]) -> Option<String> {
     use base64::Engine as _;
 
-    if on_a_runtime_thread() {
-        tracing::warn!(
-            "describe_images was called on a runtime thread, so the image went undescribed: \
-             the caller has to use spawn_blocking"
-        );
-        return None;
-    }
 
     let mut urls: Vec<String> = Vec::new();
     for file in files.iter().filter(|file| is_image(file)) {
@@ -2261,15 +2246,6 @@ pub fn describe_images(config: &TurnConfig, files: &[Attachment]) -> Option<Stri
 pub fn extract_readable(config: &TurnConfig, page: &str) -> Option<String> {
     let text = page.trim();
     if text.is_empty() {
-        return None;
-    }
-    // Blocking for the same reason `describe_images` is: a runtime of its own,
-    // and a runtime thread cannot build one.
-    if on_a_runtime_thread() {
-        tracing::warn!(
-            "extract_readable was called on a runtime thread, so the page stayed unread: \
-             the caller has to use spawn_blocking"
-        );
         return None;
     }
     let profile = config.profile("web-extract").ok()?;
@@ -7186,30 +7162,22 @@ mod transcript_bound_tests {
         assert!(output.starts_with('\u{1F600}'));
     }
 
-    /// The blocking roles build a runtime of their own, and a runtime thread
-    /// cannot do that: `Builder::build` panics with "cannot start a runtime from
-    /// within a runtime", which is what a phone turn carrying a picture hit -
-    /// the handler died, the request was dropped as a 502 with no body, and the
-    /// question row was left in the transcript with no job behind it. The guard
-    /// has to see that condition, so both sides of it are asserted here: a
-    /// `#[tokio::test]` body is a runtime thread, and cargo's own test thread is
-    /// not. The end-to-end proof is a device turn with an image and a pinned
-    /// vision role, which cannot be written in this file - the role resolves its
-    /// key through `resolve_key_now`, and the harness's injected lookup is not
-    /// that function.
+    /// The property the phone's attachment fix depends on: a closure handed to
+    /// `spawn_blocking` is a thread where a nested runtime is legal, so building
+    /// the prompt there is enough and no guard is needed. The same call on a
+    /// runtime worker panics, which is what killed every picture-bearing turn
+    /// before the prompt moved off the worker.
     #[tokio::test]
-    async fn a_runtime_thread_is_recognised_so_a_blocking_role_can_refuse() {
-        assert!(
-            on_a_runtime_thread(),
-            "a test body runs under tokio, which is the condition the guard refuses"
-        );
-    }
-
-    #[test]
-    fn a_plain_thread_is_not_a_runtime_thread() {
-        assert!(
-            !on_a_runtime_thread(),
-            "a blocking thread is exactly where the role is allowed to run"
-        );
+    async fn a_blocking_thread_can_build_a_runtime_of_its_own() {
+        let answer = tokio::task::spawn_blocking(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a blocking thread can build a runtime");
+            runtime.block_on(async { 42 })
+        })
+        .await
+        .expect("the blocking task runs");
+        assert_eq!(answer, 42, "and drive it to completion");
     }
 }
