@@ -139,12 +139,6 @@ impl ToolAccumulator {
         // column nobody can explain from the payload; replacing keeps the newest
         // spelling, which is the one the sender meant. A genuine continuation is
         // never valid JSON on its own, so this cannot swallow one.
-        if looks_complete(fragment) {
-            self.arguments.clear();
-            self.last_complete = None;
-            self.arguments.push_str(fragment);
-            return;
-        }
         // The buffer is already a whole JSON value and this fragment is neither a
         // repeat of it nor a new whole object. Only a fragment that *begins a
         // value* can be a restart of the serialisation: the new spelling is still
@@ -159,7 +153,7 @@ impl ToolAccumulator {
         // left holding seven bytes of the middle of the command, and refused a
         // call the model had written correctly.
         if looks_complete(&self.arguments) {
-            if fragment.starts_with('{') || fragment.starts_with('[') {
+            if fragment.starts_with('{') {
                 self.arguments.clear();
                 self.last_complete = None;
             }
@@ -243,9 +237,44 @@ impl ToolAccumulator {
             }
         };
 
+        // An arguments value that is not an object is never a call: recover an
+        // object if the buffer still holds one, and refuse otherwise.
+        let arguments = if arguments.is_object() {
+            arguments
+        } else {
+            match self
+                .last_complete
+                .take()
+                .filter(serde_json::Value::is_object)
+                .or_else(|| newest_object(buffered).filter(serde_json::Value::is_object))
+            {
+                Some(value) => value,
+                None => {
+                    return Err(classify::protocol(format!(
+                        "tool call `{}` arguments were {}, and a tool call's arguments are a JSON object",
+                        self.name,
+                        json_kind(&arguments)
+                    )));
+                }
+            }
+        };
+
         ToolCall::new(self.index, id, self.name.clone(), arguments)
             .map(Some)
             .map_err(|error| classify::protocol(format!("tool call `{}`: {error}", self.name)))
+    }
+}
+
+/// What kind of JSON value this is, for a refusal that names the shape without
+/// quoting the payload.
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Object(_) => "an object",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Null => "null",
     }
 }
 
@@ -259,8 +288,13 @@ fn looks_complete(fragment: &str) -> bool {
     if trimmed.len() < 2 {
         return false;
     }
-    matches!(trimmed.as_bytes()[0], b'{' | b'[')
-        && serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
+    // An object, never an array. Tool-call arguments are an object in both
+    // dialects, so a fragment that parses as an array is content inside a
+    // command - a JSON body in a curl, say - and treating it as a whole call
+    // replaced the real arguments with that body. The turn then failed with
+    // "tool-call arguments must be a JSON object", holding the JSON it was
+    // meant to send rather than the call.
+    trimmed.starts_with('{') && serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
 }
 
 /// The newest complete JSON object inside a buffer of concatenated ones.
@@ -1381,5 +1415,38 @@ mod argument_assembly_tests {
             call.arguments["command"], "ls -la",
             "the whole call in the buffer is the one that survives"
         );
+    }
+
+    /// A JSON body inside a command is content, not a call. A `curl -d
+    /// '{"query":"x"}'` streams fragments that can parse as a whole object on
+    /// their own; treating one as a re-serialised call replaced the arguments
+    /// with it, and the turn died with "arguments must be a JSON object" holding
+    /// the body it meant to send.
+    #[test]
+    fn an_object_inside_a_command_is_not_a_call() {
+        // Escaped, the way a command inside a JSON string really travels: the
+        // inner braces are content and never parse on their own.
+        let acc = accumulator(&[
+            r#"{"command":"curl -s http://x -d '"#,
+            r#"{\"query\":\"horses\"}"#,
+            r#"' | head"}"#,
+        ]);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        let command = call.arguments["command"]
+            .as_str()
+            .expect("the command survives as a string");
+        assert!(command.contains(r#"{"query":"horses"}"#), "{command}");
+        assert!(
+            command.starts_with("curl -s"),
+            "the head is intact: {command}"
+        );
+    }
+
+    /// A fragment that parses as an array is content too: arguments are an object
+    /// in both dialects, so an array can never be the call.
+    #[test]
+    fn an_array_fragment_never_counts_as_a_whole_call() {
+        assert!(!looks_complete(r#"["a","b"]"#));
+        assert!(looks_complete(r#"{"a":1}"#));
     }
 }

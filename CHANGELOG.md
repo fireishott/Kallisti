@@ -6,6 +6,16 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **Only an object can be a tool call.** A fragment that parsed as a JSON array
+  counted as a whole re-serialised call, so an array - a JSON body inside a
+  `curl`, say - could replace the real arguments. The turn then ended with
+  "tool-call arguments must be a JSON object", holding the JSON it meant to send.
+  Arguments are an object in both dialects, so completeness now means an object
+  and nothing else, and a value that is not an object is recovered from the
+  buffer when one is still in there. When nothing object-shaped survives, the
+  refusal names what arrived (`an array`, `a string`, `a number`) instead of
+  leaving the shape to be guessed. `build 134`.
+
 - **A whole tool call is not thrown away by the fragment that follows it.** The
   argument assembler kept one buffer, and when that buffer already held a complete
   JSON object it replaced the buffer with the next fragment. Replacement is only
