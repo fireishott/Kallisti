@@ -596,6 +596,13 @@ pub struct RunRequest {
     /// The parent's workspace. A child is confined to it and may not write to it,
     /// because it has no tools; see [`child_sandbox`].
     pub workspace: PathBuf,
+    /// The key the parent turn already resolved, when the caller supplied one.
+    ///
+    /// A child runs on the parent's provider and model, so re-reading the
+    /// environment for the same reference buys nothing: it is the same value, and
+    /// on a surface whose keys are injected (the phone's, in a test) the second
+    /// read is a different answer than the one the parent used.
+    pub key: Option<core_runtime::provider::SecretKey>,
 }
 
 /// What one child turn produced.
@@ -659,8 +666,11 @@ pub fn child_sandbox(workspace: PathBuf) -> crate::tools::Sandbox {
 /// The production runner: one tool-less turn through the same loop every other
 /// turn uses.
 fn run_child_turn(request: &RunRequest) -> Result<RunOutput, (String, String)> {
-    let key = crate::oauth::credential::resolve_key_now(&request.config.key_ref)
-        .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
+    let key = match request.key.clone() {
+        Some(key) => key,
+        None => crate::oauth::credential::resolve_key_now(&request.config.key_ref)
+            .map_err(|error| (error.kind().to_owned(), error.to_string()))?,
+    };
     let sandbox = child_sandbox(request.workspace.clone());
     // Nothing a child asks for may run, including a call that a provider invented
     // despite being offered an empty tool list.
@@ -723,6 +733,7 @@ pub struct Desk {
     workspace: PathBuf,
     runner: Arc<Runner>,
     notify: Option<Notify>,
+    key: Option<core_runtime::provider::SecretKey>,
 }
 
 impl Desk {
@@ -745,7 +756,15 @@ impl Desk {
             workspace,
             runner: provider_runner(),
             notify: None,
+            key: None,
         }
+    }
+
+    /// Hand the desk the key the parent turn already resolved.
+    #[must_use]
+    pub fn with_key(mut self, key: core_runtime::provider::SecretKey) -> Self {
+        self.key = Some(key);
+        self
     }
 
     /// Replace the runner. Used by the suites; production keeps the provider.
@@ -840,6 +859,7 @@ impl Desk {
             system: self.system.clone(),
             prompt: prompt.to_owned(),
             workspace: self.workspace.clone(),
+            key: self.key.clone(),
         };
         let (status, outcome) = match (self.runner)(&request) {
             Ok(output) if output.text.trim().is_empty() => (

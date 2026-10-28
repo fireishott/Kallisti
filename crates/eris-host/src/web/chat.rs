@@ -3781,9 +3781,12 @@ pub fn run_turn_with_key(
                     "id": id,
                     "label": crate::subagents::label_for(&label, &prompt),
                     "model": desk.model(),
+                    // Said without naming a control: the dashboard shows these
+                    // on its bar and the phone shows them in the run log of this
+                    // turn's tool frames, so the sentence has to be true on both.
                     "note": "The subagent is running in the background with no tools. \
-                             Its result appears in the subagents control in the top bar; \
-                             do not wait for it in this turn.",
+                             Its result lands on its own row in the daemon, not in this \
+                             reply; do not wait for it in this turn.",
                 })),
                 Err(error) => crate::tools::ToolResult {
                     content: serde_json::json!({

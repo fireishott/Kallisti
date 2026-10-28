@@ -5855,3 +5855,141 @@ async fn a_file_uploads_rides_with_the_turn_and_reads_back() {
 
     harness.stop();
 }
+
+// ---------------------------------------------------------------------------
+// Dispatch from the phone
+// ---------------------------------------------------------------------------
+
+/// A stub that answers the first request with a `dispatch_agent` call and every
+/// later one with plain text. One parent round dispatches, the parent's next
+/// round answers, and the child's turn reads the same text.
+struct DispatchStub {
+    url: String,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl DispatchStub {
+    async fn start(prompt: &'static str, text: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a dispatch stub listener");
+        let addr = listener.local_addr().expect("an address");
+        let task = tokio::spawn(async move {
+            let mut first = true;
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut scratch = [0u8; 8192];
+                let _ = socket.read(&mut scratch).await;
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                            cache-control: no-cache\r\nconnection: close\r\n\r\n";
+                if socket.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                let arguments =
+                    serde_json::json!({ "prompt": prompt, "label": "phone" }).to_string();
+                let frames: Vec<serde_json::Value> = if first {
+                    first = false;
+                    vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[{
+                            "index":0,"id":"call-1","type":"function",
+                            "function":{"name":"dispatch_agent","arguments":arguments}
+                        }]}}]}),
+                        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+                    ]
+                } else {
+                    vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"content":text}}]}),
+                        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+                    ]
+                };
+                for frame in frames {
+                    let line = format!("data: {frame}\n\n");
+                    if socket.write_all(line.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+                let _ = socket.write_all(b"data: [DONE]\n\n").await;
+            }
+        });
+        Self {
+            url: format!("http://{addr}/v1"),
+            _task: task,
+        }
+    }
+}
+
+/// The phone lane offers `dispatch_agent` and a call to it runs a child turn.
+///
+/// This is the whole capability: the operator's switch on, the Full sandbox, an
+/// answer row to count against, and a model that calls the tool. Before this the
+/// device turn hardcoded `agents: false`, so the tool was never offered and a
+/// child never ran.
+#[tokio::test]
+async fn a_phone_turn_can_dispatch_a_subagent() {
+    let stub = DispatchStub::start("Summarise the deck", "the child's answer").await;
+    let harness = Harness::start(&stub.url, DEFAULT_SSE_BUFFER).await;
+    {
+        let mut permissions = harness.engine.permissions().expect("permissions read");
+        permissions.sandbox_mode = eris_host::onboarding::permissions::SandboxMode::Full;
+        harness
+            .engine
+            .set_permissions(permissions)
+            .expect("permissions written");
+    }
+    harness
+        .engine
+        .set_setting(eris_host::subagents::SETTING_AGENTS_ENABLED, "true")
+        .expect("the dispatch switch");
+
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let created = harness
+        .request("POST", "/v1/conversations", &auth, None)
+        .await;
+    let conversation = created.json()["id"]
+        .as_str()
+        .expect("a conversation")
+        .to_owned();
+    let body =
+        serde_json::json!({ "text": "hand this to a subagent", "conversation": conversation })
+            .to_string();
+    let queued = harness
+        .request("POST", "/v1/turns", &auth, Some(body.as_str()))
+        .await;
+    assert_eq!(queued.status, 202, "{}", queued.body);
+
+    // The child runs on its own task; wait for the row to settle.
+    let db = harness.engine.db();
+    let mut settled = None;
+    for _ in 0..100 {
+        let rows = eris_host::subagents::bar(db, 10).expect("the bar reads");
+        if let Some(row) = rows.into_iter().next()
+            && row.status == eris_host::subagents::Status::Succeeded
+        {
+            settled = Some(row);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let row = settled.unwrap_or_else(|| {
+        let rows = eris_host::subagents::bar(db, 10).unwrap_or_default();
+        panic!("no settled child; rows = {rows:?}");
+    });
+    assert_eq!(row.prompt, "Summarise the deck");
+    assert_eq!(row.model, "p8-model");
+    assert!(
+        row.result
+            .as_deref()
+            .unwrap_or_default()
+            .contains("the child's answer"),
+        "the child's text lands on the row: {:?}",
+        row.result
+    );
+    assert!(
+        row.parent_turn.is_some(),
+        "the row names the answer it was counted against"
+    );
+    harness.stop();
+}

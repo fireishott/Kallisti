@@ -396,6 +396,11 @@ pub struct TurnPolicy {
     pub show_reasoning: bool,
     /// Whether tool frames go out.
     pub show_tool_log: bool,
+    /// Whether the operator's dispatch switch is on.
+    ///
+    /// The switch alone is not enough to dispatch: the desk is built only when the
+    /// sandbox is Full and the turn owns an answer row to count children against.
+    pub agents_enabled: bool,
 }
 
 impl Default for TurnPolicy {
@@ -417,6 +422,7 @@ impl Default for TurnPolicy {
             context_budget: None,
             show_reasoning: true,
             show_tool_log: true,
+            agents_enabled: false,
         }
     }
 }
@@ -459,6 +465,9 @@ impl TurnPolicy {
             ),
             show_tool_log: crate::web::chat::show_tool_log(
                 setting(crate::web::chat::SETTING_SHOW_TOOL_LOG).as_deref(),
+            ),
+            agents_enabled: crate::subagents::enabled(
+                setting(crate::subagents::SETTING_AGENTS_ENABLED).as_deref(),
             ),
         }
     }
@@ -1474,6 +1483,9 @@ impl TurnHub {
         // workspace file belongs in this prompt too.
         let system = crate::persona::PersonaConfig::with_capabilities(system);
 
+        // The database the dispatch desk will write with. Cloned here because
+        // `store` itself is moved into the writer below.
+        let desk_db = store.db().clone();
         // The writer: one blocking task owns every row this job writes.
         let (tx, mut rx) = mpsc::unbounded_channel::<Signal>();
         let writer = {
@@ -1805,6 +1817,10 @@ impl TurnHub {
                 }
             }
         };
+        // Where a child would land, cloned before the closure for the same reason.
+        let dispatch_ids = conversation
+            .as_ref()
+            .map(|write| (write.conversation.clone(), write.answer_id.clone()));
         // Cloned before the closure: the vision role and the files are only
         // read inside the turn's blocking task.
         let vision_job = conversation
@@ -1819,7 +1835,11 @@ impl TurnHub {
                 context_budget,
                 show_reasoning,
                 show_tool_log,
+                agents_enabled,
             } = policy;
+            // A child lands on the answer row this turn already owns. A turn with
+            // no conversation has no such row, so it dispatches nothing.
+            let dispatch_target = if agents_enabled { dispatch_ids } else { None };
             // The one place a device turn can be stopped from writing. The
             // approvals queue can be read and answered over `/v1`, but a running
             // turn does not park a call: nothing on this surface resumes a turn
@@ -1847,11 +1867,12 @@ impl TurnHub {
             let settings = crate::web::chat::TurnSettings {
                 tools,
                 max_rounds,
-                // A device turn has no browser to report a child to and no answer
-                // row to count one against, so it dispatches nothing. The tool is
-                // never offered, which is the honest shape: a capability the
-                // surface cannot show is one it should not have.
-                agents: false,
+                // Dispatch is offered when this turn has somewhere to put a child:
+                // the operator's switch is on, the sandbox is Full, and there is
+                // an answer row to count the child against. The tool is offered
+                // exactly when the desk exists, so a surface that cannot run a
+                // child never sees the tool.
+                agents: dispatch_target.is_some(),
                 context_budget,
             };
             // What the turn has produced so far, for the conversation row. Once a
@@ -1996,6 +2017,17 @@ impl TurnHub {
                 core_runtime::provider::ChatRole::User,
                 prompt,
             )];
+            let desk = dispatch_target.as_ref().map(|(conversation, answer)| {
+                crate::subagents::Desk::new(
+                    desk_db.clone(),
+                    turn_config.clone(),
+                    system.clone(),
+                    sandbox.workspace().to_path_buf(),
+                    conversation.clone(),
+                    Some(answer.clone()),
+                )
+                .with_key(key.clone())
+            });
             let outcome = crate::web::chat::run_turn_with_key(
                 &turn_config,
                 &key,
@@ -2003,10 +2035,13 @@ impl TurnHub {
                 messages,
                 &sandbox,
                 &mut gate,
-                None,
-                None,
-                None,
-                None,
+                None, // MCP servers
+                None, // the web-extract role
+                None, // the image role
+                // The dispatch desk, when this turn may hand work off. Built from
+                // the same gates the browser uses: the operator's switch, the Full
+                // sandbox, and an answer row to count children against.
+                desk.as_ref(),
                 // The phone gets the same turn loop but not the skill library:
                 // reading a procedure is a capability this surface has no view
                 // for, so it is not offered.

@@ -6,6 +6,17 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The phone can hand work to a subagent.** The device turn hardcoded
+  `agents: false`, so `dispatch_agent` was never offered and a child never ran -
+  the comment said the surface had no bar to report one to and no answer row to
+  count one against, and the second half has not been true since a phone turn
+  started writing a question and an answer row. Dispatch is now gated exactly as
+  the browser gates it: the operator's switch, the Full sandbox, and an answer row
+  to count children against. The desk is built in the turn's own worker, so a
+  child runs with the parent's model, system prompt, workspace and resolved key.
+  End to end over the real listener: a phone turn that calls the tool writes the
+  row, the child answers, and the row settles with its text. `build 135`.
+
 - **Only an object can be a tool call.** A fragment that parsed as a JSON array
   counted as a whole re-serialised call, so an array - a JSON body inside a
   `curl`, say - could replace the real arguments. The turn then ended with
