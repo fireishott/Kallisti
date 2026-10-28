@@ -341,7 +341,7 @@ gateway puts a nested object's opening brace on a frame of its own. A file rides
 names the id, and the prompt carries the filename and, for an image, the vision
 role's description of it.
 
-In private beta: the Kallisti iOS app on the Eris daemon, TestFlight **1.4.14 (109)**.
+In private beta: the Kallisti iOS app on the Eris daemon, TestFlight **1.4.15 (111)**.
 The app and the daemon are separate version lines - the daemon's build number moves
 when the daemon ships, the app's when the app does - so a report of a problem should
 name both, and `GET /v1/version` is where the daemon's answer comes from.
@@ -350,7 +350,9 @@ What the phone does with the daemon, as of this pair: chat with reasoning and a 
 run log (the round, the command running, its stdout as it arrives), conversations that
 load and stay loadable, Stop that stops the turn on the daemon rather than only on the
 screen, and Settings that renders the daemon's own settings table - all six of its
-tabs - with the full-host switch and the backups screen behind their guards.
+tabs - with the full-host switch and the backups screen behind their guards. A file
+goes with the message now: the app uploads the bytes, the turn names the id, and the
+picture draws from history because the byte route speaks the same bearer.
 
 In development: Voice Mode, Plugin Engine, watchOS.
 
