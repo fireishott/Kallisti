@@ -380,11 +380,7 @@ pub fn claim_for_turn(
 /// before the turn runs - the same order the browser's turn uses, because the
 /// model serving the turn may be one that cannot see at all. A turn with no
 /// files is the operator's words, unchanged.
-pub fn prompt_with_attachments(
-    text: &str,
-    files: &[Attachment],
-    vision: Option<&chat::TurnConfig>,
-) -> String {
+pub fn prompt_with_attachments(text: &str, files: &[Attachment]) -> String {
     if files.is_empty() {
         return text.to_owned();
     }
@@ -393,10 +389,6 @@ pub fn prompt_with_attachments(
     if !described.trim().is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(&described);
-    }
-    if let Some(note) = vision.and_then(|config| chat::describe_images(config, files)) {
-        prompt.push_str("\n\nWhat the vision model sees in the attached image:\n");
-        prompt.push_str(&note);
     }
     prompt
 }
@@ -446,8 +438,8 @@ mod tests {
             size: 10,
             media_type: Some("image/png".to_owned()),
         };
-        assert_eq!(prompt_with_attachments("hello", &[], None), "hello");
-        let prompt = prompt_with_attachments("", &[file], None);
+        assert_eq!(prompt_with_attachments("hello", &[]), "hello");
+        let prompt = prompt_with_attachments("", std::slice::from_ref(&file));
         assert!(prompt.contains("shot.png"), "{prompt}");
     }
 }

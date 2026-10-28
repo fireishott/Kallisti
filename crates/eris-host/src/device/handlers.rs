@@ -626,6 +626,12 @@ pub async fn create_turn(
         }
     };
 
+    // The vision role, resolved here and carried by the turn rather than called
+    // here: describing a picture is a provider call that takes seconds, and doing
+    // it before the `202` is what made a phone time out with the turn unqueued.
+    let vision = chat::aux_pinned_config(service.engine(), "vision")
+        .ok()
+        .flatten();
     let mut attachment_files: Vec<chat::Attachment> = Vec::new();
     let conversation_turn = match &conversation {
         None => None,
@@ -722,6 +728,8 @@ pub async fn create_turn(
                 answer_id,
                 question: text.to_owned(),
                 title,
+                files: attachment_files.clone(),
+                vision: vision.clone(),
             })
         }
     };
@@ -733,41 +741,16 @@ pub async fn create_turn(
                 .into_response();
         }
     };
-    // What the worker reads. The operator's words, plus what came with them: the
-    // files by name, and an image described by the pinned vision role, because
-    // the model serving the turn may be one that cannot see. The transcript row
-    // keeps the words alone - the description is a prompt, not a thing that was
-    // said.
-    let vision = chat::aux_pinned_config(service.engine(), "vision")
-        .ok()
-        .flatten();
-    // Building that prompt asks the vision role to describe the picture, and that
-    // call blocks: it makes a runtime of its own and waits on a provider. Doing it
-    // on this thread is a nested runtime, which panics inside the async worker -
-    // the request is dropped before the turn is queued, the phone reads a 502 with
-    // no body, and the question row is left in the transcript with no job, which
-    // the dashboard shows as "this turn stopped without finishing". The work goes
-    // to a blocking thread, which is where the browser's lane already does it. A
-    // prompt that cannot be built is the words alone, never a dropped turn.
-    let prompt = {
-        let words = text.to_owned();
-        let files = attachment_files.clone();
-        let vision = vision.clone();
-        match tokio::task::spawn_blocking(move || {
-            attachments::prompt_with_attachments(&words, &files, vision.as_ref())
-        })
-        .await
-        {
-            Ok(prompt) => prompt,
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "the attachment prompt could not be built, so the turn carries the words alone"
-                );
-                text.to_owned()
-            }
-        }
-    };
+    // What the worker reads. The operator's words and the files by name; the
+    // picture itself is described later, by the worker, because the model serving
+    // the turn may be one that cannot see and that call takes seconds. The
+    // transcript row keeps the words alone - the description is a prompt, not a
+    // thing that was said.
+    //
+    // The fast half of the prompt: the operator's words and the file list. The
+    // picture itself is described in the worker, because that call takes seconds
+    // and a `202` that waits on it is a `202` the phone gives up on.
+    let prompt = attachments::prompt_with_attachments(text, &attachment_files);
     let job_id = match store.create_job(token.device_id(), &session_id, idempotency_key, &prompt) {
         Ok(job_id) => job_id,
         Err(error) => {

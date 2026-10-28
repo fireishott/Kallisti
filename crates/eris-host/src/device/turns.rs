@@ -1064,6 +1064,16 @@ pub struct ConversationTurn {
     /// `None` means the role is on the primary, which is a no-op by design, so a
     /// device turn that never pinned a naming model behaves exactly as before.
     pub title: Option<crate::web::chat::TurnConfig>,
+    /// The files this turn carries, as their transcript rows.
+    ///
+    /// Carried so the worker can ask the vision role about them. The request
+    /// cannot: that call takes seconds, and a phone waiting on it inside
+    /// `POST /v1/turns` times out before the turn is queued - which is exactly
+    /// how every picture-bearing turn was lost.
+    pub files: Vec<crate::web::chat::Attachment>,
+    /// The vision role, when the operator pinned one. `None` means the role is
+    /// on the primary, which is a no-op by design.
+    pub vision: Option<crate::web::chat::TurnConfig>,
 }
 
 /// The live fan-out and the worker.
@@ -1795,6 +1805,11 @@ impl TurnHub {
                 }
             }
         };
+        // Cloned before the closure: the vision role and the files are only
+        // read inside the turn's blocking task.
+        let vision_job = conversation
+            .as_ref()
+            .map(|write| (write.files.clone(), write.vision.clone()));
         let turn_task = tokio::task::spawn_blocking(move || {
             let TurnPolicy {
                 sandbox,
@@ -1966,6 +1981,16 @@ impl TurnHub {
                         chunk: chunk.to_owned(),
                     });
                 }
+            };
+            // The picture reaches a model that can see it here, on this
+            // blocking thread, and never in the request that queued the turn:
+            // `describe_images` builds a runtime and calls a provider, which
+            // takes seconds and cannot run on the async handler.
+            let prompt = match &vision_job {
+                Some((files, vision)) if !files.is_empty() => {
+                    crate::web::chat::prompt_with_vision(prompt, files, vision.as_ref())
+                }
+                _ => prompt,
             };
             let messages = vec![core_runtime::provider::ChatMessage::text(
                 core_runtime::provider::ChatRole::User,

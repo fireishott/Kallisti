@@ -2235,6 +2235,26 @@ pub fn describe_images(config: &TurnConfig, files: &[Attachment]) -> Option<Stri
     (!text.is_empty()).then_some(text)
 }
 
+/// Add the vision role's reading of the attached pictures to a turn's prompt.
+///
+/// Blocking, on purpose: this is a provider call that takes seconds, and a phone
+/// waiting on it inside `POST /v1/turns` times out before the turn is queued. The
+/// caller has to be on a blocking thread, which for the device lane means the
+/// turn's own worker, not the request.
+#[must_use]
+pub fn prompt_with_vision(
+    mut prompt: String,
+    files: &[Attachment],
+    vision: Option<&TurnConfig>,
+) -> String {
+    let Some(note) = vision.and_then(|config| describe_images(config, files)) else {
+        return prompt;
+    };
+    prompt.push_str("\n\nWhat the vision model sees in the attached image:\n");
+    prompt.push_str(&note);
+    prompt
+}
+
 /// Pull the readable content out of a fetched page.
 ///
 /// `fetch_url` already strips tags; this asks the role's model what in the page

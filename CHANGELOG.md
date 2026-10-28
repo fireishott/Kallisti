@@ -6,6 +6,17 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The picture is described by the turn, not by the request that queues it.**
+  Build 131 moved the vision call off the async worker and onto a blocking thread,
+  which fixed the panic and introduced a worse failure: the handler now waited for
+  a provider call before answering, that call takes about seven seconds, and the
+  phone's own request timed out first. The question and answer rows were written,
+  no job was created, and the app read `transport failed: the request timed out`
+  while the daemon had nothing to run. The request now writes the rows and queues
+  the turn immediately, with the operator's words and the file list, and the
+  worker describes the picture on its own blocking thread before it calls the
+  model. The `202` is fast again and the description still happens. `build 132`.
+
 - **The picture guard that refused the one thread it was meant to allow.** Build
   130 added a `Handle::try_current` check in front of the two blocking roles, on
   the theory that it would catch a caller on an async worker. It does not: a
