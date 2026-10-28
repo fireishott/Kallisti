@@ -29,6 +29,15 @@ enum ErisRoute: Equatable, Sendable {
     case asked(turnID: String)
     /// `POST /v1/turns/{id}/answer` - settle the question and resume the turn.
     case answer(turnID: String)
+    /// `POST /v1/attachments` - store one file body and take its id.
+    ///
+    /// The body IS the file. The name and the conversation ride in
+    /// `x-kallisti-filename` and `x-kallisti-conversation`, and the `201` returns
+    /// the id a later turn names in its `attachments` field. The collection is
+    /// write-only: bytes are read back through `.attachment`.
+    case attachments
+    /// `GET /v1/attachments/{id}` - the stored bytes with their content type.
+    case attachment(attachmentID: String)
     /// `GET /v1/sessions/{id}` - the snapshot a `buffer_miss` points at.
     case session(sessionID: String)
     /// `GET /v1/conversations` - the newest conversations, newest first.
@@ -142,6 +151,10 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/turns/\(Self.segment(turnID))/asked"
         case .answer(let turnID):
             return "/v1/turns/\(Self.segment(turnID))/answer"
+        case .attachments:
+            return "/v1/attachments"
+        case .attachment(let attachmentID):
+            return "/v1/attachments/\(Self.segment(attachmentID))"
         case .session(let sessionID):
             return "/v1/sessions/\(Self.segment(sessionID))"
         case .conversations, .createConversation:
@@ -221,14 +234,15 @@ enum ErisRoute: Equatable, Sendable {
     var method: String {
         switch self {
         case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
-             .backups,
+             .backups, .attachment,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .cron, .skills, .aux, .noteRun, .noteRunEvents, .gwHealth, .gwPreflight,
              .asked:
             return "GET"
         case .skill:
             return "GET"
-        case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings,
+        case .pair, .tokenRefresh, .turns, .attachments, .cancel, .createConversation,
+             .clearConversation, .updateSettings,
              .fullAccess, .createBackup, .restoreBackup,
              .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote,
              .setModel, .createCron, .setAux,
@@ -251,6 +265,106 @@ enum ErisRoute: Equatable, Sendable {
     }
 }
 
+// MARK: - Attachment wire types
+
+/// One stored attachment: the `201` body of `POST /v1/attachments`, and one entry
+/// of a transcript row `attachments` array.
+///
+/// Both surfaces carry the same four fields, so one type serves both. `id` is what
+/// a turn names in its `attachments` field and the `{id}` of
+/// `GET /v1/attachments/{id}`; `name` and `mediaType` are what the daemon stored
+/// and will serve; `size` is the stored byte count.
+struct ErisAttachment: Equatable, Sendable, Decodable {
+    /// The id a turn names, and the id the bytes are read back by.
+    let id: String
+    /// The file name the daemon stored.
+    let name: String
+    /// Stored byte count.
+    let size: Int
+    /// The content type the bytes are served as.
+    let mediaType: String
+
+    init(id: String, name: String, size: Int, mediaType: String) {
+        self.id = id
+        self.name = name
+        self.size = size
+        self.mediaType = mediaType
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case size
+        case mediaType = "media_type"
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard
+            let id = try container.decodeIfPresent(String.self, forKey: .id),
+            !id.isEmpty
+        else {
+            throw ErisError.decoding("an attachment carried no id")
+        }
+        self.init(
+            id: id,
+            name: try container.decodeIfPresent(String.self, forKey: .name) ?? "",
+            size: try container.decodeIfPresent(Int.self, forKey: .size) ?? 0,
+            mediaType: try container.decodeIfPresent(String.self, forKey: .mediaType)
+                ?? "application/octet-stream"
+        )
+    }
+
+    /// How the transcript should group these bytes: the message view reads a
+    /// `kind` to tell an inline image from a file card.
+    var mediaKind: String {
+        if mediaType.hasPrefix("image/") { return "image" }
+        if mediaType.hasPrefix("video/") { return "video" }
+        if mediaType == "application/pdf" { return "pdf" }
+        return "file"
+    }
+}
+
+/// The `201` body from `POST /v1/attachments`.
+struct ErisAttachmentResponse: Equatable, Sendable, Decodable {
+    /// True for a stored body; kept so the shape matches every other route.
+    let ok: Bool
+    /// The stored attachment.
+    let attachment: ErisAttachment
+
+    init(ok: Bool, attachment: ErisAttachment) {
+        self.ok = ok
+        self.attachment = attachment
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case ok
+        case attachment
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard
+            let attachment = try container.decodeIfPresent(ErisAttachment.self, forKey: .attachment)
+        else {
+            throw ErisError.decoding("the attachment upload carried no attachment")
+        }
+        self.init(
+            ok: try container.decodeIfPresent(Bool.self, forKey: .ok) ?? true,
+            attachment: attachment
+        )
+    }
+}
+
+/// The two headers `POST /v1/attachments` reads. Both are required: the body is
+/// the file, so there is nowhere else to put either value.
+enum ErisAttachmentWire {
+    /// The name to store the bytes under. ASCII, one path segment.
+    static let filenameHeader = "x-kallisti-filename"
+    /// The daemon conversation the attachment belongs to.
+    static let conversationHeader = "x-kallisti-conversation"
+}
+
 // MARK: - Client
 
 /// The Kallisti-Eris device transport.
@@ -262,6 +376,13 @@ enum ErisRoute: Equatable, Sendable {
 actor ErisClient {
     /// How much of a non-2xx body is read to recover `{code,message}`.
     private static let maximumErrorBodyBytes = 64 * 1024
+
+    /// How many attachment ids one turn may name.
+    ///
+    /// The daemon reads at most this many from the comma-separated `attachments`
+    /// field, so the cap is applied here too: a composer holding more files uploads
+    /// the first eight instead of having the whole turn refused.
+    static let maximumAttachmentsPerTurn = 8
 
     /// The device listener base URL, e.g. `http://192.168.1.20:7341`.
     private let baseURL: URL
@@ -369,10 +490,17 @@ actor ErisClient {
     /// retry of the same message resolves to the same job instead of queueing a
     /// second turn. Passing `nil` is the old behaviour exactly: no key, no
     /// echoed id, and a retry that duplicates.
+    ///
+    /// `attachments` are ids this device already stored through
+    /// `POST /v1/attachments`. They travel as ONE comma-separated field, capped at
+    /// [`maximumAttachmentsPerTurn`], because the route reads one value: an empty
+    /// list sends no field at all, so a text-only turn is exactly the request it
+    /// was before attachments existed.
     func createTurn(
         text: String,
         conversation: String? = nil,
-        clientMessageID: UUID? = nil
+        clientMessageID: UUID? = nil,
+        attachments: [String] = []
     ) async throws -> ErisTurn {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -392,8 +520,143 @@ actor ErisClient {
                 for: clientMessageID
             )
         }
+        // One comma-separated field, only when there is something to name. Blank
+        // ids are dropped rather than sent: an empty element is a 400 on the
+        // daemon, and a turn that fails because of padding is a turn nobody can
+        // explain.
+        let attachmentIDs = attachments
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(Self.maximumAttachmentsPerTurn)
+        if !attachmentIDs.isEmpty {
+            form["attachments"] = attachmentIDs.joined(separator: ",")
+        }
         let data = try await send(route: .turns, form: form, extraHeaders: headers)
         return try decode(ErisTurn.self, from: data)
+    }
+
+    // MARK: Attachments
+
+    /// `POST /v1/attachments` - store one file body and take its id.
+    ///
+    /// The route takes the raw file (`application/octet-stream`) plus two headers:
+    /// the name to store it under and the conversation it belongs to. `mediaType`
+    /// is not a header - the daemon types the bytes from the name it was handed -
+    /// so it is used here only to give a name with no extension one.
+    ///
+    /// A failure arrives as `ErisError.server` carrying the daemon code: `400` for
+    /// a bad name or conversation, `413` when the body is over the limit, `409`
+    /// when the conversation is gone. Whether that costs the send is the caller
+    /// decision, not this one.
+    func uploadAttachment(
+        data: Data,
+        name: String,
+        mediaType: String,
+        conversation: String
+    ) async throws -> ErisAttachment {
+        let conversationID = conversation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !conversationID.isEmpty else {
+            throw ErisError.server(
+                status: 400,
+                code: "conversation_required",
+                message: "an attachment must name the conversation it belongs to"
+            )
+        }
+        guard !data.isEmpty else {
+            throw ErisError.server(
+                status: 400,
+                code: "attachment_empty",
+                message: "the attachment body must not be empty"
+            )
+        }
+        let body = try await sendRaw(
+            route: .attachments,
+            body: data,
+            contentType: "application/octet-stream",
+            extraHeaders: [
+                ErisAttachmentWire.filenameHeader: Self.headerFileName(name, mediaType: mediaType),
+                ErisAttachmentWire.conversationHeader: Self.headerSafe(conversationID),
+            ]
+        )
+        return try decode(ErisAttachmentResponse.self, from: body).attachment
+    }
+
+    /// `GET /v1/attachments/{id}` - the stored bytes.
+    ///
+    /// `Accept: */*`: this route answers with the file, not JSON, so the client
+    /// asks for whatever the daemon stored. The content type is the daemon own;
+    /// the caller already knows the media type from the transcript row.
+    func attachmentData(id: String) async throws -> Data {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ErisError.server(
+                status: 400,
+                code: "attachment_id_required",
+                message: "an attachment id is required"
+            )
+        }
+        return try await send(
+            route: .attachment(attachmentID: trimmed),
+            form: nil,
+            accept: "*/*"
+        )
+    }
+
+    /// A file name a header can carry: printable ASCII, one path segment, non-empty.
+    ///
+    /// The daemon stores exactly the name it is handed and serves it back on every
+    /// later read, so it is normalized once, here, instead of trusting the
+    /// composer to hand over something header-safe. A name that normalizes away
+    /// entirely becomes `attachment` plus the extension the media type implies.
+    static func headerFileName(_ name: String, mediaType: String) -> String {
+        let allowed = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.+"
+        )
+        var cleaned = ""
+        for scalar in name.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars {
+            if scalar.isASCII, allowed.contains(scalar) {
+                cleaned.unicodeScalars.append(scalar)
+            } else {
+                cleaned.append("_")
+            }
+        }
+        let stem = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "._-+"))
+        guard !stem.isEmpty else {
+            return "attachment" + fileExtension(for: mediaType)
+        }
+        return String(cleaned.prefix(180))
+    }
+
+    /// The extension a media type implies, for a composer that named no file.
+    static func fileExtension(for mediaType: String) -> String {
+        switch mediaType.lowercased() {
+        case "image/png": return ".png"
+        case "image/gif": return ".gif"
+        case "image/heic", "image/heif": return ".heic"
+        case "image/webp": return ".webp"
+        case "image/jpeg", "image/jpg": return ".jpg"
+        case "application/pdf": return ".pdf"
+        case "text/plain": return ".txt"
+        case "text/csv": return ".csv"
+        case "text/markdown": return ".md"
+        case "application/json": return ".json"
+        case "video/mp4": return ".mp4"
+        case "video/quicktime": return ".mov"
+        default: return ""
+        }
+    }
+
+    /// One header value with anything that could end a header line removed.
+    ///
+    /// A conversation id is the daemon own string and is not trusted to be
+    /// header-clean: a CR or an LF inside it would split one request into two.
+    static func headerSafe(_ value: String) -> String {
+        var cleaned = ""
+        for scalar in value.unicodeScalars
+        where scalar.isASCII && scalar.value >= 0x20 && scalar.value != 0x7f {
+            cleaned.unicodeScalars.append(scalar)
+        }
+        return cleaned
     }
 
     /// `GET /v1/turns/{id}/events` - the turn as server-sent events.
@@ -917,9 +1180,14 @@ actor ErisClient {
     // MARK: Requests
 
     /// A request that carries the bearer, retried once after a refresh on a 401.
+    ///
+    /// `accept` is a parameter because not every GET answers JSON: the attachment
+    /// byte route serves the file itself, so it asks for anything rather than for
+    /// a content type the daemon would have to fabricate.
     private func send(
         route: ErisRoute,
         form: [String: String]?,
+        accept: String = "application/json",
         extraHeaders: [String: String] = [:]
     ) async throws -> Data {
         var refreshed = false
@@ -927,7 +1195,7 @@ actor ErisClient {
             let request = try await authorizedRequest(
                 route: route,
                 form: form,
-                accept: "application/json",
+                accept: accept,
                 extraHeaders: extraHeaders
             )
             let (data, response) = try await perform(request)
@@ -942,6 +1210,81 @@ actor ErisClient {
             }
             return data
         }
+    }
+
+    /// A raw-bodied request carrying the bearer, retried once after a refresh on
+    /// a 401. Same contract as `send`, but the body is the caller-supplied bytes
+    /// and the content type is declared rather than form-encoded - `POST
+    /// /v1/attachments` takes the file itself, so there is nothing to encode.
+    private func sendRaw(
+        route: ErisRoute,
+        body: Data,
+        contentType: String,
+        accept: String = "application/json",
+        extraHeaders: [String: String] = [:]
+    ) async throws -> Data {
+        var refreshed = false
+        while true {
+            let request = try await authorizedRawRequest(
+                route: route,
+                body: body,
+                contentType: contentType,
+                accept: accept,
+                extraHeaders: extraHeaders
+            )
+            let (data, response) = try await perform(request)
+            let status = Self.status(of: response)
+            if status == 401 && !refreshed {
+                _ = try await refresh()
+                refreshed = true
+                continue
+            }
+            guard (200..<300).contains(status) else {
+                throw Self.serverError(status: status, data: data)
+            }
+            return data
+        }
+    }
+
+    private func authorizedRawRequest(
+        route: ErisRoute,
+        body: Data,
+        contentType: String,
+        accept: String,
+        extraHeaders: [String: String] = [:]
+    ) async throws -> URLRequest {
+        guard let stored = try await tokenStore.load(), !stored.accessToken.isEmpty else {
+            throw ErisError.missingToken
+        }
+        var request = try makeRawRequest(
+            route: route,
+            body: body,
+            contentType: contentType,
+            accept: accept
+        )
+        request.setValue("Bearer " + stored.accessToken, forHTTPHeaderField: "Authorization")
+        for (field, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        return request
+    }
+
+    private func makeRawRequest(
+        route: ErisRoute,
+        body: Data,
+        contentType: String,
+        accept: String
+    ) throws -> URLRequest {
+        var request = URLRequest(url: try Self.url(baseURL: baseURL, route: route))
+        request.httpMethod = route.method
+        // A file body is the one request whose transfer can outlast the 30s the
+        // form and JSON paths allow, so it gets a minute of its own rather than a
+        // timeout that fires halfway through an image on a phone uplink.
+        request.timeoutInterval = 60
+        request.httpBody = body
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        return request
     }
 
     /// A request with no bearer: pairing and refresh are the two routes that

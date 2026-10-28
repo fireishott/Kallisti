@@ -228,6 +228,13 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
     /// group an answer with its reasoning instead of guessing from timestamps.
     /// `nil` on rows written before the daemon stamped it.
     let jobID: String?
+    /// The files this row carries, as the daemon stored them.
+    ///
+    /// Absent on rows written before the daemon kept attachments and empty on a
+    /// text-only turn, so both decode to `[]`. Each `id` is the same id the sending
+    /// turn named in its `attachments` field, which is what lets a reloaded
+    /// transcript show the file the operator attached instead of a bare bubble.
+    let attachments: [ErisAttachment]
 
     init(
         id: String,
@@ -238,7 +245,8 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
         reasoning: String?,
         tools: [ErisToolCall],
         clientMessageID: String? = nil,
-        jobID: String? = nil
+        jobID: String? = nil,
+        attachments: [ErisAttachment] = []
     ) {
         self.id = id
         self.role = role
@@ -249,6 +257,7 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
         self.tools = tools
         self.clientMessageID = clientMessageID
         self.jobID = jobID
+        self.attachments = attachments
     }
 
     /// Whether the row is the operator's question.
@@ -276,6 +285,7 @@ extension ErisConversationMessage: Decodable {
         case tools
         case clientMessageID = "client_message_id"
         case jobID = "job_id"
+        case attachments
     }
 
     init(from decoder: any Decoder) throws {
@@ -293,8 +303,20 @@ extension ErisConversationMessage: Decodable {
             clientMessageID: Self.nonEmpty(
                 try container.decodeIfPresent(String.self, forKey: .clientMessageID)
             ),
-            jobID: Self.nonEmpty(try container.decodeIfPresent(String.self, forKey: .jobID))
+            jobID: Self.nonEmpty(try container.decodeIfPresent(String.self, forKey: .jobID)),
+            attachments: Self.decodeAttachments(container)
         )
+    }
+
+    /// The row attachments, or none.
+    ///
+    /// Decoded tolerantly on purpose: one attachment the daemon reshaped must not
+    /// cost the operator the whole transcript. A row whose attachments cannot be
+    /// read still renders its text, just without the file.
+    private static func decodeAttachments(
+        _ container: KeyedDecodingContainer<CodingKeys>
+    ) -> [ErisAttachment] {
+        (try? container.decodeIfPresent([ErisAttachment].self, forKey: .attachments)) ?? []
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

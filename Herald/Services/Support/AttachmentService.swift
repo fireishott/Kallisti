@@ -38,10 +38,17 @@ final class AttachmentService {
             return localData
         }
 
-        // Native-gateway history media (Build 101): the connector serves the
-        // bytes at /v1/native/media. Fetch with the native bearer token,
-        // mirroring AuthenticatedAsyncImage's auth gate exactly.
+        // Eris history media: the daemon serves the stored bytes at
+        // /v1/attachments/{id}, authenticated with the paired device bearer. The
+        // path is unique to that lane, so the shape is the whole test - a relay or
+        // native URL can never be mistaken for one.
         if let mediaURL = attachment.mediaURL {
+            if let erisID = Self.erisAttachmentID(in: mediaURL) {
+                return await fetchErisAttachment(id: erisID, cacheKey: mediaURL.absoluteString)
+            }
+            // Native-gateway history media (Build 101): the connector serves the
+            // bytes at /v1/native/media. Fetch with the native bearer token,
+            // mirroring AuthenticatedAsyncImage's auth gate exactly.
             return await fetchNativeMedia(url: mediaURL)
         }
 
@@ -125,12 +132,54 @@ final class AttachmentService {
         return result
     }
 
+    /// Fetch one Eris daemon attachment, cached by its URL.
+    ///
+    /// Cached under the URL rather than the id: two conversations can hold the
+    /// same attachment id only by sharing the file, and a stale base URL must not
+    /// serve bytes fetched from a daemon this device no longer talks to.
+    private func fetchErisAttachment(id: String, cacheKey key: String) async -> Data? {
+        if let cached = cache.object(forKey: key as NSString) {
+            return cached as Data
+        }
+        if let existing = inflight[key] {
+            return await existing.value
+        }
+        guard let erisAttachmentBytes else { return nil }
+        let task = Task<Data?, Never> { await erisAttachmentBytes(id) }
+        inflight[key] = task
+        let result = await task.value
+        inflight[key] = nil
+        if let result {
+            cache.setObject(result as NSData, forKey: key as NSString, cost: result.count)
+        }
+        return result
+    }
+
+    /// The id in an Eris daemon attachment URL (`/v1/attachments/{id}`), when this
+    /// is one. No other lane uses that path.
+    nonisolated static func erisAttachmentID(in url: URL) -> String? {
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count >= 3, parts[parts.count - 2] == "attachments" else { return nil }
+        let id = parts[parts.count - 1]
+        return id.isEmpty ? nil : id
+    }
+
     func accessToken() async -> String? { await accessTokenProvider() }
 
     /// Bearer for DSH's phone API media route (`/phone/v1/media`). Set by
     /// AppContainer when the DSH transport is active; nil on relay and native
     /// builds, where that route does not exist.
     @ObservationIgnored var dshMediaToken: String?
+
+    /// Byte loader for the Eris lane's `GET /v1/attachments/{id}`. Set by
+    /// AppContainer when a daemon is paired; nil on every other backend.
+    ///
+    /// The daemon takes the DEVICE bearer, which is a different credential from
+    /// the relay and native tokens this service holds, so the bytes are pulled
+    /// through the paired client that owns that bearer and its refresh rather
+    /// than built here. It also means a daemon URL can never be handed the wrong
+    /// lane's token.
+    @ObservationIgnored var erisAttachmentBytes: (@Sendable (String) async -> Data?)?
 
     /// ONE auth gate for every media fetch in the app. Inline images
     /// (`AuthenticatedAsyncImage`) and the fullscreen Save-to-Photos path both go

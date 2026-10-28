@@ -817,6 +817,15 @@ final class AppContainer {
             return client
         }
 
+        // Eris attachment bytes. A history row resolves to
+        // `GET /v1/attachments/{id}` on the paired daemon, which takes the device
+        // bearer. AttachmentService only holds the relay and native tokens, so the
+        // fetch goes through the paired client, which owns that bearer and its
+        // refresh.
+        container.attachmentService.erisAttachmentBytes = { [weak erisHeraldClient] id in
+            await erisHeraldClient?.attachmentData(id: id)
+        }
+
         container.modelStore.erisCatalogProvider = {
             ErisControlMapping.catalog(try await erisClient().controlModels())
         }

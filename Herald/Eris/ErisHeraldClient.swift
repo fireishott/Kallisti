@@ -156,6 +156,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
             let task = Task { @MainActor [weak self] in
                 await self?.performStreamingSend(
                     message: message,
+                    attachments: attachments,
                     clientMessageID: clientMessageID,
                     continuation: continuation
                 )
@@ -166,6 +167,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     private func performStreamingSend(
         message: String,
+        attachments: [PendingAttachment],
         clientMessageID: UUID,
         continuation: AsyncStream<StreamingUpdate>.Continuation
     ) async {
@@ -188,12 +190,28 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     return
                 }
             }
-            // Eris turns carry text only; attachments have no route yet and are
-            // dropped (the composer's text still reaches the model).
+            // Attachments go up BEFORE the turn, because the turn is the only
+            // thing that can carry them into the model context: the daemon stores
+            // the bytes on `POST /v1/attachments`, and the turn names the ids it
+            // stored. By this point the chat is bound, so the conversation the
+            // files are filed under is the same one the turn is filed under.
+            //
+            // A failed upload never costs the operator their words. The turn still
+            // goes out, without attachment ids, and the stream carries one faint
+            // system line saying so - the same channel a self-improvement notice
+            // rides, so it reads as a notice in the transcript rather than as a
+            // failed send.
+            let attachmentIDs = await uploadAttachments(
+                attachments,
+                conversation: currentConversationID(),
+                client: client,
+                continuation: continuation
+            )
             let turn = try await client.createTurn(
                 text: message,
                 conversation: currentConversationID(),
-                clientMessageID: clientMessageID
+                clientMessageID: clientMessageID,
+                attachments: attachmentIDs
             )
             let jobID = Self.stableUUID(from: turn.jobID)
             self.activeTurnID = turn.jobID
@@ -326,6 +344,113 @@ final class ErisHeraldClient: HeraldClientProtocol {
         }
     }
 
+    // MARK: - Attachments
+
+    /// How many files one turn may name. The daemon reads at most this many ids
+    /// from the comma-separated `attachments` field, so the composer is capped to
+    /// the same number: better to send the first eight than to have the whole turn
+    /// refused for naming a ninth.
+    private static let maximumAttachmentsPerTurn = ErisClient.maximumAttachmentsPerTurn
+
+    /// Store the staged attachments and return the ids the turn should name.
+    ///
+    /// Returns `[]` - and never throws - when nothing was attached, when this chat
+    /// has no conversation to file the bytes under yet, or when an upload failed.
+    /// The caller sends the text either way. One failure drops the whole set rather
+    /// than half a message: a turn that carries two of three images, with nothing
+    /// in the transcript saying which one is missing, reads as a working send and
+    /// gives the operator no reason to try again.
+    private func uploadAttachments(
+        _ attachments: [PendingAttachment],
+        conversation: String?,
+        client: ErisClient,
+        continuation: AsyncStream<StreamingUpdate>.Continuation
+    ) async -> [String] {
+        guard !attachments.isEmpty else { return [] }
+        guard let conversation, !conversation.isEmpty else {
+            Self.logAttachmentNotice("an attachment was dropped: this chat has no conversation yet")
+            return []
+        }
+        let staged = attachments.prefix(Self.maximumAttachmentsPerTurn)
+        var ids: [String] = []
+        ids.reserveCapacity(staged.count)
+        for attachment in staged {
+            do {
+                let stored = try await client.uploadAttachment(
+                    data: attachment.data,
+                    name: attachment.fileName,
+                    mediaType: attachment.mimeType,
+                    conversation: conversation
+                )
+                ids.append(stored.id)
+            } catch {
+                Self.logAttachmentNotice("an attachment upload failed: " + Self.describe(error))
+                continuation.yield(.systemNotice(Self.attachmentFailureNotice(error)))
+                return []
+            }
+        }
+        if attachments.count > staged.count {
+            continuation.yield(
+                .systemNotice(
+                    "Only the first \(Self.maximumAttachmentsPerTurn) attachments were sent."
+                )
+            )
+        }
+        return ids
+    }
+
+    /// The one line the transcript shows when a file could not be stored. The turn
+    /// continues text-only, so this is a notice and never a failure.
+    private static func attachmentFailureNotice(_ error: Error) -> String {
+        let detail = describe(error)
+        return "Your attachment could not be sent (" + detail + "). The message went without it."
+    }
+
+    /// The same fact as a console line, for the paths with no stream to yield into.
+    private static func logAttachmentNotice(_ message: String) {
+        print("[Eris attachment] " + message)
+    }
+
+    /// A failure as one readable phrase: the daemon code and message when it sent
+    /// a typed error, the localized description otherwise.
+    private static func describe(_ error: Error) -> String {
+        guard let eris = error as? ErisError else { return error.localizedDescription }
+        let code = eris.code ?? "error"
+        let message = eris.message ?? "no detail"
+        return code + ": " + message
+    }
+
+    /// The stored bytes of one attachment, for the history image view.
+    ///
+    /// This is the one place the device bearer is put on an attachment read, so a
+    /// reloaded transcript renders its files with the same credential a turn uses
+    /// rather than the relay or native token the legacy lanes carry.
+    func attachmentData(id: String) async -> Data? {
+        guard let client = await pairedClient() else { return nil }
+        do {
+            return try await client.attachmentData(id: id)
+        } catch {
+            Self.logAttachmentNotice("attachment could not be read: " + Self.describe(error))
+            return nil
+        }
+    }
+
+    /// One stored attachment as the message model the bubble renders.
+    ///
+    /// `messageID`/`remoteIndex` stay nil: those address the relay endpoint, and
+    /// these bytes live on the daemon. `mediaURL` is what makes the difference, so
+    /// the image view fetches the daemon copy instead of asking a relay that has
+    /// never heard of this file.
+    static func attachment(from attachment: ErisAttachment, base: URL?) -> MessageAttachment? {
+        guard let base else { return nil }
+        return MessageAttachment(
+            kind: attachment.mediaKind,
+            fileName: attachment.name,
+            mimeType: attachment.mediaType,
+            mediaURL: base.appendingPathComponent(attachment.id)
+        )
+    }
+
     // MARK: - Clarify
 
     /// Answer the question the running turn is parked on.
@@ -380,10 +505,16 @@ final class ErisHeraldClient: HeraldClientProtocol {
         // "New Chat" that looks like a successful load.
         let conversationID = try await resolveConversationID(for: id, client: client)
         let detail = try await client.conversation(id: conversationID)
+        // The daemon attachment collection, so a history row can point its bytes
+        // at `GET /v1/attachments/{id}`. Optional: a base URL that cannot take the
+        // route costs the images, not the transcript.
+        let attachmentBase = try? await client.url(for: .attachments)
         let conversation = Conversation(
             id: id,
             title: detail.displayTitle,
-            messages: detail.messages.map { Self.message(from: $0) },
+            messages: detail.messages.map {
+                Self.message(from: $0, attachmentBase: attachmentBase)
+            },
             sessionKey: conversationID
         )
         currentConversation = conversation
@@ -971,7 +1102,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
     /// - `jobID` lets the merged rows be grouped by turn instead of by guess.
     /// - `timestamp` is the row's real `created_at`. Without it each refresh
     ///   restamped the row to "now", which is the spacing and the reordering.
-    static func message(from m: ErisConversationMessage) -> Message {
+    ///
+    /// Attachments ride along for the same reason: a row that omits them renders as
+    /// a text-only bubble, so a reloaded conversation silently dropped every image
+    /// the operator had sent. `attachmentBase` is the daemon attachment collection
+    /// URL, and each row id is appended to it.
+    static func message(from m: ErisConversationMessage, attachmentBase: URL? = nil) -> Message {
         Message(
             id: stableUUID(from: m.id),
             clientMessageID: m.clientMessageID.flatMap(UUID.init(uuidString:)),
@@ -987,6 +1123,9 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     resultPreview: $0.output,
                     isError: $0.isError
                 )
+            },
+            attachments: m.attachments.compactMap {
+                attachment(from: $0, base: attachmentBase)
             },
             reasoning: m.displayReasoning ?? ""
         )
