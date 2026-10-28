@@ -34,6 +34,15 @@ struct ToolAccumulator {
     id: Option<String>,
     name: String,
     arguments: String,
+    /// The last whole JSON value the buffer held, if it ever held one.
+    ///
+    /// Kept so a continuation that lands after the call is complete cannot cost
+    /// the call: on 2026-10-28 a `run_command` buffer was whole, the next
+    /// fragment was seven bytes from the middle of the command, and the turn
+    /// refused a call the model had written correctly. Cleared whenever a new
+    /// serialisation starts, so a restart that is cut short still refuses rather
+    /// than running a stale spelling.
+    last_complete: Option<serde_json::Value>,
 }
 
 impl ToolAccumulator {
@@ -43,6 +52,7 @@ impl ToolAccumulator {
             id: None,
             name: String::new(),
             arguments: String::new(),
+            last_complete: None,
         }
     }
 
@@ -83,6 +93,14 @@ impl ToolAccumulator {
     /// A real truncation still ends short of valid JSON and is still refused in
     /// `finish`.
     fn push_arguments(&mut self, fragment: &str) {
+        self.absorb(fragment);
+        if looks_complete(&self.arguments) {
+            self.last_complete = serde_json::from_str(self.arguments.trim()).ok();
+        }
+    }
+
+    /// Add one fragment to the buffer, applying the replay and restart rules.
+    fn absorb(&mut self, fragment: &str) {
         if fragment.is_empty() {
             return;
         }
@@ -123,18 +141,28 @@ impl ToolAccumulator {
         // never valid JSON on its own, so this cannot swallow one.
         if looks_complete(fragment) {
             self.arguments.clear();
+            self.last_complete = None;
             self.arguments.push_str(fragment);
             return;
         }
         // The buffer is already a whole JSON value and this fragment is neither a
-        // repeat of it nor a new whole object, so appending could only ever
-        // produce two values in one buffer, which is not JSON. That happens when
-        // a gateway restarts its serialisation mid-object - the new spelling is
-        // still incomplete, so it is not `looks_complete` yet - and the newest
-        // fragment is the beginning of what the sender means. Later deltas extend
-        // it normally because they start with it.
+        // repeat of it nor a new whole object. Only a fragment that *begins a
+        // value* can be a restart of the serialisation: the new spelling is still
+        // incomplete, so it is not `looks_complete` yet, but it does start with a
+        // brace or a bracket. In that case the newest spelling is the one the
+        // sender means and the old one is stale, so the buffer is replaced.
+        //
+        // Anything else is a continuation of a call that is already whole, and
+        // appending it keeps that whole call in the buffer for `finish` to
+        // recover as the newest complete object. Clearing here threw the head
+        // away instead: the turn on 2026-10-28 lost a `run_command` this way, was
+        // left holding seven bytes of the middle of the command, and refused a
+        // call the model had written correctly.
         if looks_complete(&self.arguments) {
-            self.arguments.clear();
+            if fragment.starts_with('{') || fragment.starts_with('[') {
+                self.arguments.clear();
+                self.last_complete = None;
+            }
             self.arguments.push_str(fragment);
             return;
         }
@@ -150,7 +178,7 @@ impl ToolAccumulator {
     ///
     /// This is the only place a tool call is built, and it refuses to build one
     /// whose argument buffer never became valid JSON.
-    fn finish(self) -> Result<Option<ToolCall>, LlmError> {
+    fn finish(mut self) -> Result<Option<ToolCall>, LlmError> {
         if self.is_empty() {
             return Ok(None);
         }
@@ -183,7 +211,11 @@ impl ToolAccumulator {
                     // at the parser. A real truncation has no complete object to
                     // recover and is still refused, with the same message it
                     // always had.
-                    match newest_object(buffered) {
+                    match self
+                        .last_complete
+                        .take()
+                        .or_else(|| newest_object(buffered))
+                    {
                         Some(value) => value,
                         None => {
                             // The refusal carries one structural fact that costs
@@ -1332,6 +1364,22 @@ mod argument_assembly_tests {
         assert!(
             text.contains("the opening brace never arrived"),
             "the refusal has to name the lost opener: {text}"
+        );
+    }
+
+    /// A continuation that arrives after the call is already whole must not cost
+    /// the call. The 2026-10-28 `run_command` failure: the buffer held the whole
+    /// object, the next fragment was the middle of the command (`command`, seven
+    /// bytes), and clearing for it left a buffer that was not JSON at all - the
+    /// opener was gone and `finish` could recover nothing.
+    #[test]
+    fn a_continuation_after_a_whole_call_keeps_the_call() {
+        let whole = r#"{"command":"ls -la"}"#;
+        let acc = accumulator(&[whole, "command", r#": "cat /etc/hosts""#]);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(
+            call.arguments["command"], "ls -la",
+            "the whole call in the buffer is the one that survives"
         );
     }
 }

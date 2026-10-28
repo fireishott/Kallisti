@@ -6,6 +6,19 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A whole tool call is not thrown away by the fragment that follows it.** The
+  argument assembler kept one buffer, and when that buffer already held a complete
+  JSON object it replaced the buffer with the next fragment. Replacement is only
+  right when that fragment begins a value, which is what a restarted
+  serialisation does; anything else is a continuation of the call that is already
+  whole. On 2026-10-28 a `run_command` hit exactly this: sixteen calls ran, the
+  buffer held the whole object, the next fragment was seven bytes from the middle
+  of the command, and the turn died with `expected value at line 1 column 1`
+  holding nothing but those seven bytes. The accumulator now remembers the last
+  whole value it held and recovers it when the buffer no longer parses, and it
+  forgets that value the moment a new serialisation starts, so a restart that is
+  cut short still refuses instead of running a stale spelling. `build 133`.
+
 - **The picture is described by the turn, not by the request that queues it.**
   Build 131 moved the vision call off the async worker and onto a blocking thread,
   which fixed the panic and introduced a worse failure: the handler now waited for
