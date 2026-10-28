@@ -6,6 +6,18 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A picture from the phone no longer kills the turn that carried it.** Every
+  turn sent from the app with an image attached died before it was queued: the
+  handler asked the pinned vision role to describe the picture on the async
+  worker, and that role builds a runtime of its own, so the request panicked with
+  "cannot start a runtime from within a runtime". The phone read `502: no
+  message`, the dashboard said "this turn stopped without finishing", and the
+  question row sat in the transcript with no job behind it. The description now
+  runs on a blocking thread, the way the browser's lane already did it, and both
+  blocking roles refuse with a logged warning instead of panicking if a future
+  caller makes the same mistake - a turn without a description is worth more than
+  a request that dies. `build 130`.
+
 - **The argument assembler keeps the spaces it was given, and says which failure
   it hit.** Two faults from one turn on the phone. First, a fragment that was
   pure whitespace was dropped unless it came after a finished call - but this

@@ -741,7 +741,33 @@ pub async fn create_turn(
     let vision = chat::aux_pinned_config(service.engine(), "vision")
         .ok()
         .flatten();
-    let prompt = attachments::prompt_with_attachments(text, &attachment_files, vision.as_ref());
+    // Building that prompt asks the vision role to describe the picture, and that
+    // call blocks: it makes a runtime of its own and waits on a provider. Doing it
+    // on this thread is a nested runtime, which panics inside the async worker -
+    // the request is dropped before the turn is queued, the phone reads a 502 with
+    // no body, and the question row is left in the transcript with no job, which
+    // the dashboard shows as "this turn stopped without finishing". The work goes
+    // to a blocking thread, which is where the browser's lane already does it. A
+    // prompt that cannot be built is the words alone, never a dropped turn.
+    let prompt = {
+        let words = text.to_owned();
+        let files = attachment_files.clone();
+        let vision = vision.clone();
+        match tokio::task::spawn_blocking(move || {
+            attachments::prompt_with_attachments(&words, &files, vision.as_ref())
+        })
+        .await
+        {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "the attachment prompt could not be built, so the turn carries the words alone"
+                );
+                text.to_owned()
+            }
+        }
+    };
     let job_id = match store.create_job(token.device_id(), &session_id, idempotency_key, &prompt) {
         Ok(job_id) => job_id,
         Err(error) => {
