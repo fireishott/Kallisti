@@ -285,6 +285,7 @@ struct HeraldApp: App {
                 .environment(container.skillsStore)
                 .environment(container.cronStore)
                 .environment(container.canvasStore)
+                .environment(container.subagentStore)
                 .environment(container.notesStore)
                 .environment(container.notesSyncEngine)
                 .environment(container.attachmentService)

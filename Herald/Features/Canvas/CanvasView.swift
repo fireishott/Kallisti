@@ -12,6 +12,9 @@ import SwiftUI
 struct CanvasView: View {
     @Bindable var store: HeraldCanvasStore
     var onDismiss: (() -> Void)? = nil
+    /// Subagents the daemon is running. Read here so the sheet and the toolbar
+    /// badge are the same numbers, from the same store.
+    @Environment(SubagentStore.self) private var subagents
 
     @State private var editedContent: String = ""
     @State private var copied = false
@@ -71,7 +74,7 @@ struct CanvasView: View {
 
             // Build 78: tab picker — only shown when there are live
             // tool activities to display (or background processes).
-            if store.isLiveActivityVisible || store.isProcessFeedVisible {
+            if store.isLiveActivityVisible || store.isProcessFeedVisible || subagents.hasRows {
                 Picker(
                     "",
                     selection: Binding(
@@ -81,6 +84,10 @@ struct CanvasView: View {
                 ) {
                     Text("Artifact").tag(HeraldCanvasStore.CanvasTab.artifact)
                     Text("Live").tag(HeraldCanvasStore.CanvasTab.live)
+                    Text(subagents.activeCount > 0
+                        ? "Subagents (\(subagents.activeCount))"
+                        : "Subagents")
+                        .tag(HeraldCanvasStore.CanvasTab.subagents)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal, Design.Spacing.md)
@@ -91,7 +98,9 @@ struct CanvasView: View {
             }
 
             // Content area
-            if (store.isLiveActivityVisible || store.isProcessFeedVisible) && store.activeTab == .live {
+            if store.activeTab == .subagents {
+                subagentList
+            } else if (store.isLiveActivityVisible || store.isProcessFeedVisible) && store.activeTab == .live {
                 liveActivityList
             } else if store.activeArtifact != nil {
                 TextEditor(text: $editedContent)
@@ -137,6 +146,14 @@ struct CanvasView: View {
                 store.activeTab = .live
             }
         }
+        // A child starting is the moment this sheet is worth opening, so the
+        // Subagents tab selects itself the first time one is running.
+        .onChange(of: subagents.activeCount) { _, count in
+            if count > 0 && store.activeTab == .artifact {
+                store.activeTab = .subagents
+            }
+        }
+        .task { await subagents.refresh() }
         .confirmationDialog(
             "Clear Artifact",
             isPresented: $showClearConfirmation,
@@ -150,6 +167,95 @@ struct CanvasView: View {
         } message: {
             Text("This will permanently delete the artifact from this session.")
         }
+    }
+
+    /// The subagents the daemon is running, and the ones it recently finished.
+    ///
+    /// Same rows the dashboard bar draws, read from `/v1/subagents` on a poll, so
+    /// a child that starts while this sheet is open appears without a reload and
+    /// settles in place when it finishes.
+    private var subagentList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                if subagents.rows.isEmpty {
+                    VStack(spacing: Design.Spacing.xs) {
+                        Text("No subagents")
+                            .font(.system(.caption))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                        Text("Ask for work to be handed off and it appears here while it runs.")
+                            .font(.system(.caption2))
+                            .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.6))
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, Design.Spacing.xl)
+                } else {
+                    ForEach(subagents.rows) { row in
+                        subagentRow(row)
+                    }
+                    if subagents.truncated {
+                        Text("Older subagents are not shown here.")
+                            .font(.system(.caption2))
+                            .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.6))
+                    }
+                }
+            }
+            .padding(.horizontal, Design.Spacing.md)
+            .padding(.vertical, Design.Spacing.md)
+        }
+        .background(Design.Colors.background)
+    }
+
+    /// One subagent: label, status, model, elapsed, and its result once there is
+    /// one. The status word is the daemon's own, never a client paraphrase.
+    @ViewBuilder
+    private func subagentRow(_ row: ErisSubagent) -> some View {
+        let accent: Color = row.status == "failed"
+            ? .orange
+            : (row.isActive ? Design.Brand.accent : .green)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: Design.Spacing.xs) {
+                Circle()
+                    .fill(accent)
+                    .frame(width: 7, height: 7)
+                Text(row.label)
+                    .font(.system(.caption, weight: .semibold))
+                    .foregroundStyle(Design.Colors.foreground)
+                Spacer()
+                Text(row.status.uppercased())
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(accent)
+                Text(row.elapsed)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+            Text(row.prompt)
+                .font(.system(.caption2))
+                .foregroundStyle(Design.Colors.secondaryForeground)
+                .lineLimit(2)
+            if let result = row.result, !result.isEmpty {
+                Text(result)
+                    .font(.system(.footnote))
+                    .foregroundStyle(Design.Colors.foreground)
+                    .lineLimit(6)
+                    .padding(.top, 2)
+            } else if let code = row.errorCode {
+                Text(code)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.orange)
+            }
+            Text(row.model)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.7))
+        }
+        .padding(Design.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Design.Colors.surface.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.CornerRadius.md)
+                .stroke(Design.Colors.divider, lineWidth: 1)
+        )
     }
 
     /// Build 78: scrollable list of in-flight and completed tool

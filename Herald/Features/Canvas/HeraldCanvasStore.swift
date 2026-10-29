@@ -33,7 +33,7 @@ final class HeraldCanvasStore {
     /// True when there is at least one live tool activity to show.
     var isLiveActivityVisible: Bool { !liveToolActivities.isEmpty }
 
-    enum CanvasTab: Hashable { case artifact, live }
+    enum CanvasTab: Hashable { case artifact, live, subagents }
 
     private let defaults = UserDefaults.standard
     private let storageKey = "herald.canvas.artifacts"
