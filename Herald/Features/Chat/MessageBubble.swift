@@ -410,6 +410,18 @@ struct MessageBubble: View, Equatable {
                     MessageAttachmentsView(attachments: message.attachments, alignment: .leading)
                 }
 
+                // A turn between rounds is still a turn. A long provider call can
+                // sit silent for minutes with no delta, no reasoning and no tool
+                // frame, and the bubble - already carrying text and a tool rail -
+                // rendered exactly like a finished one, so the app read as idle
+                // while it was working. This line ticks for as long as the row is
+                // streaming, whatever the daemon is quiet about.
+                if message.isStreaming
+                    && (message.content.isEmpty == false || message.toolActivities.isEmpty == false) {
+                    StreamingPlaceholderText(startedAt: message.timestamp)
+                        .padding(.top, Design.Spacing.xxs)
+                }
+
                 // Build 128.54: a streaming row must never show a frozen
                 // creation stamp (7:59 PM for 40 minutes while the turn runs).
                 // While streaming, render a LIVE clock via TimelineView so the
