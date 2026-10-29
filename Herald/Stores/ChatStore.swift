@@ -4119,6 +4119,21 @@ final class ChatStore {
         let activeLocal = !activeStreams.isEmpty
         let activeServer = isServerTurnActive
         if activeLocal || activeServer {
+            // Sending the same words again is not a steer, it is the operator
+            // retrying because the turn looks stuck - which is exactly what a long
+            // tool run or a slow upload looks like. Preempting there threw the work
+            // in flight away and filed a duplicate row: on 2026-10-29 one message
+            // with four screenshots was sent twice, and the first turn was cancelled
+            // one second before the second went out with its 24 tool calls lost.
+            let running = outboxItems.first(where: { $0.isInFlight })?.cleanText
+                ?? conversation?.messages.last(where: { $0.sender == .user })?.content
+            let words = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let running,
+               !words.isEmpty,
+               running.trimmingCharacters(in: .whitespacesAndNewlines) == words {
+                appendLog(level: .warn, "Repeat send ignored: that message is already running")
+                return nil
+            }
             cancelStreaming(interruptServerTurn: true)
         }
         // enqueueMessage is synchronous - the durable outbox owns the text
