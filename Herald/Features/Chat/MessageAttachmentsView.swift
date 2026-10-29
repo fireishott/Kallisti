@@ -420,9 +420,18 @@ private struct PDFAttachmentView: View {
         let bounds = page.bounds(for: .mediaBox)
         let renderer = UIGraphicsImageRenderer(size: bounds.size)
         thumbnail = renderer.image { context in
-            UIColor.white.set()
-            context.fill(bounds)
-            page.draw(with: .mediaBox, to: context.cgContext)
+            let cg = context.cgContext
+            UIColor.white.setFill()
+            cg.fill(bounds)
+            // A PDF page is drawn in its own coordinate space, which is y-up, and
+            // a UIKit bitmap is y-down: without this the page lands upside down.
+            // Flip around the page before drawing it, then put the context back
+            // for anything drawn after.
+            cg.saveGState()
+            cg.translateBy(x: 0, y: bounds.size.height)
+            cg.scaleBy(x: 1, y: -1)
+            page.draw(with: .mediaBox, to: cg)
+            cg.restoreGState()
         }
     }
 }
