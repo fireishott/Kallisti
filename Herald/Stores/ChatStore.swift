@@ -2684,6 +2684,22 @@ final class ChatStore {
                         )
                         resolved.toolActivities = activities
                         resolved.codeDiff = diff
+                        // A file the turn attached lives on the placeholder: the
+                        // terminal frame carries text and usage and never
+                        // attachments, so without this the chip appeared while the
+                        // answer streamed and vanished the moment it finished.
+                        let streamedAttachments = placeholder?.attachments ?? []
+                        if streamedAttachments.isEmpty == false {
+                            var merged = streamedAttachments
+                            for attachment in resolved.attachments
+                            where merged.contains(where: {
+                                $0.fileName == attachment.fileName
+                                    && $0.mediaURL == attachment.mediaURL
+                            }) == false {
+                                merged.append(attachment)
+                            }
+                            resolved.attachments = merged
+                        }
                         // Priority for reasoning:
                         // 1) finalMessage.reasoning — set by LiveHeraldClient (SSE terminal
                         //    reasoning from the done payload, or splitThinkingBlocks extraction).
