@@ -358,9 +358,32 @@ final class ErisHeraldClient: HeraldClientProtocol {
             }
             continuation.finish()
         } catch {
+            // A cancelled request is not a transport failure. This stream is
+            // cancelled whenever the attempt consuming it goes away - a reconnect,
+            // a replacement attempt, the app going to the background - and mapping
+            // that to `.failed` put "Eris transport failed: cancelled" in an alert
+            // in front of the operator for something nobody actually did wrong.
+            // The turn is still running on the daemon; the poll settles it.
+            if Task.isCancelled || Self.isCancellation(error) {
+                continuation.yield(.cancelled)
+                continuation.finish()
+                return
+            }
             continuation.yield(.failed((error as? ErisError)?.errorDescription ?? error.localizedDescription))
             continuation.finish()
         }
+    }
+
+    /// Whether an error is this attempt being torn down rather than the daemon
+    /// failing to answer.
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return true }
+        if case .transport(let message)? = error as? ErisError {
+            return message.lowercased().contains("cancel")
+        }
+        return false
     }
 
     // MARK: - Attachments

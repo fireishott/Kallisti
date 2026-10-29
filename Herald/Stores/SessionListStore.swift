@@ -51,6 +51,21 @@ final class SessionListStore {
         // change) is EXPECTED behavior, not a real error.
         if error is CancellationError { return true }
 
+        // The Eris lane wraps a cancelled URLSession request into its own error
+        // type, so the NSURLError check below never sees it and the bare word
+        // "cancelled" reached the "Error" alert on every superseded refresh. The
+        // same goes for the transport blips the connection banner already covers.
+        if let eris = error as? ErisError, case .transport(let message) = eris {
+            let text = message.lowercased()
+            if text.contains("cancel")
+                || text.contains("timed out")
+                || text.contains("network connection")
+                || text.contains("offline")
+                || text.contains("not connected") {
+                return true
+            }
+        }
+
         if let native = error as? NativeGatewayClientError {
             switch native {
             case .notConnected, .transportClosed, .requestTimeout:

@@ -1417,6 +1417,11 @@ actor ErisClient {
     private func perform(_ request: URLRequest) async throws -> (Data, URLResponse) {
         do {
             return try await session.data(for: request)
+        } catch let error as URLError where error.code == .cancelled {
+            // Cancellation keeps its own type. Wrapping it into a transport error
+            // made every caller's `is CancellationError` guard miss, and the bare
+            // word "cancelled" reached the operator as "Eris transport failed".
+            throw CancellationError()
         } catch {
             throw ErisError.transport(error.localizedDescription)
         }
@@ -1426,6 +1431,8 @@ actor ErisClient {
         do {
             let (bytes, response) = try await session.bytes(for: request)
             return (bytes, Self.status(of: response))
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw ErisError.transport(error.localizedDescription)
         }
