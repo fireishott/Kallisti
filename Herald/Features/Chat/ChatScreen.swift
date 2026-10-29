@@ -193,6 +193,8 @@ struct ChatScreen: View {
     @Environment(ThemeManager.self) private var themeManager
     @Environment(TabRouter.self) private var router
     @Environment(HeraldCanvasStore.self) private var canvasStore
+    /// Subagents the daemon is running, for the badge and the canvas sheet.
+    @Environment(SubagentStore.self) private var subagentStore
     @Environment(SessionListStore.self) private var sessionListStore
     @Environment(AppContainer.self) private var container
     @Binding var isSessionDrawerOpen: Bool
@@ -424,6 +426,10 @@ struct ChatScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         .toolbarBackground(.hidden, for: .navigationBar)
+        // The badge is only ever a few seconds stale: one small GET per tick
+        // while this screen is the one on screen, and nothing once it leaves.
+        .onAppear { subagentStore.startPolling() }
+        .onDisappear { subagentStore.stopPolling() }
         }
 
 
@@ -821,18 +827,38 @@ struct ChatScreen: View {
     }
 
     /// Canvas action button — shared across all toolbar compositions.
+    ///
+    /// It carries the subagent count: the same sheet lists them, so the button is
+    /// the one place the operator sees how much work is running without opening
+    /// anything. The badge is the store's `activeCount`, so it moves as a child
+    /// starts and as it settles.
     private var canvasButton: some View {
         Button {
             showCanvas = true
         } label: {
-            Image(systemName: "rectangle.on.rectangle")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(canvasStore.activeArtifact != nil
-                    ? Design.Brand.accent
-                    : Design.Colors.secondaryForeground)
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "rectangle.on.rectangle")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(canvasStore.activeArtifact != nil || subagentStore.activeCount > 0
+                        ? Design.Brand.accent
+                        : Design.Colors.secondaryForeground)
+                if subagentStore.activeCount > 0 {
+                    Text("\(subagentStore.activeCount)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Design.Colors.background)
+                        .padding(.horizontal, 4)
+                        .frame(minWidth: 14)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Design.Brand.accent))
+                        .offset(x: 7, y: -7)
+                        .accessibilityHidden(true)
+                }
+            }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Open canvas")
+        .accessibilityLabel(subagentStore.activeCount > 0
+            ? "Open canvas, \(subagentStore.activeCount) subagents running"
+            : "Open canvas")
     }
 
     /// Build 128.1: visible catch-up affordance. Pull-to-refresh exists

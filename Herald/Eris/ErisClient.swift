@@ -117,6 +117,10 @@ enum ErisRoute: Equatable, Sendable {
     case aux
     /// `POST /v1/aux` - pin one role's model and provider.
     case setAux
+    /// `GET /v1/subagents` - the subagents this daemon has run, newest first.
+    case subagents
+    /// `GET /v1/subagents/{id}` - one row, whether or not it is still listed.
+    case subagent(id: String)
     /// `GET /v1/gw/health` - the daemon's own state.
     case gwHealth
     /// `GET /v1/gw/restart/preflight` - restart confirmation snapshot.
@@ -206,6 +210,10 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/skills/\(Self.segment(key))"
         case .aux, .setAux:
             return "/v1/aux"
+        case .subagents:
+            return "/v1/subagents"
+        case .subagent(let id):
+            return "/v1/subagents/\(Self.segment(id))"
         case .talkReadiness:
             return "/v1/talk/readiness"
         case .gwHealth:
@@ -224,7 +232,7 @@ enum ErisRoute: Equatable, Sendable {
              .backups,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .cron, .skills, .aux, .noteRun, .noteRunEvents, .gwHealth, .gwPreflight,
-             .asked:
+             .subagents, .subagent, .asked:
             return "GET"
         case .skill:
             return "GET"
@@ -602,6 +610,22 @@ actor ErisClient {
             route: .setAux,
             body: ErisControlAuxBody(role: role, provider: provider, model: model)
         )
+    }
+
+    /// `GET /v1/subagents` - what this daemon has handed off, newest first.
+    ///
+    /// The list is the dashboard bar's own view: anything still working plus
+    /// anything that finished recently. A row that aged out is still readable by
+    /// its id, which is the handle the dispatch tool returned.
+    func subagents() async throws -> ErisSubagentList {
+        let data = try await send(route: .subagents, form: nil)
+        return try decode(ErisSubagentList.self, from: data)
+    }
+
+    /// `GET /v1/subagents/{id}` - one row by the id the tool returned.
+    func subagent(id: String) async throws -> ErisSubagentDetail {
+        let data = try await send(route: .subagent(id: id), form: nil)
+        return try decode(ErisSubagentDetail.self, from: data)
     }
 
     // MARK: Gateway control (`/v1/gw/*`)

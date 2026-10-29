@@ -140,6 +140,9 @@ final class AppContainer {
     let skillsStore: SkillsStore
     let cronStore: CronStore
     let canvasStore: HeraldCanvasStore
+    /// Subagents the daemon has handed off. Read by the chat toolbar badge and
+    /// the canvas sheet; empty on a transport that cannot dispatch.
+    let subagentStore: SubagentStore
     let notesStore: NotesStore
     /// Notes sync engine. Option 1 architecture: every note is a gateway
     /// session titled with the note name; edits append messages to that
@@ -271,6 +274,7 @@ final class AppContainer {
             nativeFeatureClientProvider: { [nativeGatewayClient] in nativeGatewayClient?.featureClient }
         )
         self.canvasStore = canvasStore ?? HeraldCanvasStore()
+        self.subagentStore = SubagentStore()
         let chatStoreRef = self.chatStore
         let settingsRef = self.settingsStore
         self.notesStore = notesStore ?? NotesStore(
@@ -864,6 +868,11 @@ final class AppContainer {
         }
         container.auxService?.erisSetter = { role, provider, model in
             try await erisClient().setControlAux(role: role, provider: provider, model: model)
+        }
+        // Subagents: the same client, one read. The store polls only while a
+        // surface is showing them, so a closed app costs nothing.
+        container.subagentStore.erisProvider = {
+            try await erisClient().subagents()
         }
         container.gatewayControl.erisClient = {
             try await erisClient()
