@@ -6,6 +6,15 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A turn from the phone carries the conversation it is continuing.** The device
+  lane assembled every turn as a single user message: no transcript, no window, no
+  summary. The browser lane has always sent the settled exchange; the phone never
+  did, so a model in a long chat answered the current message with nothing behind it
+  and read as if it had moved to a new session and got slow. The turn now starts from
+  the same 24-message window the browser uses, and appends the prompt only when it
+  says something the question row does not (a described image, or a turn with no row
+  at all). `build 142`.
+
 - **Gemini thinking models can call tools again.** A 2.5 model returns a
   `thoughtSignature` beside every `functionCall` and refuses the next round with
   `400 Function call is missing a thought_signature in functionCall parts` if the

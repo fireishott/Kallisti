@@ -543,10 +543,21 @@ fn dechunk(body: &str) -> String {
 struct StubProvider {
     url: String,
     hits: Arc<AtomicUsize>,
+    /// The raw request head and body each call arrived with, in order. A test that
+    /// cares about what the model was told reads this.
+    bodies: Arc<std::sync::Mutex<Vec<String>>>,
     _task: tokio::task::JoinHandle<()>,
 }
 
 impl StubProvider {
+    /// What each call arrived with, in order.
+    fn bodies(&self) -> Vec<String> {
+        self.bodies
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
     /// Start a stub. `gap` is the delay between deltas, so a test can hold a turn
     /// open long enough to cancel or disconnect mid-stream.
     async fn start(deltas: &[&'static str], gap: Duration) -> Self {
@@ -556,6 +567,8 @@ impl StubProvider {
         let addr = listener.local_addr().expect("a stub provider address");
         let hits = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&hits);
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&bodies);
         let deltas: Vec<&'static str> = deltas.to_vec();
         let task = tokio::spawn(async move {
             loop {
@@ -563,11 +576,15 @@ impl StubProvider {
                     return;
                 };
                 counter.fetch_add(1, Ordering::SeqCst);
+                let recorder = Arc::clone(&recorder);
                 let deltas = deltas.clone();
                 tokio::spawn(async move {
                     // Drain the request head; the body is not interesting.
                     let mut scratch = [0u8; 4096];
-                    let _ = socket.read(&mut scratch).await;
+                    let read = socket.read(&mut scratch).await.unwrap_or(0);
+                    if let Ok(mut seen) = recorder.lock() {
+                        seen.push(String::from_utf8_lossy(&scratch[..read]).into_owned());
+                    }
                     let response = String::from(
                         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
                     );
@@ -603,6 +620,7 @@ impl StubProvider {
         Self {
             url: format!("http://{addr}/v1"),
             hits,
+            bodies,
             _task: task,
         }
     }
@@ -6294,5 +6312,70 @@ async fn a_phone_turn_can_attach_a_file_it_made() {
         .await;
     assert_eq!(bytes.status, 200, "{}", bytes.body);
     assert_eq!(bytes.body, "%PDF-1.4 fake");
+    harness.stop();
+}
+
+/// A phone turn carries the exchange before it.
+///
+/// The device lane used to send one user message and nothing else, so a model in a
+/// long chat answered as if the conversation had just started: the "it moved to a
+/// new session mid-chat and went dumb" report. This is the contract: the second
+/// turn's request contains the first question and the first answer.
+#[tokio::test]
+async fn a_phone_turn_carries_the_exchange_before_it() {
+    let stub = StubProvider::start(&["first-answer"], Duration::ZERO).await;
+    let harness = Harness::start(&stub.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let created = harness
+        .request("POST", "/v1/conversations", &auth, None)
+        .await;
+    let conversation = created.json()["id"]
+        .as_str()
+        .expect("a conversation")
+        .to_owned();
+
+    let db = harness.engine.db();
+    for (index, text) in ["first-question", "second-question"].iter().enumerate() {
+        let body = serde_json::json!({ "text": text, "conversation": conversation }).to_string();
+        let queued = harness
+            .request("POST", "/v1/turns", &auth, Some(body.as_str()))
+            .await;
+        assert_eq!(queued.status, 202, "{}", queued.body);
+
+        // Wait for this turn's answer row to settle before starting the next one.
+        let expected = index + 1;
+        let mut settled = false;
+        for _ in 0..200 {
+            let complete: i64 = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM chat_messages \
+                          WHERE conversation_id = ?1 AND role = 'assistant' AND state = 'complete'",
+                        rusqlite::params![conversation],
+                        |row| row.get(0),
+                    )
+                })
+                .expect("counted");
+            if complete >= expected as i64 {
+                settled = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(settled, "turn {expected} settled");
+    }
+
+    let seen = stub.bodies();
+    assert!(seen.len() >= 2, "two model calls: {}", seen.len());
+    let second = &seen[1];
+    assert!(
+        second.contains("first-question"),
+        "the second turn carries the first question: {second}"
+    );
+    assert!(
+        second.contains("first-answer"),
+        "and the first answer: {second}"
+    );
     harness.stop();
 }

@@ -1892,6 +1892,19 @@ impl TurnHub {
         let vision_job = conversation
             .as_ref()
             .map(|write| (write.files.clone(), write.vision.clone()));
+        // The exchange this turn continues. Without it every phone turn arrived as
+        // one user message with nothing behind it, so a model in a two-hour chat
+        // answered as if it had just met the operator: the "moved to a new session
+        // and went dumb" report. The browser lane has always carried this; the
+        // device lane never did. Read here because the turn below runs in a closure
+        // that moves what it captures.
+        let carried_history = match conversation.as_ref() {
+            Some(write) => match crate::web::chat::load(store.db(), &write.conversation) {
+                Ok(rows) => crate::web::chat::history(&rows, &write.answer_id),
+                Err(_) => Vec::new(),
+            },
+            None => Vec::new(),
+        };
         let turn_task = tokio::task::spawn_blocking(move || {
             let TurnPolicy {
                 sandbox,
@@ -2092,10 +2105,22 @@ impl TurnHub {
                 }
                 _ => prompt,
             };
-            let messages = vec![core_runtime::provider::ChatMessage::text(
-                core_runtime::provider::ChatRole::User,
-                prompt,
-            )];
+            // The question row is part of the history read above, so the
+            // operator's words are already in it. `prompt` is only appended when
+            // it says something the row does not - a described image, or a turn
+            // with no row at all.
+            let mut messages = carried_history;
+            let already_carried = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == core_runtime::provider::ChatRole::User)
+                .is_some_and(|message| message.content.trim() == prompt.trim());
+            if !already_carried {
+                messages.push(core_runtime::provider::ChatMessage::text(
+                    core_runtime::provider::ChatRole::User,
+                    prompt,
+                ));
+            }
             let desk = dispatch_target.as_ref().map(|(conversation, answer)| {
                 crate::subagents::Desk::new(
                     desk_db.clone(),
