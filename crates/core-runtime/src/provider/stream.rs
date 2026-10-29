@@ -309,7 +309,9 @@ fn newest_object(text: &str) -> Option<serde_json::Value> {
     let mut depth = 0usize;
     let mut in_string = false;
     let mut escaped = false;
-    let mut starts: Vec<usize> = Vec::new();
+    // (where it opens, where it closes). A candidate with no close is a
+    // serialisation cut short, which is not an object however much of it arrived.
+    let mut candidates: Vec<(usize, Option<usize>)> = Vec::new();
     for (index, byte) in bytes.iter().enumerate() {
         if in_string {
             if escaped {
@@ -325,19 +327,33 @@ fn newest_object(text: &str) -> Option<serde_json::Value> {
             b'"' => in_string = true,
             b'{' => {
                 if depth == 0 {
-                    starts.push(index);
+                    candidates.push((index, None));
                 }
                 depth += 1;
             }
-            b'}' => depth = depth.saturating_sub(1),
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0
+                    && let Some(last) = candidates.last_mut()
+                {
+                    last.1 = Some(index);
+                }
+            }
             _ => {}
         }
     }
-    // Newest first, and at most a handful: if the whole buffer were one object
-    // the parse that got us here would have succeeded, so a candidate at index 0
-    // is only worth trying when nothing later works.
-    for start in starts.iter().rev().take(4) {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text[*start..]) {
+    // Newest first, and at most a handful: if the whole buffer were one object the
+    // parse that got us here would have succeeded, so a candidate at index 0 is
+    // only worth trying when nothing later works. Each one is parsed to *its own*
+    // closing brace, which is what makes an earlier whole object recoverable when
+    // a later serialisation was cut short - parsing to the end of the buffer would
+    // read `trailing characters` for a call that is sitting there complete, and
+    // that is the 597-byte `clarify` refusal.
+    for (start, close) in candidates.iter().rev().take(4) {
+        let Some(close) = close else {
+            continue;
+        };
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text[*start..=*close]) {
             return Some(value);
         }
     }
@@ -1448,5 +1464,31 @@ mod argument_assembly_tests {
     fn an_array_fragment_never_counts_as_a_whole_call() {
         assert!(!looks_complete(r#"["a","b"]"#));
         assert!(looks_complete(r#"{"a":1}"#));
+    }
+
+    /// The 597-byte `clarify` refusal: a whole object followed by the start of a
+    /// second serialisation that never finished. Parsing the earlier candidate to
+    /// the end of the buffer read `trailing characters at line 1 column 553`, so
+    /// the call that was sitting there complete was refused and the question card
+    /// never appeared.
+    #[test]
+    fn a_whole_object_before_a_cut_short_one_is_recovered() {
+        let whole = r#"{"title":"deck","questions":[]}"#;
+        let cut = r#"{"title":"deck","quest"#;
+        let glued = format!("{whole}{cut}");
+        let acc = accumulator(&[&glued]);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(call.arguments["title"], "deck");
+        assert!(call.arguments["questions"].is_array());
+    }
+
+    /// And the newest one still wins when both are whole.
+    #[test]
+    fn the_newest_whole_object_wins() {
+        let first = r#"{"title":"old"}"#;
+        let second = r#"{"title":"new"}"#;
+        let acc = accumulator(&[&format!("{first}{second}")]);
+        let call = acc.finish().expect("a call").expect("a tool call");
+        assert_eq!(call.arguments["title"], "new");
     }
 }

@@ -6,6 +6,14 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A whole tool call is recovered even when the next serialisation is cut short.**
+  The recovery scan parsed every candidate object from its opening brace to the end
+  of the buffer, so a complete call followed by the beginning of a second one read
+  `trailing characters at line 1 column 553` and was refused - the 597-byte
+  `clarify` failure, which killed the turn before the question card could appear.
+  Each candidate is now parsed to its own closing brace, newest first, so the whole
+  call is recovered and a cut-short neighbour is ignored. `build 137`.
+
 - **The phone can read the subagents it dispatched.** `GET /v1/subagents` and
   `GET /v1/subagents/{id}`, behind the `sessions` scope. Before this the phone could
   hand work off and then had no way to read it: the tool's own answer ("dispatched,
