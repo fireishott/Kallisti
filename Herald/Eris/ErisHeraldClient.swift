@@ -1143,6 +1143,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     isError: $0.isError
                 )
             },
+            // The daemon stamps the row `streaming` for as long as the turn is
+            // running. Carrying that through means a transcript refresh or a poll
+            // cannot make a live turn look finished, which is what happened when
+            // the stream went quiet: the bubble settled, its thought card
+            // collapsed, and the app read as doing nothing while the daemon ran.
+            isStreaming: m.state == "streaming",
             attachments: m.attachments.compactMap {
                 attachment(from: $0, base: attachmentBase)
             },
