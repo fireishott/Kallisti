@@ -13,6 +13,8 @@ enum StreamingUpdate: Sendable {
     case messageSent(jobID: UUID)
     case textDelta(String)
     case reasoningDelta(String)
+    /// A file the turn attached to the reply while it streamed.
+    case attachmentAdded(MessageAttachment)
     case toolActivity(String)
     case toolStarted(ToolActivity)
     case toolCompleted(toolCallID: String, resultPreview: String?, isError: Bool, durationMs: Int?)

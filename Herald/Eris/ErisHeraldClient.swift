@@ -220,6 +220,9 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
             var text = ""
             self.activeToolRunID = nil
+            // Where an attachment frame's bytes will be read from. Resolved once,
+            // before the stream: the chip has to be usable the moment it lands.
+            let attachmentBase = try? await client.url(for: .attachments)
             let stream = await client.events(turnID: turn.jobID)
             for try await outcome in stream {
                 // Reasoning and tool frames are carried, not dropped. The two
@@ -230,6 +233,22 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     switch outcome {
                     case .reasoning(let reasoning):
                         continuation.yield(.reasoningDelta(reasoning.text))
+                    case .attachment(let file):
+                        // A file that landed on this reply, drawn while the turn
+                        // is still running instead of after a reload.
+                        if let base = attachmentBase,
+                           let built = Self.attachment(
+                               from: ErisAttachment(
+                                   id: file.id,
+                                   name: file.name,
+                                   size: file.size,
+                                   mediaType: file.mediaType
+                               ),
+                               base: base
+                           )
+                        {
+                            continuation.yield(.attachmentAdded(built))
+                        }
                     case .round(let round):
                         // Which round is running, before the model says anything.
                         // Without it "thinking" covers a model call, a bash

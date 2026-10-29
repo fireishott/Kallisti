@@ -124,6 +124,18 @@ enum ErisFrameBridge {
                 )
             )
 
+        case "attachment":
+            let object = try ErisJSON.object(data)
+            guard let id = object["id"] as? String, !id.isEmpty else { return .ignored }
+            return .attachment(
+                ErisFrameAttachment(
+                    id: id,
+                    name: object["name"] as? String ?? "attachment",
+                    size: object["size"] as? Int ?? 0,
+                    mediaType: object["media_type"] as? String ?? "application/octet-stream"
+                )
+            )
+
         case "round":
             // The round about to run, sent before the model call. It is the only
             // signal that separates "the model is thinking" from "a command is
@@ -200,7 +212,21 @@ enum ErisFrameBridge {
 }
 
 /// What one SSE event turned out to be.
+/// One file the turn attached to the reply it is writing.
+///
+/// The transcript renders chips from the rows it loads, and the bubble on screen
+/// arrived over the stream: no rows, no chip. The daemon sends this frame the
+/// moment the file lands, so the chip can be drawn without a reload.
+struct ErisFrameAttachment: Equatable, Sendable {
+    let id: String
+    let name: String
+    let size: Int
+    let mediaType: String
+}
+
 enum ErisFrameOutcome: Equatable, Sendable {
+    /// A file attached to the reply while it streamed.
+    case attachment(ErisFrameAttachment)
     /// One of the two frames the current `ErisFrame` does not model.
     case reasoning(ErisFrameReasoning)
     case tool(ErisFrameTool)
@@ -267,7 +293,8 @@ struct ErisFrameToolOutput: Equatable, Sendable {
 extension ErisFrameOutcome {
     var isTerminal: Bool {
         switch self {
-        case .reasoning, .tool, .asked, .ignored, .round, .toolStart, .toolOutput:
+        case .reasoning, .tool, .asked, .ignored, .round, .toolStart, .toolOutput,
+             .attachment:
             return false
         case .existing(let frame): return frame.isTerminal
         }

@@ -2517,6 +2517,20 @@ final class ChatStore {
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
                     self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
 
+                case .attachmentAdded(let attachment):
+                    // The chip appears as the file lands: the transcript renders
+                    // these from rows it loads, and this bubble has not loaded.
+                    self.noteStreamingProgress()
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
+                       conv.messages[idx].attachments.contains(where: {
+                           $0.fileName == attachment.fileName && $0.mediaURL == attachment.mediaURL
+                       }) == false
+                    {
+                        conv.messages[idx].attachments.append(attachment)
+                        self.conversation = conv
+                    }
+
                 case .toolActivity(let label):
                     self.noteStreamingProgress()
                     // Build 64: a tool activity event is real progress;
