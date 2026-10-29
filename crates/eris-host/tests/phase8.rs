@@ -6052,3 +6052,87 @@ async fn a_phone_turn_can_dispatch_a_subagent() {
 
     harness.stop();
 }
+
+// ---------------------------------------------------------------------------
+// The auxiliary roles the phone can pin
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/aux` names every role by its canonical key, and `POST` takes that
+/// key. The image role's key is `image` while its label is "Image generation",
+/// which is the gap a client that sends the label falls into.
+#[tokio::test]
+async fn the_aux_roles_are_readable_and_pinnable_by_key() {
+    let provider = StubProvider::start(&["ok"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let admin = {
+        let db = harness.engine.db().clone();
+        let device = AuthStore::new(db.clone())
+            .register_device("admin-phone", "ios")
+            .expect("a device row");
+        // Admin is only minted from a point where a person decided: the loopback
+        // surface, or a pairing code that carried the tick.
+        TokenService::new(db)
+            .mint_access(
+                &device,
+                ScopeSet::device_default().with(Scope::Admin),
+                TokenOrigin::Loopback,
+            )
+            .expect("an admin token")
+            .token()
+            .to_owned()
+    };
+    let auth = [("authorization", format!("Bearer {admin}"))];
+
+    let listed = harness.request("GET", "/v1/aux", &auth, None).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    let roles = body["roles"].as_array().expect("a role list");
+    let image = roles
+        .iter()
+        .find(|role| role["key"] == "image")
+        .unwrap_or_else(|| panic!("the image role is published: {body}"));
+    assert_eq!(
+        image["label"].as_str(),
+        Some("Image generation"),
+        "the label is not the key"
+    );
+    assert_eq!(
+        image["probe_validated"].as_bool(),
+        Some(false),
+        "an image endpoint is not the chat-model probe"
+    );
+
+    // The key works.
+    let body = serde_json::json!({
+        "role": "image",
+        "provider": "primary",
+        "model": "primary",
+    })
+    .to_string();
+    let pinned = harness
+        .request("POST", "/v1/aux", &auth, Some(body.as_str()))
+        .await;
+    assert_eq!(pinned.status, 200, "{}", pinned.body);
+
+    // The label does not, and the refusal names what this build knows.
+    let body = serde_json::json!({
+        "role": "Image generation",
+        "provider": "primary",
+        "model": "primary",
+    })
+    .to_string();
+    let refused = harness
+        .request("POST", "/v1/aux", &auth, Some(body.as_str()))
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    let body = refused.json();
+    assert_eq!(body["code"].as_str(), Some("aux_role_unknown"), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("image"),
+        "the refusal lists the keys it knows: {body}"
+    );
+    harness.stop();
+}
