@@ -834,13 +834,24 @@ final class AppContainer {
             ErisControlMapping.catalog(try await erisClient().controlModels())
         }
         container.modelStore.erisSwitchProvider = { name, provider in
-            // A pin is stored `provider/model`. A bare id is accepted when
-            // exactly one catalogue publishes it, but an id two providers both
-            // publish needs the provider named, so send it whenever the row that
-            // was tapped carried one.
+            // The daemon decides which providers publish an id, and its answer is
+            // the only one that matters: a bare id is accepted when exactly one
+            // catalogue carries it, and `provider/model` is required only when two
+            // do. This used to prefix unconditionally from the row's `provider`
+            // field, which is how a Command Code row arrived labelled `deepseek`
+            // and got `model_invalid` for a model that provider does not carry. Ask
+            // for the bare id the daemon lists, and name a provider only when it
+            // says the id is ambiguous.
             let slug = provider.trimmingCharacters(in: .whitespacesAndNewlines)
-            let target = (slug.isEmpty || name.contains("/")) ? name : "\(slug)/\(name)"
-            try await erisClient().setControlModel(target)
+            guard !slug.isEmpty, !name.contains("/") else {
+                try await erisClient().setControlModel(name)
+                return
+            }
+            do {
+                try await erisClient().setControlModel(name)
+            } catch let error as ErisError where error.code == "model_invalid" {
+                try await erisClient().setControlModel("\(slug)/\(name)")
+            }
         }
 
         container.cronStore.erisCronProvider = {
