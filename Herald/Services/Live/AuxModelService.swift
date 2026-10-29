@@ -125,7 +125,13 @@ final class AuxModelService {
             // Reject anything else with a real error instead of writing
             // garbage to the gateway config.
             let snake = task.lowercased().replacingOccurrences(of: " ", with: "_")
-            if NativeGatewayFeatureClient.auxiliaryCatalog.contains(where: { $0.key == snake }) {
+            // The static catalog is the legacy gateway's slot list; the rows the
+            // daemon published are the roles that exist on this connection. A
+            // role added server-side - the image role, key `image` - is licensed
+            // by the row, not by a client table that predates it.
+            if NativeGatewayFeatureClient.auxiliaryCatalog.contains(where: { $0.key == snake })
+                || tasks.contains(where: { $0.key == snake })
+            {
                 normalizedTask = snake
             } else {
                 lastError = "Unknown auxiliary task: \(task)"

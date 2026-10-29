@@ -148,7 +148,9 @@ struct SettingsScreen: View {
                 models: modelStore.models,
                 searchText: $auxPickerSearchText,
                 onSelect: { provider, model in
-                    Task { await auxService?.set(task: task.task, provider: provider, model: model) }
+                    // The row's canonical key, not its display label: labels are
+                    // prose and change, keys are the contract.
+                    Task { await auxService?.set(task: task.key, provider: provider, model: model) }
                     auxPickerTask = nil
                 }
             )
