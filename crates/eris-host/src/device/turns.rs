@@ -1817,6 +1817,15 @@ impl TurnHub {
                 }
             }
         };
+        // Where a produced file would land: the answer row this turn writes, so
+        // the reply can carry attachments of its own. Same clone rule as above.
+        let attach_target = conversation
+            .as_ref()
+            .map(|write| crate::web::attach::Target {
+                db: store.db().clone(),
+                conversation: write.conversation.clone(),
+                answer: write.answer_id.clone(),
+            });
         // Where a child would land, cloned before the closure for the same reason.
         let dispatch_ids = conversation
             .as_ref()
@@ -2042,6 +2051,7 @@ impl TurnHub {
                 // the same gates the browser uses: the operator's switch, the Full
                 // sandbox, and an answer row to count children against.
                 desk.as_ref(),
+                attach_target.as_ref(),
                 // The phone gets the same turn loop but not the skill library:
                 // reading a procedure is a capability this surface has no view
                 // for, so it is not offered.

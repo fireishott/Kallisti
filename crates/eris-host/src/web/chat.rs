@@ -219,6 +219,18 @@ pub fn record_attachment(db: &Db, conversation: &str, file: &Attachment) -> Resu
     })
 }
 
+/// How many files one row already carries.
+pub fn attachment_count_for(db: &Db, message_id: &str) -> Result<usize, DbError> {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM chat_attachments WHERE message_id = ?1",
+            params![message_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count as usize)
+    })
+}
+
 /// Tie the files a message carried to the message itself.
 ///
 /// The row is written when the file lands, which is before the message exists: a
@@ -3402,6 +3414,7 @@ pub fn run_turn(
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
     agents: Option<&crate::subagents::Desk>,
+    attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
@@ -3421,6 +3434,7 @@ pub fn run_turn(
         web_extract,
         image,
         agents,
+        attach,
         skills,
         settings,
         ask,
@@ -3465,6 +3479,7 @@ pub fn run_turn_resilient(
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
     agents: Option<&crate::subagents::Desk>,
+    attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
@@ -3498,6 +3513,7 @@ pub fn run_turn_resilient(
         web_extract,
         image,
         agents,
+        attach,
         skills,
         settings,
         ask,
@@ -3522,6 +3538,7 @@ pub fn run_turn_resilient_with_keys(
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
     agents: Option<&crate::subagents::Desk>,
+    attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
@@ -3543,6 +3560,7 @@ pub fn run_turn_resilient_with_keys(
         web_extract,
         image,
         agents,
+        attach,
         skills,
         settings,
         ask,
@@ -3582,6 +3600,7 @@ pub fn run_turn_resilient_with_keys(
                 web_extract,
                 image,
                 agents,
+                attach,
                 skills,
                 settings,
                 ask,
@@ -3623,6 +3642,7 @@ pub fn run_turn_with_key(
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
     agents: Option<&crate::subagents::Desk>,
+    attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
@@ -3718,6 +3738,34 @@ pub fn run_turn_with_key(
         // Drawing is not a local capability: with the image role pinned the
         // request goes to its provider, and the file lands in the workspace so
         // the operator can open it.
+        // A file the model made, put on its own reply. Without this it can only
+        // name a path in prose, and "attached" is a claim the daemon cannot make
+        // true.
+        if call.name == crate::web::attach::TOOL {
+            let Some(target) = attach else {
+                return crate::tools::ToolResult::refused(
+                    "this turn has no reply row to attach a file to, so nothing was attached",
+                );
+            };
+            let path = call
+                .arguments
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            return match crate::web::attach::attach(target, sandbox.workspace(), path) {
+                Ok(file) => crate::tools::ToolResult::ok(serde_json::json!({
+                    "status": "attached",
+                    "name": file.name,
+                    "bytes": file.size,
+                    "media_type": file.media_type,
+                    // Says what the operator sees, so the model does not paste the
+                    // contents it just attached.
+                    "note": "It rides on this reply as an attachment the operator can open. \
+                             Name it in your answer; do not paste its contents.",
+                })),
+                Err(reason) => crate::tools::ToolResult::refused(&reason),
+            };
+        }
         if call.name == "generate_image"
             && let Some(config) = image
             && let Some(prompt) = call
@@ -3878,6 +3926,11 @@ pub fn run_turn_with_key(
                     }
                     // Only offered when the role is pinned: a tool the daemon
                     // will refuse must never reach the model's list.
+                    // Offered when this turn has a reply row of its own to attach
+                    // to, which is every turn on a conversation.
+                    if attach.is_some() {
+                        offered.push(crate::web::attach::spec());
+                    }
                     if image.is_some() {
                         offered.push(core_runtime::provider::ToolSpec {
                             name: "generate_image".to_owned(),

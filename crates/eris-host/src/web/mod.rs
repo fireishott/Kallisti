@@ -7,6 +7,7 @@
 //! and the reply arrives on the next page.
 
 pub mod accounts;
+pub mod attach;
 pub mod backups;
 pub mod chat;
 pub mod clarify;

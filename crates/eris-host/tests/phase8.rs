@@ -6136,3 +6136,143 @@ async fn the_aux_roles_are_readable_and_pinnable_by_key() {
     );
     harness.stop();
 }
+
+/// A stub that answers the first request with one named tool call and every
+/// later request with plain text: one parent round calls the tool, the next one
+/// answers, and any child turn reads the text.
+struct ToolStub {
+    url: String,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl ToolStub {
+    async fn start(name: &'static str, arguments: &'static str, text: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a tool stub listener");
+        let addr = listener.local_addr().expect("an address");
+        let task = tokio::spawn(async move {
+            let mut first = true;
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut scratch = [0u8; 8192];
+                let _ = socket.read(&mut scratch).await;
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                            cache-control: no-cache\r\nconnection: close\r\n\r\n";
+                if socket.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                let frames: Vec<serde_json::Value> = if first {
+                    first = false;
+                    vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[{
+                            "index":0,"id":"call-1","type":"function",
+                            "function":{"name":name,"arguments":arguments}
+                        }]}}]}),
+                        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+                    ]
+                } else {
+                    vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"content":text}}]}),
+                        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+                    ]
+                };
+                for frame in frames {
+                    let line = format!("data: {frame}\n\n");
+                    if socket.write_all(line.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+                let _ = socket.write_all(b"data: [DONE]\n\n").await;
+            }
+        });
+        Self {
+            url: format!("http://{addr}/v1"),
+            _task: task,
+        }
+    }
+}
+
+/// A file the model made is attached to the reply it made it in, and the phone
+/// can open it. Before `attach_file` the model could only name a path in prose.
+#[tokio::test]
+async fn a_phone_turn_can_attach_a_file_it_made() {
+    let stub = ToolStub::start("attach_file", r#"{"path":"report.pdf"}"#, "Done.").await;
+    let harness = Harness::start(&stub.url, DEFAULT_SSE_BUFFER).await;
+    let workspace = harness.engine.workspace_path().expect("the workspace");
+    std::fs::write(workspace.join("report.pdf"), b"%PDF-1.4 fake").expect("a produced file");
+
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let created = harness
+        .request("POST", "/v1/conversations", &auth, None)
+        .await;
+    let conversation = created.json()["id"]
+        .as_str()
+        .expect("a conversation")
+        .to_owned();
+    let body = serde_json::json!({ "text": "attach the report", "conversation": conversation })
+        .to_string();
+    let queued = harness
+        .request("POST", "/v1/turns", &auth, Some(body.as_str()))
+        .await;
+    assert_eq!(queued.status, 202, "{}", queued.body);
+
+    // Wait for the answer row to settle, then read the transcript the way the app
+    // does: the file has to be on the assistant's own row.
+    let db = harness.engine.db();
+    let mut settled = false;
+    for _ in 0..100 {
+        let state: Option<String> = db
+            .with_conn(|conn| {
+                let found: Result<String, _> = conn.query_row(
+                    "SELECT state FROM chat_messages WHERE conversation_id = ?1 AND role = 'assistant'",
+                    rusqlite::params![conversation],
+                    |row| row.get(0),
+                );
+                match found {
+                    Ok(state) => Ok(Some(state)),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                    Err(error) => Err(error),
+                }
+            })
+            .expect("the row reads");
+        if state.as_deref() == Some("complete") {
+            settled = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(settled, "the answer settled");
+
+    let transcript = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(transcript.status, 200, "{}", transcript.body);
+    let body = transcript.json();
+    let messages = body["messages"].as_array().expect("messages");
+    let answer = messages
+        .iter()
+        .find(|message| message["role"] == "assistant")
+        .unwrap_or_else(|| panic!("the answer is in the transcript: {body}"));
+    let files = answer["attachments"].as_array().expect("attachments");
+    assert_eq!(files.len(), 1, "the reply carries the file: {answer}");
+    assert_eq!(files[0]["name"].as_str(), Some("report.pdf"));
+    assert_eq!(files[0]["media_type"].as_str(), Some("application/pdf"));
+
+    // And the bytes are served back for the app to open.
+    let id = files[0]["id"].as_str().expect("an id");
+    let bytes = harness
+        .request_octets("GET", &format!("/v1/attachments/{id}"), &auth, "")
+        .await;
+    assert_eq!(bytes.status, 200, "{}", bytes.body);
+    assert_eq!(bytes.body, "%PDF-1.4 fake");
+    harness.stop();
+}

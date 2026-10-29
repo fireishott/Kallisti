@@ -427,11 +427,12 @@ fn production_runner(
         messages,
         &sandbox,
         &mut gate,
-        None,
-        None,
-        None,
-        None,
-        None,
+        None, // MCP servers
+        None, // the web-extract role
+        None, // the image role
+        None, // the dispatch desk
+        None, // no reply row to attach a file to
+        None, // no skill library
         crate::web::chat::TurnSettings {
             tools: false,
             max_rounds: 1,

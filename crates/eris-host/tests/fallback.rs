@@ -119,6 +119,9 @@ async fn run(
             None,
             None,
             None,
+            // Nothing to attach a file to in this suite: the fallback path is
+            // what is under test.
+            None,
             // No skill library in this suite: the fallback path is what is under
             // test, and a catalog would only add prompt text to compare.
             None,

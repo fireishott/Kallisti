@@ -691,6 +691,9 @@ fn run_child_turn(request: &RunRequest) -> Result<RunOutput, (String, String)> {
         None,
         None,
         None,
+        // A child has no reply row of its own to attach a file to: its text lands
+        // on the parent's row.
+        None,
         // A child has no skills: the catalog belongs to the turn that decided to
         // dispatch, and a child that could read a procedure would be a second
         // place the operator's library is interpreted.

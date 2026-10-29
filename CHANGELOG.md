@@ -6,6 +6,16 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A file the model made can ride on the reply it made it in.** There was no tool
+  for this, so a turn that produced a PDF could only write "attached: report.pdf" in
+  prose - a claim the daemon had no way to make true, and a transcript with no
+  attachment on it. `attach_file` names a workspace file, copies it into the
+  conversation's uploads, records the attachment row and binds it to the answer row
+  the turn is writing, so both surfaces render it with the code they already had for
+  the operator's own files. The rules are the upload path's: the source has to
+  resolve inside the workspace, and one reply carries no more files or bytes than one
+  message may. Offered whenever a turn has a reply row, on either lane. `build 138`.
+
 - **A whole tool call is recovered even when the next serialisation is cut short.**
   The recovery scan parsed every candidate object from its opening brace to the end
   of the buffer, so a complete call followed by the beginning of a second one read

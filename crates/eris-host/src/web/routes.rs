@@ -8718,6 +8718,12 @@ fn spawn_turn(
         // A turn asked by a page can ask back. The registry lives on the daemon,
         // so the route that answers the question is answering this thread.
         let ask = crate::web::clarify::Ask::new(clarify, conversation.clone());
+        // A produced file has somewhere to land: this turn's own answer row.
+        let attach = crate::web::attach::Target {
+            db: db.clone(),
+            conversation: conversation.clone(),
+            answer: answer_id.clone(),
+        };
         let started = std::time::Instant::now();
         let (outcome, note) = chat::run_turn_resilient(
             &config,
@@ -8730,6 +8736,7 @@ fn spawn_turn(
             web_extract.as_ref(),
             image.as_ref(),
             desk.as_ref(),
+            Some(&attach),
             skills.as_ref(),
             chat::TurnSettings {
                 tools: tools_enabled,
