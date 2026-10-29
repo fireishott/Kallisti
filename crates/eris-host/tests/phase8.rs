@@ -4816,7 +4816,7 @@ async fn the_daemon_says_what_it_is_without_a_credential() {
     assert_eq!(body["version"], eris_host::admin::VERSION);
     assert_eq!(body["build"], eris_host::admin::BUILD);
     let frames = body["frames"].as_array().expect("the frame vocabulary");
-    assert_eq!(frames.len(), 10, "every frame kind is named: {body}");
+    assert_eq!(frames.len(), 11, "every frame kind is named: {body}");
     assert!(
         frames.iter().any(|f| f == "reasoning") && frames.iter().any(|f| f == "tool"),
         "a client can learn that reasoning and tools exist: {body}"
@@ -6266,6 +6266,19 @@ async fn a_phone_turn_can_attach_a_file_it_made() {
     assert_eq!(files.len(), 1, "the reply carries the file: {answer}");
     assert_eq!(files[0]["name"].as_str(), Some("report.pdf"));
     assert_eq!(files[0]["media_type"].as_str(), Some("application/pdf"));
+
+    // The live stream carried it too, journalled, so a phone watching the turn
+    // draws the chip without a reload and a reconnect replays the same frame.
+    let frames: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM job_events WHERE kind = 'attachment'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("the frame is journalled");
+    assert_eq!(frames, 1, "exactly one attachment frame for one file");
 
     // And the bytes are served back for the app to open.
     let id = files[0]["id"].as_str().expect("an id");

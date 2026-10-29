@@ -6,6 +6,16 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A file the turn attaches shows up while it streams, not after a reload.** The
+  transcript draws attachment chips from the rows it loads, and a bubble that
+  arrived over the stream loads none: `attach_file` wrote the row, the answer came
+  back, and the file was invisible until the page was reloaded. The turn stream now
+  carries an `attachment` frame the moment the file lands - `id`, `name`, `size`,
+  `media_type` - journalled like every other frame so a reconnect replays it.
+  `/v1/version` advertises eleven frame kinds now. The dashboard draws the chip
+  inline as a download, and the phone appends it to the streaming message (build
+  114). `build 139`.
+
 - **A file the model made can ride on the reply it made it in.** There was no tool
   for this, so a turn that produced a PDF could only write "attached: report.pdf" in
   prose - a claim the daemon had no way to make true, and a transcript with no

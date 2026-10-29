@@ -8662,6 +8662,25 @@ fn spawn_turn(
                     );
                 }
             }
+            chat::StreamPart::Attached {
+                id,
+                name,
+                size,
+                media_type,
+            } => {
+                // A chip on the live bubble. The page renders chips from the
+                // transcript it loads, and this bubble has not been loaded - which
+                // is why a file the model attached only appeared after a reload.
+                emit(
+                    "attachment",
+                    serde_json::json!({
+                        "id": id,
+                        "name": name,
+                        "size": size,
+                        "media_type": media_type,
+                    }),
+                );
+            }
             chat::StreamPart::ToolStart { name, arguments } => {
                 // What the turn is doing right now, said in the operator's own
                 // words rather than in the tool's id. A settled call is a receipt

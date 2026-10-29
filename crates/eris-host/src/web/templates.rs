@@ -7066,6 +7066,12 @@ const CHAT_JS: &str = r##"(function () {
       toBottom();
     });
 
+    source.addEventListener("attachment", function (event) {
+      var file = {};
+      try { file = JSON.parse(event.data); } catch (error) { return; }
+      target.addAttachment(file);
+    });
+
     source.addEventListener("tool", function (event) {
       var tool = {};
       try { tool = JSON.parse(event.data); } catch (error) { return; }
@@ -7803,6 +7809,33 @@ const CHAT_JS: &str = r##"(function () {
       sendAnswer(conversationId(), question, [label], "");
     });
 
+    // One file this turn attached to its reply, drawn the way the transcript
+    // draws it: the badge, the name, the size, and a download. The transcript gets
+    // these from the rows it loads; a bubble that arrived over the stream has no
+    // rows, which is why an attached file used to appear only after a reload.
+    function addAttachment(file) {
+      if (present(file) === false || present(file.id) === false) { return; }
+      var chip = document.createElement("a");
+      chip.className = "attached-chip";
+      chip.setAttribute("href", "/dashboard/chat/file/" + encodeURIComponent(file.id));
+      chip.setAttribute("download", file.name || "attachment");
+      chip.setAttribute("title", file.name || "attachment");
+      var badge = document.createElement("span");
+      badge.className = "attached-badge";
+      badge.textContent = badgeForName(file.name || "");
+      var name = document.createElement("span");
+      name.className = "attached-name";
+      name.textContent = file.name || "attachment";
+      var size = document.createElement("span");
+      size.className = "attached-size";
+      size.textContent = humanSize(file.size || 0);
+      chip.appendChild(badge);
+      chip.appendChild(name);
+      chip.appendChild(size);
+      body.appendChild(chip);
+      toBottom();
+    }
+
     thread.appendChild(article);
     return {
       article: article,
@@ -7816,6 +7849,7 @@ const CHAT_JS: &str = r##"(function () {
       thinkBody: thinkBody,
       streamChunk: streamChunk,
       addTool: addTool,
+      addAttachment: addAttachment,
       setTurn: setTurn,
       metaLive: metaLive,
       setLive: setLive,

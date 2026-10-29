@@ -3319,6 +3319,22 @@ pub enum StreamPart<'a> {
         /// string in it.
         asked: Option<&'a Asked>,
     },
+    /// A file that landed on this reply.
+    ///
+    /// The transcript renders an attachment chip from the rows it loads, and a
+    /// bubble that arrived over the stream never loads any: that is why a file the
+    /// model attached showed up only after a reload. The frame carries what the
+    /// chip needs, so a surface can draw it the moment it happens.
+    Attached {
+        /// The attachment row id, which is also how the bytes are fetched.
+        id: &'a str,
+        /// The stored file name.
+        name: &'a str,
+        /// Stored byte count.
+        size: u64,
+        /// The content type the daemon will serve it as.
+        media_type: &'a str,
+    },
     /// A tool call that is about to run, before it has produced anything.
     ///
     /// The finished [`StreamPart::Tool`] frame is a receipt: it lands after the
@@ -3755,6 +3771,7 @@ pub fn run_turn_with_key(
             return match crate::web::attach::attach(target, sandbox.workspace(), path) {
                 Ok(file) => crate::tools::ToolResult::ok(serde_json::json!({
                     "status": "attached",
+                    "id": file.id,
                     "name": file.name,
                     "bytes": file.size,
                     "media_type": file.media_type,
@@ -4421,6 +4438,23 @@ pub fn drive_tool_loop(
                 is_error: record.is_error,
                 asked: record.asked.as_ref(),
             });
+            // A file that just landed goes out as its own frame. The transcript
+            // renders chips from the rows it loads; a bubble that arrived over the
+            // stream loads none, which is why an attached file only appeared after
+            // a reload.
+            if record.name == crate::web::attach::TOOL
+                && !record.is_error
+                && let Ok(attached) = serde_json::from_str::<serde_json::Value>(&record.output)
+            {
+                sink(StreamPart::Attached {
+                    id: attached["id"].as_str().unwrap_or_default(),
+                    name: attached["name"].as_str().unwrap_or_default(),
+                    size: attached["bytes"].as_u64().unwrap_or(0),
+                    media_type: attached["media_type"]
+                        .as_str()
+                        .unwrap_or("application/octet-stream"),
+                });
+            }
             records.push(record);
             messages.push(ChatMessage::tool_result(call.id.clone(), result.content));
         }

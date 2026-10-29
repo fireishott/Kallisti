@@ -91,6 +91,13 @@ pub enum FrameKind {
     /// happening. The count is the round about to run and whether it may still
     /// call tools, so a reader can tell thinking from working.
     Round,
+    /// A file that landed on the reply this turn is writing.
+    ///
+    /// The transcript renders an attachment chip from the rows it loads, and the
+    /// bubble a phone is watching arrived over the stream: no rows, no chip. This
+    /// frame carries the four fields the chip needs and is journalled, so a
+    /// reconnect replays it rather than losing it.
+    Attachment,
     /// A tool call is about to run.
     ///
     /// [`FrameKind::Tool`] is a receipt: it lands after the call returned. A
@@ -110,7 +117,7 @@ pub enum FrameKind {
 impl FrameKind {
     /// Every kind, so a client can learn the vocabulary from `/v1/version`
     /// instead of pinning a build number.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Delta,
         Self::Reasoning,
         Self::Tool,
@@ -121,6 +128,7 @@ impl FrameKind {
         Self::Round,
         Self::ToolStart,
         Self::ToolOutput,
+        Self::Attachment,
     ];
 
     /// The storage and wire spelling.
@@ -137,6 +145,7 @@ impl FrameKind {
             Self::Round => "round",
             Self::ToolStart => "tool_start",
             Self::ToolOutput => "tool_output",
+            Self::Attachment => "attachment",
         }
     }
 
@@ -154,6 +163,7 @@ impl FrameKind {
             "round" => Some(Self::Round),
             "tool_start" => Some(Self::ToolStart),
             "tool_output" => Some(Self::ToolOutput),
+            "attachment" => Some(Self::Attachment),
             _ => None,
         }
     }
@@ -167,6 +177,7 @@ impl FrameKind {
             Self::Delta
                 | Self::Reasoning
                 | Self::Tool
+                | Self::Attachment
                 | Self::Asked
                 | Self::Round
                 | Self::ToolStart
@@ -180,6 +191,7 @@ impl FrameKind {
             Self::Delta
             | Self::Reasoning
             | Self::Tool
+            | Self::Attachment
             | Self::Asked
             | Self::Round
             | Self::ToolStart
@@ -233,6 +245,17 @@ enum Signal {
     /// One fragment of the model's own reasoning.
     Reasoning(String),
     /// One tool call that ran.
+    /// One file that landed on the reply.
+    Attached {
+        /// The attachment row id.
+        id: String,
+        /// The stored file name.
+        name: String,
+        /// Stored byte count.
+        size: u64,
+        /// What the daemon will serve it as.
+        media_type: String,
+    },
     Tool {
         /// The tool name.
         name: String,
@@ -1623,6 +1646,24 @@ impl TurnHub {
                                 publish(&sender, seq, FrameKind::Asked, data);
                             }
                         }
+                        Signal::Attached {
+                            id,
+                            name,
+                            size,
+                            media_type,
+                        } => {
+                            let data = serde_json::json!({
+                                "id": &id,
+                                "name": &name,
+                                "size": size,
+                                "media_type": &media_type,
+                            });
+                            if let Ok(Some(seq)) =
+                                store.append(&writer_job, FrameKind::Attachment, &data)
+                            {
+                                publish(&sender, seq, FrameKind::Attachment, data);
+                            }
+                        }
                         Signal::Done { text, usage } => {
                             let data = serde_json::json!({ "text": &text, "usage": &usage });
                             match store.finish(&writer_job, FrameKind::Done, &data) {
@@ -1982,6 +2023,19 @@ impl TurnHub {
                 // A call that has started but not finished. Announced, because a
                 // two-minute command is otherwise a silence that reads exactly
                 // like a turn that died.
+                crate::web::chat::StreamPart::Attached {
+                    id,
+                    name,
+                    size,
+                    media_type,
+                } => {
+                    let _ = tx.send(Signal::Attached {
+                        id: id.to_owned(),
+                        name: name.to_owned(),
+                        size,
+                        media_type: media_type.to_owned(),
+                    });
+                }
                 crate::web::chat::StreamPart::ToolStart { name, arguments } => {
                     let _ = tx.send(Signal::ToolStart {
                         name: name.to_owned(),
