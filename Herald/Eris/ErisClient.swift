@@ -245,7 +245,7 @@ enum ErisRoute: Equatable, Sendable {
              .backups, .attachment,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .cron, .skills, .aux, .noteRun, .noteRunEvents, .gwHealth, .gwPreflight,
-             .asked:
+             .subagents, .subagent, .asked:
             return "GET"
         case .skill:
             return "GET"
