@@ -6,6 +6,18 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The phone can read the subagents it dispatched.** `GET /v1/subagents` and
+  `GET /v1/subagents/{id}`, behind the `sessions` scope. Before this the phone could
+  hand work off and then had no way to read it: the tool's own answer ("dispatched,
+  id ...") was the last the operator heard unless he was looking at the dashboard.
+  The list is the dashboard bar's view - anything still working plus anything that
+  finished recently, newest first, bounded at forty with a `truncated` flag - so the
+  two surfaces cannot disagree about what is live. The single-row read is the
+  durable half: a child that finished while the app was closed is fetched by the id
+  the tool returned, and a row the bar has aged out is not lost. Field names are the
+  daemon's own, so `status` is `queued`, `running`, `succeeded`, `failed` or
+  `cancelled`. `build 136`.
+
 - **The phone can hand work to a subagent.** The device turn hardcoded
   `agents: false`, so `dispatch_agent` was never offered and a child never ran -
   the comment said the surface had no bar to report one to and no answer row to

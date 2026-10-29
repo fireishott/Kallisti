@@ -3435,6 +3435,105 @@ pub async fn version() -> axum::response::Response {
     .into_response()
 }
 
+/// The most subagents one read returns.
+///
+/// The bar keeps four running at a time, so forty is a page of history rather
+/// than a live view: enough that a phone reopening after a while sees what
+/// happened, bounded so a long-running install cannot answer with a megabyte.
+const SUBAGENT_LIST_LIMIT: usize = 40;
+
+/// One subagent row on the wire.
+///
+/// The field names are the daemon's own words, not a second vocabulary: a status
+/// is `queued`, `running`, `succeeded`, `failed` or `cancelled` exactly as the
+/// table and the dashboard spell it, so a client branches on one set of values.
+fn subagent_json(row: &crate::subagents::Subagent) -> serde_json::Value {
+    serde_json::json!({
+        "id": row.id,
+        "label": row.label,
+        "prompt": row.prompt,
+        "model": row.model,
+        "status": row.status.as_str(),
+        "result": row.result,
+        "error_code": row.error_code,
+        "parent_conversation": row.parent_conversation,
+        "parent_turn": row.parent_turn,
+        "created_at": row.created_at,
+        "started_at": row.started_at,
+        "finished_at": row.finished_at,
+        "elapsed_secs": row.elapsed_secs,
+        "elapsed": row.elapsed_label(),
+        "prompt_tokens": row.prompt_tokens,
+        "completion_tokens": row.completion_tokens,
+    })
+}
+
+/// `GET /v1/subagents` - the subagents the daemon has run, newest first.
+///
+/// Behind `sessions`, with the transcript: a subagent is work one of this
+/// operator's turns handed off, so it is conversation state. The list is the
+/// dashboard bar's own view - anything still working plus anything that finished
+/// recently - so the phone and the page cannot disagree about what is live.
+pub async fn subagents(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let rows = match crate::subagents::bar(service.engine().db(), SUBAGENT_LIST_LIMIT + 1) {
+        Ok(rows) => rows,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the subagents: {error}"))
+                .into_response();
+        }
+    };
+    // Read one over the limit, so "there are more" is a fact rather than a guess.
+    let truncated = rows.len() > SUBAGENT_LIST_LIMIT;
+    let rows = &rows[..rows.len().min(SUBAGENT_LIST_LIMIT)];
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "count": rows.len(),
+        "truncated": truncated,
+        "subagents": rows.iter().map(subagent_json).collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+/// `GET /v1/subagents/{id}` - one row, whether or not the bar still lists it.
+///
+/// This is the read that makes a dispatch durable on a phone: a child that
+/// finished while the app was closed is fetched by the id the tool returned.
+pub async fn subagent(
+    State(service): State<DeviceService>,
+    Path(subagent_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    match crate::subagents::get(service.engine().db(), &subagent_id) {
+        Ok(Some(row)) => axum::Json(serde_json::json!({
+            "ok": true,
+            "subagent": subagent_json(&row),
+        }))
+        .into_response(),
+        Ok(None) => DeviceError::new(
+            axum::http::StatusCode::NOT_FOUND,
+            "subagent_not_found",
+            "No subagent has that id.",
+        )
+        .into_response(),
+        Err(error) => DeviceError::db_unavailable(format!("cannot read the subagent: {error}"))
+            .into_response(),
+    }
+}
+
 /// The list `GET /v1/approvals` answers with.
 fn read_approvals(service: &DeviceService) -> Result<serde_json::Value, DeviceError> {
     let mut waiting = approvals::pending(service.engine().db()).map_err(|error| {

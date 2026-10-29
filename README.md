@@ -123,7 +123,8 @@ The app talks to the daemon's own device API - there is no relay in between. Tod
 `/v1/pair` · `/v1/token/refresh` · `/v1/turns` · `/v1/turns/{id}/events` ·
 `/v1/turns/{id}/cancel` · `/v1/sessions/{id}` · `/v1/conversations` ·
 `/v1/conversations/{id}` · `/v1/conversations/{id}/clear` ·
-`/v1/approvals` · `/v1/settings` · `/v1/settings/full-access` · `/v1/devices` ·
+`/v1/approvals` · `/v1/subagents` · `/v1/subagents/{id}` ·
+`/v1/settings` · `/v1/settings/full-access` · `/v1/devices` ·
 `/v1/mcp` · `/v1/projects` · `/v1/persona` · `/v1/audit` · `/v1/version` ·
 `/v1/backups` · `/v1/backups/{name}/restore` · `/v1/device/sensor/*` ·
 `/v1/device/health/latest` · `/v1/device/location` · `/v1/inbox` · `/v1/notes` ·
@@ -323,7 +324,7 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 
-Shipped and running: **Kallisti-Eris 1.4.15, build 135**, with the cron scheduler and
+Shipped and running: **Kallisti-Eris 1.4.15, build 136**, with the cron scheduler and
 the skills library switched on. The web client is server-rendered HTML with an inlined
 stylesheet and one script, so a transcript renders on a browser with no scripting and a
 turn that is already running can be reattached to.

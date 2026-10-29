@@ -195,6 +195,22 @@ pub const ROUTE_ASKED: &str = "/v1/turns/{id}/asked";
 /// asked by a phone turn can be answered from either surface.
 pub const ROUTE_ANSWER: &str = "/v1/turns/{id}/answer";
 
+/// `GET /v1/subagents` - the subagents this daemon has run, newest first,
+/// behind the `sessions` scope.
+///
+/// The dashboard draws these on its top bar; before this the phone could dispatch
+/// a child and then had no way to read it, so the tool's own answer ("dispatched,
+/// id ...") was the last the operator heard. The list is the bar's: anything still
+/// working plus anything that finished recently, so it is a live view rather than
+/// a growing log. A row older than that is still readable by its id.
+pub const ROUTE_SUBAGENTS: &str = "/v1/subagents";
+
+/// `GET /v1/subagents/{id}` - one row, whether or not it is still in the bar.
+///
+/// The read that makes a dispatch durable: a result that landed while the phone
+/// was closed is still there to fetch, and a row the bar has aged out is not lost.
+pub const ROUTE_SUBAGENT: &str = "/v1/subagents/{id}";
+
 /// `GET /v1/mcp` - the configured MCP servers and the health the daemon
 /// observed, behind the `sessions` scope.
 ///
@@ -1049,6 +1065,8 @@ pub fn router(service: DeviceService) -> Router {
             ROUTE_SETTINGS,
             get(handlers::settings).post(handlers::update_settings),
         )
+        .route(ROUTE_SUBAGENTS, get(handlers::subagents))
+        .route(ROUTE_SUBAGENT, get(handlers::subagent))
         .route(ROUTE_APPROVALS, get(handlers::approvals))
         .route(ROUTE_APPROVAL_DECIDE, post(handlers::decide_approval))
         .route(ROUTE_MCP, get(handlers::mcp_servers))

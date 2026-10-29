@@ -5991,5 +5991,64 @@ async fn a_phone_turn_can_dispatch_a_subagent() {
         row.parent_turn.is_some(),
         "the row names the answer it was counted against"
     );
+
+    // And the phone can read what it dispatched. The list is the dashboard bar's
+    // own view, so the two surfaces cannot disagree about what is live.
+    let listed = harness.request("GET", "/v1/subagents", &auth, None).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["count"].as_u64(), Some(1), "{body}");
+    let wire = &body["subagents"][0];
+    assert_eq!(wire["id"].as_str(), Some(row.id.as_str()));
+    assert_eq!(wire["status"].as_str(), Some("succeeded"));
+    assert_eq!(wire["label"].as_str(), Some("phone"));
+    assert!(
+        wire["result"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("the child's answer"),
+        "the result travels: {wire}"
+    );
+
+    // A row is readable by its id even after the bar has aged it out, which is the
+    // point: the id the tool returned is a durable handle.
+    let one = harness
+        .request("GET", &format!("/v1/subagents/{}", row.id), &auth, None)
+        .await;
+    assert_eq!(one.status, 200, "{}", one.body);
+    assert_eq!(one.json()["subagent"]["id"].as_str(), Some(row.id.as_str()));
+
+    let missing = harness
+        .request("GET", "/v1/subagents/not-a-real-id", &auth, None)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.json()["code"].as_str(), Some("subagent_not_found"));
+
+    // A device without the sessions scope cannot read work it did not send for.
+    let chat_only = {
+        let db = harness.engine.db().clone();
+        let device = AuthStore::new(db.clone())
+            .register_device("chat-only", "ios")
+            .expect("a device row");
+        TokenService::new(db)
+            .mint_access(
+                &device,
+                ScopeSet::device_default().without(Scope::Sessions),
+                TokenOrigin::Device,
+            )
+            .expect("a chat-only token")
+            .token()
+            .to_owned()
+    };
+    let denied = harness
+        .request(
+            "GET",
+            "/v1/subagents",
+            &[("authorization", format!("Bearer {chat_only}"))],
+            None,
+        )
+        .await;
+    assert_eq!(denied.status, 403, "{}", denied.body);
+
     harness.stop();
 }
