@@ -6,6 +6,16 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A phone that reconnects can attach to a running turn again.** A request with no
+  `Last-Event-ID` was treated as a resume from zero, so once a long turn pruned its
+  early frames the daemon answered `409 buffer_miss` to every reconnect. A client
+  with no resume support can never name a position that is still retained, so the
+  stream went quiet and the app fell back to polling: the turn ran, the phone showed
+  nothing. A connection that names no position now watches from the current tail of
+  a live turn, and still replays a finished one in full. An explicit stale resume
+  point is still a `409`, and the snapshot route is still the recovery path.
+  `build 140`.
+
 - **A file the turn attaches shows up while it streams, not after a reload.** The
   transcript draws attachment chips from the rows it loads, and a bubble that
   arrived over the stream loads none: `attach_file` wrote the row, the answer came

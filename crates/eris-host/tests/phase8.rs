@@ -965,6 +965,13 @@ async fn a_resume_past_the_retention_window_is_a_409_buffer_miss() {
         format!("/v1/sessions/{session_id}").as_str()
     );
 
+    // A connection that names no position is not resuming, it is watching, so
+    // it must not be told its position is stale. This is the phone: it has no
+    // resume header at all, and before this a long turn pruning its early frames
+    // made every reconnect a 409 and the live view went silent.
+    let watching = harness.request("GET", &path, &auth, None).await;
+    assert_eq!(watching.status, 200, "{}", watching.body);
+
     // The snapshot route is the documented recovery path.
     let snapshot = harness
         .request("GET", &format!("/v1/sessions/{session_id}"), &auth, None)

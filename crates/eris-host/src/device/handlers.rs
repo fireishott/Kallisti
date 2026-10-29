@@ -1481,11 +1481,19 @@ pub async fn events(
         }
     };
 
-    let last_event_id = match headers.get(LAST_EVENT_ID_HEADER) {
+    // A request that names no position is not asking for a resume, it is asking to
+    // watch. That distinction is the whole difference between a phone attached to
+    // a turn and a phone that went quiet: with no header the old code replayed
+    // from zero, and once a long turn pruned its early frames that read as
+    // `409 buffer_miss` on every reconnect, forever, because a client with no
+    // resume support can never name a position that is still retained. A fresh
+    // connection now starts at the current tail: it misses what it missed (it
+    // polls the transcript for that) and hears everything from here on.
+    let resume_from = match headers.get(LAST_EVENT_ID_HEADER) {
         Some(value) => {
             let text = value.to_str().unwrap_or("").trim();
             match text.parse::<i64>() {
-                Ok(seq) if seq >= 0 => seq,
+                Ok(seq) if seq >= 0 => Some(seq),
                 _ => {
                     return DeviceError::bad_request(
                         "last_event_id_invalid",
@@ -1495,8 +1503,20 @@ pub async fn events(
                 }
             }
         }
-        None => 0,
+        None if FrameKind::terminal_for_status(&job.status).is_some() => {
+            // A finished job is a transcript, not a live turn: a fresh reader
+            // wants everything it retained, so replay from the start.
+            Some(0)
+        }
+        None => match store.max_seq(&job_id) {
+            Ok(seq) => seq.or(Some(0)),
+            Err(error) => {
+                return DeviceError::db_unavailable(format!("cannot read the event log: {error}"))
+                    .into_response();
+            }
+        },
     };
+    let last_event_id = resume_from.unwrap_or(0);
 
     // Subscribe before reading, so a frame written between the read and the tail
     // is delivered by the channel rather than lost in the gap.
@@ -1517,6 +1537,7 @@ pub async fn events(
         }
     };
     if let Some(oldest) = oldest
+        && headers.contains_key(LAST_EVENT_ID_HEADER)
         && oldest > last_event_id.saturating_add(1)
     {
         return DeviceError::buffer_miss(job.session_id.as_deref().unwrap_or("")).into_response();

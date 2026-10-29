@@ -640,6 +640,22 @@ impl TurnStore {
         })
     }
 
+    /// The highest `seq` a job has written, or `None` when it has written none.
+    ///
+    /// What a fresh connection to a running turn needs: it has no resume point,
+    /// so it should watch from here rather than be told its position is stale.
+    pub fn max_seq(&self, job_id: &str) -> Result<Option<i64>, DbError> {
+        self.db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT MAX(seq) FROM job_events WHERE job_id = ?1",
+                params![job_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(Option::flatten)
+        })
+    }
+
     /// Every retained event with `seq > after`, ascending.
     pub fn events_after(&self, job_id: &str, after: i64) -> Result<Vec<TurnFrame>, DbError> {
         self.db.with_conn(|conn| {
