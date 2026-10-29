@@ -6,6 +6,13 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **Gemini thinking models can call tools again.** A 2.5 model returns a
+  `thoughtSignature` beside every `functionCall` and refuses the next round with
+  `400 Function call is missing a thought_signature in functionCall parts` if the
+  replay omits it. The adapter rebuilt calls from name and arguments only, so any
+  antigravity turn died on its second tool call. The signature is now kept from the
+  stream, carried on the call, and echoed back beside it. `build 141`.
+
 - **A phone that reconnects can attach to a running turn again.** A request with no
   `Last-Event-ID` was treated as a resume from zero, so once a long turn pruned its
   early frames the daemon answered `409 buffer_miss` to every reconnect. A client

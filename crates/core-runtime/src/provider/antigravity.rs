@@ -164,9 +164,17 @@ pub fn build_body(
                     parts.push(serde_json::json!({ "text": message.content }));
                 }
                 for call in &message.tool_calls {
-                    parts.push(serde_json::json!({
+                    let mut part = serde_json::json!({
                         "functionCall": { "name": call.name, "args": call.arguments },
-                    }));
+                    });
+                    // A 2.5 thinking model issues a signature with every call and
+                    // refuses the next round without it: "Function call is missing
+                    // a thought_signature in functionCall parts". It goes back
+                    // beside the call, unread, exactly as it arrived.
+                    if let Some(signature) = &call.thought_signature {
+                        part["thoughtSignature"] = serde_json::Value::String(signature.clone());
+                    }
+                    parts.push(part);
                 }
                 if !parts.is_empty() {
                     contents.push(serde_json::json!({ "role": "model", "parts": parts }));
@@ -327,6 +335,50 @@ mod tests {
             "session-1",
         )
         .expect("builds")
+    }
+
+    #[test]
+    fn a_replayed_call_carries_the_signature_the_model_issued() {
+        // Gemini 2.5 thinking models return `thoughtSignature` with every
+        // functionCall and refuse the next round without it. This is the 400 the
+        // user hit: "Function call is missing a thought_signature".
+        let mut call = ToolCall::new(
+            0,
+            "call_1",
+            "run_command",
+            serde_json::json!({ "command": "ls" }),
+        )
+        .expect("a call");
+        call.thought_signature = Some("sig-abc".to_owned());
+        let request = ChatRequest {
+            system: Some("Be brief.".to_owned()),
+            messages: vec![
+                ChatMessage::text(ChatRole::User, "list the directory"),
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: String::new(),
+                    tool_calls: vec![call],
+                    tool_call_id: None,
+                },
+            ],
+            ..ChatRequest::default()
+        };
+        let body = build_body(
+            &profile(Some("proj-1")),
+            "gemini-2.5-flash",
+            &request,
+            RequestType::Agent,
+            "agent/c1/1700000000000/t1/1",
+            "session-1",
+        )
+        .expect("builds");
+        let parts = &body["request"]["contents"][1]["parts"];
+        let part = &parts[0];
+        assert_eq!(part["functionCall"]["name"], "run_command");
+        assert_eq!(
+            part["thoughtSignature"], "sig-abc",
+            "the signature goes back beside the call, or the next round is a 400"
+        );
     }
 
     #[test]

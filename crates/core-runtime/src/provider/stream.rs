@@ -43,6 +43,9 @@ struct ToolAccumulator {
     /// serialisation starts, so a restart that is cut short still refuses rather
     /// than running a stale spelling.
     last_complete: Option<serde_json::Value>,
+    /// The provider's per-call signature, when it issued one. Only Gemini 2.5
+    /// thinking models do, and only they require it back.
+    thought_signature: Option<String>,
 }
 
 impl ToolAccumulator {
@@ -53,6 +56,7 @@ impl ToolAccumulator {
             name: String::new(),
             arguments: String::new(),
             last_complete: None,
+            thought_signature: None,
         }
     }
 
@@ -260,7 +264,10 @@ impl ToolAccumulator {
         };
 
         ToolCall::new(self.index, id, self.name.clone(), arguments)
-            .map(Some)
+            .map(|mut call| {
+                call.thought_signature = self.thought_signature.clone();
+                Some(call)
+            })
             .map_err(|error| classify::protocol(format!("tool call `{}`: {error}", self.name)))
     }
 }
@@ -1024,6 +1031,14 @@ impl ChatStreamParser {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default();
                     if !name.is_empty() {
+                        // Gemini 2.5 returns this beside the call and 400s the
+                        // next round if the replay drops it.
+                        let signature = part
+                            .get("thoughtSignature")
+                            .or_else(|| call.get("thoughtSignature"))
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|text| !text.is_empty())
+                            .map(str::to_owned);
                         let id = call
                             .get("id")
                             .and_then(serde_json::Value::as_str)
@@ -1043,6 +1058,7 @@ impl ChatStreamParser {
                             .filter(|id| !id.is_empty())
                             .map_or(id, str::to_owned);
                         let accumulator = self.accumulator(self.tools.len() as u32);
+                        accumulator.thought_signature = signature;
                         accumulator.observe_id(&id);
                         accumulator.push_name(name);
                         accumulator.push_arguments(&arguments.to_string());

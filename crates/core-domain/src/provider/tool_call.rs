@@ -22,6 +22,16 @@ pub struct ToolCall {
     pub name: String,
     /// Arguments, parsed. Always a JSON object, never a fragment.
     pub arguments: serde_json::Value,
+    /// The provider's signature for this call, when it issued one.
+    ///
+    /// Gemini 2.5 thinking models return `thoughtSignature` beside every
+    /// `functionCall` and refuse the next round with a 400 if the replay omits
+    /// it: "Function call is missing a thought_signature in functionCall parts".
+    /// Carried verbatim so the adapter can echo it without knowing what it means.
+    /// Absent for every other provider, and omitted from the wire so nothing else
+    /// sees a new field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 impl ToolCall {
@@ -43,6 +53,7 @@ impl ToolCall {
             index,
             id: id.into(),
             name: name.into(),
+            thought_signature: None,
             arguments,
         })
     }
