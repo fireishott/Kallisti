@@ -403,9 +403,14 @@ struct DocumentPickerView: UIViewControllerRepresentable {
     let onComplete: ([URL]) -> Void
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [
-            .image, .pdf, .plainText, .sourceCode, .json, .html, .xml, .yaml,
-        ], asCopy: true)
+        // Every type, not the relay's short list. A phone that can attach a
+        // screenshot but not the zip, the spreadsheet or the log beside it is a
+        // phone that cannot send the thing the conversation is about; the daemon
+        // sniffs what it stores and caps it at its own ceiling.
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.item],
+            asCopy: true
+        )
         picker.allowsMultipleSelection = allowsMultipleSelection
         picker.delegate = context.coordinator
         return picker

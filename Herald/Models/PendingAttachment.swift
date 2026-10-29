@@ -17,15 +17,18 @@ struct PendingAttachment: Identifiable, Sendable {
         case file
     }
 
-    /// Maximum file size for downscaled images and text/code attachments: 350 KB
-    /// (before base64 encoding -> ~470KB base64).
-    /// The Herald API server accepts a 1 MB request body for the whole message payload,
-    /// so individual attachments still need additional aggregate request-size validation.
-    static let maxFileSize = 350 * 1024
-    /// Documents keep their original bytes (no downscaling path), and the relay
-    /// accepts up to 7,000,000 base64 chars per attachment (~5.2 MB raw), so a
-    /// 4 MB PDF encodes to ~5.5 MB and still fits.
-    static let maxDocumentFileSize = 4 * 1024 * 1024
+    /// Per-file ceiling for anything that is not a document or a video.
+    ///
+    /// The old 350 KB was a relay limit: the Hermes API took base64 inside one
+    /// message body, so a file had to fit an encoded budget. On Eris the bytes go
+    /// up raw in their own request and the daemon's own ceiling is 25 MB, so the
+    /// client was refusing zips, archives, logs and office documents the daemon
+    /// would happily store. Set just under the daemon's cap so a refusal comes from
+    /// the side that owns the limit, with a typed error.
+    static let maxFileSize = 24 * 1024 * 1024
+    /// Documents keep their original bytes (no downscaling path). Same ceiling and
+    /// same reason as [`maxFileSize`].
+    static let maxDocumentFileSize = 24 * 1024 * 1024
     static let maxAttachmentsPerMessage = 10
     /// Build 78.7: video files ride the file.attach data_url path (WS cap 384 MB).
     static let maxVideoFileSize = 150 * 1024 * 1024
@@ -57,10 +60,14 @@ struct PendingAttachment: Identifiable, Sendable {
         "application/pdf",
     ]
 
+    /// Whether the composer will stage a file of this type.
+    ///
+    /// Everything, now. The list this replaced was the relay's: text, images, video
+    /// and PDF, so a zip or a spreadsheet was dropped in the picker with no
+    /// explanation. On Eris the daemon sniffs the bytes and serves whatever it
+    /// stored, so the honest policy is "any type" and the one real limit is size.
     static func supportsMimeType(_ mimeType: String) -> Bool {
-        mimeType.hasPrefix("image/") || supportedTextMimeTypes.contains(mimeType)
-            || supportedVideoMimeTypes.contains(mimeType)
-            || supportedDocumentMimeTypes.contains(mimeType)
+        !mimeType.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     /// Per-type raw byte ceiling. Images are downscaled before this is checked,
@@ -213,6 +220,20 @@ struct PendingAttachment: Identifiable, Sendable {
             "m4v": "video/x-m4v",
             "avi": "video/x-msvideo",
             "3gp": "video/3gpp",
+            // Archives, office documents and the rest of what a desktop hands you.
+            "zip": "application/zip", "gz": "application/gzip",
+            "tar": "application/x-tar", "7z": "application/x-7z-compressed",
+            "rar": "application/vnd.rar", "dmg": "application/x-apple-diskimage",
+            "doc": "application/msword",
+            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "xls": "application/vnd.ms-excel",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "ppt": "application/vnd.ms-powerpoint",
+            "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "rtf": "application/rtf",
+            "log": "text/plain", "sh": "text/x-shellscript",
+            "toml": "application/toml", "ini": "text/plain",
+            "sql": "text/plain", "ts": "text/typescript",
         ]
         return map[ext] ?? "application/octet-stream"
     }
