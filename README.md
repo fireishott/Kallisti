@@ -228,6 +228,24 @@ That is the whole install. What it does:
 - Writes and starts a systemd **user** unit, `kallisti-eris.service`, and tells you
   if `Linger` is off.
 
+### Upgrading without killing a turn
+
+`scripts/deploy.sh` installs a freshly built binary and waits for the daemon to be
+idle first. Restarting under a running turn loses it: the boot sweep settles the row
+as interrupted and the operator is told the daemon stopped before the turn finished,
+for work they did nothing to stop.
+
+```sh
+scripts/deploy.sh                 # build, wait for idle, install, restart
+scripts/deploy.sh --skip-build    # install target/release/eris as it sits
+scripts/deploy.sh --dry-run       # say what would happen, touch nothing
+scripts/deploy.sh --wait 600      # wait longer than the default five minutes
+scripts/deploy.sh --force         # restart now, turn or no turn
+```
+
+It refuses and exits `3` when a turn is still running after the wait, and it backs
+up the binary it replaces.
+
 Then two edits and you are in:
 
 ```sh
