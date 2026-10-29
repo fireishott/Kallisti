@@ -386,6 +386,9 @@ final class ChatStore {
     /// Last clarify the user answered, and when. Probes and server snapshots
     /// skip that request ID for `answeredClarifySuppressWindow` so a stale
     /// cached copy cannot bring an answered card back.
+    /// The row the turn parked on a question. It keeps streaming across the
+    /// answer: the turn is not over, it is waiting.
+    private var clarifyPlaceholderID: UUID?
     private var answeredClarifyRequestID: String?
     private var answeredClarifyAt: Date = .distantPast
     private static let answeredClarifySuppressWindow: TimeInterval = 60
@@ -1487,7 +1490,9 @@ final class ChatStore {
                 // trickle-events let it run forever. Settle any
                 // placeholder that no longer has an active stream.
                 var _owned78a = Set(self.activeStreams.values)
+                _owned78a.formUnion(self.pendingStreamPlaceholders)
                 if let sid = self.serverTurnPlaceholderID { _owned78a.insert(sid) }
+                if let sid = self.clarifyPlaceholderID { _owned78a.insert(sid) }
                 if let _conv78a = self.conversation {
                     for _idx78a in _conv78a.messages.indices where _conv78a.messages[_idx78a].isStreaming {
                         if !_owned78a.contains(_conv78a.messages[_idx78a].id) {
@@ -1598,6 +1603,20 @@ final class ChatStore {
             do {
                 try await self.heraldClient.respondToClarify(requestID: requestID, answer: answer)
                 self.appendLog(level: .info, "Clarify respond accepted, turn unblocked")
+                // The turn is not over, it was waiting. Answering puts the row
+                // back in the live set so the thought card stays open and its
+                // tail keeps following the continuation instead of freezing on
+                // the moment the question was answered.
+                if let id = self.clarifyPlaceholderID {
+                    self.pendingStreamPlaceholders.insert(id)
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == id }) {
+                        conv.messages[idx].isStreaming = true
+                        self.conversation = conv
+                    }
+                    self.noteStreamingProgress()
+                    self.clearStall()
+                }
             } catch {
                 // "No pending question" means the server already consumed an
                 // answer (or the turn moved on). Re-showing the card then
@@ -1743,7 +1762,9 @@ final class ChatStore {
             // isStreaming placeholder that is no longer backed by an
             // active stream entry.
             var _owned78b = Set(self.activeStreams.values)
+            _owned78b.formUnion(self.pendingStreamPlaceholders)
             if let sid = self.serverTurnPlaceholderID { _owned78b.insert(sid) }
+            if let sid = self.clarifyPlaceholderID { _owned78b.insert(sid) }
             if let _conv78b = self.conversation {
                 for _idx78b in _conv78b.messages.indices where _conv78b.messages[_idx78b].isStreaming {
                     if !_owned78b.contains(_conv78b.messages[_idx78b].id) {
@@ -2624,6 +2645,7 @@ final class ChatStore {
                     // Update the placeholder row's tool activity so the
                     // spinner reads "awaiting your answer" instead of the
                     // stale tool label.
+                    self.clarifyPlaceholderID = placeholderID
                     if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
                         conv.messages[idx].toolActivity = "awaiting your answer"
                         self.conversation = conv
@@ -2646,6 +2668,7 @@ final class ChatStore {
                         self.pendingClarify = nil
                         self.appendLog(level: .info, "Clarify resolved (turn finished)")
                     }
+                    self.clarifyPlaceholderID = nil
                     self.pendingStreamPlaceholders.remove(placeholderID)
                     progressContinuation?.yield(())
                     self.updateConnectionStatus(.connected)
@@ -5398,6 +5421,15 @@ final class ChatStore {
             if !local.toolActivities.isEmpty {
                 refreshedConversation.messages[index].toolActivities = local.toolActivities
                 refreshedConversation.messages[index].toolActivity = local.toolActivity
+            }
+
+            // A row that is still being written stays live through a refresh.
+            // Without this a transcript load mid-turn settles the bubble: the
+            // thought card collapses and its tail stops following the answer,
+            // even though tokens keep arriving on this same row. Answering a
+            // clarify is the one moment a refresh lands in the middle of a turn.
+            if local.isStreaming {
+                refreshedConversation.messages[index].isStreaming = true
             }
 
             if let diff = local.codeDiff, refreshedConversation.messages[index].codeDiff == nil {
