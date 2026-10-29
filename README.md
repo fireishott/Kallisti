@@ -105,7 +105,7 @@ simulator or registered device.
 - Pairing codes are single-use and never persisted.
 - Sensor synchronization is optional and self-hosted.
 
-See [SECURITY.md](SECURITY.md).
+See [SECURITY.md](SECURITY.md). Build steps, signing and the one config file\nare in [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Release history
 
