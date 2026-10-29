@@ -51,7 +51,28 @@ struct MessageAttachmentsView: View {
                 mimeType: payload.mimeType
             )
         }
-        .quickLookPreview($previewURL)
+        // QuickLook, presented from the bubble rather than through the
+        // `.quickLookPreview` modifier: that one is applied inside a LazyVStack
+        // cell and does not reliably present, which is why tapping a file card
+        // often did nothing. The cover carries its own close button so a preview
+        // always has a way out, whatever iOS decides to render.
+        .fullScreenCover(item: $previewURL) { target in
+            ZStack(alignment: .topTrailing) {
+                QuickLookController(url: target.url)
+                    .ignoresSafeArea()
+                Button {
+                    previewURL = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(10)
+                        .background(Circle().fill(Color.black.opacity(0.55)))
+                }
+                .padding(Design.Spacing.md)
+                .accessibilityLabel("Close preview")
+            }
+        }
     }
 
     @ViewBuilder
@@ -750,6 +771,42 @@ private struct QuickLookPreview: UIViewControllerRepresentable {
         }
         @objc func closeTapped() {
             dismiss()
+        }
+    }
+}
+
+/// QuickLook, as a controller we own.
+///
+/// The SwiftUI modifier is only reliable on a stable container; a bubble inside a
+/// LazyVStack is not one. Hosting the controller directly means a preview opens
+/// from the row that was tapped, and the close button above it belongs to us
+/// rather than to whatever chrome the system decides to draw.
+struct QuickLookController: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ controller: QLPreviewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(url: url)
+    }
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        let url: URL
+
+        init(url: URL) {
+            self.url = url
+        }
+
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+
+        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> any QLPreviewItem {
+            url as NSURL
         }
     }
 }

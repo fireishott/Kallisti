@@ -249,6 +249,9 @@ struct ChatScreen: View {
     @State private var showCamera = false
     @State private var showCameraPermissionDenied = false
     @State private var showCanvas = false
+    /// A link tapped in a message, opened in an in-app browser instead of
+    /// handing the operator to Safari and losing the conversation.
+    @State private var inAppLink: InAppLink?
     /// Build 128.52: queue manager sheet - view/edit/delete queued messages.
     @State private var showQueueManager = false
     /// Build 118: breathing animation state for the chat-switch overlay coin.
@@ -424,6 +427,20 @@ struct ChatScreen: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        // A link in a message opens here, not in Safari. Only http(s): a file
+        // path or a custom scheme still goes to the system, because those are
+        // not pages and a browser would show an error.
+        .environment(\.openURL, OpenURLAction { url in
+            guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+                return .systemAction
+            }
+            inAppLink = InAppLink(url: url)
+            return .handled
+        })
+        .sheet(item: $inAppLink) { link in
+            SafariView(url: link.url)
+                .ignoresSafeArea()
+        }
         .toolbar { toolbarContent }
         .toolbarBackground(.hidden, for: .navigationBar)
         // The badge is only ever a few seconds stale: one small GET per tick
@@ -2493,4 +2510,10 @@ struct QueueManagerSheet: View {
         }
         .padding(.vertical, 2)
     }
+}
+
+/// One link opened in the in-app browser.
+struct InAppLink: Identifiable {
+    let id = UUID()
+    let url: URL
 }
