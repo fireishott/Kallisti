@@ -6,6 +6,12 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A slow model no longer looks like a page that stopped.** The chat surface says
+  which round is running and then went quiet until text arrived, so a two-minute
+  think on a large context read as a finished page that later dumped a wall of text.
+  The status line now ticks with elapsed seconds and stops the moment a delta or a
+  tool receipt lands. `build 145`.
+
 - **The chat page says how much of the conversation came from the provider's
   cache, and how much of the turn that just ran did.** The chip beside the model
   reads `cache N% session · M% turn`: the conversation total from every answer's

@@ -7056,6 +7056,7 @@ const CHAT_JS: &str = r##"(function () {
     source.addEventListener("delta", function (event) {
       var frame = {};
       try { frame = JSON.parse(event.data); } catch (error) { return; }
+      stopTick();
       liveAnswer += frame.text;
       // Through the answer's own writer: a delta with nothing in it does not
       // bring the bubble into the page, and the first real one does.
@@ -7063,12 +7064,33 @@ const CHAT_JS: &str = r##"(function () {
       toBottom();
     });
 
+    // A round is announced, then the model thinks. On a long context that silence
+    // lasts minutes and the page said one static sentence, so the screen looked
+    // finished and the answer then arrived as a wall of text. The label now ticks,
+    // so a slow model reads as a slow model rather than as a page that stopped.
+    var liveTicker = null;
+    var liveTickLabel = "";
+    var liveTickStart = 0;
+    function paintTick() {
+      if (!status) { return; }
+      var seconds = Math.max(0, Math.round((Date.now() - liveTickStart) / 1000));
+      status.textContent = liveTickLabel + (liveTickLabel === "" ? "" : " \u00b7 ") + seconds + "s";
+    }
+    function startTick(label) {
+      liveTickLabel = label || "";
+      if (liveTicker !== null) { return; }
+      liveTickStart = Date.now();
+      paintTick();
+      liveTicker = window.setInterval(paintTick, 1000);
+    }
+    function stopTick() {
+      if (liveTicker !== null) { window.clearInterval(liveTicker); liveTicker = null; }
+    }
+
     source.addEventListener("round", function (event) {
       var frame = {};
       try { frame = JSON.parse(event.data); } catch (error) { return; }
-      if (status) {
-        status.textContent = roundLabel(frame.round, frame.max_rounds, frame.tools_allowed);
-      }
+      startTick(roundLabel(frame.round, frame.max_rounds, frame.tools_allowed));
     });
 
     source.addEventListener("working", function (event) {
@@ -7089,6 +7111,7 @@ const CHAT_JS: &str = r##"(function () {
     source.addEventListener("tool", function (event) {
       var tool = {};
       try { tool = JSON.parse(event.data); } catch (error) { return; }
+      stopTick();
       target.addTool(tool);
       // The call that was running has finished, so the claim it made is over.
       // Cleared rather than replaced with "ran": a receipt is the run log's job.
