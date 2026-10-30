@@ -6269,8 +6269,11 @@ pub fn chat_page(view: &ChatView) -> Markup {
                         // to the far end.
                         @if let Some(cache) = view.stats.cache_hit_pct {
                             span .small .nowrap
-                                title="Prompt tokens served from cache across this conversation" {
-                                "cache " (cache) "%"
+                                title="Prompt tokens served from cache: this conversation, and the turn that just ran" {
+                                "cache " (cache) "% session"
+                                @if let Some(turn) = view.stats.turn_cache_pct {
+                                    " · " (turn) "% turn"
+                                }
                             }
                         }
                     }

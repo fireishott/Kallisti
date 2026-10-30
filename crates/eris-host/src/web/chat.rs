@@ -4013,6 +4013,12 @@ pub struct Stats {
     /// Completion tokens per second of streaming, averaged over answers that
     /// reported a duration.
     pub tokens_per_second: Option<u32>,
+    /// Cached share of the prompt on the newest answer alone.
+    ///
+    /// The session figure answers "is this chat cheap"; this one answers "did the
+    /// turn that just ran reuse anything", which is the question an operator asks
+    /// while a long conversation gets expensive.
+    pub turn_cache_pct: Option<u8>,
 }
 
 /// Total a transcript into [`Stats`].
@@ -4042,6 +4048,19 @@ pub fn stats(transcript: &[Message]) -> Stats {
         }
     }
 
+    // The newest answer that reported usage, for the turn-level share.
+    if let Some(last) = transcript
+        .iter()
+        .rev()
+        .find(|message| message.prompt_tokens.is_some() || message.cached_tokens.is_some())
+    {
+        let prompt = last.prompt_tokens.unwrap_or(0);
+        let cached = last.cached_tokens.unwrap_or(0);
+        let denominator = prompt + cached;
+        if denominator > 0 {
+            out.turn_cache_pct = Some((cached * 100).div_ceil(denominator).min(100) as u8);
+        }
+    }
     out.total_tokens = out.prompt_tokens + out.completion_tokens;
     let prompt_total = out.prompt_tokens + out.cached_tokens;
     out.cache_hit_pct = (out.cached_tokens * 100)
