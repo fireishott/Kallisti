@@ -6,6 +6,11 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The chat page says how much of the conversation came from the provider's
+  cache.** A chip beside the model and the context window shows the cached share of
+  the prompt summed over the conversation, from the usage every answer already
+  records. `build 143`.
+
 - **A turn from the phone carries the conversation it is continuing.** The device
   lane assembled every turn as a single user message: no transcript, no window, no
   summary. The browser lane has always sent the settled exchange; the phone never

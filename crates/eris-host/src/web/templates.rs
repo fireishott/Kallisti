@@ -6262,6 +6262,17 @@ pub fn chat_page(view: &ChatView) -> Markup {
                         @if let Some(window) = view.context_window {
                             span .small .nowrap { (human_tokens(window)) " window" }
                         }
+                        // Prompt tokens the provider served from its cache,
+                        // summed over this conversation. It sits beside the model
+                        // and the window because it describes the same thing they
+                        // do: how much of what this chat sends was already known
+                        // to the far end.
+                        @if let Some(cache) = view.stats.cache_hit_pct {
+                            span .small .nowrap
+                                title="Prompt tokens served from cache across this conversation" {
+                                "cache " (cache) "%"
+                            }
+                        }
                     }
                     div .composer-send {
                         span .hint id="composer-status" {}
