@@ -826,6 +826,63 @@ fn run_command(
                 Ok(reply) => reply,
                 Err(error) => return error.into_response(),
             },
+            // A phone can start a conversation, so it can start a new one: the
+            // reply names the row the next turn files into.
+            "new" => {
+                let db = service.engine().db();
+                match crate::web::chat::create_conversation(db) {
+                    Ok(id) => format!(
+                        "Started a new conversation. Send into `{id}` and it files there."
+                    ),
+                    Err(error) => {
+                        return DeviceError::db_unavailable(format!(
+                            "cannot start a conversation: {error}"
+                        ))
+                        .into_response();
+                    }
+                }
+            }
+            // `/clear` needs to know which conversation, and a command is answered
+            // before this surface resolves one. Naming it in the argument is the
+            // honest way to ask: the id is the one the reply to `/new` gave.
+            "clear" => match command.argument.trim() {
+                "" => "Name the conversation to clear: `/clear <conversation id>`. `/new`                        answers with the id it started."
+                    .to_owned(),
+                named => {
+                    let db = service.engine().db();
+                    match crate::web::chat::conversation(db, named) {
+                        Ok(Some(row)) => match crate::web::chat::clear(db, &row.id) {
+                            Ok(_) => format!("Cleared the transcript of `{}`.", row.id),
+                            Err(error) => {
+                                return DeviceError::db_unavailable(format!(
+                                    "cannot clear that conversation: {error}"
+                                ))
+                                .into_response();
+                            }
+                        },
+                        Ok(None) => format!("No conversation `{named}` exists on this daemon."),
+                        Err(error) => {
+                            return DeviceError::db_unavailable(format!(
+                                "cannot read that conversation: {error}"
+                            ))
+                            .into_response();
+                        }
+                    }
+                }
+            },
+            // Reading the pin is not a settings write, so this surface can answer
+            // it: the model a turn will use, named the way `GET /v1/models` names
+            // it. Acting on it stays on `POST /v1/settings`, behind the admin
+            // scope.
+            "model" => {
+                let pinned = crate::web::chat::model_value(service.engine());
+                if pinned.is_empty() {
+                    "No model is pinned yet; choose one in the app's model list."
+                        .to_owned()
+                } else {
+                    format!("Turns use `{pinned}`. To change it, pick from the model list in the app.")
+                }
+            }
             other => {
                 return DeviceError::bad_request(
                     "command_not_available",

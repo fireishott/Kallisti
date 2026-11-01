@@ -6,6 +6,13 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **`/new`, `/clear` and `/model` answer on the phone too.** The device lane used to
+  refuse four of the six commands because it resolves no conversation before a
+  command is answered. `/new` now starts a conversation and names its id, `/clear`
+  takes that id and clears that transcript, and `/model` reports the pin instead of
+  being silent about it. Acting on the pin still belongs to `POST /v1/settings`,
+  behind the admin scope. `build 146`.
+
 - **A slow model no longer looks like a page that stopped.** The chat surface says
   which round is running and then went quiet until text arrived, so a two-minute
   think on a large context read as a finished page that later dumped a wall of text.
