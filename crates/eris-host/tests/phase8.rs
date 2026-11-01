@@ -6393,3 +6393,38 @@ async fn a_phone_turn_carries_the_exchange_before_it() {
     );
     harness.stop();
 }
+
+/// The command table is the daemon's, not the client's.
+///
+/// A phone that hardcodes a slash-command list offers commands the daemon refuses
+/// and misses the ones it answers, which is exactly what happened with `/goal`: the
+/// client had no way to know. This is the list a hint menu should render.
+#[tokio::test]
+async fn the_command_table_is_readable_over_the_device_surface() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("GET", "/v1/slash-commands", &auth, None)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    let rows = body["commands"].as_array().expect("a command list");
+    let names: Vec<&str> = rows.iter().filter_map(|row| row["name"].as_str()).collect();
+    for expected in ["help", "new", "clear", "stop", "model", "memory"] {
+        assert!(
+            names.contains(&expected),
+            "`/{expected}` is listed: {names:?}"
+        );
+    }
+    assert!(
+        rows.iter()
+            .all(|row| row["summary"].as_str().is_some_and(|text| !text.is_empty())),
+        "every command carries the line /help prints"
+    );
+    assert_eq!(provider.hits(), 0, "reading the list costs no tokens");
+
+    harness.stop();
+}

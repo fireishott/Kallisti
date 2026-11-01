@@ -3553,6 +3553,31 @@ fn subagent_json(row: &crate::subagents::Subagent) -> serde_json::Value {
 /// operator's turns handed off, so it is conversation state. The list is the
 /// dashboard bar's own view - anything still working plus anything that finished
 /// recently - so the phone and the page cannot disagree about what is live.
+/// `GET /v1/commands` - the slash commands this daemon answers.
+///
+/// A phone that hardcodes the list will drift the first time a command is added or
+/// withdrawn, so it reads the daemon's own table instead. The reply is the same
+/// one `/help` prints, in a shape a client can render as a hint list.
+pub async fn slash_commands(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let rows: Vec<serde_json::Value> = crate::commands::SUPPORTED
+        .iter()
+        .map(|(name, summary)| serde_json::json!({ "name": name, "summary": summary }))
+        .collect();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "count": rows.len(),
+        "commands": rows,
+    }))
+    .into_response()
+}
+
 pub async fn subagents(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,

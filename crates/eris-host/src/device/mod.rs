@@ -205,6 +205,14 @@ pub const ROUTE_ANSWER: &str = "/v1/turns/{id}/answer";
 /// a growing log. A row older than that is still readable by its id.
 pub const ROUTE_SUBAGENTS: &str = "/v1/subagents";
 
+/// `GET /v1/slash-commands` - the slash commands this daemon implements.
+///
+/// Served rather than hardcoded in the client so a phone cannot offer a command
+/// the daemon refuses, or miss one it answers. Not `/v1/commands`: that path is
+/// already the legacy control surface's, and two handlers on one path is a panic
+/// at router build time, which is how this was found.
+pub const ROUTE_SLASH_COMMANDS: &str = "/v1/slash-commands";
+
 /// `GET /v1/subagents/{id}` - one row, whether or not it is still in the bar.
 ///
 /// The read that makes a dispatch durable: a result that landed while the phone
@@ -1067,6 +1075,7 @@ pub fn router(service: DeviceService) -> Router {
         )
         .route(ROUTE_SUBAGENTS, get(handlers::subagents))
         .route(ROUTE_SUBAGENT, get(handlers::subagent))
+        .route(ROUTE_SLASH_COMMANDS, get(handlers::slash_commands))
         .route(ROUTE_APPROVALS, get(handlers::approvals))
         .route(ROUTE_APPROVAL_DECIDE, post(handlers::decide_approval))
         .route(ROUTE_MCP, get(handlers::mcp_servers))

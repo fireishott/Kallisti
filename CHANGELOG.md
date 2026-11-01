@@ -6,6 +6,12 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **`GET /v1/slash-commands` publishes the command table** so a client cannot drift
+  from what the daemon implements: every command with the line `/help` prints for
+  it. Not `/v1/commands`, which the legacy control surface already owns - two
+  handlers on one path panic at router build time, which is how the collision was
+  found. `build 148`.
+
 - **`/new`, `/clear` and `/model` answer on the phone too.** The device lane used to
   refuse four of the six commands because it resolves no conversation before a
   command is answered. `/new` now starts a conversation and names its id, `/clear`
