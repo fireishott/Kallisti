@@ -1937,7 +1937,11 @@ async fn a_command_that_needs_a_transcript_or_settings_is_refused_by_name() {
     let (_, token) = harness.device_with_token("iPhone");
     let auth = [("authorization", format!("Bearer {token}"))];
 
-    for name in ["new", "clear", "model", "memory"] {
+    // /new, /clear and /model answer on this lane now: a phone can start a
+    // conversation, clear the one it names, and be told which model a turn will
+    // use. /memory is still refused, because it is a settings write and settings
+    // have one path - POST /v1/settings, behind the admin scope.
+    for name in ["memory"] {
         let response = harness
             .request(
                 "POST",
@@ -1957,6 +1961,16 @@ async fn a_command_that_needs_a_transcript_or_settings_is_refused_by_name() {
         );
     }
     assert_eq!(provider.hits(), 0);
+
+    // /new starts a conversation and names it, and /model reports the pin.
+    let started = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"/new"}"#))
+        .await;
+    assert_eq!(started.status, 202, "{}", started.body);
+    let repinned = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"/model"}"#))
+        .await;
+    assert_eq!(repinned.status, 202, "{}", repinned.body);
 
     harness.stop();
 }

@@ -7069,22 +7069,24 @@ const CHAT_JS: &str = r##"(function () {
     // finished and the answer then arrived as a wall of text. The label now ticks,
     // so a slow model reads as a slow model rather than as a page that stopped.
     var liveTicker = null;
+    var liveTicking = false;
     var liveTickLabel = "";
     var liveTickStart = 0;
     function paintTick() {
-      if (!status) { return; }
+      if (present(status) === false) { return; }
       var seconds = Math.max(0, Math.round((Date.now() - liveTickStart) / 1000));
       status.textContent = liveTickLabel + (liveTickLabel === "" ? "" : " \u00b7 ") + seconds + "s";
     }
     function startTick(label) {
       liveTickLabel = label || "";
-      if (liveTicker !== null) { return; }
+      if (liveTicking) { return; }
+      liveTicking = true;
       liveTickStart = Date.now();
       paintTick();
       liveTicker = window.setInterval(paintTick, 1000);
     }
     function stopTick() {
-      if (liveTicker !== null) { window.clearInterval(liveTicker); liveTicker = null; }
+      if (liveTicking) { window.clearInterval(liveTicker); liveTicker = null; liveTicking = false; }
     }
 
     source.addEventListener("round", function (event) {
