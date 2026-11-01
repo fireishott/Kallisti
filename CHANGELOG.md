@@ -6,6 +6,11 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **`/goal <objective>` starts working instead of filing a note.** It stores the
+  objective and then runs the turn that begins it, with the objective in the prompt
+  and the sixty-round budget a long job needs. A goal that waits for the operator to
+  type again is a note with extra steps, which is what it was. `build 150`.
+
 - **`/goal` exists.** `/goal <objective>` stores the objective, `/goal status` reports
   it and `/goal stop` clears it. Every turn from then on carries the objective in its
   system prompt and is told to keep working until it is done or out of rounds, then

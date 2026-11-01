@@ -513,7 +513,7 @@ pub async fn create_turn(
         Ok(fields) => fields,
         Err(error) => return error.into_response(),
     };
-    let text = field(&fields, "text");
+    let mut text: String = field(&fields, "text").to_owned();
     if text.is_empty() {
         return DeviceError::bad_request("text_required", "the turn text must not be empty")
             .into_response();
@@ -603,8 +603,40 @@ pub async fn create_turn(
     // guarantee is structural rather than a rule somebody has to remember. This
     // is the same parser and the same answer copy the browser's send handler
     // uses.
-    if let Some(command) = crate::commands::parse(text) {
-        return run_command(&service, token.device_id(), text, &command, idempotency_key);
+    if let Some(command) = crate::commands::parse(&text) {
+        // Setting a goal starts the work. A goal that waits for the operator to
+        // type again is a note with extra steps: `/goal <objective>` stores the
+        // objective and then runs the turn that begins it, with the objective in
+        // the prompt and the larger round budget a long job needs.
+        let mut starts_a_turn = false;
+        if command.name == "goal" {
+            let argument = command.argument.trim().to_owned();
+            if !argument.is_empty()
+                && argument != "status"
+                && argument != "stop"
+                && argument != "clear"
+            {
+                if let Err(error) = service.engine().set_setting(GOAL_SETTING, &argument) {
+                    return DeviceError::db_unavailable(format!("cannot store the goal: {error}"))
+                        .into_response();
+                }
+                text = format!(
+                    "Goal set: {argument}\n\nStart on it now. Work it through with the tools \
+                     available until it is done or you run out of rounds, then say exactly \
+                     what is finished and what is left."
+                );
+                starts_a_turn = true;
+            }
+        }
+        if !starts_a_turn {
+            return run_command(
+                &service,
+                token.device_id(),
+                &text,
+                &command,
+                idempotency_key,
+            );
+        }
     }
 
     // The writing half of a named conversation: the question and the answer row
@@ -642,7 +674,7 @@ pub async fn create_turn(
                 db,
                 conversation_id,
                 chat::Role::User,
-                text,
+                &text,
                 chat::State::Complete,
                 client_message_id.as_deref(),
             ) {
@@ -714,7 +746,7 @@ pub async fn create_turn(
             // browser calls. Recording the model is what lets the picker restore
             // what this conversation is actually on when the operator comes back
             // to it, instead of quietly moving it to the global default.
-            let _ = chat::name_from_first_message(db, conversation_id, text);
+            let _ = chat::name_from_first_message(db, conversation_id, &text);
             let _ = chat::set_conversation_model(db, conversation_id, &model);
             let _ = chat::touch_conversation(db, conversation_id);
             // The naming role, when the operator pinned one. A role on the primary
@@ -751,7 +783,7 @@ pub async fn create_turn(
     // The fast half of the prompt: the operator's words and the file list. The
     // picture itself is described in the worker, because that call takes seconds
     // and a `202` that waits on it is a `202` the phone gives up on.
-    let prompt = attachments::prompt_with_attachments(text, &attachment_files);
+    let prompt = attachments::prompt_with_attachments(&text, &attachment_files);
     let job_id = match store.create_job(token.device_id(), &session_id, idempotency_key, &prompt) {
         Ok(job_id) => job_id,
         Err(error) => {
