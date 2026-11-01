@@ -6,6 +6,12 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A goal keeps your words and sends the instruction only to the model.** Build 150
+  rewrote the turn text, so the transcript showed machine instructions in the
+  operator's mouth: the row read "Goal set: ... Start on it now" instead of the
+  `/goal ...` they typed. The row now keeps what was typed and the objective rides
+  only on the prompt. `build 151`.
+
 - **`/goal <objective>` starts working instead of filing a note.** It stores the
   objective and then runs the turn that begins it, with the objective in the prompt
   and the sixty-round budget a long job needs. A goal that waits for the operator to

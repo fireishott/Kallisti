@@ -513,7 +513,7 @@ pub async fn create_turn(
         Ok(fields) => fields,
         Err(error) => return error.into_response(),
     };
-    let mut text: String = field(&fields, "text").to_owned();
+    let text: String = field(&fields, "text").to_owned();
     if text.is_empty() {
         return DeviceError::bad_request("text_required", "the turn text must not be empty")
             .into_response();
@@ -603,6 +603,7 @@ pub async fn create_turn(
     // guarantee is structural rather than a rule somebody has to remember. This
     // is the same parser and the same answer copy the browser's send handler
     // uses.
+    let mut goal_prompt: Option<String> = None;
     if let Some(command) = crate::commands::parse(&text) {
         // Setting a goal starts the work. A goal that waits for the operator to
         // type again is a note with extra steps: `/goal <objective>` stores the
@@ -620,11 +621,15 @@ pub async fn create_turn(
                     return DeviceError::db_unavailable(format!("cannot store the goal: {error}"))
                         .into_response();
                 }
-                text = format!(
-                    "Goal set: {argument}\n\nStart on it now. Work it through with the tools \
-                     available until it is done or you run out of rounds, then say exactly \
-                     what is finished and what is left."
-                );
+                // The operator's own words stay their row: the transcript keeps
+                // `/goal ...` exactly as typed, and only what the model is given
+                // changes. Rewriting `text` put machine instructions in the
+                // operator's mouth, which read as the app sending messages for them.
+                goal_prompt = Some(format!(
+                    "Objective: {argument}\n\nStart on it now. Work it through with the \
+                     tools available until it is done or you run out of rounds, then say \
+                     exactly what is finished and what is left."
+                ));
                 starts_a_turn = true;
             }
         }
@@ -783,7 +788,8 @@ pub async fn create_turn(
     // The fast half of the prompt: the operator's words and the file list. The
     // picture itself is described in the worker, because that call takes seconds
     // and a `202` that waits on it is a `202` the phone gives up on.
-    let prompt = attachments::prompt_with_attachments(&text, &attachment_files);
+    let model_text = goal_prompt.clone().unwrap_or_else(|| text.clone());
+    let prompt = attachments::prompt_with_attachments(&model_text, &attachment_files);
     let job_id = match store.create_job(token.device_id(), &session_id, idempotency_key, &prompt) {
         Ok(job_id) => job_id,
         Err(error) => {
