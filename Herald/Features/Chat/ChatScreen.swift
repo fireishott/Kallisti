@@ -340,6 +340,12 @@ struct ChatScreen: View {
                 // Build 128.78: in TUI mode the terminal view owns input - the iOS
                 // composer is hidden entirely.
                 if !usesEmbeddedTerminal {
+                    SlashCommandHints(
+                        text: chatStore.loadDraft(for: draftConversationID)
+                    ) { filled in
+                        chatStore.saveDraft(filled, for: draftConversationID)
+                        isComposerFocused = true
+                    }
                     ChatInputBar(
                     text: messageTextBinding,
                     pendingAttachments: $pendingAttachments,

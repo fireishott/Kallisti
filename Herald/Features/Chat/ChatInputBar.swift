@@ -776,3 +776,80 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
         }
     }
 }
+
+// MARK: - Slash command hints
+
+/// One command the daemon answers, for the hint row.
+struct SlashCommandHint: Identifiable, Hashable {
+    let name: String
+    let summary: String
+    var id: String { name }
+}
+
+/// A strip of `/` commands above the composer, shown while the draft is a command.
+///
+/// The list mirrors `GET /v1/slash-commands`, which the daemon publishes from the
+/// same table `/help` prints, so what is offered here is what is answered there.
+/// Tapping a row fills the field rather than sending it: a command with an argument
+/// (`/clear <id>`) is useless half-typed.
+struct SlashCommandHints: View {
+    let text: String
+    let onPick: (String) -> Void
+
+    /// The commands this build knows about. Kept in step with
+    /// `crates/eris-host/src/commands.rs` `SUPPORTED`; the daemon also serves the
+    /// list at `/v1/slash-commands` for a build that would rather fetch it.
+    static let all: [SlashCommandHint] = [
+        SlashCommandHint(name: "help", summary: "list every command the daemon implements"),
+        SlashCommandHint(name: "new", summary: "start a new conversation and show it"),
+        SlashCommandHint(name: "clear", summary: "clear a conversation's transcript"),
+        SlashCommandHint(name: "stop", summary: "cancel a turn that is running"),
+        SlashCommandHint(name: "model", summary: "report the model turns use"),
+        SlashCommandHint(name: "memory", summary: "set the memory backend"),
+    ]
+
+    private var matches: [SlashCommandHint] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/") else { return [] }
+        // Only the command word itself: once there is a space the operator is typing
+        // an argument and the menu is in the way.
+        let word = trimmed.dropFirst()
+        if word.contains(" ") { return [] }
+        let needle = word.lowercased()
+        if needle.isEmpty { return Self.all }
+        return Self.all.filter { $0.name.hasPrefix(needle) }
+    }
+
+    var body: some View {
+        let rows = matches
+        if rows.isEmpty == false {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Design.Spacing.xs) {
+                    ForEach(rows) { row in
+                        Button {
+                            onPick("/" + row.name + (row.name == "clear" ? " " : ""))
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("/" + row.name)
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(Design.Brand.accent)
+                                Text(row.summary)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, Design.Spacing.sm)
+                            .padding(.vertical, 5)
+                            .background(Design.Colors.surface)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Design.Colors.divider, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, Design.Spacing.md)
+            }
+            .padding(.bottom, 4)
+        }
+    }
+}
