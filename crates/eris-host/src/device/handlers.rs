@@ -805,6 +805,9 @@ pub async fn create_turn(
 /// behind the admin scope. A slash command is not a second path into them, so it
 /// is refused by name whatever the token holds, rather than silently skipped or
 /// emulated into something that looks like it worked.
+/// The setting a goal lives in. One active goal per daemon.
+pub const GOAL_SETTING: &str = "goal.objective";
+
 fn run_command(
     service: &DeviceService,
     device_id: &str,
@@ -840,6 +843,44 @@ fn run_command(
                         ))
                         .into_response();
                     }
+                }
+            }
+            // The objective every turn in this daemon works toward, until it is
+            // stopped or replaced. Stored as one setting rather than a table: a
+            // goal is one line of text and a cap, and a table for that would be a
+            // migration for nothing.
+            "goal" => {
+                let engine = service.engine();
+                let argument = command.argument.trim();
+                match argument {
+                    "" | "status" => match engine.setting(GOAL_SETTING) {
+                        Ok(Some(objective)) if !objective.trim().is_empty() => format!(
+                            "Working toward: {objective}\nTurns carry it until `/goal stop`."
+                        ),
+                        _ => "No goal is set. `/goal <objective>` sets one.".to_owned(),
+                    },
+                    "stop" | "clear" => match engine.set_setting(GOAL_SETTING, "") {
+                        Ok(()) => "Goal cleared. Turns no longer carry it.".to_owned(),
+                        Err(error) => {
+                            return DeviceError::db_unavailable(format!(
+                                "cannot clear the goal: {error}"
+                            ))
+                            .into_response();
+                        }
+                    },
+                    objective => match engine.set_setting(GOAL_SETTING, objective) {
+                        Ok(()) => format!(
+                            "Goal set: {objective}\nEvery turn from here carries it and is told \
+                             to work until it is done or it runs out of rounds, then report what \
+                             is left. `/goal stop` clears it."
+                        ),
+                        Err(error) => {
+                            return DeviceError::db_unavailable(format!(
+                                "cannot store the goal: {error}"
+                            ))
+                            .into_response();
+                        }
+                    },
                 }
             }
             // `/clear` needs to know which conversation, and a command is answered

@@ -1790,7 +1790,9 @@ async fn an_unknown_command_is_refused_by_name_and_costs_nothing() {
     let (device_id, token) = harness.device_with_token("iPhone");
     let auth = [("authorization", format!("Bearer {token}"))];
 
-    for name in ["goal", "restart", "doesnotexist"] {
+    // `/goal` is a Kallisti command now, so the unknown names are the ones that
+    // genuinely belong to other tools.
+    for name in ["restart", "deploy", "doesnotexist"] {
         let response = harness
             .request(
                 "POST",

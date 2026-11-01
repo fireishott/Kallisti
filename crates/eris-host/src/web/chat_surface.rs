@@ -2554,7 +2554,7 @@ fn help_is_answered_by_the_daemon_and_never_becomes_a_turn() {
 #[test]
 fn an_unknown_command_is_refused_by_name_and_still_costs_nothing() {
     let (_dir, engine, app, cookie) = ready_app();
-    for name in ["goal", "restart", "doesnotexist"] {
+    for name in ["restart", "deploy", "doesnotexist"] {
         let reply = post_command(&app, &cookie, &format!("/{name}"));
         assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
         let row = newest_row(&engine, CONVERSATION_ID);
@@ -2572,10 +2572,10 @@ fn an_unknown_command_is_refused_by_name_and_still_costs_nothing() {
         assert_eq!(row.prompt_tokens, None, "nothing was sent to a model");
     }
 
-    // The two commands operators arrive with are named as somebody else's
-    // features rather than quietly failing.
+    // The command operators arrive with from other tools is named as somebody
+    // else's feature rather than quietly failing. `/goal` is a Kallisti command
+    // now, so it is no longer in this list.
     let row = newest_row(&engine, CONVERSATION_ID);
-    assert!(row.body.contains("/goal"), "{}", row.body);
     assert!(row.body.contains("/restart"), "{}", row.body);
     assert!(
         row.body.contains("not Kallisti features"),

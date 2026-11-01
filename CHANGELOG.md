@@ -6,6 +6,14 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **`/goal` exists.** `/goal <objective>` stores the objective, `/goal status` reports
+  it and `/goal stop` clears it. Every turn from then on carries the objective in its
+  system prompt and is told to keep working until it is done or out of rounds, then
+  say what is left, with the round budget raised to sixty so a real job can finish.
+  The loop is the objective plus the budget: no background process, nothing spending
+  tokens that the operator cannot see. `/restart` stays absent on purpose.
+  `build 149`.
+
 - **`GET /v1/slash-commands` publishes the command table** so a client cannot drift
   from what the daemon implements: every command with the line `/help` prints for
   it. Not `/v1/commands`, which the legacy control surface already owns - two

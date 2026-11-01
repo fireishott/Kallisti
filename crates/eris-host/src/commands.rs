@@ -40,6 +40,10 @@ pub const SUPPORTED: &[(&str, &str)] = &[
         "model",
         "set the stored default model, by id from the model list",
     ),
+    (
+        "goal",
+        "set the objective turns keep working toward: /goal <objective>, /goal status, /goal stop",
+    ),
     ("memory", "set the memory backend to gbrain, vault or off"),
 ];
 
@@ -48,7 +52,7 @@ pub const SUPPORTED: &[(&str, &str)] = &[
 /// They are listed rather than merely refused, because an operator who types
 /// `/goal` expects a goal loop to exist and deserves to be told the truth in one
 /// line instead of watching nothing happen.
-pub const NOT_FEATURES: &[&str] = &["goal", "restart"];
+pub const NOT_FEATURES: &[&str] = &["restart"];
 
 /// What a command resolves to without touching the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,8 +130,7 @@ pub fn help() -> String {
 pub fn unsupported(name: &str) -> String {
     format!(
         "/{name} is not supported: this daemon does not implement it, and nothing was sent to \
-         a model. {}: there is no goal loop here and no restart command either. /help lists the \
-         commands this daemon does implement.",
+         a model. {}. /help lists the commands this daemon does implement.",
         not_features_line()
     )
 }
@@ -259,13 +262,13 @@ mod tests {
     /// A name outside the list is unknown, and the refusal names it.
     #[test]
     fn an_unknown_name_is_unknown_and_the_refusal_names_it() {
-        let command = parse("/goal get fit").expect("a command");
+        let command = parse("/deploy get fit").expect("a command");
         assert!(!is_supported(&command.name));
         match immediate(&command) {
             Some(Outcome::Unsupported(name)) => {
-                assert_eq!(name, "goal");
+                assert_eq!(name, "deploy");
                 let text = unsupported(&name);
-                assert!(text.contains("/goal"), "the refusal names it: {text}");
+                assert!(text.contains("/deploy"), "the refusal names it: {text}");
                 assert!(
                     text.contains("not supported"),
                     "the refusal says so: {text}"
@@ -305,7 +308,7 @@ mod tests {
     /// `/goal` and `/restart` are named as somebody else's features, in both the
     /// help text and the refusal, because that is the honest answer.
     #[test]
-    fn the_copy_names_goal_and_restart_as_not_kallisti_features() {
+    fn the_copy_names_restart_as_not_a_kallisti_feature() {
         let text = help();
         for name in NOT_FEATURES {
             assert!(
@@ -317,17 +320,18 @@ mod tests {
             text.contains("not Kallisti features"),
             "help says whose they are: {text}"
         );
-        let refusal = unsupported("goal");
+        let refusal = unsupported("restart");
         for name in NOT_FEATURES {
             assert!(
                 refusal.contains(&format!("/{name}")),
                 "/{name} is named in the refusal: {refusal}"
             );
         }
-        assert!(refusal.contains("no goal loop"), "the loop is denied");
+        // A goal loop exists now (`/goal`), so the refusal only has to deny the
+        // thing that genuinely is not here.
         assert!(
-            refusal.contains("no restart command"),
-            "the restart is denied"
+            refusal.contains("not Kallisti features"),
+            "the refusal says whose the command is: {refusal}"
         );
     }
 
@@ -348,8 +352,8 @@ mod tests {
         }
         assert_eq!(
             SUPPORTED.len(),
-            6,
-            "six commands ship, and the list is the contract"
+            7,
+            "seven commands ship, and the list is the contract"
         );
         // A description is one line of prose, because /help prints one row each.
         for (name, description) in SUPPORTED {
@@ -389,7 +393,7 @@ mod tests {
     /// rule: no exclamation mark, no em dash.
     #[test]
     fn no_command_copy_carries_an_exclamation_or_an_em_dash() {
-        let mut texts = vec![help(), unsupported("goal"), unsupported("restart")];
+        let mut texts = vec![help(), unsupported("restart"), unsupported("deploy")];
         texts.push(memory_backend("postgres").expect_err("refused"));
         texts.push(memory_backend("").expect_err("refused"));
         for text in texts {
