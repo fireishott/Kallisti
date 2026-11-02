@@ -25,6 +25,9 @@ struct ReasoningView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isExpanded = false
+    /// True when the operator collapsed the card themselves. New reasoning must not
+    /// re-open a card they closed, and must re-open one the view closed on its own.
+    @State private var collapsedByOperator = false
     @State private var isLarge = false
     @State private var shimmerPhase: CGFloat = -1
     @State private var startedAt: Date = .now
@@ -65,6 +68,7 @@ struct ReasoningView: View {
         .task(id: isStreaming) {
             if isStreaming {
                 startedAt = .now
+                collapsedByOperator = false
                 isExpanded = true
                 guard !reduceMotion else { return }
                 withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
@@ -76,6 +80,17 @@ struct ReasoningView: View {
                     isExpanded = false
                     isLarge = false
                 }
+            }
+        }
+        // New reasoning means the model is still thinking, so the card belongs open.
+        // A card that closed while the turn paused - after a clarifying question, or
+        // a long tool round - used to stay shut and the tail stopped following, which
+        // reads as an app that stopped working. Only an operator's own collapse
+        // survives this.
+        .onChange(of: reasoning.count) { _, _ in
+            guard isStreaming, collapsedByOperator == false, isExpanded == false else { return }
+            withAnimation(reduceMotion ? nil : Design.Motion.standard) {
+                isExpanded = true
             }
         }
         .animation(reduceMotion ? nil : Design.Motion.standard, value: isLarge)
@@ -153,6 +168,7 @@ struct ReasoningView: View {
                 // large view back to the small viewport.
                 withAnimation(reduceMotion ? nil : Design.Motion.standard) {
                     isExpanded.toggle()
+                    collapsedByOperator = isExpanded == false
                     if isLarge { isLarge = false }
                 }
             } label: {
