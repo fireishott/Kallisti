@@ -207,6 +207,14 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 client: client,
                 continuation: continuation
             )
+            // Bind the chat here, where the id is about to be used, and not only
+            // in the guard above: a chat created by this very send has no local id
+            // yet when that guard runs, so the turn went up with no conversation at
+            // all and the daemon filed it into one of its own. That is how a message
+            // appeared in a new session while the operator was looking at theirs.
+            if let local = currentConversation?.id, conversationIDByLocalID[local] == nil {
+                _ = await ensureConversation(id: local)
+            }
             let turn = try await client.createTurn(
                 text: message,
                 conversation: currentConversationID(),
