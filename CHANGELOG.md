@@ -6,6 +6,14 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **Reverted: the legacy refresh rotates again.** Build 152 stopped `/v1/auth/refresh`
+  from rotating so the two refresh spellings could not retire each other's token. The
+  legacy client did not accept the same token coming back, treated the response as a
+  failure, and revoked the device: an iPad pairing died three minutes after that build
+  went in, and the app went back to "no host connected". Rotation is restored. The
+  retired-token problem is real and is the next thing to solve, but not this way.
+  `build 153`.
+
 - **A dropped connection costs a reconnect, not a re-pair.** The daemon serves two
   refresh spellings from one token store: `/v1/token/refresh` verified and minted an
   access token, while `/v1/auth/refresh` rotated - retiring the presented refresh

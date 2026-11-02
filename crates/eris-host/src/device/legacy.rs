@@ -959,14 +959,8 @@ pub async fn auth_refresh(
         .into_response();
     }
     let tokens = TokenService::new(service.engine().db().clone());
-    // Verified, not rotated. Two refresh routes share one token store, and a
-    // rotation on one retires the token the other is holding: the legacy lane
-    // refreshed, the Eris lane's stored refresh token died with it, and the phone
-    // then could not recover without pairing again. A connection drop should cost a
-    // reconnect, never a re-pair. The refresh token is returned unchanged so the
-    // legacy response keeps its shape.
-    let verified = match tokens.verify_refresh(presented) {
-        Ok(verified) => verified,
+    let pair = match tokens.rotate(presented) {
+        Ok(pair) => pair,
         Err(_) => {
             return DeviceError::unauthorized(
                 "token_invalid",
@@ -975,27 +969,12 @@ pub async fn auth_refresh(
             .into_response();
         }
     };
-    let origin = if verified.scope().has_admin() {
-        crate::auth::TokenOrigin::Loopback
-    } else {
-        crate::auth::TokenOrigin::Device
-    };
-    let access = match tokens.mint_access(verified.device_id(), verified.scope(), origin) {
-        Ok(access) => access,
-        Err(_) => {
-            return DeviceError::unauthorized(
-                "token_invalid",
-                "the refresh token does not verify: it is unknown, expired, or revoked",
-            )
-            .into_response();
-        }
-    };
-    let expires = format_timestamp(access.expires_at());
+    let expires = format_timestamp(pair.access.expires_at());
     answered(json!({
-        "access_token": access.token(),
-        "refresh_token": presented,
-        "accessToken": access.token(),
-        "refreshToken": presented,
+        "access_token": pair.access.token(),
+        "refresh_token": pair.refresh.token(),
+        "accessToken": pair.access.token(),
+        "refreshToken": pair.refresh.token(),
         "expires_at": expires,
         "expiresAt": expires,
     }))
