@@ -1616,6 +1616,13 @@ final class ChatStore {
                     }
                     self.noteStreamingProgress()
                     self.clearStall()
+                    // The turn carries on after the answer, and if its stream is
+                    // gone nothing here is listening. The watch re-reads the
+                    // transcript so the thought card and the text keep moving
+                    // instead of the screen looking dead until the end.
+                    if self.activeStreams.isEmpty {
+                        await self.startServerTurnWatchIfNeeded(force: true)
+                    }
                 }
             } catch {
                 // "No pending question" means the server already consumed an
@@ -4919,12 +4926,22 @@ final class ChatStore {
         return true
     }
 
-    func startServerTurnWatchIfNeeded() async {
+    /// Start the transcript watch that keeps a running turn visible.
+    ///
+    /// `force` exists for one case: a turn that is running on the daemon with no
+    /// stream attached to it here. Answering a clarifying question is exactly that
+    /// - the continuation's frames go to a consumer that is gone - and the normal
+    /// guards would refuse because the row still says it is streaming. Without the
+    /// watch the screen shows nothing: no reasoning, no activity, then a finished
+    /// answer appearing from nowhere.
+    func startServerTurnWatchIfNeeded(force: Bool = false) async {
         guard isPollingEnabled else { return }
         guard conversation != nil else { return }
         // If a local send or stream is in flight, the normal machinery owns
         // the thread — this watch is only for server-side-only turns.
-        guard !hasPendingMessages, !isStreaming else { return }
+        if force == false {
+            guard !hasPendingMessages, !isStreaming else { return }
+        }
         guard serverTurnPollTask == nil else { return }
 
         // Build 128.47: heal the socket before probing. A dead/phantom WS
