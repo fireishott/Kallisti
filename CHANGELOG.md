@@ -6,6 +6,13 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A dropped connection costs a reconnect, not a re-pair.** The daemon serves two
+  refresh spellings from one token store: `/v1/token/refresh` verified and minted an
+  access token, while `/v1/auth/refresh` rotated - retiring the presented refresh
+  token and minting a new pair. Whenever the older lane refreshed, it silently killed
+  the token the newer lane was holding, and that lane could never recover without
+  pairing again. Both routes now verify and mint; neither rotates. `build 152`.
+
 - **A goal keeps your words and sends the instruction only to the model.** Build 150
   rewrote the turn text, so the transcript showed machine instructions in the
   operator's mouth: the row read "Goal set: ... Start on it now" instead of the
