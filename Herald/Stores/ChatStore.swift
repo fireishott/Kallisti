@@ -314,11 +314,18 @@ final class ChatStore {
     /// 1800s per turn and the connector 420s per job, so a 300s no-progress
     /// window still catches real dead streams while letting long tool calls
     /// finish.
-    static var watchdogTimeout: Duration = .seconds(300)
+    /// Raised from 300s to 900s on 2026-11-02. A turn on this daemon legitimately ran
+    /// seven minutes forty-eight seconds (job 01a19e99, 34 tool calls) and the app
+    /// killed anything that went quiet for five. A long job is not a dead one, and
+    /// the cost of being wrong here is destroying real work.
+    static var watchdogTimeout: Duration = .seconds(900)
 
     /// Timeout for turns that have not started streaming any content yet.
     /// Catches model errors, stream drops, and provider timeouts before any tokens arrive.
-    static var thinkingOnlyTimeout: Duration = .seconds(60)
+    /// Raised from 60s for the same reason, and because this is the window a goal turn
+    /// spends thinking before its first token. A minute of silence from a thinking
+    /// model is normal, not a stall.
+    static var thinkingOnlyTimeout: Duration = .seconds(300)
 
     /// Absolute deadline for a single streaming job from message acceptance to
     /// terminal resolution. After this duration, the polling loop forcibly
