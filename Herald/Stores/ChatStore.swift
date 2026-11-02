@@ -2685,6 +2685,22 @@ final class ChatStore {
                     // refresh so other devices see the new preview/timestamp/
                     // blue-dot state without waiting for the 30s auto-tick.
                     self.onTurnCompleted?()
+                    // Pull the transcript once the turn settles, here rather than
+                    // only on foreground. Without this the finished row appeared
+                    // only if the operator left the chat and came back: the live
+                    // path settles the placeholder, and anything the daemon wrote
+                    // that the stream did not carry - a reason, a tool result, a
+                    // row from another device - stayed missing until the next full
+                    // load. That is the reload dance.
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if let refreshed = await self.refreshActiveConversation() {
+                            self.conversation = self.mergeConversationMetadata(
+                                from: self.conversation,
+                                into: refreshed
+                            )
+                        }
+                    }
                     // Build 78: sweep orphaned streaming placeholders.
                     // activeStreams was just cleared above; any remaining
                     // isStreaming placeholder is now ownerless and would
