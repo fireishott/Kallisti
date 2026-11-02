@@ -467,7 +467,31 @@ actor ErisClient {
     /// The daemon does not rotate the refresh token on this route, so the stored
     /// pair keeps the refresh token it already had and only the access half is
     /// replaced.
+    /// A refresh already running, so concurrent 401s wait on one call.
+    ///
+    /// Every request that comes back 401 used to refresh on its own. On a server
+    /// wake-up that is a dozen requests at once, and the daemon's audit log shows
+    /// the result: six rotations inside two seconds. Each one rewrites the stored
+    /// token, so the slowest writer wins and the others can leave a token the
+    /// daemon has already moved past - which is how a device ends up looking
+    /// unpaired while its refresh token is perfectly good. One call, everyone else
+    /// awaits it.
+    private var refreshInFlight: Task<ErisTokenPair, Error>?
+
     func refresh() async throws -> ErisTokenPair {
+        if let running = refreshInFlight {
+            return try await running.value
+        }
+        let task = Task<ErisTokenPair, Error> { [self] in
+            try await performRefresh()
+        }
+        refreshInFlight = task
+        defer { refreshInFlight = nil }
+        return try await task.value
+    }
+
+    /// The one call the single-flight wrapper shares.
+    private func performRefresh() async throws -> ErisTokenPair {
         guard let stored = try await tokenStore.load() else {
             throw ErisError.missingToken
         }
