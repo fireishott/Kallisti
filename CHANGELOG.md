@@ -6,6 +6,11 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The daemon logs when a phone attaches to a turn stream.** One line per attach, with
+  the job and the resume point. A stream that attaches and dies is a transport problem;
+  one that never attaches, or is refused, is the client's. That distinction has been
+  guessed at three times now and this makes it readable. `build 155`.
+
 - **A refresh rotates, and hands back the replacement.** Both refresh spellings share
   one token store, and only the legacy one rotated: a refresh there retired the token
   the newer lane held, so the phone could not refresh again until it was paired.

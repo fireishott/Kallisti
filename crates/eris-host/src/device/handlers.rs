@@ -1649,6 +1649,16 @@ pub async fn events(
     // Subscribe before reading, so a frame written between the read and the tail
     // is delivered by the channel rather than lost in the gap.
     let receiver = service.hub().subscribe(&job_id);
+    // Ground truth for a question a screenshot cannot answer: is a phone attached
+    // to this turn, and does it stay attached while the turn runs long. A stream
+    // that attaches and dies is a transport problem; one that never attaches, or
+    // that is refused, is the app's. Logged at info so it lands in the journal
+    // without turning up the whole daemon.
+    tracing::info!(
+        job = %job_id,
+        resume_from = last_event_id,
+        "device stream attached"
+    );
 
     let mut replay = match store.events_after(&job_id, last_event_id) {
         Ok(replay) => replay,
