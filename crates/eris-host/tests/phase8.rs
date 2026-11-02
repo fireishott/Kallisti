@@ -697,6 +697,7 @@ async fn pair_redeems_a_code_and_refresh_mints_an_access_token() {
     assert_eq!(bogus.json()["ok"], false);
 
     // Refresh: the stored refresh token buys one fresh access token.
+    let previous_refresh = refresh.clone();
     let refreshed = harness
         .request(
             "POST",
@@ -712,11 +713,27 @@ async fn pair_redeems_a_code_and_refresh_mints_an_access_token() {
         .as_str()
         .expect("a fresh access token");
     assert_ne!(fresh, access, "a refresh mints a new token");
+    // Rotation: the refresh token that bought this access token is spent, and the
+    // replacement is what carries on.
+    let refresh = refreshed_body["refresh_token"]
+        .as_str()
+        .expect("a replacement refresh token")
+        .to_owned();
+    assert_ne!(refresh, previous_refresh, "the replacement is a new token");
 
-    // The same refresh token still works a second time: rotation would retire
-    // the caller's only way to refresh, and the documented body has no field to
-    // hand back a replacement.
+    // The retired token is refused, and the replacement works. Anything else would
+    // mean a client holding the old copy could still refresh, which is the state the
+    // two lanes kept getting each other into.
     let again = harness
+        .request(
+            "POST",
+            "/v1/token/refresh",
+            &[],
+            Some(&format!(r#"{{"refresh_token":"{previous_refresh}"}}"#)),
+        )
+        .await;
+    assert_eq!(again.status, 401, "{}", again.body);
+    let rotated_again = harness
         .request(
             "POST",
             "/v1/token/refresh",
@@ -724,7 +741,7 @@ async fn pair_redeems_a_code_and_refresh_mints_an_access_token() {
             Some(&format!(r#"{{"refresh_token":"{refresh}"}}"#)),
         )
         .await;
-    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(rotated_again.status, 200, "{}", rotated_again.body);
 
     // An access token is not a refresh token.
     let wrong_kind = harness

@@ -6,6 +6,14 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A refresh rotates, and hands back the replacement.** Both refresh spellings share
+  one token store, and only the legacy one rotated: a refresh there retired the token
+  the newer lane held, so the phone could not refresh again until it was paired.
+  `/v1/token/refresh` now rotates too, returns `refresh_token` in the response, and the
+  retired token is refused. The app already prefers a refresh token from the response
+  over the one it sent, and cannot present a superseded one: its refresh is
+  single-flight and reads storage at call time. `build 154`.
+
 - **Reverted: the legacy refresh rotates again.** Build 152 stopped `/v1/auth/refresh`
   from rotating so the two refresh spellings could not retire each other's token. The
   legacy client did not accept the same token coming back, treated the response as a

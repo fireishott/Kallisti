@@ -452,8 +452,14 @@ pub async fn refresh(
             .into_response();
     }
     let tokens = TokenService::new(service.engine().db().clone());
-    let verified = match tokens.verify_refresh(presented) {
-        Ok(verified) => verified,
+    // Rotated, and the replacement returned. This route and the legacy spelling
+    // share one store, so a refresh that retired the token without handing back the
+    // new one left the other lane holding a dead token: the phone could not refresh
+    // again until it was paired. The client already prefers a refresh token from the
+    // response over the one it sent, and refuses to reuse a superseded token because
+    // it is single-flight and reads storage at call time.
+    let pair = match tokens.rotate(presented) {
+        Ok(pair) => pair,
         Err(_) => {
             return DeviceError::unauthorized(
                 "token_invalid",
@@ -462,25 +468,11 @@ pub async fn refresh(
             .into_response();
         }
     };
-    // The access token inherits the scope set of the row that was verified: a
-    // device the operator asked to administer keeps that across a refresh, and a
-    // device that was paired without it cannot acquire it here. Refreshing
-    // decides nothing, it carries a decision that was already made.
-    let origin = if verified.scope().has_admin() {
-        TokenOrigin::PairedAdmin
-    } else {
-        TokenOrigin::Device
-    };
-    let access = match tokens.mint_access(verified.device_id(), verified.scope(), origin) {
-        Ok(access) => access,
-        Err(error) => {
-            return DeviceError::unauthorized("token_invalid", error.to_string()).into_response();
-        }
-    };
     axum::Json(serde_json::json!({
         "ok": true,
-        "access_token": access.token(),
-        "expires_at": format_timestamp(access.expires_at()),
+        "access_token": pair.access.token(),
+        "refresh_token": pair.refresh.token(),
+        "expires_at": format_timestamp(pair.access.expires_at()),
     }))
     .into_response()
 }
