@@ -42,6 +42,9 @@ struct SettingsScreen: View {
     // NOT a live-bound Menu whose content rebuilt on every parent re-render
     // and snapped scroll back to top.
     @State private var isEnrichmentPickerPresented = false
+    /// Whether every enrichment mode may read outside the note, or only research.
+    /// The daemon holds the truth; this mirrors the last thing sent from here.
+    @State private var freeReadEnabled = false
     @State private var enrichmentPickerSearchText = ""
     private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.kallisti.session")
     @Environment(ThemeManager.self) private var themeManager
@@ -2583,6 +2586,39 @@ struct SettingsScreen: View {
     private var notesDefaultsSection: some View {
         SettingsSectionView(title: "Notes") {
             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                Toggle(isOn: Binding(
+                    get: { freeReadEnabled },
+                    set: { on in
+                        freeReadEnabled = on
+                        Task {
+                            // The settings write lives on the Eris client, and the
+                            // store only knows the protocol, so this reaches the
+                            // concrete client rather than pretending the seam has it.
+                            guard let eris = chatStore.heraldClient as? ErisHeraldClient,
+                                  let client = await eris.client() else { return }
+                            _ = try? await client.updateSettings(
+                                ErisSettingsPatch(freeRead: on ? "true" : "false")
+                            )
+                        }
+                    }
+                )) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "books.vertical")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Free reads")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("Let every enrichment read the vault, not just research mode. Off keeps a note about someone from pulling their history.")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
                 Toggle(isOn: Binding(
                     get: { settingsStore.settings.notesDefaultLinesEnabled },
                     set: { settingsStore.settings.notesDefaultLinesEnabled = $0 }

@@ -146,12 +146,22 @@ struct ErisSettingsPatch: Equatable, Sendable {
     var memory: String?
     /// The approval policy, when it changed.
     var approval: String?
+    /// `notes.enrichment.free_read` - let every enrichment mode read outside the
+    /// note, not just research. Off is the default and the safe answer.
+    var freeRead: String?
 
-    init(model: String? = nil, sandbox: String? = nil, memory: String? = nil, approval: String? = nil) {
+    init(
+        model: String? = nil,
+        sandbox: String? = nil,
+        memory: String? = nil,
+        approval: String? = nil,
+        freeRead: String? = nil
+    ) {
         self.model = model
         self.sandbox = sandbox
         self.memory = memory
         self.approval = approval
+        self.freeRead = freeRead
     }
 
     /// Whether there is anything to send at all.
@@ -169,6 +179,7 @@ struct ErisSettingsPatch: Equatable, Sendable {
         if let sandbox, !sandbox.isEmpty { fields["sandbox"] = sandbox }
         if let memory, !memory.isEmpty { fields["memory"] = memory }
         if let approval, !approval.isEmpty { fields["approval"] = approval }
+        if let freeRead, !freeRead.isEmpty { fields["notes.enrichment.free_read"] = freeRead }
         return fields
     }
 
