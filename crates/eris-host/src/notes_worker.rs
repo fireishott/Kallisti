@@ -270,12 +270,47 @@ impl NotesWorker {
             .latest_recognition_text(&claimed.note_id)
             .map_err(|error| ("notes_unreadable".to_owned(), error.to_string()))?
             .unwrap_or_default();
+        // When the ink is on disk, a vision model reads it and the recognition text
+        // stops being the last word. Cursive handwriting defeats on-device Vision -
+        // it returns confident nonsense for "Does Note Enrichment Work?" - and the
+        // worker used to have no way past that but to refuse. The transcription is
+        // preferred over the recogniser's text only when it comes back non-empty;
+        // otherwise the run carries on exactly as before.
+        let transcript = self.transcribe_ink(&claimed.note_id, &config);
+        let recognized = match transcript {
+            Some(text) if !text.trim().is_empty() => text,
+            _ => recognized,
+        };
 
         Ok(WorkRequest {
             config,
             system: Some(SYSTEM.to_owned()),
             prompt: build_prompt(&title, &recognized, &claimed.requested_directives),
         })
+    }
+
+    /// Transcribe the note's stored ink with a vision model, when there is any.
+    ///
+    /// Blocking on purpose: `describe_images` builds its own runtime, which is legal
+    /// on this worker thread and not legal on a runtime worker. A missing blob, an
+    /// unreadable file or a provider that cannot see all return `None`, and the run
+    /// falls back to the recognised text exactly as it did before this existed.
+    fn transcribe_ink(
+        &self,
+        note_id: &str,
+        config: &crate::web::chat::TurnConfig,
+    ) -> Option<String> {
+        let (path, _revision) = self.store.latest_blob(note_id).ok().flatten()?;
+        let bytes = std::fs::read(&path).ok()?;
+        let attachment = crate::web::chat::Attachment {
+            id: format!("ink-{_revision}"),
+            name: format!("ink-{_revision}.png"),
+            path: path.clone(),
+            media_type: Some("image/png".to_owned()),
+            size: bytes.len() as u64,
+        };
+        let _ = bytes;
+        crate::web::chat::describe_images(config, &[attachment])
     }
 
     /// Record why a run failed, on the run and in its event log.

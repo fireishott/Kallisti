@@ -947,6 +947,24 @@ impl NotesStore {
     ///
     /// The `note_recognitions` table holds no `device_id`, so ownership is checked
     /// through the note itself rather than assumed from the caller.
+    /// The newest stored ink for a note, as a path and media type.
+    ///
+    /// The blob is the drawing revision itself. Nothing on this side has ever read
+    /// it: enrichment worked from the recognised text alone, which is why cursive
+    /// handwriting arrived garbled and the worker could only refuse. A vision model
+    /// can read the ink, so the path is what the worker needs to hand it over.
+    pub fn latest_blob(&self, note_id: &str) -> Result<Option<(String, i64)>, NotesError> {
+        let conn = self.lock()?;
+        Ok(optional(conn.query_row(
+            "SELECT storage_path, drawing_revision
+               FROM note_blobs
+              WHERE note_id = ?1
+              ORDER BY drawing_revision DESC LIMIT 1",
+            [note_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ))?)
+    }
+
     pub fn latest_recognition_text(&self, note_id: &str) -> Result<Option<String>, NotesError> {
         let conn = self.lock()?;
         Ok(optional(conn.query_row(

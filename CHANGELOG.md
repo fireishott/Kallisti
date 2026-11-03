@@ -6,6 +6,13 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **Note enrichment reads the ink when there is any.** The worker used to work from the
+  recognised text alone, and on-device Vision returns confident nonsense for cursive,
+  so the only honest answer was "too garbled". It now looks for the newest stored
+  drawing revision, hands that image to the vision role, and enriches from the
+  transcription when one comes back. No blob, an unreadable file or a provider that
+  cannot see all fall back to the recognised text exactly as before. `build 159`.
+
 - **Push registration stopped being refused twelve times a minute.** The app sends
   `bundleID`; the legacy request the daemon decodes calls it `bundleId`, so the field
   arrived empty, the route answered `400 pushEnvironment and bundleId are required`,
