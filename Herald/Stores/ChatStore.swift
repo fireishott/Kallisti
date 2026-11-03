@@ -2692,6 +2692,12 @@ final class ChatStore {
                     // refresh so other devices see the new preview/timestamp/
                     // blue-dot state without waiting for the 30s auto-tick.
                     self.onTurnCompleted?()
+                    // A message queued behind this turn goes now. Without this a
+                    // queued send waited for the next unrelated trigger.
+                    let queuedConversation = self.conversation?.id
+                    Task { @MainActor [weak self] in
+                        await self?.submitNextEligible(for: queuedConversation)
+                    }
                     // Pull the transcript once the turn settles, here rather than
                     // only on foreground. Without this the finished row appeared
                     // only if the operator left the chat and came back: the live
@@ -4148,6 +4154,22 @@ final class ChatStore {
     func interruptAndSend(_ content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil) -> ChatOutboxRecord? {
         let activeLocal = !activeStreams.isEmpty
         let activeServer = isServerTurnActive
+        // A send during a running turn queues. It used to preempt, which destroyed
+        // real work every time a long job made the operator impatient: two jobs four
+        // seconds apart in the daemon log, the first with its tools in flight. Only a
+        // message that starts with an interrupt marker preempts now.
+        let wantsInterrupt = content
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("/interrupt")
+        if (activeLocal || activeServer) && wantsInterrupt == false {
+            let record = enqueueMessage(
+                content,
+                attachments: attachments,
+                clientMessageID: clientMessageID
+            )
+            return record
+        }
         if activeLocal || activeServer {
             // Sending the same words again is not a steer, it is the operator
             // retrying because the turn looks stuck - which is exactly what a long
