@@ -6,6 +6,12 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **Push registration stopped being refused twelve times a minute.** The app sends
+  `bundleID`; the legacy request the daemon decodes calls it `bundleId`, so the field
+  arrived empty, the route answered `400 pushEnvironment and bundleId are required`,
+  and the client retried. Every field now accepts its snake_case and its other-caps
+  spelling. Found only after the refusal log started naming its route. `build 157`.
+
 - **The daemon logs when a phone attaches to a turn stream.** One line per attach, with
   the job and the resume point. A stream that attaches and dies is a transport problem;
   one that never attaches, or is refused, is the client's. That distinction has been

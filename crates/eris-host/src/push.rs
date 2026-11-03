@@ -196,27 +196,33 @@ pub fn reply_notification(
 pub const MESSAGE_READY_CATEGORY: &str = "HERALD_MESSAGE_READY";
 
 /// `POST /v1/push/register`. Field names are the legacy `PushRegisterRequest`.
+///
+/// Every field also accepts its snake_case and its other-caps spelling, because the
+/// app sends `bundleID` while the legacy request called it `bundleId`. That one
+/// difference made every registration a `400 invalid_request`, which the daemon then
+/// answered twelve times a minute in a retry loop - named only after the refusal line
+/// started logging its route.
 #[derive(Debug, Deserialize)]
 pub struct PushRegisterRequest {
-    #[serde(rename = "deviceId", default)]
+    #[serde(rename = "deviceId", alias = "device_id", alias = "deviceID", default)]
     pub device_id: Option<String>,
     #[serde(default = "default_transport")]
     pub transport: String,
-    #[serde(rename = "apnsToken", default)]
+    #[serde(rename = "apnsToken", alias = "apns_token", default)]
     pub apns_token: Option<String>,
-    #[serde(rename = "pushEnvironment", default)]
+    #[serde(rename = "pushEnvironment", alias = "push_environment", default)]
     pub push_environment: String,
-    #[serde(rename = "bundleId", default)]
+    #[serde(rename = "bundleId", alias = "bundleID", alias = "bundle_id", default)]
     pub bundle_id: String,
-    #[serde(rename = "relayHandle", default)]
+    #[serde(rename = "relayHandle", alias = "relay_handle", default)]
     pub relay_handle: Option<String>,
-    #[serde(rename = "sendGrant", default)]
+    #[serde(rename = "sendGrant", alias = "send_grant", default)]
     pub send_grant: Option<String>,
-    #[serde(rename = "relayId", default)]
+    #[serde(rename = "relayId", alias = "relay_id", default)]
     pub relay_id: Option<String>,
-    #[serde(rename = "relayPublicKey", default)]
+    #[serde(rename = "relayPublicKey", alias = "relay_public_key", default)]
     pub relay_public_key: Option<String>,
-    #[serde(rename = "tokenDebugSuffix", default)]
+    #[serde(rename = "tokenDebugSuffix", alias = "token_debug_suffix", default)]
     pub token_debug_suffix: Option<String>,
 }
 
