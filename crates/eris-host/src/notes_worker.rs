@@ -352,6 +352,106 @@ If the recognized text is too garbled to use, say so in one line and stop. That 
 honest answer, not a failure: the operator can then correct the note's text and \
 re-run, and a wrong guess is worse than a short refusal.";
 
+/// The enrichment mode a note was sent with, and what it asks the run to do.
+///
+/// Notes serve people differently: a jot to remember, a question to research, a
+/// meeting to follow up, a story to tell, a sketch. Without this the worker gave
+/// all of them the same generic treatment. The mode is a contract in the prompt,
+/// not a different code path: nothing here changes what the worker may touch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Whatever the note seems to want. The default, and what an old client gets.
+    Auto,
+    /// Look things up and come back with findings.
+    Research,
+    /// Anything owed to someone else: who, what, by when.
+    FollowUp,
+    /// A schedule candidate, for the operator to approve.
+    Reminder,
+    /// A draft summary, for the operator to review before it goes anywhere.
+    Summary,
+    /// Narrative: keep the voice, keep the thread.
+    Story,
+    /// A drawing: name what is there, do not invent meaning.
+    Sketch,
+}
+
+impl Mode {
+    /// Read the mode from the directives, or fall back to `Auto`.
+    #[must_use]
+    pub fn from_directives(directives: &serde_json::Value) -> Self {
+        let Some(items) = directives.as_array() else {
+            return Self::Auto;
+        };
+        for item in items {
+            let (name, argument) = match item {
+                serde_json::Value::String(text) => (text.as_str(), ""),
+                serde_json::Value::Object(object) => (
+                    object.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    object
+                        .get("argument")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                ),
+                _ => ("", ""),
+            };
+            for candidate in [name, argument] {
+                match candidate.trim().to_lowercase().as_str() {
+                    "research" => return Self::Research,
+                    "followup" | "follow-up" | "follow_up" => return Self::FollowUp,
+                    "reminder" => return Self::Reminder,
+                    "summary" => return Self::Summary,
+                    "story" => return Self::Story,
+                    "sketch" | "drawing" => return Self::Sketch,
+                    _ => {}
+                }
+            }
+        }
+        Self::Auto
+    }
+
+    /// The line the prompt carries for this mode.
+    #[must_use]
+    pub fn contract(self) -> &'static str {
+        match self {
+            Self::Auto => {
+                "Mode: auto. Do what the note itself is asking for. A question gets an \
+                 answer, a task gets tracked, a doodle gets described and left alone."
+            }
+            Self::Research => {
+                "Mode: research. Look into what the note names and come back with what you \
+                 found, separated from what the note already said. Name your sources where \
+                 you can. Do not pad: fewer, better findings beats a survey."
+            }
+            Self::FollowUp => {
+                "Mode: follow-up. List what is owed to whom and by when, in the note's own \
+                 words. If a date or an owner is missing, say it is missing rather than \
+                 choosing one. Do not draft the message unless the note asks for it."
+            }
+            Self::Reminder => {
+                "Mode: reminder. Propose one schedule: what it is, when it should fire, and \
+                 whether it repeats. State it plainly and note that it is a proposal. Do not \
+                 claim it is scheduled; the operator approves it."
+            }
+            Self::Summary => {
+                "Mode: summary. Write the summary that could be sent to the people the note \
+                 names: short, factual, no praise and no filler. Say it is a draft for review. \
+                 Do not claim it was sent."
+            }
+            Self::Story => {
+                "Mode: story. Keep the note's own voice and thread, in the order it happened. \
+                 Do not add events or detail the note does not contain, and do not turn it \
+                 into a motivational essay."
+            }
+            Self::Sketch => {
+                "Mode: sketch. Name what is drawn and what it appears to be, briefly. Do not \
+                 invent intent, and do not summarise a picture that has no text as though it \
+                 were an argument."
+            }
+        }
+    }
+}
+
 /// The user message: the note, bounded, with any directives the client sent.
 #[must_use]
 pub fn build_prompt(title: &str, recognized: &str, directives: &serde_json::Value) -> String {
@@ -372,6 +472,10 @@ pub fn build_prompt(title: &str, recognized: &str, directives: &serde_json::Valu
         out.push_str(&truncate(recognized, MAX_SOURCE_CHARS));
         out.push('\n');
     }
+
+    out.push('\n');
+    out.push_str(Mode::from_directives(directives).contract());
+    out.push('\n');
 
     let names = directive_names(directives);
     if !names.is_empty() {
@@ -841,5 +945,41 @@ mod tests {
     fn an_enrichment_title_marks_the_derivation() {
         assert_eq!(enrichment_title("  Notes  "), "Notes (enriched)");
         assert_eq!(enrichment_title(""), "Enrichment");
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::{Mode, build_prompt};
+
+    #[test]
+    fn an_absent_mode_is_auto() {
+        let directives = serde_json::json!([]);
+        assert_eq!(Mode::from_directives(&directives), Mode::Auto);
+        let prompt = build_prompt("note", "text", &directives);
+        assert!(prompt.contains("Mode: auto"), "{prompt}");
+    }
+
+    #[test]
+    fn each_mode_names_itself_in_the_prompt() {
+        for (name, expected) in [
+            ("research", "Mode: research"),
+            ("follow-up", "Mode: follow-up"),
+            ("reminder", "Mode: reminder"),
+            ("summary", "Mode: summary"),
+            ("story", "Mode: story"),
+            ("sketch", "Mode: sketch"),
+        ] {
+            let directives = serde_json::json!([{ "name": name }]);
+            let prompt = build_prompt("note", "text", &directives);
+            assert!(prompt.contains(expected), "{name}: {prompt}");
+        }
+    }
+
+    #[test]
+    fn a_reminder_is_a_proposal_and_never_a_claim() {
+        let directives = serde_json::json!([{ "name": "reminder" }]);
+        let prompt = build_prompt("note", "text", &directives);
+        assert!(prompt.contains("operator approves it"), "{prompt}");
     }
 }
