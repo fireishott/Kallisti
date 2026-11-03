@@ -2392,6 +2392,18 @@ final class ChatStore {
                             from: self.conversation,
                             into: refreshed
                         )
+                        // The daemon answered, so a local failure was a guess about a
+                        // stream that ended badly, not a fact about the turn. Clear it:
+                        // a REGENERATE button under a finished answer invites the
+                        // operator to redo work that is already done.
+                        if var conv = self.conversation,
+                           let idx = conv.messages.lastIndex(where: { $0.sender == .herald }),
+                           conv.messages[idx].status == .failed,
+                           conv.messages[idx].content.isEmpty == false {
+                            conv.messages[idx].status = .sent
+                            conv.messages[idx].isStreaming = false
+                            self.conversation = conv
+                        }
                     }
                 }
             }
