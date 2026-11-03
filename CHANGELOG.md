@@ -6,6 +6,12 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The free-read switch is settable.** `POST /v1/settings` now accepts
+  `notes.enrichment.free_read` (`true`/`false` and the usual spellings), reports it in
+  `changed`, and refuses anything else by name. Before this the notes worker honoured a
+  key that nothing could write: the only way to change it was SQL, which is not a
+  setting. `build 164`.
+
 - **Only research mode reads on its own.** An enrichment in auto, follow-up, reminder,
   summary, story or sketch mode runs from the note alone; a jot that mentions a person
   must not quietly pull their history out of the vault and paste it into an enrichment

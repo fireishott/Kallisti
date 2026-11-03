@@ -3036,6 +3036,40 @@ fn parse_settings(
         }
     }
 
+    // The notes worker reads this key; without a way to write it through the
+    // settings route the only way to change it was SQL, which is not a setting.
+    if let Some(raw) = fields.get("notes.enrichment.free_read") {
+        let on = match raw.trim().to_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => true,
+            "false" | "0" | "no" | "off" => false,
+            other => {
+                return Err(DeviceError::bad_request(
+                    "free_read_invalid",
+                    format!(
+                        "notes.enrichment.free_read does not accept `{other}`: send true or false"
+                    ),
+                ));
+            }
+        };
+        service
+            .engine()
+            .set_setting(
+                crate::notes_worker::Mode::FREE_READ_SETTING,
+                if on { "true" } else { "false" },
+            )
+            .map_err(|error| {
+                DeviceError::db_unavailable(format!("cannot store the free-read switch: {error}"))
+            })?;
+        write.changes.push(SettingsChange {
+            field: "notes.enrichment.free_read",
+            value: if on {
+                "true".to_owned()
+            } else {
+                "false".to_owned()
+            },
+        });
+    }
+
     if let Some(raw) = fields.get("memory") {
         write.named = true;
         let backend = crate::memory::Backend::parse(raw).ok_or_else(|| {
