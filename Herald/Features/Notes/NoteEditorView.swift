@@ -57,10 +57,32 @@ struct NoteEditorView: View {
     @State private var showDocumentScanner = false
     @State private var showAttachmentMenu = false
 
+    /// The modes the daemon implements, in the order the picker shows them.
+    static let enrichmentModes = [
+        "auto", "research", "follow-up", "reminder", "summary", "story", "sketch",
+    ]
+
+    /// What the picker says for a mode id.
+    static func modeTitle(_ mode: String) -> String {
+        switch mode {
+        case "auto": "Auto"
+        case "research": "Research"
+        case "follow-up": "Follow up"
+        case "reminder": "Reminder"
+        case "summary": "Summary"
+        case "story": "Story"
+        case "sketch": "Sketch"
+        default: "Auto"
+        }
+    }
+
     // Recognition and enrichment state
     @State private var currentRecognition: NoteRecognition?
     @State private var parsedDirectives: [NoteDirective] = []
     @State private var enrichmentResult: EnrichmentResult?
+    /// What the next enrichment is for. `auto` lets the note speak for itself;
+    /// research is the one mode that reads the vault on its own.
+    @AppStorage("notes.enrichment.mode") private var enrichmentMode: String = "auto"
     @State private var runStatus: NoteRunStatus?
     @State private var commandResults: [NoteCommandResult] = []
     @State private var showShareToNotes = false
@@ -118,6 +140,23 @@ struct NoteEditorView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    ForEach(Self.enrichmentModes, id: \.self) { mode in
+                        Button {
+                            enrichmentMode = mode
+                        } label: {
+                            if enrichmentMode == mode {
+                                Label(Self.modeTitle(mode), systemImage: "checkmark")
+                            } else {
+                                Text(Self.modeTitle(mode))
+                            }
+                        }
+                    }
+                } label: {
+                    Label(Self.modeTitle(enrichmentMode), systemImage: "wand.and.stars")
+                }
+                .accessibilityLabel("Enrichment mode")
+
                 if viewMode == .ink {
                     Button {
                         undoRequest &+= 1

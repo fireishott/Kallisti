@@ -846,6 +846,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
         }
     }
 
+    /// The directive list for a run, from the operator's chosen mode.
+    static func noteDirectives() -> [String] {
+        let mode = UserDefaults.standard.string(forKey: "notes.enrichment.mode") ?? "auto"
+        return mode == "auto" ? ["enrich"] : ["enrich", mode]
+    }
+
     private func performNoteEnrichment(
         text: String,
         attachments: [PendingAttachment],
@@ -908,7 +914,10 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 noteID: noteID,
                 payload: ErisNoteRunCreatePayload(
                     clientRunId: clientMessageID.uuidString,
-                    directives: ["enrich"]
+                    // The mode the note was sent with. `auto` is the daemon's default,
+                    // so it travels as no directive at all and an older daemon is
+                    // unaffected. Research is the mode allowed to read the vault.
+                    directives: Self.noteDirectives()
                 )
             )
             lastRunIDByLocalID[conversationID] = run.data.id
