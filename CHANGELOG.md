@@ -6,6 +6,13 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **Enrichment may read.** The worker runs with `read_file` and `list_dir` allowed and
+  everything else refused - no write, no command, no fetch, because those are actions
+  and this worker has no approval surface to park one on. The sandbox root is the
+  daemon's own workspace, so a note about a meeting can be enriched from what the vault
+  and the brain already know, and rounds rise from one to six so it can look something
+  up and still answer. `build 162`.
+
 - **Note enrichment reads the ink when there is any.** The worker used to work from the
   recognised text alone, and on-device Vision returns confident nonsense for cursive,
   so the only honest answer was "too garbled". It now looks for the newest stored

@@ -58,6 +58,9 @@ pub const DELTA_CHARS: usize = 200;
 pub struct WorkRequest {
     /// The provider, the key reference and the model.
     pub config: crate::web::chat::TurnConfig,
+    /// The sandbox root the run may read. The daemon's own workspace, so an
+    /// enrichment can look at the vault and the brain instead of guessing.
+    pub workspace: std::path::PathBuf,
     /// The system message, when one is configured.
     pub system: Option<String>,
     /// The note's own content and directives.
@@ -282,8 +285,13 @@ impl NotesWorker {
             _ => recognized,
         };
 
+        let workspace = self
+            .engine
+            .workspace_path()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
         Ok(WorkRequest {
             config,
+            workspace,
             system: Some(SYSTEM.to_owned()),
             prompt: build_prompt(&title, &recognized, &claimed.requested_directives),
         })
@@ -553,11 +561,18 @@ fn production_runner(
     let key = crate::oauth::credential::resolve_key_now(&request.config.key_ref)
         .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
     let sandbox = crate::tools::Sandbox::new(
-        std::path::PathBuf::from("."),
+        request.workspace.clone(),
         crate::onboarding::permissions::SandboxMode::ReadOnly,
     );
-    let mut gate = |_call: &core_domain::ToolCall| crate::web::chat::GateDecision::Refuse {
-        reason: "an enrichment run has no tools".to_owned(),
+    // An enrichment may read: the vault, the brain, a file the note names. It may
+    // not write, run a command or fetch a page, because those are actions and this
+    // worker has no approval surface to park one on. Reading is how a note about a
+    // meeting can be enriched from what the vault already knows about it.
+    let mut gate = |call: &core_domain::ToolCall| match call.name.as_str() {
+        "read_file" | "list_dir" => crate::web::chat::GateDecision::Run,
+        other => crate::web::chat::GateDecision::Refuse {
+            reason: format!("an enrichment run may read, not {other}"),
+        },
     };
     let mut sink = |part: crate::web::chat::StreamPart<'_>| {
         if let crate::web::chat::StreamPart::Text(delta) = part {
@@ -580,8 +595,8 @@ fn production_runner(
         None, // no reply row to attach a file to
         None, // no skill library
         crate::web::chat::TurnSettings {
-            tools: false,
-            max_rounds: 1,
+            tools: true,
+            max_rounds: 6,
             agents: false,
             // One note, one prompt, no history: nothing here can grow past a
             // window, so there is no budget to enforce.
