@@ -58,9 +58,16 @@ struct ChatInputBar: View {
     @State private var dictationBaseText = ""
 
     private var canSend: Bool {
-        let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasText = !trimmed.isEmpty
         let hasAttachments = !pendingAttachments.isEmpty
-        let hasRunnableSlashCommand = isSlashMode && hasText && text.trimmingCharacters(in: .whitespacesAndNewlines) != "/" && !hasAttachments
+        // `/goal` is a turn, not a command reply: the daemon stores the objective and
+        // runs the turn, so it can carry files like any other message. Without this
+        // the send button stayed dead the moment a file was attached to a slash
+        // command, which is why no `/goal` row has ever carried one.
+        let isGoal = trimmed.lowercased().hasPrefix("/goal")
+        if isGoal && hasText { return true }
+        let hasRunnableSlashCommand = isSlashMode && hasText && trimmed != "/" && !hasAttachments
         return hasRunnableSlashCommand || ((hasText || hasAttachments) && !isSlashMode)
     }
 
