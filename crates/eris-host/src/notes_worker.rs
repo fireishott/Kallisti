@@ -340,10 +340,17 @@ impl NotesWorker {
 /// The identity of an enrichment turn. Short on purpose: the note's own content
 /// carries the instruction, and a long system message would crowd it.
 pub const SYSTEM: &str = "You write the enrichment for one note in a note-taking app. \
-Read the note's recognized text and answer or summarise it. Return markdown only, \
-with no preamble and no closing offer to help. If the note asks a question, answer \
-it. If the recognized text is too garbled to use, say so in one line rather than \
-inventing content.";
+This is a fresh session: you have not seen this note before, you have not seen any \
+other note, and nothing from a previous enrichment applies. Read only what is below.\n\n\
+What to produce: markdown, no preamble, no closing offer to help. Answer a question \
+rather than describing it. Summarise only what the note actually says and do not pad \
+it. If the note lists tasks, keep them as a list in the note's own words. If it asks \
+for research or a specific directive, answer that directive. Never invent a fact that \
+is not in the note or already established public knowledge, and never state a figure \
+the note does not contain.\n\n\
+If the recognized text is too garbled to use, say so in one line and stop. That is the \
+honest answer, not a failure: the operator can then correct the note's text and \
+re-run, and a wrong guess is worse than a short refusal.";
 
 /// The user message: the note, bounded, with any directives the client sent.
 #[must_use]
@@ -358,7 +365,7 @@ pub fn build_prompt(title: &str, recognized: &str, directives: &serde_json::Valu
     out.push('\n');
 
     let recognized = recognized.trim();
-    out.push_str("\nRecognized text from the note:\n");
+    out.push_str("\nThis note, in full. Nothing else is in scope for this run:\n");
     if recognized.is_empty() {
         out.push_str("(the note carries no recognized text yet)\n");
     } else {
