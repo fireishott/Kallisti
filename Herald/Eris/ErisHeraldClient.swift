@@ -424,6 +424,15 @@ final class ErisHeraldClient: HeraldClientProtocol {
         let staged = attachments.prefix(Self.maximumAttachmentsPerTurn)
         var ids: [String] = []
         ids.reserveCapacity(staged.count)
+        // Live progress while files go up. An upload of four screenshots on a phone
+        // connection takes visible time, and until this the app showed nothing at all
+        // between pressing send and the turn starting: it read as a dead app, and the
+        // operator pressed send again.
+        let total = staged.count
+        var sent = 0
+        continuation.yield(.systemNotice(
+            total == 1 ? "Uploading 1 file..." : "Uploading \(total) files..."
+        ))
         for attachment in staged {
             do {
                 let stored = try await client.uploadAttachment(
@@ -433,6 +442,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     conversation: conversation
                 )
                 ids.append(stored.id)
+                sent += 1
+                continuation.yield(.systemNotice(
+                    sent == total
+                        ? "Uploaded \(total) of \(total) - starting the turn."
+                        : "Uploaded \(sent) of \(total): \(attachment.fileName)"
+                ))
             } catch {
                 Self.logAttachmentNotice("an attachment upload failed: " + Self.describe(error))
                 continuation.yield(.systemNotice(Self.attachmentFailureNotice(error)))
