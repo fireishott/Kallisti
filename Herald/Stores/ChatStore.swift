@@ -3366,6 +3366,12 @@ final class ChatStore {
                     appendLog(level: .info, "watchdog: server reports job still running - resetting stall clock")
                     self.streamingProgressAt = .now
                     self.streamingPhase = .streaming
+                    // Knowing the job is alive is not enough. This consumer has
+                    // stopped receiving frames, so the screen is frozen while the
+                    // daemon works, and the operator leaves the chat to force a
+                    // reload. Start the transcript watch instead: it re-reads the row
+                    // on a tick, so progress keeps appearing until the stream returns.
+                    await self.startServerTurnWatchIfNeeded(force: true)
                     continue
                 }
                 self.streamingPhase = .stalled
