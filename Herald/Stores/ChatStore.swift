@@ -2377,7 +2377,24 @@ final class ChatStore {
         var consumerFinished = false
         let consumerTask = Task { [weak self] in
             guard let self else { return }
-            defer { consumerFinished = true }
+            defer {
+                consumerFinished = true
+                // A stream can end without an ending: a dropped socket, a resumed
+                // connection that starts at the live tail, an app that was
+                // suspended mid-turn. The daemon may well have finished - the 19:38
+                // turn completed at 19:45 and the app still put a REGENERATE button
+                // under a finished answer - so ask the server what it holds before
+                // anything is called failed.
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if let refreshed = await self.refreshActiveConversation() {
+                        self.conversation = self.mergeConversationMetadata(
+                            from: self.conversation,
+                            into: refreshed
+                        )
+                    }
+                }
+            }
             self.appendLog(level: .info, "Streaming started")
             for await update in stream {
                 if Task.isCancelled { break }
