@@ -210,9 +210,18 @@ pub struct PushRegisterRequest {
     pub transport: String,
     #[serde(rename = "apnsToken", alias = "apns_token", default)]
     pub apns_token: Option<String>,
-    #[serde(rename = "pushEnvironment", alias = "push_environment", default)]
+    #[serde(
+        rename = "pushEnvironment",
+        alias = "push_environment",
+        default = "default_environment"
+    )]
     pub push_environment: String,
-    #[serde(rename = "bundleId", alias = "bundleID", alias = "bundle_id", default)]
+    #[serde(
+        rename = "bundleId",
+        alias = "bundleID",
+        alias = "bundle_id",
+        default = "default_bundle"
+    )]
     pub bundle_id: String,
     #[serde(rename = "relayHandle", alias = "relay_handle", default)]
     pub relay_handle: Option<String>,
@@ -224,6 +233,19 @@ pub struct PushRegisterRequest {
     pub relay_public_key: Option<String>,
     #[serde(rename = "tokenDebugSuffix", alias = "token_debug_suffix", default)]
     pub token_debug_suffix: Option<String>,
+}
+
+/// The app's own bundle. A registration that omits the field is this client, and
+/// refusing it only produced a `400` the client retried every few seconds.
+fn default_bundle() -> String {
+    "net.fihonline.kallisti".to_owned()
+}
+
+/// Production unless the client says otherwise. The environment decides which APNs
+/// endpoint a token belongs to, so a wrong default costs delivery, not correctness -
+/// and a rejected registration costs both, because nothing is stored at all.
+fn default_environment() -> String {
+    "production".to_owned()
 }
 
 fn default_transport() -> String {
