@@ -871,7 +871,10 @@ final class ErisHeraldClient: HeraldClientProtocol {
             // nonsense on cursive, and the worker only ever saw the text. Nothing in
             // this app called the blob route, so `note_blobs` stayed empty and
             // enrichment could do nothing but report garbled text.
-            if let ink = attachments.first(where: { $0.mimeType == "image/png" }) {
+            // Any image attachment is the ink: the sync engine renders the drawing to
+            // a PNG and downscales it to fit the body limit, and a narrower predicate
+            // here is what let the upload silently never happen.
+            if let ink = attachments.first(where: { $0.mimeType.hasPrefix("image/") }) ?? attachments.first {
                 do {
                     try await client.uploadNoteBlob(noteID: noteID, revision: 0, png: ink.data)
                 } catch {
