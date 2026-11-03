@@ -2391,10 +2391,10 @@ final class ChatStore {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     if let refreshed = await self.refreshActiveConversation() {
-                        self.conversation = self.mergeConversationMetadata(
+                        self.adoptMerged(self.mergeConversationMetadata(
                             from: self.conversation,
                             into: refreshed
-                        )
+                        ))
                         // The daemon answered, so a local failure was a guess about a
                         // stream that ended badly, not a fact about the turn. Clear it:
                         // a REGENERATE button under a finished answer invites the
@@ -2745,10 +2745,10 @@ final class ChatStore {
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         if let refreshed = await self.refreshActiveConversation() {
-                            self.conversation = self.mergeConversationMetadata(
+                            self.adoptMerged(self.mergeConversationMetadata(
                                 from: self.conversation,
                                 into: refreshed
-                            )
+                            ))
                         }
                     }
                     // Build 78: sweep orphaned streaming placeholders.
@@ -5302,6 +5302,26 @@ final class ChatStore {
     /// arbitrary "current" conversation, which (now that a device can have many
     /// sessions) may silently resolve to an unrelated session and clobber the one
     /// actually on screen.
+    /// Assign a merged conversation only when it actually differs.
+    ///
+    /// Every refresh used to reassign `conversation` unconditionally, and builds 133
+    /// and 136 made that happen repeatedly during a live turn. Each assignment swaps
+    /// the object the chat view is rendering, which drops it into "Loading messages"
+    /// for a beat and makes scroll position, expanded cards and view state a coin
+    /// flip on return. Nothing about a refresh needs to change the identity when the
+    /// content it brought back is the same.
+    private func adoptMerged(_ merged: Conversation?) {
+        guard let merged else { return }
+        let current = conversation
+        let sameCount = current?.messages.count == merged.messages.count
+        let sameLastBody = current?.messages.last?.content == merged.messages.last?.content
+        let sameLastStream = current?.messages.last?.isStreaming == merged.messages.last?.isStreaming
+        guard sameCount && sameLastBody && sameLastStream else {
+            conversation = merged
+            return
+        }
+    }
+
     private func refreshActiveConversation() async -> Conversation? {
         if let activeID = conversation?.id {
             return try? await heraldClient.loadConversation(id: activeID)
