@@ -61,6 +61,8 @@ pub struct WorkRequest {
     /// The sandbox root the run may read. The daemon's own workspace, so an
     /// enrichment can look at the vault and the brain instead of guessing.
     pub workspace: std::path::PathBuf,
+    /// Whether this run may read at all: research mode, or the operator's toggle.
+    pub allow_read: bool,
     /// The system message, when one is configured.
     pub system: Option<String>,
     /// The note's own content and directives.
@@ -289,9 +291,23 @@ impl NotesWorker {
             .engine
             .workspace_path()
             .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        // Research reads because that is its job. Everything else stays inside the
+        // note unless `notes.enrichment.free_read` is on: a jot that mentions a
+        // person must not quietly pull their history out of the vault and paste it
+        // into an enrichment the operator never asked to be researched.
+        let mode = Mode::from_directives(&claimed.requested_directives);
+        let free_read = self
+            .engine
+            .setting(Mode::FREE_READ_SETTING)
+            .ok()
+            .flatten()
+            .map(|value| matches!(value.trim(), "true" | "1" | "yes" | "on"))
+            .unwrap_or(false);
+        let allow_read = mode.reads_by_default() || free_read;
         Ok(WorkRequest {
             config,
             workspace,
+            allow_read,
             system: Some(SYSTEM.to_owned()),
             prompt: build_prompt(&title, &recognized, &claimed.requested_directives),
         })
@@ -417,6 +433,19 @@ impl Mode {
         }
         Self::Auto
     }
+
+    /// Whether this mode may read outside the note on its own.
+    ///
+    /// Research is the one mode whose job is to go and look. Everything else runs
+    /// from the note unless the operator has switched on free reads, because a
+    /// person's name in a jot must not quietly pull their history out of the vault.
+    #[must_use]
+    pub fn reads_by_default(self) -> bool {
+        matches!(self, Self::Research)
+    }
+
+    /// The setting that lets every mode read, for operators who want that.
+    pub const FREE_READ_SETTING: &'static str = "notes.enrichment.free_read";
 
     /// The line the prompt carries for this mode.
     #[must_use]
@@ -568,11 +597,18 @@ fn production_runner(
     // not write, run a command or fetch a page, because those are actions and this
     // worker has no approval surface to park one on. Reading is how a note about a
     // meeting can be enriched from what the vault already knows about it.
-    let mut gate = |call: &core_domain::ToolCall| match call.name.as_str() {
-        "read_file" | "list_dir" => crate::web::chat::GateDecision::Run,
+    let allow_read = request.allow_read;
+    let mut gate = |call: &core_domain::ToolCall| {
+        match call.name.as_str() {
+        "read_file" | "list_dir" if allow_read => crate::web::chat::GateDecision::Run,
+        "read_file" | "list_dir" => crate::web::chat::GateDecision::Refuse {
+            reason: "this enrichment runs from the note alone; switch on note free reads                      in settings, or use research mode, to let it read"
+                .to_owned(),
+        },
         other => crate::web::chat::GateDecision::Refuse {
             reason: format!("an enrichment run may read, not {other}"),
         },
+    }
     };
     let mut sink = |part: crate::web::chat::StreamPart<'_>| {
         if let crate::web::chat::StreamPart::Text(delta) = part {
@@ -595,8 +631,8 @@ fn production_runner(
         None, // no reply row to attach a file to
         None, // no skill library
         crate::web::chat::TurnSettings {
-            tools: true,
-            max_rounds: 6,
+            tools: allow_read,
+            max_rounds: if allow_read { 6 } else { 1 },
             agents: false,
             // One note, one prompt, no history: nothing here can grow past a
             // window, so there is no budget to enforce.
@@ -996,5 +1032,28 @@ mod mode_tests {
         let directives = serde_json::json!([{ "name": "reminder" }]);
         let prompt = build_prompt("note", "text", &directives);
         assert!(prompt.contains("operator approves it"), "{prompt}");
+    }
+}
+
+#[cfg(test)]
+mod read_policy_tests {
+    use super::Mode;
+
+    #[test]
+    fn research_reads_and_everything_else_waits_for_the_toggle() {
+        assert!(Mode::Research.reads_by_default());
+        for mode in [
+            Mode::Auto,
+            Mode::FollowUp,
+            Mode::Reminder,
+            Mode::Summary,
+            Mode::Story,
+            Mode::Sketch,
+        ] {
+            assert!(
+                !mode.reads_by_default(),
+                "{mode:?} reads without being asked"
+            );
+        }
     }
 }

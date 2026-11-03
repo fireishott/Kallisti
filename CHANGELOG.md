@@ -6,6 +6,13 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **Only research mode reads on its own.** An enrichment in auto, follow-up, reminder,
+  summary, story or sketch mode runs from the note alone; a jot that mentions a person
+  must not quietly pull their history out of the vault and paste it into an enrichment
+  nobody asked to be researched. Research reads because that is its job. Operators who
+  want every mode to read set `notes.enrichment.free_read` to true. A refused read says
+  which switch would allow it. `build 163`.
+
 - **Enrichment may read.** The worker runs with `read_file` and `list_dir` allowed and
   everything else refused - no write, no command, no fetch, because those are actions
   and this worker has no approval surface to park one on. The sandbox root is the
