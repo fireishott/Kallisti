@@ -1046,6 +1046,28 @@ fn open_push(engine: &SetupEngine) -> Option<crate::push::PushStore> {
 
 /// Build the device router. `/v1` only; everything else is a typed 404.
 pub fn router(service: DeviceService) -> Router {
+    // Every refused device request, with the route and the method. The error body
+    // names its code but not where it came from, and a bare `400 invalid_request`
+    // repeated twelve times in two minutes says a client is calling something wrong
+    // without saying what. One line per refusal is enough to name it.
+    async fn note_refusal(
+        request: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> axum::response::Response {
+        let method = request.method().clone();
+        let path = request.uri().path().to_owned();
+        let response = next.run(request).await;
+        if response.status().is_client_error() {
+            tracing::warn!(
+                %method,
+                path = %path,
+                status = response.status().as_u16(),
+                "device request refused route"
+            );
+        }
+        response
+    }
+
     Router::new()
         .route(ROUTE_PAIR, post(handlers::pair))
         .route(ROUTE_REFRESH, post(handlers::refresh))
@@ -1182,6 +1204,7 @@ pub fn router(service: DeviceService) -> Router {
         )
         .fallback(not_here)
         .method_not_allowed_fallback(wrong_method)
+        .layer(axum::middleware::from_fn(note_refusal))
         .layer(axum::middleware::from_fn(assign_request_id))
         .with_state(service)
 }
