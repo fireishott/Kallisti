@@ -835,6 +835,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
             let task = Task { @MainActor [weak self] in
                 await self?.performNoteEnrichment(
                     text: text,
+                    attachments: attachments,
                     clientMessageID: clientMessageID,
                     conversationID: conversationID,
                     title: title,
@@ -847,6 +848,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     private func performNoteEnrichment(
         text: String,
+        attachments: [PendingAttachment],
         clientMessageID: UUID,
         conversationID: UUID,
         title: String,
@@ -864,6 +866,21 @@ final class ErisHeraldClient: HeraldClientProtocol {
             // reads what this note says rather than an empty note. A failure here
             // is not fatal on its own - a run against the text the daemon already
             // holds is better than no run - so it is reported and the run goes on.
+            // The ink goes up before the text, because the daemon enriches from the
+            // drawing when it has one: on-device recognition returns confident
+            // nonsense on cursive, and the worker only ever saw the text. Nothing in
+            // this app called the blob route, so `note_blobs` stayed empty and
+            // enrichment could do nothing but report garbled text.
+            if let ink = attachments.first(where: { $0.mimeType == "image/png" }) {
+                do {
+                    try await client.uploadNoteBlob(noteID: noteID, revision: 0, png: ink.data)
+                } catch {
+                    // Not fatal: an enrichment from the recognised text is what this
+                    // did before the ink path existed.
+                    _ = error
+                }
+            }
+
             let staged = Self.contentForRecognition(text)
             if !staged.isEmpty {
                 do {

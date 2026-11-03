@@ -94,6 +94,13 @@ enum ErisRoute: Equatable, Sendable {
     /// `DELETE /v1/notes/{note_id}` - delete a note.
     case deleteNote(noteID: String)
     /// `POST /v1/notes/{note_id}/recognitions` - stage the note's text content.
+    /// `PUT /v1/notes/{note_id}/blobs/{revision}` - store the note's ink.
+    ///
+    /// The daemon enriches from the *drawing* when it has one, because on-device
+    /// recognition returns confident nonsense on cursive. Nothing in the app ever
+    /// called this route, so `note_blobs` stayed empty and enrichment could only
+    /// read garbled text.
+    case noteBlob(noteID: String, revision: Int)
     case noteRecognition(noteID: String)
     /// `POST /v1/notes/{note_id}/runs` - open an enrichment run.
     case noteRuns(noteID: String)
@@ -203,6 +210,8 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/notes/\(Self.segment(noteID))"
         case .noteRecognition(let noteID):
             return "/v1/notes/\(Self.segment(noteID))/recognitions"
+        case .noteBlob(let noteID, let revision):
+            return "/v1/notes/\(Self.segment(noteID))/blobs/\(revision)"
         case .noteRuns(let noteID):
             return "/v1/notes/\(Self.segment(noteID))/runs"
         case .noteRun(let runID):
@@ -256,6 +265,8 @@ enum ErisRoute: Equatable, Sendable {
              .setModel, .createCron, .setAux,
              .noteRecognition, .noteRuns, .cancelNoteRun, .gwRestart, .answer:
             return "POST"
+        case .noteBlob:
+            return "PUT"
         case .cronJob(_, let verb):
             return verb
         case .updateNote:
@@ -1111,6 +1122,18 @@ actor ErisClient {
 
     /// `POST /v1/notes/{note_id}/recognitions` - stage the note's text so the
     /// daemon's enrichment worker has something to read.
+    /// `PUT /v1/notes/{note_id}/blobs/{revision}` - store the note's ink.
+    ///
+    /// The body is the PNG itself, so this goes through the raw-bodied send path.
+    @discardableResult
+    func uploadNoteBlob(noteID: String, revision: Int, png: Data) async throws -> Data {
+        try await sendRaw(
+            route: .noteBlob(noteID: noteID, revision: revision),
+            body: png,
+            contentType: "image/png"
+        )
+    }
+
     func createNoteRecognition(
         noteID: String,
         payload: ErisNoteRecognitionPayload
