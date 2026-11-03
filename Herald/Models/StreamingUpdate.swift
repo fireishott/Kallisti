@@ -15,6 +15,8 @@ enum StreamingUpdate: Sendable {
     case reasoningDelta(String)
     /// A file the turn attached to the reply while it streamed.
     case attachmentAdded(MessageAttachment)
+    /// How far the upload got, 0...1, while files are being sent before a turn.
+    case uploadProgress(Double)
     case toolActivity(String)
     case toolStarted(ToolActivity)
     case toolCompleted(toolCallID: String, resultPreview: String?, isError: Bool, durationMs: Int?)

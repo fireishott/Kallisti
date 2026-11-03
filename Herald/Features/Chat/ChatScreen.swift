@@ -340,6 +340,22 @@ struct ChatScreen: View {
                 // Build 128.78: in TUI mode the terminal view owns input - the iOS
                 // composer is hidden entirely.
                 if !usesEmbeddedTerminal {
+                    // A real bar while files go up: determinate, filling per file,
+                    // and gone the moment the turn exists.
+                    if let progress = chatStore.attachmentProgress {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ProgressView(value: progress)
+                                .progressViewStyle(.linear)
+                                .tint(Design.Brand.accent)
+                            Text(progress < 1
+                                 ? "Uploading \(Int((progress * 100).rounded()))%"
+                                 : "Uploaded - starting the turn")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                        .padding(.horizontal, Design.Spacing.md)
+                        .padding(.bottom, 2)
+                    }
                     SlashCommandHints(
                         text: chatStore.loadDraft(for: draftConversationID)
                     ) { filled in

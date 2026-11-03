@@ -113,6 +113,9 @@ final class ChatStore {
     /// `heraldClient.respondToClarify`, which unblocks the parked gateway
     /// turn. Cleared on .finished/.failed or conversation switch.
     var pendingClarify: PendingClarify? = nil
+    /// How far the composer's uploads have got, 0...1, or nil when nothing is
+    /// uploading. Drives the bar above the reply bubble.
+    var attachmentProgress: Double?
     private var isPollingEnabled = false
     private var pollingTask: Task<Void, Never>?
     /// Build 117: separate task watching a turn that is running SERVER-side
@@ -2426,6 +2429,8 @@ final class ChatStore {
                 }
                 switch update {
                 case .messageSent(let jobID):
+                    // The turn exists, so the upload is over and the bar goes.
+                    self.attachmentProgress = nil
                     // Build N+: guard against stale .messageSent from a
                     // previous attempt.  cancelStreaming() bumps
                     // activeAttemptID, so a late arrival from the old stream
@@ -2580,6 +2585,9 @@ final class ChatStore {
                     self.sendPhase = .streaming
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
                     self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
+
+                case .uploadProgress(let fraction):
+                    self.attachmentProgress = max(0, min(1, fraction))
 
                 case .attachmentAdded(let attachment):
                     // The chip appears as the file lands: the transcript renders
