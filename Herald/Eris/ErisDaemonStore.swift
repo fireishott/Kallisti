@@ -93,11 +93,11 @@ final class ErisDaemonStore {
 
         let client = makeClient(baseURL: stored.baseURL)
         do {
-            if let sessionID = defaults.string(forKey: DefaultsKey.lastSession), !sessionID.isEmpty {
-                _ = try await client.session(sessionID: sessionID)
-            } else {
-                _ = try await client.refresh()
-            }
+            // A cheap authenticated read, not a session snapshot. The stored id is a
+            // conversation, and `/v1/sessions/{id}` looks up a job session, so the
+            // daemon answered a correct 404 on every launch: the pairing looked
+            // degraded when it was fine, and the notice filled the chat header.
+            _ = try await client.conversations()
             notice = nil
         } catch let error as ErisError {
             if error.isUnauthorized {
