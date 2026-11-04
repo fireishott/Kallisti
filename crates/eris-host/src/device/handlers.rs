@@ -3375,6 +3375,26 @@ pub(crate) fn resolve_model_value(engine: &SetupEngine, raw: &str) -> Result<Str
             .then(|| (head.to_owned(), rest.trim().to_owned()))
     });
 
+    // A publisher-qualified id: `deepseek/deepseek-v4.1-flash`. The head is not a
+    // provider this daemon knows, because it names the company rather than the
+    // integration, and the phone's catalogue rows carry the publisher. Resolving the
+    // tail against the model itself is honest: if exactly one provider publishes it,
+    // that provider is what the caller meant. Previously this fell through to
+    // "bare id", found nothing, and answered model_invalid for a model that was
+    // there all along.
+    if explicit.is_none()
+        && let Some((_, rest)) = value.split_once('/')
+        && !rest.trim().is_empty()
+        && let Ok(mut publishers) = publishers_of(engine, &registry, rest.trim())
+        && let Some(only) = (publishers.len() == 1).then(|| publishers.remove(0))
+    {
+        // The head named a publisher rather than a provider. The tail identifies the
+        // model, so exactly one publishing provider is the answer the caller meant.
+        // This used to fall through to "bare id", find nothing, and answer
+        // model_invalid for a model that was there all along.
+        return Ok(format!("{only}/{}", rest.trim()));
+    }
+
     let (provider_id, model) = match explicit {
         Some(pair) => pair,
         None => {
