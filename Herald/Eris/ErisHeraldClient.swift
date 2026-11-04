@@ -1,4 +1,6 @@
 import Foundation
+import PencilKit
+import UIKit
 
 // MARK: - Eris-backed Herald client
 //
@@ -846,6 +848,18 @@ final class ErisHeraldClient: HeraldClientProtocol {
         }
     }
 
+    /// Render stored ink to PNG, at the resolution the recogniser uses.
+    ///
+    /// Returns nil when the bytes are already an image or are not a drawing, so the
+    /// caller falls back to what it was given.
+    static func renderInkPNG(_ data: Data) -> Data? {
+        guard let drawing = try? PKDrawing(data: data) else { return nil }
+        let bounds = drawing.bounds
+        guard !bounds.isEmpty, bounds.width > 0, bounds.height > 0 else { return nil }
+        let image = drawing.image(from: bounds, scale: 4.0)
+        return image.pngData()
+    }
+
     /// The directive list for a run, from the operator's chosen mode.
     static func noteDirectives() -> [String] {
         let mode = UserDefaults.standard.string(forKey: "notes.enrichment.mode") ?? "auto"
@@ -881,8 +895,13 @@ final class ErisHeraldClient: HeraldClientProtocol {
             // a PNG and downscales it to fit the body limit, and a narrower predicate
             // here is what let the upload silently never happen.
             if let ink = attachments.first(where: { $0.mimeType.hasPrefix("image/") }) ?? attachments.first {
+                // The attachment is the PencilKit drawing itself, not a picture. Sending
+                // those bytes as image/png is what produced an enrichment that answered
+                // one line of three: the vision model was handed PKDrawing binary.
+                // Render it here, at the same 4x the on-device OCR uses.
+                let bytes = Self.renderInkPNG(ink.data) ?? ink.data
                 do {
-                    try await client.uploadNoteBlob(noteID: noteID, revision: 0, png: ink.data)
+                    try await client.uploadNoteBlob(noteID: noteID, revision: 0, png: bytes)
                 } catch {
                     // Not fatal: an enrichment from the recognised text is what this
                     // did before the ink path existed.
