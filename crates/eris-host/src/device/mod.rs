@@ -1089,7 +1089,10 @@ pub fn router(service: DeviceService) -> Router {
         )
         .route(ROUTE_ATTACHMENTS, post(attachments::upload))
         .route(ROUTE_ATTACHMENT, get(attachments::bytes))
-        .route(ROUTE_CONVERSATION, get(handlers::conversation))
+        .route(
+            ROUTE_CONVERSATION,
+            get(handlers::conversation).patch(handlers::rename_conversation),
+        )
         .route(ROUTE_CONVERSATION_CLEAR, post(handlers::clear_conversation))
         .route(
             ROUTE_SETTINGS,

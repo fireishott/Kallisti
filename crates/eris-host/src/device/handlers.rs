@@ -1431,6 +1431,50 @@ pub async fn create_conversation(
 /// An id the daemon does not hold is a typed 404 rather than an empty transcript:
 /// a client that asked about a conversation it lost the id of has to be able to
 /// tell "gone" from "nothing said yet".
+/// `PATCH /v1/conversations/{id}` - rename a conversation.
+///
+/// The app has offered this for weeks and the daemon answered "not backed by Eris
+/// yet", which is a missing feature wearing an error message. Only the title moves.
+pub async fn rename_conversation(
+    State(service): State<DeviceService>,
+    Path(conversation_id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let title = field(&fields, "title");
+    if title.trim().is_empty() {
+        return DeviceError::bad_request(
+            "invalid_request",
+            "a `title` is required and cannot be blank",
+        )
+        .into_response();
+    }
+    match crate::web::chat::rename_conversation(service.engine().db(), &conversation_id, title) {
+        Ok(true) => axum::Json(serde_json::json!({
+            "ok": true,
+            "id": conversation_id,
+            "title": title.trim(),
+        }))
+        .into_response(),
+        Ok(false) => DeviceError::conversation_not_found().into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot rename the conversation: {error}"))
+                .into_response()
+        }
+    }
+}
+
 pub async fn conversation(
     State(service): State<DeviceService>,
     Path(conversation_id): Path<String>,

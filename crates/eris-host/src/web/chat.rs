@@ -897,6 +897,21 @@ pub fn set_conversation_model(db: &Db, id: &str, model: &str) -> Result<(), DbEr
 
 /// Name a conversation from its first question, when it still has the default
 /// name. Never renames one the operator has already seen named.
+/// Rename a conversation, at the operator's request.
+///
+/// Unlike [`name_from_first_message`] this overwrites whatever is there: the operator
+/// typed the title, so it beats the generated one.
+pub fn rename_conversation(db: &Db, id: &str, title: &str) -> Result<bool, DbError> {
+    let trimmed = title.trim();
+    let changed = db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_conversations SET title = ?2 WHERE id = ?1",
+            params![id, trimmed],
+        )
+    })?;
+    Ok(changed > 0)
+}
+
 pub fn name_from_first_message(db: &Db, id: &str, text: &str) -> Result<(), DbError> {
     let title = title_from(text);
     db.with_conn(|conn| {
