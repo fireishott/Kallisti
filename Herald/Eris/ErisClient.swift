@@ -49,6 +49,9 @@ enum ErisRoute: Equatable, Sendable {
     case createConversation
     /// `GET /v1/conversations/{id}` - one conversation and its transcript.
     case conversation(conversationID: String)
+    /// `PATCH /v1/conversations/{id}` - rename it. Same path as the detail load,
+    /// different verb, so it needs its own case for `method` to stay total.
+    case renameConversation(conversationID: String)
     /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
     case clearConversation(conversationID: String)
     /// `GET /v1/settings` - the operator-facing settings snapshot.
@@ -170,7 +173,7 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/sessions/\(Self.segment(sessionID))"
         case .conversations, .createConversation:
             return "/v1/conversations"
-        case .conversation(let conversationID):
+        case .conversation(let conversationID), .renameConversation(let conversationID):
             return "/v1/conversations/\(Self.segment(conversationID))"
         case .clearConversation(let conversationID):
             return "/v1/conversations/\(Self.segment(conversationID))/clear"
@@ -265,6 +268,8 @@ enum ErisRoute: Equatable, Sendable {
              .setModel, .createCron, .setAux,
              .noteRecognition, .noteRuns, .cancelNoteRun, .gwRestart, .answer:
             return "POST"
+        case .renameConversation:
+            return "PATCH"
         case .noteBlob:
             return "PUT"
         case .cronJob(_, let verb):
@@ -778,6 +783,14 @@ actor ErisClient {
     ///
     /// `truncated` in the answer is the daemon saying it cut the page, which is a
     /// fact the client has to be able to state rather than a silent cap.
+    /// `PATCH /v1/conversations/{id}` - rename a conversation.
+    func renameConversation(id: String, title: String) async throws {
+        _ = try await send(
+            route: .renameConversation(conversationID: id),
+            form: ["title": title]
+        )
+    }
+
     func conversations() async throws -> ErisConversationPage {
         let data = try await send(route: .conversations, form: nil)
         return try decode(ErisConversationPage.self, from: data)

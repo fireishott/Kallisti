@@ -691,8 +691,23 @@ final class ErisHeraldClient: HeraldClientProtocol {
         throw ErisHeraldError.notBackedYet("togglePinSession")
     }
 
+    /// Rename a conversation. Eris serves this as PATCH on the conversation path, so
+    /// the store member that used to throw now does the work.
     func renameSession(id: UUID, title: String) async throws -> SessionSummary {
-        throw ErisHeraldError.notBackedYet("renameSession")
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        guard let conversationID = conversationIDByLocalID[id] else {
+            throw ErisHeraldError.notConnected
+        }
+        try await client.renameConversation(id: conversationID, title: title)
+        return SessionSummary(
+            id: id,
+            title: title,
+            previewText: "",
+            lastActivity: .now,
+            source: nil,
+            isPinned: false,
+            isArchived: false
+        )
     }
 
     func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
