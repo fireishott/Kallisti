@@ -3373,7 +3373,7 @@ fn publishers_of(
 /// actually serve it, and returned in the one form a later turn can split again:
 /// `provider/model`.
 ///
-/// Two shapes arrive here, and both are legal because both are something this
+/// Three shapes arrive here, and all are legal because all are something this
 /// daemon published itself.
 ///
 /// - `provider/model` is the documented pin. The list it is checked against is
@@ -3388,6 +3388,12 @@ fn publishers_of(
 ///   back to the primary instead - what `split_model_value` does for an
 ///   unrecognised head - is what refused `gemini-3-flash` on a daemon whose
 ///   primary is `commandcode`: the id was published all along, by `antigravity`.
+/// - A slash-qualified model id (`deepseek/deepseek-v4-flash`) is one id that a
+///   provider publishes, not a provider prefix. A gateway that resells other
+///   companies' models names them that way, and the head can coincide with a
+///   provider id on this daemon. The catalogue settles it: the whole string is
+///   looked up first, and only a head whose own catalogue publishes the tail
+///   keeps the `provider/model` reading.
 ///
 /// Whatever arrives, `provider/model` is what gets stored. A bare id stored bare
 /// would be split against the primary on every later turn, which is the same
@@ -3410,6 +3416,51 @@ pub(crate) fn resolve_model_value(engine: &SetupEngine, raw: &str) -> Result<Str
         .setting(crate::providers::SETTING_PRIMARY)
         .map_err(settings_unavailable)?
         .unwrap_or_default();
+
+    // A model id that is itself slash-qualified: `deepseek/deepseek-v4-flash`.
+    // A provider like CommandCode publishes its models under the publisher's
+    // name, and some of those heads are also provider ids on this daemon
+    // (`deepseek`, `minimax`). The catalogues decide which reading is real: when
+    // no provider publishes the tail under that head's own id, the whole string
+    // is one model id, and the provider that publishes it is what the picker row
+    // meant. Without this, selecting a CommandCode DeepSeek row was refused as
+    // though `deepseek` were the endpoint, which is exactly what a phone saw.
+    //
+    // The head-pin check is what keeps every pin that already worked working: a
+    // value whose tail *is* in the head provider's catalogue is still that
+    // provider's model, and nothing here changes it.
+    if value.contains('/') {
+        let whole = publishers_of(engine, &registry, value)?;
+        let head_pins_validly = value.split_once('/').is_some_and(|(head, tail)| {
+            registry.iter().any(|provider| provider.id == head)
+                && engine
+                    .provider_catalog(head)
+                    .is_ok_and(|catalog| catalog.iter().any(|id| id == tail.trim()))
+        });
+        if !whole.is_empty() && !head_pins_validly {
+            let chosen = if whole.iter().any(|id| id == &primary) {
+                Some(primary.clone())
+            } else if whole.len() == 1 {
+                Some(whole[0].clone())
+            } else {
+                None
+            };
+            let Some(chosen) = chosen else {
+                return Err(DeviceError::bad_request(
+                    "model_invalid",
+                    format!(
+                        "model does not accept {}: {} providers publish that id ({}), so name \
+                         the endpoint as `provider/{}`",
+                        shown_value(value),
+                        whole.len(),
+                        whole.join(", "),
+                        value
+                    ),
+                ));
+            };
+            return Ok(format!("{chosen}/{value}"));
+        }
+    }
 
     // An explicit `provider/model`, where the head is a provider this daemon
     // knows. Anything else is a bare id, including `cmc/deepseek/...`: that is
@@ -7815,6 +7866,109 @@ mod tests {
             resolve_model_value(engine, "whatever-model").expect("accepted"),
             "whatever-model",
             "nothing was measured, so nothing is claimed: the value is stored as written"
+        );
+    }
+
+    /// A gateway that resells models names them `publisher/model`, and two of
+    /// those heads (`deepseek`, `minimax`) are provider ids on this daemon. A
+    /// picker row carrying one of those ids was refused as though the publisher
+    /// were the endpoint. The catalogue decides which reading is real.
+    #[test]
+    fn a_slash_qualified_model_id_beats_a_provider_that_shares_its_head() {
+        let fx = fixture();
+        let engine = fx.service.engine();
+        let registry = r#"[
+            {"id":"cmc","name":"CommandCode","base_url":"https://cc.test/v1","key_ref":"env:CC"},
+            {"id":"deepseek","name":"DeepSeek","base_url":"https://ds.test","key_ref":"env:DS"}
+        ]"#;
+        engine
+            .set_setting(crate::providers::SETTING_REGISTRY, registry)
+            .expect("registry");
+        engine
+            .set_setting(crate::providers::SETTING_PRIMARY, "cmc")
+            .expect("primary");
+        for (provider, models) in [
+            (
+                "cmc",
+                r#"["deepseek/deepseek-v4-flash","deepseek/deepseek-v4-pro"]"#,
+            ),
+            ("deepseek", r#"["deepseek-flash","deepseek-v4-pro"]"#),
+        ] {
+            engine
+                .set_setting(
+                    &crate::onboarding::SetupEngine::provider_catalog_key(provider),
+                    models,
+                )
+                .expect("catalogue");
+        }
+
+        // The row the picker drew: one model id, published by cmc, whose head is
+        // also a provider id. It pins on the provider that publishes it.
+        assert_eq!(
+            resolve_model_value(engine, "deepseek/deepseek-v4-flash").expect("the row pins"),
+            "cmc/deepseek/deepseek-v4-flash"
+        );
+        // A pin whose tail the head provider really publishes keeps its old
+        // meaning: `deepseek` owns `deepseek-v4-pro`, so that reading stands.
+        assert_eq!(
+            resolve_model_value(engine, "deepseek/deepseek-v4-pro").expect("explicit wins"),
+            "deepseek/deepseek-v4-pro"
+        );
+        // The fully-qualified form is how a caller names the endpoint itself.
+        assert_eq!(
+            resolve_model_value(engine, "cmc/deepseek/deepseek-v4-flash").expect("qualified"),
+            "cmc/deepseek/deepseek-v4-flash"
+        );
+    }
+
+    /// When two providers publish the same slash-qualified id and neither is the
+    /// primary, the pin has to name the endpoint. Naming `provider/model` is not
+    /// enough here, because the head is already the publisher, so the refusal
+    /// says the form that does work.
+    #[test]
+    fn a_slash_qualified_id_two_providers_publish_names_the_endpoint() {
+        let fx = fixture();
+        let engine = fx.service.engine();
+        let registry = r#"[
+            {"id":"cmc","name":"CommandCode","base_url":"https://cc.test/v1","key_ref":"env:CC"},
+            {"id":"mirror","name":"Mirror","base_url":"https://mirror.test/v1","key_ref":"env:MR"},
+            {"id":"deepseek","name":"DeepSeek","base_url":"https://ds.test","key_ref":"env:DS"}
+        ]"#;
+        engine
+            .set_setting(crate::providers::SETTING_REGISTRY, registry)
+            .expect("registry");
+        engine
+            .set_setting(crate::providers::SETTING_PRIMARY, "deepseek")
+            .expect("primary");
+        for (provider, models) in [
+            ("cmc", r#"["minimax/minimax-m3.1-flash"]"#),
+            ("mirror", r#"["minimax/minimax-m3.1-flash"]"#),
+            ("deepseek", r#"["deepseek-flash"]"#),
+        ] {
+            engine
+                .set_setting(
+                    &crate::onboarding::SetupEngine::provider_catalog_key(provider),
+                    models,
+                )
+                .expect("catalogue");
+        }
+
+        let refusal = resolve_model_value(engine, "minimax/minimax-m3.1-flash").expect_err("ambiguous");
+        assert_eq!(refusal.code(), "model_invalid");
+        let message = format!("{refusal:?}");
+        assert!(
+            message.contains("cmc") && message.contains("mirror"),
+            "both publishers are named: {message}"
+        );
+        assert!(
+            message.contains("provider/minimax/minimax-m3.1-flash"),
+            "the refusal names the form that disambiguates: {message}"
+        );
+
+        // And the form it named works.
+        assert_eq!(
+            resolve_model_value(engine, "cmc/minimax/minimax-m3.1-flash").expect("pins"),
+            "cmc/minimax/minimax-m3.1-flash"
         );
     }
 }
