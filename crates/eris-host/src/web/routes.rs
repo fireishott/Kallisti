@@ -32,6 +32,7 @@ use crate::admin::{
     ROUTE_CHAT_FILE, ROUTE_CHAT_ID, ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW,
     ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_SORT, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD,
     ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_LOGOUT,
+    ROUTE_LEARNING, ROUTE_LEARNING_CURATOR, ROUTE_LEARNING_SAVE, ROUTE_LEARNING_SKILL,
     ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS,
     ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS,
     ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
@@ -57,9 +58,9 @@ use crate::web::proxy::ClientContext;
 use crate::web::store;
 use crate::web::templates::{
     ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
-    DashboardView, DeviceRow, DevicesView, FormError, IssuedCodeView, SessionDetailView,
+    DashboardView, DeviceRow, DevicesView, FormError, IssuedCodeView, LearningView, SessionDetailView,
     SessionsView, SettingsGroup, SettingsView, SetupView, activity_page, backups_page, chat_page,
-    dashboard_page, devices_page, error_page, login_page, session_page, sessions_page,
+    dashboard_page, devices_page, error_page, learning_page, login_page, session_page, sessions_page,
     settings_page, setup_page, type_badge,
 };
 use crate::web::wallpaper;
@@ -139,6 +140,10 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_SCHEDULES, post(save_schedules))
         .route(ROUTE_SETTINGS_SKILLS, post(save_skills))
         .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
+        .route(ROUTE_LEARNING, get(learning))
+        .route(ROUTE_LEARNING_SAVE, post(save_learning))
+        .route(ROUTE_LEARNING_SKILL, post(learning_skill))
+        .route(ROUTE_LEARNING_CURATOR, post(run_learning_curator))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
         .route(ROUTE_SESSION, get(session_detail))
@@ -1215,6 +1220,241 @@ async fn activity(
     match build_activity_view(&state) {
         Ok(view) => page(activity_page(&view)),
         Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Learning
+// ---------------------------------------------------------------------------
+
+/// The redirect after the loop's switches save.
+const SAVED_LEARNING: &str = "/dashboard/learning?saved=loop";
+
+/// The redirect after one skill is pinned, unpinned or restored.
+const SAVED_SKILL: &str = "/dashboard/learning?saved=skill";
+
+/// The redirect after a maintenance pass.
+const SAVED_PASS: &str = "/dashboard/learning?saved=pass";
+
+/// `GET /dashboard/learning` - what the loop learned and its two controls.
+async fn learning(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let notice = match query.get("saved").map(String::as_str) {
+        Some("loop") => Some("The learning loop's switches are saved.".to_owned()),
+        Some("skill") => Some("The skill was changed.".to_owned()),
+        Some("pass") => Some("The maintenance pass ran. Its counts are below.".to_owned()),
+        _ => None,
+    };
+    match build_learning_view(&state, notice) {
+        Ok(view) => page(learning_page(&view)),
+        Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+/// `POST /dashboard/learning/save` - the master switch, review and curator.
+async fn save_learning(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_learning(&state, as_html, error),
+    };
+    let switches = crate::learning::Switches {
+        enabled: flag(&fields, "learning_enabled"),
+        review: flag(&fields, "learning_review"),
+        curator: flag(&fields, "learning_curator"),
+    };
+    let db = state.engine.db();
+    if let Err(error) = crate::learning::save_switches(db, switches) {
+        return store_failure(&request_id.0, "the learning switches", error);
+    }
+    let detail = format!(
+        "enabled={}; review={}; curator={}",
+        switches.enabled, switches.review, switches.curator
+    );
+    if let Err(error) = state.engine.auth().audit("loopback", "settings.learning", Some(&detail)) {
+        return audit_failure(&request_id.0, "settings.learning", error);
+    }
+    see_other(SAVED_LEARNING)
+}
+
+/// `POST /dashboard/learning/skill` - pin, unpin or restore one learned skill.
+async fn learning_skill(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_learning(&state, as_html, error),
+    };
+    let key = field(&fields, "key").to_owned();
+    let action = field(&fields, "action").to_owned();
+    if !crate::skills::valid_key(&key) {
+        return fail_learning(
+            &state,
+            as_html,
+            FormError::new(Some("key"), "key_invalid", "that is not a skill key"),
+        );
+    }
+    let Some(shelf) = crate::learning::Shelf::for_engine(&state.engine) else {
+        return fail_learning(
+            &state,
+            as_html,
+            FormError::new(None, "library_missing", "no skill library resolves on this host"),
+        );
+    };
+    let db = state.engine.db();
+    let detail = match action.as_str() {
+        "pin" | "unpin" => {
+            let pinned = action == "pin";
+            match crate::learning::set_pinned(db, &key, pinned) {
+                Ok(true) => format!("{action} {key}"),
+                Ok(false) => {
+                    return fail_learning(
+                        &state,
+                        as_html,
+                        FormError::new(None, "skill_unknown", "no skill with that key is in the ledger"),
+                    );
+                }
+                Err(error) => return store_failure(&request_id.0, "the skill row", error),
+            }
+        }
+        "restore" => match crate::learning::restore(&shelf, &key) {
+            Ok(path) => {
+                let _ = crate::learning::set_state(db, &key, crate::learning::State::Active);
+                format!("restore {key} from {}", path.display())
+            }
+            Err(error) => {
+                return fail_learning(
+                    &state,
+                    as_html,
+                    FormError::new(None, "restore_refused", error.to_string()),
+                );
+            }
+        },
+        other => {
+            return fail_learning(
+                &state,
+                as_html,
+                FormError::new(None, "action_invalid", &format!("`{other}` is not an action this page offers")),
+            );
+        }
+    };
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "learning.skill", Some(&detail))
+    {
+        return audit_failure(&request_id.0, "learning.skill", error);
+    }
+    see_other(SAVED_SKILL)
+}
+
+/// `POST /dashboard/learning/curator` - run one maintenance pass now.
+async fn run_learning_curator(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let Some(shelf) = crate::learning::Shelf::for_engine(&state.engine) else {
+        return ApiError::internal(
+            request_id.0,
+            "no skill library resolves on this host".to_owned(),
+        )
+        .into_response();
+    };
+    let db = state.engine.db();
+    match crate::learning_worker::run_curator(&db, &shelf) {
+        Ok(outcome) => {
+            let detail = format!(
+                "checked={}; stale={}; archived={}; reactivated={}",
+                outcome.checked, outcome.marked_stale, outcome.archived, outcome.reactivated
+            );
+            if let Err(error) = state
+                .engine
+                .auth()
+                .audit("loopback", "learning.curator", Some(&detail))
+            {
+                return audit_failure(&request_id.0, "learning.curator", error);
+            }
+            see_other(SAVED_PASS)
+        }
+        Err(error) => ApiError::internal(
+            request_id.0,
+            format!("the maintenance pass failed: {error}"),
+        )
+        .into_response(),
+    }
+}
+
+/// Build the learning page.
+fn build_learning_view(
+    state: &AppState,
+    notice: Option<String>,
+) -> Result<LearningView, FormError> {
+    let engine = &state.engine;
+    let db = engine.db();
+    let mut view = LearningView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.chrome = state.chrome();
+    view.switches = crate::learning::Switches::read(db);
+    view.totals = crate::learning::totals(db).map_err(|error| db_error(&error))?;
+    view.rows = crate::learning::rows(db).map_err(|error| db_error(&error))?;
+    view.runs = crate::learning::recent_runs(db, LEARNING_RUNS_SHOWN)
+        .map_err(|error| db_error(&error))?;
+    view.curator = crate::learning::last_curator(db).map_err(|error| db_error(&error))?;
+    let stored = engine
+        .setting(crate::skills::SETTING_DIR)
+        .ok()
+        .flatten();
+    view.library = crate::skills::library_dir(stored.as_deref())
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_default();
+    view.interval_hours = crate::learning::interval_hours(db);
+    view.stale_days = crate::learning::stale_days(db);
+    view.archive_days = crate::learning::archive_days(db);
+    view.notice = notice;
+    Ok(view)
+}
+
+/// How many review runs the page lists.
+const LEARNING_RUNS_SHOWN: usize = 20;
+
+/// A refusal on the learning page, rendered where the operator already is.
+fn fail_learning(state: &AppState, as_html: bool, error: FormError) -> Response {
+    let status = failure_status(&error.code);
+    if as_html {
+        match build_learning_view(state, None) {
+            Ok(mut view) => {
+                view.error = Some(error);
+                page_with_status(learning_page(&view), status)
+            }
+            Err(build_error) => refusal(build_error),
+        }
+    } else {
+        refusal(error)
     }
 }
 

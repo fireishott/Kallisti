@@ -84,6 +84,13 @@ pub const ROLES: &[Role] = &[
         purpose: "Retries a failed turn on another model.",
         consumed_by: ("a turn whose primary model failed, once this role is pinned to a model"),
     },
+    Role {
+        key: "learning",
+        label: "Learning",
+        probe_validated: true,
+        purpose: "Reviews a finished turn and records what it taught.",
+        consumed_by: ("the learning loop, once this role is pinned to a model"),
+    },
 ];
 
 /// The `settings` row that holds one role's model id.
@@ -261,7 +268,8 @@ mod tests {
                 "compression",
                 "title_generation",
                 "approval",
-                "fallback"
+                "fallback",
+                "learning"
             ]
         );
         for role in ROLES {

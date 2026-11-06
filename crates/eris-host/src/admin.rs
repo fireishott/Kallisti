@@ -268,6 +268,18 @@ pub const SETTING_RAIL_HIDDEN: &str = "display.rail_hidden";
 /// host sandbox mode, behind a typed confirmation.
 pub const ROUTE_SETTINGS_FULL_ACCESS: &str = "/dashboard/settings/full-access";
 
+/// `GET /dashboard/learning` - what the daemon learned, and the loop's controls.
+pub const ROUTE_LEARNING: &str = "/dashboard/learning";
+
+/// `POST /dashboard/learning/save` - the loop's three switches.
+pub const ROUTE_LEARNING_SAVE: &str = "/dashboard/learning/save";
+
+/// `POST /dashboard/learning/skill` - pin, unpin or restore one learned skill.
+pub const ROUTE_LEARNING_SKILL: &str = "/dashboard/learning/skill";
+
+/// `POST /dashboard/learning/curator` - run one maintenance pass now.
+pub const ROUTE_LEARNING_CURATOR: &str = "/dashboard/learning/curator";
+
 /// `GET /dashboard/activity` - the audit trail, newest first.
 pub const ROUTE_ACTIVITY: &str = "/dashboard/activity";
 

@@ -29,6 +29,11 @@
 //!
 //! The subagent lane adds `subagents`: one row per dispatched child turn, the
 //! caps that bound it, and the rows the top bar renders.
+//!
+//! The learning lane adds `learning` (the ledger, the review contract, the
+//! writer, and the prompt a review runs under) and `learning_worker` (the sweep,
+//! the one-review-per-tick claim, and the time-based curator). It writes only
+//! skills the loop itself created, and only inside the operator's own library.
 
 pub mod admin;
 pub mod apns;
@@ -44,6 +49,8 @@ pub mod doctor;
 pub mod error;
 pub mod greeting;
 pub mod inbox;
+pub mod learning;
+pub mod learning_worker;
 pub mod mcp;
 pub mod memory;
 pub mod notes;

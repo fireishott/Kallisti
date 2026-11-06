@@ -420,18 +420,24 @@ pub fn read(db: &Db, stored_dir: Option<&str>, key: &str) -> Result<String, Skil
     })?;
     let (_, body) = split(&text);
     let body = body.trim();
-    if body.len() <= MAX_READ_BYTES {
-        return Ok(body.to_owned());
-    }
-    // Truncation is stated, not silent: a procedure that stops mid-step has to say
-    // that it stopped.
-    let cut = floor_boundary(body, MAX_READ_BYTES);
-    Ok(format!(
-        "{}\n\n[truncated: the skill is {} bytes and this is the first {}]",
-        &body[..cut],
-        body.len(),
-        cut
-    ))
+    let body = if body.len() <= MAX_READ_BYTES {
+        body.to_owned()
+    } else {
+        // Truncation is stated, not silent: a procedure that stops mid-step has to
+        // say that it stopped.
+        let cut = floor_boundary(body, MAX_READ_BYTES);
+        format!(
+            "{}\n\n[truncated: the skill is {} bytes and this is the first {}]",
+            &body[..cut],
+            body.len(),
+            cut
+        )
+    };
+    // A read is the only signal the ledger has that a skill is in use. Best
+    // effort by contract: a ledger write that failed must never make a skill
+    // unreadable, so the error is dropped here and the next pass reconciles.
+    let _ = crate::learning::note_use(db, key);
+    Ok(body)
 }
 
 /// The last byte index at or below `limit` that is a character boundary.

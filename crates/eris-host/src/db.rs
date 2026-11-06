@@ -29,20 +29,20 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 23;
+pub const SCHEMA_VERSION: i64 = 24;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The nineteen tables the migrations create. `schema_migrations` is the
-/// twentieth and is created by the runner, not by a migration. 0001 creates the
-/// first nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds
-/// columns to `jobs` and no table at all; 0005 adds `chat_messages`; 0008 adds
-/// `chat_attachments`; 0009 adds `approvals`; 0013 adds `projects`; 0014 adds
-/// `subagents`; 0015 adds the opt-in `admin` flag to `pairing_codes` and no
-/// table at all; 0017 adds `schedules` and `schedule_runs`; 0020 adds a
-/// column to `chat_conversations` and no table at all.
-pub const TABLES: [&str; 19] = [
+/// The tables the migrations create. `schema_migrations` is created by the
+/// runner, not by a migration. 0001 creates the first nine; 0002 adds
+/// `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds columns to `jobs` and no
+/// table at all; 0005 adds `chat_messages`; 0008 adds `chat_attachments`; 0009
+/// adds `approvals`; 0013 adds `projects`; 0014 adds `subagents`; 0015 adds the
+/// opt-in `admin` flag to `pairing_codes` and no table at all; 0017 adds
+/// `schedules` and `schedule_runs`; 0020 adds a column to `chat_conversations`
+/// and no table at all; 0024 adds the three learning tables.
+pub const TABLES: [&str; 22] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
@@ -55,13 +55,16 @@ pub const TABLES: [&str; 19] = [
     "devices",
     "job_events",
     "jobs",
+    "learning_runs",
     "pairing_codes",
     "projects",
     "schedule_runs",
     "schedules",
     "sessions",
     "settings",
+    "skill_usage",
     "subagents",
+    "curator_runs",
 ];
 
 /// One forward migration. Never edited once released; add a new version.
@@ -187,6 +190,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 23,
         name: "0023_wrapped_up",
         sql: MIGRATION_0023,
+    },
+    Migration {
+        version: 24,
+        name: "0024_learning_loop",
+        sql: MIGRATION_0024,
     },
 ];
 
@@ -777,6 +785,80 @@ ALTER TABLE chat_messages ADD COLUMN wrapped_up INTEGER
     CHECK (wrapped_up IS NULL OR wrapped_up IN (0, 1));
 ";
 
+/// Migration 0024: the learning loop.
+///
+/// Three tables, one per concern the loop needs to keep apart:
+///
+/// - `skill_usage` is the ledger. A row is one skill the daemon has seen, who
+///   made it (`operator` for anything already on disk when the learner first
+///   looked, `agent` for what the learner wrote itself), how often a turn read
+///   it, and its lifecycle state. Pinned rows are never touched by an automatic
+///   transition, and an operator row is never edited or archived by the learner.
+/// - `learning_runs` is the queue. One row per finished answer that is worth a
+///   review, claimed with a lease so two ticks cannot review the same turn and a
+///   daemon that died mid-review leaves a row the next tick re-claims. The
+///   `UNIQUE (answer_id)` is what makes the sweeper idempotent.
+/// - `curator_runs` is the report. One row per maintenance pass, so the page can
+///   say what the last pass did rather than only what the ledger looks like now.
+///
+/// No column holds a secret: a run keeps the conversation and answer ids, the
+/// action it took, the skill key and a bounded summary. The review itself is
+/// never stored beyond that.
+const MIGRATION_0024: &str = r"
+CREATE TABLE IF NOT EXISTS skill_usage (
+    key              TEXT PRIMARY KEY NOT NULL,
+    use_count        INTEGER NOT NULL DEFAULT 0 CHECK (use_count >= 0),
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_used_at     TEXT,
+    last_activity_at TEXT,
+    created_by       TEXT NOT NULL DEFAULT 'operator'
+                     CHECK (created_by IN ('agent', 'operator')),
+    state            TEXT NOT NULL DEFAULT 'active'
+                     CHECK (state IN ('active', 'stale', 'archived')),
+    pinned           INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+    description      TEXT,
+    run_id           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_usage_state ON skill_usage (state);
+CREATE INDEX IF NOT EXISTS idx_skill_usage_last_activity ON skill_usage (last_activity_at);
+
+CREATE TABLE IF NOT EXISTS learning_runs (
+    id              TEXT PRIMARY KEY NOT NULL,
+    conversation_id TEXT NOT NULL,
+    answer_id       TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'queued'
+                    CHECK (status IN ('queued', 'running', 'done', 'skipped', 'failed')),
+    attempts        INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    started_at      TEXT,
+    finished_at     TEXT,
+    lease_expires_at TEXT,
+    model           TEXT,
+    action          TEXT,
+    skill_key       TEXT,
+    summary         TEXT,
+    error_code      TEXT,
+    error_text      TEXT,
+    result_json     TEXT,
+    UNIQUE (answer_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_learning_runs_status ON learning_runs (status);
+CREATE INDEX IF NOT EXISTS idx_learning_runs_created ON learning_runs (created_at);
+
+CREATE TABLE IF NOT EXISTS curator_runs (
+    id             TEXT PRIMARY KEY NOT NULL,
+    started_at     TEXT NOT NULL,
+    finished_at    TEXT,
+    checked        INTEGER NOT NULL DEFAULT 0,
+    marked_stale   INTEGER NOT NULL DEFAULT 0,
+    archived       INTEGER NOT NULL DEFAULT 0,
+    reactivated    INTEGER NOT NULL DEFAULT 0,
+    report_json    TEXT
+);
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 
@@ -1184,7 +1266,7 @@ mod tests {
     #[test]
     fn migration_0023_adds_wrapped_up_and_re_running_it_changes_nothing() {
         let db = Db::open_in_memory().expect("a database");
-        assert_eq!(db.schema_version().expect("version"), 23);
+        assert_eq!(db.schema_version().expect("version"), 24);
         assert!(
             db.column_names("chat_messages")
                 .expect("columns")
@@ -1201,7 +1283,7 @@ mod tests {
         );
         assert_eq!(
             db.applied_migration_count().expect("count"),
-            23,
+            24,
             "one row per migration, and the new one is the last"
         );
 
@@ -1214,8 +1296,8 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, 23, "one row per migration, on a fresh file");
-        assert_eq!(first.schema_version().expect("version"), 23);
+        assert_eq!(applied, 24, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 24);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");
         assert_eq!(

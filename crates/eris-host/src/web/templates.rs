@@ -879,6 +879,8 @@ pub enum Nav {
     Devices,
     /// The settings surface, the only page that writes behaviour.
     Settings,
+    /// What the daemon learned, and the loop's two controls.
+    Learning,
     /// The audit trail.
     Activity,
     /// The archive list, the create button, and the restore form.
@@ -888,12 +890,13 @@ pub enum Nav {
 impl Nav {
     /// Every entry, in display order. Every one of them is a page: the nav has
     /// no placeholder in it.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Chat,
         Self::Dashboard,
         Self::Sessions,
         Self::Devices,
         Self::Settings,
+        Self::Learning,
         Self::Activity,
         Self::Backups,
     ];
@@ -907,6 +910,7 @@ impl Nav {
             Self::Sessions => crate::admin::ROUTE_SESSIONS,
             Self::Devices => crate::admin::ROUTE_DEVICES,
             Self::Settings => crate::admin::ROUTE_SETTINGS,
+            Self::Learning => crate::admin::ROUTE_LEARNING,
             Self::Activity => crate::admin::ROUTE_ACTIVITY,
             Self::Backups => crate::admin::ROUTE_BACKUPS,
         }
@@ -921,6 +925,7 @@ impl Nav {
             Self::Sessions => "Sessions",
             Self::Devices => "Devices",
             Self::Settings => "Settings",
+            Self::Learning => "Learning",
             Self::Activity => "Activity",
             Self::Backups => "Backups",
         }
@@ -4490,6 +4495,245 @@ pub fn activity_page(view: &ActivityView) -> Markup {
         "Activity",
         view.state,
         Some(Nav::Activity),
+        body,
+        &view.chrome,
+    )
+}
+
+/// Everything the learning page needs.
+#[derive(Debug, Clone)]
+pub struct LearningView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// The loop's three switches.
+    pub switches: crate::learning::Switches,
+    /// Counts for the header.
+    pub totals: crate::learning::Totals,
+    /// Every skill the ledger knows, newest activity first.
+    pub rows: Vec<crate::learning::Usage>,
+    /// The newest review runs.
+    pub runs: Vec<crate::learning::Run>,
+    /// The last maintenance pass, when one has run.
+    pub curator: Option<crate::learning::CuratorReport>,
+    /// The library directory the loop writes into.
+    pub library: String,
+    /// The maintenance interval the pass uses.
+    pub interval_hours: i64,
+    /// The staleness window.
+    pub stale_days: i64,
+    /// The archive window.
+    pub archive_days: i64,
+    /// A failure to show, when a read failed.
+    pub error: Option<FormError>,
+    /// A success line, when a form just saved.
+    pub notice: Option<String>,
+}
+
+impl LearningView {
+    /// An empty view, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            switches: crate::learning::Switches {
+                enabled: true,
+                review: true,
+                curator: true,
+            },
+            totals: crate::learning::Totals::default(),
+            rows: Vec::new(),
+            runs: Vec::new(),
+            curator: None,
+            library: String::new(),
+            interval_hours: crate::learning::DEFAULT_INTERVAL_HOURS,
+            stale_days: crate::learning::DEFAULT_STALE_DAYS,
+            archive_days: crate::learning::DEFAULT_ARCHIVE_DAYS,
+            error: None,
+            notice: None,
+        }
+    }
+}
+
+/// The learning page: what the loop learned, when it last looked, and the two
+/// controls an operator needs (the switches, and a pass on demand).
+pub fn learning_page(view: &LearningView) -> Markup {
+    let error = view.error.as_ref();
+    let learned: Vec<&crate::learning::Usage> = view
+        .rows
+        .iter()
+        .filter(|row| row.created_by == crate::learning::Origin::Agent)
+        .collect();
+    let operator = view.rows.len() - learned.len();
+    let body = html! {
+        h1 { "Learning" }
+        p .lede {
+            "After a turn finishes, the loop reads the exchange and, when it taught something              durable, writes a rule into this library. Only skills the loop wrote itself are              editable here; a skill you wrote is yours and is never touched. Archiving moves a              directory into " code { ".archive/" } " and restore brings it back."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        section .card aria-labelledby="learning-switches" {
+            h2 id="learning-switches" { "The loop" }
+            form method="post" action=(crate::admin::ROUTE_LEARNING_SAVE) novalidate {
+                div .field {
+                    label for="learning_enabled" {
+                        input type="checkbox" id="learning_enabled" name="learning_enabled"
+                            value="true" checked[view.switches.enabled];
+                        " Run the learning loop"
+                    }
+                    span .hint {
+                        "Off stops the sweep, the review and the curator. Existing skills stay."
+                    }
+                }
+                div .field {
+                    label for="learning_review" {
+                        input type="checkbox" id="learning_review" name="learning_review"
+                            value="true" checked[view.switches.review];
+                        " Review new turns"
+                    }
+                    span .hint {
+                        "One provider call per reviewed turn, at most a few an hour. A turn that                          answered in a sentence and used no tools is skipped."
+                    }
+                }
+                div .field {
+                    label for="learning_curator" {
+                        input type="checkbox" id="learning_curator" name="learning_curator"
+                            value="true" checked[view.switches.curator];
+                        " Run the maintenance pass"
+                    }
+                    span .hint {
+                        "A learned skill goes stale after " (view.stale_days) " days unused and is                          archived after " (view.archive_days) ". The pass runs every "
+                        (view.interval_hours) " hours, and never touches a pinned or operator skill."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save the loop" }
+                }
+            }
+            p .small {
+                "Library: " code .mono { (view.library) }
+            }
+            p .small {
+                (view.totals.active) " learned skill(s) active, "
+                (view.totals.stale) " stale, "
+                (view.totals.archived) " archived, "
+                (view.totals.pending) " review(s) queued. "
+                (operator) " operator-owned skill(s) are in the library and off limits to the loop."
+            }
+        }
+        section .card aria-labelledby="learning-skills" {
+            h2 id="learning-skills" { "Learned skills" }
+            @if learned.is_empty() {
+                p .empty {
+                    strong { "Nothing learned yet" }
+                    "The loop has not written a skill yet. A reviewed turn that taught nothing                      settles as skipped, which is the ordinary outcome."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Skill" }
+                            th scope="col" { "State" }
+                            th scope="col" { "Reads" }
+                            th scope="col" { "Last activity" }
+                            th scope="col" { "Control" }
+                        }
+                    }
+                    tbody {
+                        @for row in &learned {
+                            tr {
+                                td {
+                                    strong { (row.key) }
+                                    @if let Some(description) = &row.description {
+                                        p .small { (description) }
+                                    }
+                                }
+                                td { (row.state.as_str()) }
+                                td { (row.use_count) }
+                                td .mono .small {
+                                    (row.last_activity_at.as_deref().unwrap_or(&row.created_at))
+                                }
+                                td {
+                                    form method="post" action=(crate::admin::ROUTE_LEARNING_SKILL) {
+                                        input type="hidden" name="key" value=(row.key);
+                                        @if row.state == crate::learning::State::Archived {
+                                            button type="submit" name="action" value="restore" {
+                                                "Restore"
+                                            }
+                                        } @else if row.pinned {
+                                            button type="submit" name="action" value="unpin" {
+                                                "Unpin"
+                                            }
+                                        } @else {
+                                            button type="submit" name="action" value="pin" {
+                                                "Pin"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="learning-curator" {
+            h2 id="learning-curator" { "Maintenance" }
+            @if let Some(report) = &view.curator {
+                p {
+                    "Last pass started " span .mono { (report.started_at) } ": checked "
+                    (report.checked) ", marked stale " (report.marked_stale) ", archived "
+                    (report.archived) ", reactivated " (report.reactivated) "."
+                }
+            } @else {
+                p .small {
+                    "No maintenance pass has run yet. The first observation seeds the clock and the                      first pass runs one interval later."
+                }
+            }
+            form method="post" action=(crate::admin::ROUTE_LEARNING_CURATOR) {
+                div .actions {
+                    button type="submit" { "Run a pass now" }
+                }
+            }
+        }
+        section .card aria-labelledby="learning-runs" {
+            h2 id="learning-runs" { "Reviews" }
+            @if view.runs.is_empty() {
+                p .empty {
+                    strong { "No reviews yet" }
+                    "A finished turn that is worth reading is queued here, then reviewed one at a                      time."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "When" }
+                            th scope="col" { "Status" }
+                            th scope="col" { "Action" }
+                            th scope="col" { "Skill" }
+                            th scope="col" { "Note" }
+                        }
+                    }
+                    tbody {
+                        @for run in &view.runs {
+                            tr {
+                                td .mono .small { (run.created_at) }
+                                td { (run.status) }
+                                td { (run.action.as_deref().unwrap_or("-")) }
+                                td .mono .small { (run.skill_key.as_deref().unwrap_or("-")) }
+                                td .small { (run.summary.as_deref().unwrap_or("")) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    shell(
+        "Learning",
+        view.state,
+        Some(Nav::Learning),
         body,
         &view.chrome,
     )
@@ -9827,7 +10071,10 @@ mod tests {
         let error = error_page(SetupState::Setup, "not_loopback", "denied", &chrome)
             .into_string()
             .to_ascii_lowercase();
-        for page in [&setup, &dashboard, &error] {
+        let learning = learning_page(&LearningView::new(SetupState::Ready))
+            .into_string()
+            .to_ascii_lowercase();
+        for page in [&setup, &dashboard, &error, &learning] {
             assert!(!page.contains("herald"), "the old name is gone");
             for banned in [
                 "#800080", "#7b1fa2", "#6a1b9a", "#9c27b0", "#8e24aa", "#673ab7",
@@ -9839,6 +10086,20 @@ mod tests {
             }
             assert!(!page.contains('\u{2014}'), "no em dash reaches a page");
         }
+    }
+
+    #[test]
+    fn the_learning_page_names_the_loop_and_its_library() {
+        let mut view = LearningView::new(SetupState::Ready);
+        view.library = "/home/operator/.config/kallisti/skills".to_owned();
+        view.totals.active = 3;
+        let page = learning_page(&view).into_string();
+        assert!(page.contains("Learning"), "{page}");
+        assert!(page.contains("Run the learning loop"), "{page}");
+        assert!(page.contains("Library:"), "{page}");
+        assert!(page.contains("/home/operator/.config/kallisti/skills"), "{page}");
+        assert!(page.contains("Run a pass now"), "{page}");
+        assert!(page.contains(r#"href="/dashboard/learning""#) || page.contains("Learning"));
     }
 
     #[test]

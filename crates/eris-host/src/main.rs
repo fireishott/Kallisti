@@ -713,7 +713,14 @@ fn run_serve(
         // asked for rather than a queue that drains itself.
         let notes_state = state.clone();
         let notes_worker = tokio::spawn(eris_host::notes_worker::run(notes_state));
+        // The learning loop, on the same runtime and the same shape: one
+        // background task, aborted with the listeners. It sweeps for finished
+        // answers, reviews at most one per tick, and runs the curator when its
+        // interval has elapsed.
+        let learning_state = state.clone();
+        let learning_worker = tokio::spawn(eris_host::learning_worker::run(learning_state));
         let served = admin::serve_listeners(state, listeners).await;
+        learning_worker.abort();
         notes_worker.abort();
         ticker.abort();
         served
