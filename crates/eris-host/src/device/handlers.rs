@@ -1622,6 +1622,71 @@ pub async fn clear_conversation(
     .into_response()
 }
 
+/// `DELETE /v1/sessions/{id}` and `DELETE /v1/conversations/{id}` - drop a
+/// conversation and its transcript.
+///
+/// The phone calls this `deleteSession`, and it called `/v1/sessions/{id}`, a path
+/// this daemon only answered with `GET` for a *device* session. The client removed
+/// the row from its own list and then failed the sync, so a deleted chat came back
+/// on the next refresh: "Removed locally - sync failed: deleteSession is not backed
+/// by Eris yet." Both spellings answer here now, because a client cannot be fixed
+/// from this side and the two names are the same object to the person pressing
+/// delete.
+///
+/// The deletion is [`chat::delete_conversation`], the same statement the
+/// dashboard's own delete runs, so a phone delete and a browser delete cannot leave
+/// the transcript in two different states. Unlike clear, the conversation row goes
+/// too: that is the whole difference between the two commands.
+pub async fn delete_conversation(
+    State(service): State<DeviceService>,
+    Path(conversation_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let db = service.engine().db();
+    match chat::conversation(db, &conversation_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return DeviceError::conversation_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the conversation: {error}"))
+                .into_response();
+        }
+    }
+    let removed = match chat::delete_conversation(db, &conversation_id) {
+        Ok(removed) => removed,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot delete the conversation: {error}"))
+                .into_response();
+        }
+    };
+    if let Err(error) = service.engine().auth().audit(
+        token.device_id(),
+        "conversation.deleted",
+        Some(&format!("id={conversation_id}; {removed} messages")),
+    ) {
+        return DeviceError::db_unavailable(format!(
+            "cannot append the conversation.deleted audit row: {error}"
+        ))
+        .into_response();
+    }
+    // An explicit body rather than `204`: the client decodes an empty struct, and
+    // the count is the only way an operator can tell a delete that found a
+    // transcript from one that found a row already empty.
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "deleted": true,
+        "removed": removed,
+        "messages": removed,
+    }))
+    .into_response()
+}
+
 // ---------------------------------------------------------------------------
 // GET /v1/turns/{id}/events
 // ---------------------------------------------------------------------------

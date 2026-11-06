@@ -6,6 +6,19 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A deleted chat stays deleted.** The phone's delete called `DELETE
+  /v1/sessions/{id}`, which this daemon only answered with `GET` for a device
+  session, so the client dropped its own row and then failed the sync: "Removed
+  locally - sync failed". `/v1/sessions/{id}` and `/v1/conversations/{id}` both
+  delete a conversation and its transcript now, with an audit row, and a second
+  press is a `404 conversation_not_found` rather than a silent success. `build 170`.
+
+- **A greeting is answered in words.** The goal gate stopped the objective riding a
+  hello, and the next greeting still came back as four tool calls, a container list,
+  a services check and a warehouse data-quality sweep on the model's own initiative.
+  Every turn now carries one more instruction: answer the message at the size it
+  asks for, and a greeting gets words rather than a briefing. `build 170`.
+
 - **A greeting is not a work order.** A goal used to ride every turn, and a message
   with no task in it left the objective as the only actionable instruction in the
   prompt: "Sup" came back as a warehouse sweep with sixty rounds of budget behind

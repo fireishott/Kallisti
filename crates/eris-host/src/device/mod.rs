@@ -130,6 +130,10 @@ pub const ROUTE_EVENTS: &str = "/v1/turns/{id}/events";
 pub const ROUTE_CANCEL: &str = "/v1/turns/{id}/cancel";
 
 /// `GET /v1/sessions/{id}` - the snapshot a buffer miss points at.
+///
+/// `DELETE` on the same path drops a conversation. The phone calls that
+/// `deleteSession`, so the name of the route is the client's and the object is
+/// this daemon's: a chat, not a device session.
 pub const ROUTE_SESSION: &str = "/v1/sessions/{id}";
 
 /// `GET /v1/version` - which daemon a client is talking to, without a token.
@@ -1076,7 +1080,10 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_CANCEL, post(handlers::cancel))
         .route(ROUTE_ASKED, get(handlers::asked))
         .route(ROUTE_ANSWER, post(handlers::answer_asked))
-        .route(ROUTE_SESSION, get(handlers::session))
+        .route(
+            ROUTE_SESSION,
+            get(handlers::session).delete(handlers::delete_conversation),
+        )
         .route(ROUTE_VERSION, get(handlers::version))
         .route(
             ROUTE_PROJECTS,
@@ -1091,7 +1098,9 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_ATTACHMENT, get(attachments::bytes))
         .route(
             ROUTE_CONVERSATION,
-            get(handlers::conversation).patch(handlers::rename_conversation),
+            get(handlers::conversation)
+                .patch(handlers::rename_conversation)
+                .delete(handlers::delete_conversation),
         )
         .route(ROUTE_CONVERSATION_CLEAR, post(handlers::clear_conversation))
         .route(

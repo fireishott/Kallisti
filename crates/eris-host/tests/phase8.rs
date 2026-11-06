@@ -2448,6 +2448,106 @@ fn a_conversation(harness: &Harness) -> String {
     eris_host::web::chat::create_conversation(harness.engine.db()).expect("a conversation row")
 }
 
+/// A conversation that actually holds a message, so the count is not zero and a
+/// delete that removed nothing cannot pass as one that worked.
+fn a_conversation_with_a_message(harness: &Harness) -> String {
+    let id = a_conversation(harness);
+    eris_host::web::chat::append(
+        harness.engine.db(),
+        &id,
+        eris_host::web::chat::Role::User,
+        "hello",
+        eris_host::web::chat::State::Complete,
+    )
+    .expect("a question row");
+    id
+}
+
+/// Deleting a chat has to delete the chat.
+///
+/// The phone calls this `deleteSession` and it called `/v1/sessions/{id}`, a path
+/// this daemon only answered with `GET` for a *device* session. The client dropped
+/// its own row and then failed the sync, so the chat came back on the next
+/// refresh. Both spellings delete a conversation now, and the transcript goes with
+/// the row.
+#[tokio::test]
+async fn deleting_a_session_drops_the_conversation_and_its_transcript() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    // The app's spelling first: it is the one the phone actually calls.
+    let by_app = a_conversation_with_a_message(&harness);
+    let response = harness
+        .request("DELETE", &format!("/v1/sessions/{by_app}"), &auth, None)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(response.json()["ok"], true);
+    assert_eq!(response.json()["removed"], 1, "{}", response.body);
+    assert!(
+        eris_host::web::chat::conversation(harness.engine.db(), &by_app)
+            .expect("readable")
+            .is_none(),
+        "the conversation row is gone, not merely emptied"
+    );
+    assert!(
+        eris_host::web::chat::load(harness.engine.db(), &by_app)
+            .expect("readable transcript")
+            .is_empty(),
+        "and so is its transcript"
+    );
+
+    // The second press is a 404 rather than a silent success, so a client cannot
+    // report "deleted" for a chat that was already gone.
+    let again = harness
+        .request("DELETE", &format!("/v1/sessions/{by_app}"), &auth, None)
+        .await;
+    assert_eq!(again.status, 404, "{}", again.body);
+    assert_eq!(again.json()["code"], "conversation_not_found");
+
+    // The daemon's own spelling answers the same way, because the two names are
+    // one object to the person pressing delete.
+    let by_name = a_conversation_with_a_message(&harness);
+    let response = harness
+        .request(
+            "DELETE",
+            &format!("/v1/conversations/{by_name}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert!(
+        eris_host::web::chat::conversation(harness.engine.db(), &by_name)
+            .expect("readable")
+            .is_none()
+    );
+
+    // A delete is an audit fact: "where did that conversation go" is asked later.
+    let audited: Vec<String> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement =
+                conn.prepare("SELECT action FROM audit_log WHERE action = 'conversation.deleted'")?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(row.get(0)?);
+            }
+            Ok(out)
+        })
+        .expect("the audit rows");
+    assert_eq!(
+        audited.len(),
+        2,
+        "one row per delete, and none for the refused second press: {audited:?}"
+    );
+
+    harness.stop();
+}
+
 #[tokio::test]
 async fn conversations_require_a_bearer_and_the_sessions_scope() {
     let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
@@ -2462,6 +2562,7 @@ async fn conversations_require_a_bearer_and_the_sessions_scope() {
         ("POST", "/v1/conversations".to_owned()),
         ("GET", one.clone()),
         ("POST", clear.clone()),
+        ("DELETE", one.clone()),
     ];
 
     // No bearer: 401 on every one, with the code the rest of the surface uses.

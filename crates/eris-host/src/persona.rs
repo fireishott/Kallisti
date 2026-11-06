@@ -296,10 +296,30 @@ otherwise have to guess a value. When you must ask: one question, at the very en
 your answer, naming the options you would accept. Never guess a credential, and never \
 invent a number or a fact you could have read or asked for.";
 
+    /// How much answer one message has earned.
+    ///
+    /// The proportional half of [`Self::ASKING`]: that note says do the work rather
+    /// than stall on questions, and nothing said the work is the size of the
+    /// message. A goal made it worse, because an objective is an instruction to
+    /// keep going, but it was not the whole cause: with no goal in the prompt at
+    /// all, "Good morning" still came back as four tool calls, a docker list, a
+    /// services check and a warehouse data-quality sweep, on the model's own
+    /// initiative. A greeting is a greeting. Saying so is cheaper than hoping.
+    pub const PROPORTION: &'static str = "\
+Answer the message in front of you, at the size it asks for. A greeting, a thanks \
+or a short acknowledgement gets a short reply in words: no tool calls, no status \
+sweep and no briefing unless the message asked for one. Reach for a tool when the \
+answer needs a fact you do not have, not to open a conversation or to look busy.";
+
     /// `text` with the capability notes appended, or the notes alone.
     #[must_use]
     pub fn with_capabilities(text: Option<String>) -> Option<String> {
-        let notes = format!("{}\n\n{}", Self::CAPABILITIES, Self::ASKING);
+        let notes = format!(
+            "{}\n\n{}\n\n{}",
+            Self::CAPABILITIES,
+            Self::ASKING,
+            Self::PROPORTION
+        );
         Some(match text {
             Some(text) if !text.trim().is_empty() => format!("{text}\n\n{notes}"),
             _ => notes,
@@ -432,6 +452,17 @@ mod tests {
         assert!(
             notes.contains("![caption]"),
             "the file note is kept: {notes}"
+        );
+        // The proportional half: a greeting is answered in words, not with a
+        // status sweep. This is the note that stops "Good morning" costing four
+        // tool calls.
+        assert!(
+            notes.contains("at the size it asks for"),
+            "the proportion note is kept: {notes}"
+        );
+        assert!(
+            notes.contains("no tool calls"),
+            "and it says which way a greeting goes: {notes}"
         );
 
         let with_persona =
