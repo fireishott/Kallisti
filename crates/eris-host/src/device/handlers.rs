@@ -7953,7 +7953,8 @@ mod tests {
                 .expect("catalogue");
         }
 
-        let refusal = resolve_model_value(engine, "minimax/minimax-m3.1-flash").expect_err("ambiguous");
+        let refusal =
+            resolve_model_value(engine, "minimax/minimax-m3.1-flash").expect_err("ambiguous");
         assert_eq!(refusal.code(), "model_invalid");
         let message = format!("{refusal:?}");
         assert!(

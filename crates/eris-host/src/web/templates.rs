@@ -10097,7 +10097,10 @@ mod tests {
         assert!(page.contains("Learning"), "{page}");
         assert!(page.contains("Run the learning loop"), "{page}");
         assert!(page.contains("Library:"), "{page}");
-        assert!(page.contains("/home/operator/.config/kallisti/skills"), "{page}");
+        assert!(
+            page.contains("/home/operator/.config/kallisti/skills"),
+            "{page}"
+        );
         assert!(page.contains("Run a pass now"), "{page}");
         assert!(page.contains(r#"href="/dashboard/learning""#) || page.contains("Learning"));
     }

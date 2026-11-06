@@ -773,14 +773,7 @@ pub fn valid_description(description: &str) -> bool {
 /// would turn this loop into a leak.
 #[must_use]
 pub fn looks_like_secret(text: &str) -> bool {
-    const MARKERS: [&str; 6] = [
-        "-----BEGIN",
-        "sk-",
-        "ghp_",
-        "github_pat_",
-        "AKIA",
-        "xoxb-",
-    ];
+    const MARKERS: [&str; 6] = ["-----BEGIN", "sk-", "ghp_", "github_pat_", "AKIA", "xoxb-"];
     if MARKERS.iter().any(|marker| text.contains(marker)) {
         return true;
     }
@@ -869,7 +862,7 @@ impl Shelf {
         let db = engine.db();
         let stored = engine.setting(crate::skills::SETTING_DIR).ok().flatten();
         let dir = crate::skills::library_dir(stored.as_deref())?;
-        Some(Self::new(dir, Self::history_beside(&db)))
+        Some(Self::new(dir, Self::history_beside(db)))
     }
 
     /// The history directory derived from the state database's own directory.
@@ -935,8 +928,8 @@ pub fn append_section(
         )));
     }
     let path = shelf.dir.join(key).join(crate::skills::FILE_NAME);
-    let existing = std::fs::read_to_string(&path)
-        .map_err(|error| LearningError::io(&path, error))?;
+    let existing =
+        std::fs::read_to_string(&path).map_err(|error| LearningError::io(&path, error))?;
     if existing.trim().contains(text.trim()) {
         return Err(LearningError::Refused(
             "that text is already in the skill".to_owned(),
@@ -1016,8 +1009,8 @@ fn save_history(shelf: &Shelf, key: &str, text: &str) -> Result<(), LearningErro
 fn write_atomic(path: &Path, text: &str) -> Result<(), LearningError> {
     let temporary = path.with_extension("tmp");
     {
-        let mut file =
-            std::fs::File::create(&temporary).map_err(|error| LearningError::io(&temporary, error))?;
+        let mut file = std::fs::File::create(&temporary)
+            .map_err(|error| LearningError::io(&temporary, error))?;
         file.write_all(text.as_bytes())
             .map_err(|error| LearningError::io(&temporary, error))?;
         file.sync_all()
@@ -1164,7 +1157,8 @@ pub fn apply(
                 return Ok(Applied {
                     action: "none",
                     key: Some(review.key.clone()),
-                    note: "the skill is the operator's own, so the loop will not edit it".to_owned(),
+                    note: "the skill is the operator's own, so the loop will not edit it"
+                        .to_owned(),
                 });
             }
             if row.state == State::Archived || !shelf.dir.join(&review.key).is_dir() {
@@ -1281,7 +1275,9 @@ pub const DIGEST_CONTEXT_CHARS: usize = 1_200;
 /// tool output and a review that carried it would cost more than the turn.
 #[must_use]
 pub fn digest(messages: &[crate::web::chat::Message], answer_id: &str) -> Option<String> {
-    let at = messages.iter().position(|message| message.id == answer_id)?;
+    let at = messages
+        .iter()
+        .position(|message| message.id == answer_id)?;
     let answer = &messages[at];
     let question = messages[..at]
         .iter()
@@ -1331,10 +1327,7 @@ pub fn digest(messages: &[crate::web::chat::Message], answer_id: &str) -> Option
     Some(text)
 }
 
-fn question_id(
-    messages: &[crate::web::chat::Message],
-    answer_at: usize,
-) -> String {
+fn question_id(messages: &[crate::web::chat::Message], answer_at: usize) -> String {
     messages[..answer_at]
         .iter()
         .rev()
@@ -1660,7 +1653,8 @@ mod tests {
 
     #[test]
     fn a_section_lands_under_its_existing_heading_instead_of_a_second_one() {
-        let existing = "---\nname: Deploy\n---\n\n## Procedure\n\n1. build\n\n## Pitfalls\n\nold rule\n";
+        let existing =
+            "---\nname: Deploy\n---\n\n## Procedure\n\n1. build\n\n## Pitfalls\n\nold rule\n";
         let updated = insert_section(existing, "Pitfalls", "new rule");
         assert_eq!(updated.matches("## Pitfalls").count(), 1, "{updated}");
         assert!(updated.contains("old rule\n\nnew rule"), "{updated}");
@@ -1675,7 +1669,9 @@ mod tests {
         assert_eq!(applied.action, "create");
         let text = std::fs::read_to_string(shelf.dir.join("deploy-host").join("SKILL.md"))
             .expect("the file");
-        assert!(text.starts_with("---\nname: Deploy The Host\ndescription: Ship the daemon safely.\n---\n"));
+        assert!(text.starts_with(
+            "---\nname: Deploy The Host\ndescription: Ship the daemon safely.\n---\n"
+        ));
         let row = usage(&db, "deploy-host").expect("db").expect("a row");
         assert_eq!(row.created_by, Origin::Agent);
         assert_eq!(row.description.as_deref(), Some("Ship the daemon safely."));
@@ -1696,8 +1692,7 @@ mod tests {
         let applied = apply(&db, &shelf, &review, None).expect("apply");
         assert_eq!(applied.action, "none");
         assert!(applied.note.contains("operator"), "{}", applied.note);
-        let text =
-            std::fs::read_to_string(shelf.dir.join("deploy-host").join("SKILL.md")).unwrap();
+        let text = std::fs::read_to_string(shelf.dir.join("deploy-host").join("SKILL.md")).unwrap();
         assert!(text.contains("mine"), "{text}");
     }
 
@@ -1733,8 +1728,7 @@ mod tests {
         let append = parse_review(&reviewed("append")).expect("a review");
         let applied = apply(&db, &shelf, &append, None).expect("append");
         assert_eq!(applied.action, "append");
-        let text =
-            std::fs::read_to_string(shelf.dir.join("deploy-host").join("SKILL.md")).unwrap();
+        let text = std::fs::read_to_string(shelf.dir.join("deploy-host").join("SKILL.md")).unwrap();
         assert!(text.contains("## Pitfalls"), "{text}");
         let copies: Vec<_> = std::fs::read_dir(shelf.history.join("deploy-host"))
             .expect("history")
@@ -1842,8 +1836,8 @@ mod tests {
             },
         )
         .expect("save");
-        assert_eq!(Switches::read(&db).enabled, false);
-        assert_eq!(Switches::read(&db).curator, false);
+        assert!(!Switches::read(&db).enabled);
+        assert!(!Switches::read(&db).curator);
         assert!(Switches::read(&db).review);
     }
 }

@@ -1539,7 +1539,8 @@ impl TurnHub {
         let skills_dir = crate::web::store::settings_get(store.db(), crate::skills::SETTING_DIR)
             .ok()
             .flatten();
-        let skills_catalog = crate::skills::catalog_for(store.db(), skills_enabled, skills_dir.as_deref());
+        let skills_catalog =
+            crate::skills::catalog_for(store.db(), skills_enabled, skills_dir.as_deref());
         let skills = skills_catalog
             .is_some()
             .then(|| crate::skills::Access::new(store.db().clone(), skills_dir.clone()));

@@ -25,10 +25,7 @@ fn app_with_library() -> (
     let library = dir.path().join("skills");
     std::fs::create_dir_all(&library).expect("a test library");
     engine
-        .set_setting(
-            crate::skills::SETTING_DIR,
-            &library.display().to_string(),
-        )
+        .set_setting(crate::skills::SETTING_DIR, &library.display().to_string())
         .expect("the library setting");
     (dir, engine, app, cookie)
 }
@@ -99,8 +96,13 @@ fn restoring_an_archived_skill_moves_it_back() {
         "## Procedure\n\nRun the guard first.\n",
     )
     .expect("the file");
-    learning::record_created(engine.db(), "guard-first", Some("Ship behind the guard."), None)
-        .expect("ledger");
+    learning::record_created(
+        engine.db(),
+        "guard-first",
+        Some("Ship behind the guard."),
+        None,
+    )
+    .expect("ledger");
     learning::archive(&shelf, "guard-first").expect("archive");
     learning::mark_archived(engine.db(), "guard-first").expect("state");
 
@@ -111,9 +113,15 @@ fn restoring_an_archived_skill_moves_it_back() {
             .cookie(Some(&cookie)),
     ));
     assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
-    assert!(shelf.dir.join("guard-first").is_dir(), "the directory is back");
+    assert!(
+        shelf.dir.join("guard-first").is_dir(),
+        "the directory is back"
+    );
     assert_eq!(
-        learning::usage(engine.db(), "guard-first").unwrap().unwrap().state,
+        learning::usage(engine.db(), "guard-first")
+            .unwrap()
+            .unwrap()
+            .state,
         learning::State::Active
     );
 }

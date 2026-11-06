@@ -103,10 +103,10 @@ impl LearningWorker {
     #[must_use]
     pub fn production(engine: SetupEngine) -> Self {
         let shelf = Shelf::for_engine(&engine);
-        if let Some(shelf) = &shelf {
-            if let Err(error) = std::fs::create_dir_all(&shelf.dir) {
-                tracing::warn!(%error, dir = %shelf.dir.display(), "learning: the library could not be created");
-            }
+        if let Some(shelf) = &shelf
+            && let Err(error) = std::fs::create_dir_all(&shelf.dir)
+        {
+            tracing::warn!(%error, dir = %shelf.dir.display(), "learning: the library could not be created");
         }
         Self::new(engine, shelf, Arc::new(production_runner))
     }
@@ -122,26 +122,26 @@ impl LearningWorker {
     /// belongs to one run is written onto that run instead.
     pub fn run_once(&self) -> Result<bool, LearningError> {
         let db = self.engine.db();
-        if !learning::enabled(&db) {
+        if !learning::enabled(db) {
             return Ok(false);
         }
         let Some(shelf) = self.shelf.as_ref() else {
             tracing::warn!("learning: no library directory resolves, so the loop is idle");
             return Ok(false);
         };
-        let swept = self.sweep(&db)?;
+        let swept = self.sweep(db)?;
         if swept > 0 {
             tracing::info!(queued = swept, "learning: queued reviews");
         }
-        let reviewed = match self.claim_next(&db)? {
+        let reviewed = match self.claim_next(db)? {
             Some(claimed) => {
-                self.execute(&db, shelf, &claimed)?;
+                self.execute(db, shelf, &claimed)?;
                 true
             }
             None => false,
         };
-        if curator_due(&db) {
-            match run_curator(&db, shelf) {
+        if curator_due(db) {
+            match run_curator(db, shelf) {
                 Ok(report) => tracing::info!(
                     checked = report.checked,
                     archived = report.archived,
@@ -185,23 +185,25 @@ impl LearningWorker {
         if queued >= budget {
             return Ok(0);
         }
-        let candidates: Vec<(String, String, String, Option<String>, String)> = db.with_conn(|conn| {
-            let mut statement = conn.prepare(
-                "SELECT id, conversation_id, body, tools, created_at FROM chat_messages \
+        let candidates: Vec<(String, String, String, Option<String>, String)> =
+            db.with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT id, conversation_id, body, tools, created_at FROM chat_messages \
                   WHERE role = 'assistant' AND state = 'complete' AND created_at > ?1 \
                   ORDER BY created_at ASC LIMIT ?2",
-            )?;
-            let mapped = statement.query_map(params![watermark, SWEEP_LIMIT as i64], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
+                )?;
+                let mapped =
+                    statement.query_map(params![watermark, SWEEP_LIMIT as i64], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    })?;
+                mapped.collect::<Result<Vec<_>, _>>()
             })?;
-            mapped.collect::<Result<Vec<_>, _>>()
-        })?;
         let mut added = 0usize;
         let mut newest = watermark.clone();
         for (answer_id, conversation_id, body, tools, created_at) in candidates {
@@ -282,15 +284,12 @@ impl LearningWorker {
     }
 
     /// Execute one claimed review.
-    fn execute(
-        &self,
-        db: &Db,
-        shelf: &Shelf,
-        claimed: &Claimed,
-    ) -> Result<(), LearningError> {
+    fn execute(&self, db: &Db, shelf: &Shelf, claimed: &Claimed) -> Result<(), LearningError> {
         let messages = match chat::load(db, &claimed.conversation_id) {
             Ok(messages) => messages,
-            Err(error) => return self.fail(db, claimed, "conversation_unreadable", &error.to_string()),
+            Err(error) => {
+                return self.fail(db, claimed, "conversation_unreadable", &error.to_string());
+            }
         };
         let Some(digest) = learning::digest(&messages, &claimed.answer_id) else {
             return self.settle(
@@ -333,11 +332,15 @@ impl LearningWorker {
         let applied = match learning::apply(db, shelf, &review, Some(&claimed.id)) {
             Ok(applied) => applied,
             Err(LearningError::Refused(reason)) => {
-                return self.settle(db, claimed, "skipped", None, None, Some(&reason), None)
+                return self.settle(db, claimed, "skipped", None, None, Some(&reason), None);
             }
             Err(other) => return Err(other),
         };
-        let status = if applied.action == "none" { "skipped" } else { "done" };
+        let status = if applied.action == "none" {
+            "skipped"
+        } else {
+            "done"
+        };
         self.settle(
             db,
             claimed,
@@ -380,6 +383,10 @@ impl LearningWorker {
     }
 
     /// Settle one run. `summary` is truncated to the column's honest size.
+    ///
+    /// The fields are one row each on purpose; a struct here would be a second
+    /// shape of the same record and a place for the two to drift.
+    #[allow(clippy::too_many_arguments)]
     fn settle(
         &self,
         db: &Db,
@@ -449,11 +456,13 @@ pub fn curator_due(db: &Db) -> bool {
         return false;
     };
     let Some(raw) = stored else {
-        let _ = crate::web::store::settings_put(db, learning::SETTING_LAST_CURATOR, &learning::now());
+        let _ =
+            crate::web::store::settings_put(db, learning::SETTING_LAST_CURATOR, &learning::now());
         return false;
     };
     let Some(last) = learning::parse_timestamp(&raw) else {
-        let _ = crate::web::store::settings_put(db, learning::SETTING_LAST_CURATOR, &learning::now());
+        let _ =
+            crate::web::store::settings_put(db, learning::SETTING_LAST_CURATOR, &learning::now());
         return false;
     };
     OffsetDateTime::now_utc() - last >= time::Duration::hours(learning::interval_hours(db))
@@ -489,9 +498,8 @@ pub fn run_curator(db: &Db, shelf: &Shelf) -> Result<CuratorOutcome, LearningErr
         if row.created_by != Origin::Agent || row.pinned {
             continue;
         }
-        let anchor = learning::parse_timestamp(
-            row.last_activity_at.as_deref().unwrap_or(&row.created_at),
-        );
+        let anchor =
+            learning::parse_timestamp(row.last_activity_at.as_deref().unwrap_or(&row.created_at));
         let Some(anchor) = anchor else {
             continue;
         };
@@ -605,8 +613,10 @@ pub async fn run(state: crate::admin::AppState) {
     // wrote is recorded as theirs once, at startup, so the first review never
     // guesses and the page can count the library it inherited.
     if let Some(shelf) = Shelf::for_engine(&state.engine) {
-        match learning::sync_library(&state.engine.db(), &shelf.dir) {
-            Ok(rows) => tracing::info!(rows, library = %shelf.dir.display(), "learning: ledger seeded"),
+        match learning::sync_library(state.engine.db(), &shelf.dir) {
+            Ok(rows) => {
+                tracing::info!(rows, library = %shelf.dir.display(), "learning: ledger seeded")
+            }
             Err(error) => tracing::warn!(%error, "learning: the ledger could not be seeded"),
         }
     }
@@ -663,8 +673,14 @@ mod tests {
 
     fn answer(db: &Db) -> (String, String) {
         let conversation = chat::create_conversation(db).expect("conversation");
-        chat::append(db, &conversation, Role::User, "why did the deploy fail?", chat::State::Complete)
-            .expect("question");
+        chat::append(
+            db,
+            &conversation,
+            Role::User,
+            "why did the deploy fail?",
+            chat::State::Complete,
+        )
+        .expect("question");
         let answer = chat::append_answer(db, &conversation, "test/model", None).expect("answer");
         chat::settle(
             db,
@@ -686,11 +702,13 @@ mod tests {
     fn a_first_sweep_seeds_the_watermark_and_queues_nothing() {
         let (_dir, engine) = engine();
         let db = engine.db();
-        answer(&db);
+        answer(db);
         let worker = worker(engine.clone(), shelf(_dir.path()), "{}");
-        assert_eq!(worker.sweep(&db).expect("sweep"), 0);
+        assert_eq!(worker.sweep(db).expect("sweep"), 0);
         let queued: i64 = db
-            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM learning_runs", [], |row| row.get(0)))
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM learning_runs", [], |row| row.get(0))
+            })
             .unwrap();
         assert_eq!(queued, 0, "the first tick only seeds the watermark");
     }
@@ -699,17 +717,13 @@ mod tests {
     fn a_later_sweep_queues_a_real_answer_once() {
         let (_dir, engine) = engine();
         let db = engine.db();
-        let (conversation, answer_id) = answer(&db);
-        crate::web::store::settings_put(
-            &db,
-            learning::SETTING_WATERMARK,
-            "2000-01-01T00:00:00Z",
-        )
-        .expect("seed the mark");
+        let (conversation, answer_id) = answer(db);
+        crate::web::store::settings_put(db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
+            .expect("seed the mark");
         let worker = worker(engine.clone(), shelf(_dir.path()), "{}");
-        assert_eq!(worker.sweep(&db).expect("sweep"), 1);
-        assert_eq!(worker.sweep(&db).expect("second sweep"), 0);
-        let claimed = worker.claim_next(&db).expect("claim").expect("a run");
+        assert_eq!(worker.sweep(db).expect("sweep"), 1);
+        assert_eq!(worker.sweep(db).expect("second sweep"), 0);
+        let claimed = worker.claim_next(db).expect("claim").expect("a run");
         assert_eq!(claimed.conversation_id, conversation);
         assert_eq!(claimed.answer_id, answer_id);
     }
@@ -718,22 +732,31 @@ mod tests {
     fn a_short_answer_with_no_tools_is_not_queued() {
         let (_dir, engine) = engine();
         let db = engine.db();
-        let conversation = chat::create_conversation(&db).unwrap();
-        chat::append(&db, &conversation, Role::User, "hi", chat::State::Complete).unwrap();
-        let answer = chat::append_answer(&db, &conversation, "test/model", None).unwrap();
-        chat::settle(&db, &answer, "hello", None, &[], None, chat::Accounting::default()).unwrap();
-        crate::web::store::settings_put(&db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
+        let conversation = chat::create_conversation(db).unwrap();
+        chat::append(db, &conversation, Role::User, "hi", chat::State::Complete).unwrap();
+        let answer = chat::append_answer(db, &conversation, "test/model", None).unwrap();
+        chat::settle(
+            db,
+            &answer,
+            "hello",
+            None,
+            &[],
+            None,
+            chat::Accounting::default(),
+        )
+        .unwrap();
+        crate::web::store::settings_put(db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
             .unwrap();
         let worker = worker(engine.clone(), shelf(_dir.path()), "{}");
-        assert_eq!(worker.sweep(&db).unwrap(), 0);
+        assert_eq!(worker.sweep(db).unwrap(), 0);
     }
 
     #[test]
     fn a_review_that_creates_a_skill_settles_done_and_the_skill_is_readable() {
         let (_dir, engine) = engine();
         let db = engine.db();
-        answer(&db);
-        crate::web::store::settings_put(&db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
+        answer(db);
+        crate::web::store::settings_put(db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
             .unwrap();
         let reply = r###"{"action":"create","key":"deploy-guard","name":"Deploy Guard","description":"Ship the daemon only behind the guard.","body":"## When to Use\nBefore any deploy.\n\n## Procedure\n- Run the guard snapshot first.\n- Then run the deploy script.\n","reason":"the operator corrected the deploy order"}"###;
         let worker = worker(engine.clone(), shelf(_dir.path()), reply);
@@ -743,15 +766,32 @@ mod tests {
                 conn.query_row(
                     "SELECT status, action, skill_key FROM learning_runs",
                     [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )
             })
             .unwrap();
-        assert_eq!(row, ("done".to_owned(), "create".to_owned(), "deploy-guard".to_owned()));
-        let body = crate::skills::read(&db, Some(&_dir.path().join("skills").display().to_string()), "deploy-guard")
-            .expect("the learned skill reads");
+        assert_eq!(
+            row,
+            (
+                "done".to_owned(),
+                "create".to_owned(),
+                "deploy-guard".to_owned()
+            )
+        );
+        let body = crate::skills::read(
+            db,
+            Some(&_dir.path().join("skills").display().to_string()),
+            "deploy-guard",
+        )
+        .expect("the learned skill reads");
         assert!(body.contains("guard snapshot"), "{body}");
-        let usage = learning::usage(&db, "deploy-guard").unwrap().unwrap();
+        let usage = learning::usage(db, "deploy-guard").unwrap().unwrap();
         assert_eq!(usage.created_by, Origin::Agent);
     }
 
@@ -759,8 +799,8 @@ mod tests {
     fn an_unparseable_reply_fails_the_run_with_a_named_code() {
         let (_dir, engine) = engine();
         let db = engine.db();
-        answer(&db);
-        crate::web::store::settings_put(&db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
+        answer(db);
+        crate::web::store::settings_put(db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
             .unwrap();
         let worker = worker(engine.clone(), shelf(_dir.path()), "I learned a lot today.");
         assert!(worker.run_once().unwrap());
@@ -781,13 +821,19 @@ mod tests {
     fn a_none_review_settles_skipped_and_writes_no_skill() {
         let (_dir, engine) = engine();
         let db = engine.db();
-        answer(&db);
-        crate::web::store::settings_put(&db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
+        answer(db);
+        crate::web::store::settings_put(db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
             .unwrap();
-        let worker = worker(engine.clone(), shelf(_dir.path()), r#"{"action":"none","reason":"small talk"}"#);
+        let worker = worker(
+            engine.clone(),
+            shelf(_dir.path()),
+            r#"{"action":"none","reason":"small talk"}"#,
+        );
         assert!(worker.run_once().unwrap());
         let status: String = db
-            .with_conn(|conn| conn.query_row("SELECT status FROM learning_runs", [], |row| row.get(0)))
+            .with_conn(|conn| {
+                conn.query_row("SELECT status FROM learning_runs", [], |row| row.get(0))
+            })
             .unwrap();
         assert_eq!(status, "skipped");
         assert!(!_dir.path().join("skills/deploy-host").exists());
@@ -797,19 +843,16 @@ mod tests {
     fn the_loop_switched_off_does_nothing() {
         let (_dir, engine) = engine();
         let db = engine.db();
-        answer(&db);
-        crate::web::store::settings_put(
-            &db,
-            learning::SETTING_ENABLED,
-            "false",
-        )
-        .unwrap();
-        crate::web::store::settings_put(&db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
+        answer(db);
+        crate::web::store::settings_put(db, learning::SETTING_ENABLED, "false").unwrap();
+        crate::web::store::settings_put(db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
             .unwrap();
         let worker = worker(engine.clone(), shelf(_dir.path()), "{}");
         assert!(!worker.run_once().unwrap());
         let queued: i64 = db
-            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM learning_runs", [], |row| row.get(0)))
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM learning_runs", [], |row| row.get(0))
+            })
             .unwrap();
         assert_eq!(queued, 0);
     }
@@ -826,7 +869,7 @@ mod tests {
             "---\nname: Old One\ndescription: Old.\n---\n\n## Procedure\n\nold\n",
         )
         .unwrap();
-        learning::record_created(&db, "old-one", Some("Old."), None).unwrap();
+        learning::record_created(db, "old-one", Some("Old."), None).unwrap();
         let old = (OffsetDateTime::now_utc() - time::Duration::days(40))
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap()
@@ -838,10 +881,16 @@ mod tests {
             )
         })
         .unwrap();
-        let outcome = run_curator(&db, &shelf).unwrap();
+        let outcome = run_curator(db, &shelf).unwrap();
         assert_eq!(outcome.marked_stale, 1);
-        assert_eq!(learning::usage(&db, "old-one").unwrap().unwrap().state, State::Stale);
-        assert!(shelf.dir.join("old-one").exists(), "stale keeps the directory");
+        assert_eq!(
+            learning::usage(db, "old-one").unwrap().unwrap().state,
+            State::Stale
+        );
+        assert!(
+            shelf.dir.join("old-one").exists(),
+            "stale keeps the directory"
+        );
 
         // Another 60 days and the same pass archives it.
         let older = (OffsetDateTime::now_utc() - time::Duration::days(100))
@@ -855,9 +904,12 @@ mod tests {
             )
         })
         .unwrap();
-        let outcome = run_curator(&db, &shelf).unwrap();
+        let outcome = run_curator(db, &shelf).unwrap();
         assert_eq!(outcome.archived, 1);
-        assert_eq!(learning::usage(&db, "old-one").unwrap().unwrap().state, State::Archived);
+        assert_eq!(
+            learning::usage(db, "old-one").unwrap().unwrap().state,
+            State::Archived
+        );
         assert!(!shelf.dir.join("old-one").exists());
         assert!(shelf.dir.join(learning::ARCHIVE_DIR).exists());
     }
@@ -873,7 +925,7 @@ mod tests {
             "---\nname: Mine\ndescription: Mine.\n---\n\nbody\n",
         )
         .unwrap();
-        learning::sync_library(&db, &shelf.dir).unwrap();
+        learning::sync_library(db, &shelf.dir).unwrap();
         // A separate learned skill, created through the writer so its row is the
         // loop's, then pinned: the second gate the pass must respect.
         learning::create_skill(
@@ -884,18 +936,24 @@ mod tests {
             "## When to Use\nnever\n",
         )
         .unwrap();
-        learning::record_created(&db, "pinned", Some("Mine."), None).unwrap();
-        learning::set_pinned(&db, "pinned", true).unwrap();
+        learning::record_created(db, "pinned", Some("Mine."), None).unwrap();
+        learning::set_pinned(db, "pinned", true).unwrap();
         let old = (OffsetDateTime::now_utc() - time::Duration::days(400))
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap()
             .replace("+00:00", "Z");
         db.with_conn(|conn| {
-            conn.execute("UPDATE skill_usage SET created_at = ?1, last_activity_at = ?1", params![old])
+            conn.execute(
+                "UPDATE skill_usage SET created_at = ?1, last_activity_at = ?1",
+                params![old],
+            )
         })
         .unwrap();
-        let outcome = run_curator(&db, &shelf).unwrap();
-        assert_eq!(outcome.checked, 0, "a pinned row is skipped before it is counted");
+        let outcome = run_curator(db, &shelf).unwrap();
+        assert_eq!(
+            outcome.checked, 0,
+            "a pinned row is skipped before it is counted"
+        );
         assert_eq!(outcome.archived, 0);
         assert!(shelf.dir.join("mine").exists());
         assert!(shelf.dir.join("pinned").exists());
@@ -905,11 +963,16 @@ mod tests {
     fn the_curator_clock_defers_its_first_run() {
         let (_dir, engine) = engine();
         let db = engine.db();
-        assert!(!curator_due(&db), "a fresh install seeds the clock and waits");
-        assert!(crate::web::store::settings_get(&db, learning::SETTING_LAST_CURATOR)
-            .unwrap()
-            .is_some());
-        let switches = Switches::read(&db);
+        assert!(
+            !curator_due(db),
+            "a fresh install seeds the clock and waits"
+        );
+        assert!(
+            crate::web::store::settings_get(db, learning::SETTING_LAST_CURATOR)
+                .unwrap()
+                .is_some()
+        );
+        let switches = Switches::read(db);
         assert!(switches.curator);
     }
 }

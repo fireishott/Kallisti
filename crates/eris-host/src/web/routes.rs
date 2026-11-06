@@ -31,17 +31,17 @@ use crate::admin::{
     ROUTE_BACKUPS_RESTORE, ROUTE_CHAT, ROUTE_CHAT_ANSWER, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE,
     ROUTE_CHAT_FILE, ROUTE_CHAT_ID, ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW,
     ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_SORT, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD,
-    ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_LOGOUT,
-    ROUTE_LEARNING, ROUTE_LEARNING_CURATOR, ROUTE_LEARNING_SAVE, ROUTE_LEARNING_SKILL,
-    ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS,
-    ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS,
-    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
-    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
-    ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT,
-    ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA,
-    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
-    ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
+    ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LEARNING, ROUTE_LEARNING_CURATOR,
+    ROUTE_LEARNING_SAVE, ROUTE_LEARNING_SKILL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS,
+    ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
+    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING,
+    ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD,
+    ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
+    ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
+    ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
+    VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -58,10 +58,10 @@ use crate::web::proxy::ClientContext;
 use crate::web::store;
 use crate::web::templates::{
     ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
-    DashboardView, DeviceRow, DevicesView, FormError, IssuedCodeView, LearningView, SessionDetailView,
-    SessionsView, SettingsGroup, SettingsView, SetupView, activity_page, backups_page, chat_page,
-    dashboard_page, devices_page, error_page, learning_page, login_page, session_page, sessions_page,
-    settings_page, setup_page, type_badge,
+    DashboardView, DeviceRow, DevicesView, FormError, IssuedCodeView, LearningView,
+    SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView, activity_page,
+    backups_page, chat_page, dashboard_page, devices_page, error_page, learning_page, login_page,
+    session_page, sessions_page, settings_page, setup_page, type_badge,
 };
 use crate::web::wallpaper;
 
@@ -1286,7 +1286,11 @@ async fn save_learning(
         "enabled={}; review={}; curator={}",
         switches.enabled, switches.review, switches.curator
     );
-    if let Err(error) = state.engine.auth().audit("loopback", "settings.learning", Some(&detail)) {
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.learning", Some(&detail))
+    {
         return audit_failure(&request_id.0, "settings.learning", error);
     }
     see_other(SAVED_LEARNING)
@@ -1320,7 +1324,11 @@ async fn learning_skill(
         return fail_learning(
             &state,
             as_html,
-            FormError::new(None, "library_missing", "no skill library resolves on this host"),
+            FormError::new(
+                None,
+                "library_missing",
+                "no skill library resolves on this host",
+            ),
         );
     };
     let db = state.engine.db();
@@ -1333,7 +1341,11 @@ async fn learning_skill(
                     return fail_learning(
                         &state,
                         as_html,
-                        FormError::new(None, "skill_unknown", "no skill with that key is in the ledger"),
+                        FormError::new(
+                            None,
+                            "skill_unknown",
+                            "no skill with that key is in the ledger",
+                        ),
                     );
                 }
                 Err(error) => return store_failure(&request_id.0, "the skill row", error),
@@ -1356,7 +1368,11 @@ async fn learning_skill(
             return fail_learning(
                 &state,
                 as_html,
-                FormError::new(None, "action_invalid", &format!("`{other}` is not an action this page offers")),
+                FormError::new(
+                    None,
+                    "action_invalid",
+                    format!("`{other}` is not an action this page offers"),
+                ),
             );
         }
     };
@@ -1387,16 +1403,17 @@ async fn run_learning_curator(
         .into_response();
     };
     let db = state.engine.db();
-    match crate::learning_worker::run_curator(&db, &shelf) {
+    match crate::learning_worker::run_curator(db, &shelf) {
         Ok(outcome) => {
             let detail = format!(
                 "checked={}; stale={}; archived={}; reactivated={}",
                 outcome.checked, outcome.marked_stale, outcome.archived, outcome.reactivated
             );
-            if let Err(error) = state
-                .engine
-                .auth()
-                .audit("loopback", "learning.curator", Some(&detail))
+            if let Err(error) =
+                state
+                    .engine
+                    .auth()
+                    .audit("loopback", "learning.curator", Some(&detail))
             {
                 return audit_failure(&request_id.0, "learning.curator", error);
             }
@@ -1422,13 +1439,10 @@ fn build_learning_view(
     view.switches = crate::learning::Switches::read(db);
     view.totals = crate::learning::totals(db).map_err(|error| db_error(&error))?;
     view.rows = crate::learning::rows(db).map_err(|error| db_error(&error))?;
-    view.runs = crate::learning::recent_runs(db, LEARNING_RUNS_SHOWN)
-        .map_err(|error| db_error(&error))?;
+    view.runs =
+        crate::learning::recent_runs(db, LEARNING_RUNS_SHOWN).map_err(|error| db_error(&error))?;
     view.curator = crate::learning::last_curator(db).map_err(|error| db_error(&error))?;
-    let stored = engine
-        .setting(crate::skills::SETTING_DIR)
-        .ok()
-        .flatten();
+    let stored = engine.setting(crate::skills::SETTING_DIR).ok().flatten();
     view.library = crate::skills::library_dir(stored.as_deref())
         .map(|dir| dir.display().to_string())
         .unwrap_or_default();
