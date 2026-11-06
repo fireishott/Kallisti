@@ -6,6 +6,25 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The daemon learns from a finished turn.** After an answer settles, a background
+  worker queues the exchange, reviews it once with a tool-less model call, and
+  writes a class-level procedure into `~/.config/kallisti/skills` when the exchange
+  taught something durable. It creates and appends, and only to skills the loop
+  wrote itself: a skill the operator wrote is never edited, and a pinned one is
+  never touched. A review that finds nothing settles as `skipped` with its reason
+  rather than writing a hollow skill. `build 168`.
+
+- **Reads, pins and age are a ledger, and the library has a page.** Every
+  `read_skill` bumps a row; the new Learning page pins, unpins, restores an
+  archived skill, runs a maintenance pass, and lists the last reviews. A weekly
+  pass ages learned skills active -> stale -> archived, with `.archive` recovery,
+  and the page states the windows. The loop is on by default and switching it off
+  changes nothing on disk. `build 168`.
+
+- **The phone carries the skill catalog too.** A device turn now gets the same
+  names-and-descriptions catalog and the same `read_skill` tool as the dashboard,
+  so a procedure learned from one surface is reachable from the other. `build 168`.
+
 - **The free-read switch is settable.** `POST /v1/settings` now accepts
   `notes.enrichment.free_read` (`true`/`false` and the usual spellings), reports it in
   `changed`, and refuses anything else by name. Before this the notes worker honoured a

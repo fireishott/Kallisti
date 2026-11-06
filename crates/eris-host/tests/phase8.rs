@@ -540,6 +540,45 @@ fn dechunk(body: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// A provider stub that streams `deltas` one frame at a time.
+/// Read one full HTTP request: headers plus the body `content-length` names.
+///
+/// The stub used to read a single 4 KB chunk, which was enough while every prompt
+/// was small. A turn that carries a skill catalog is not small, and the record
+/// stopped mid-system-prompt, so a test about history could not see the history.
+async fn read_full_request(socket: &mut tokio::net::TcpStream) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    let mut scratch = [0u8; 8192];
+    let mut body_start: Option<usize> = None;
+    let mut body_len: Option<usize> = None;
+    loop {
+        if let (Some(start), Some(len)) = (body_start, body_len)
+            && buffer.len() >= start + len
+        {
+            break;
+        }
+        let read = socket.read(&mut scratch).await.unwrap_or(0);
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&scratch[..read]);
+        if body_start.is_none()
+            && let Some(pos) = buffer.windows(4).position(|window| window == b"\r\n\r\n")
+        {
+            let start = pos + 4;
+            let headers = String::from_utf8_lossy(&buffer[..start]);
+            let len = headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            });
+            body_start = Some(start);
+            body_len = Some(len.unwrap_or(0));
+        }
+    }
+    buffer
+}
+
 struct StubProvider {
     url: String,
     hits: Arc<AtomicUsize>,
@@ -579,11 +618,13 @@ impl StubProvider {
                 let recorder = Arc::clone(&recorder);
                 let deltas = deltas.clone();
                 tokio::spawn(async move {
-                    // Drain the request head; the body is not interesting.
-                    let mut scratch = [0u8; 4096];
-                    let read = socket.read(&mut scratch).await.unwrap_or(0);
+                    // Record the whole request, not one 4 KB read. A system
+                    // prompt that carries a skill catalog is larger than that,
+                    // and a truncated record made a history assertion fail on
+                    // what the client never sent.
+                    let body = read_full_request(&mut socket).await;
                     if let Ok(mut seen) = recorder.lock() {
-                        seen.push(String::from_utf8_lossy(&scratch[..read]).into_owned());
+                        seen.push(String::from_utf8_lossy(&body).into_owned());
                     }
                     let response = String::from(
                         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",

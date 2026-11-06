@@ -3,10 +3,10 @@
 > **To the Most Beautiful.** The most beautiful way to meet your agent.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/daemon-1.4.13-C8CCD2?style=flat-square&labelColor=0C0C10" alt="daemon 1.4.13"/>
+  <img src="https://img.shields.io/badge/daemon-1.4.15-C8CCD2?style=flat-square&labelColor=0C0C10" alt="daemon 1.4.15"/>
   <img src="https://img.shields.io/badge/iOS-1.4.15-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 1.4.15"/>
   <img src="https://img.shields.io/badge/Rust-1.99-F74C00?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99"/>
-  <img src="https://img.shields.io/badge/tests-1177-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1177 tests"/>
+  <img src="https://img.shields.io/badge/tests-1246-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1246 tests"/>
   <img src="https://img.shields.io/badge/device_api-no_relay-C8CCD2?style=flat-square&labelColor=0C0C10" alt="no relay"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
@@ -30,7 +30,7 @@ stays free to compile from source.
 |---|---|---|
 | **Kallisti for iOS** | branch `restore/kallisti-identity-on-eris` | The front. The literal Kallisti 0.4.0 UI - rich chat, the full sidebar (Chat, Inbox, Talk, Notes, Settings), health and sensors - as a native Swift 6 / SwiftUI app for iPhone and iPad. |
 | **Kallisti-Eris** | branch `main` | The back. The Rust daemon: turns, tools, memory, MCP, approvals, sensors, inbox, notes, push, backups and device pairing. |
-| **Kallisti-Eris Web UI** | branch `main`, `crates/eris-host/src/web` | The same daemon's dashboard: chat, sessions, settings, schedules, skills, approvals, backups and the onboarding wizard. Server-rendered HTML with one inlined stylesheet and one script, so it works with no build step and no JavaScript bundle. |
+| **Kallisti-Eris Web UI** | branch `main`, `crates/eris-host/src/web` | The same daemon's dashboard: chat, sessions, settings, schedules, skills, learning, approvals, backups and the onboarding wizard. Server-rendered HTML with one inlined stylesheet and one script, so it works with no build step and no JavaScript bundle. |
 
 Eris is the backend; the phone and the dashboard are its two frontends. They are
 the same product: a setting changed in the browser is the setting the phone reads
@@ -111,8 +111,14 @@ is not in your hand.
   refused when it is saved, not when it fires.
 - **Skills.** A library of procedures at `~/.config/kallisti/skills`, one directory
   per skill holding a `SKILL.md`. The prompt carries names and descriptions only;
-  the model calls `read_skill` to pull one in when the task fits. Each skill has its
-  own switch.
+  the model calls `read_skill` to pull one in when the task fits, on the dashboard
+  and the phone. Each skill has its own switch.
+- **A learning loop.** When an answer settles, a background worker reviews the
+  exchange once, with no tools, and writes a class-level procedure into the library
+  only when it taught something durable. It creates and appends, and never edits a
+  skill you wrote. A ledger tracks reads, pins and age; a weekly pass moves learned
+  skills active -> stale -> archived with `.archive` recovery. Both the dashboard
+  and the phone carry the catalog and `read_skill`.
 - **Backups that cannot leak the key.** Three members: the database, the env file of
   references, the config. The setup passphrase is excluded unconditionally.
 
@@ -196,7 +202,7 @@ hostname that points at a private address.
 | `ios-host` | on-device surface stub: a UniFFI export with no I/O of its own, so the core never imports a device framework and every permission prompt belongs to the Swift shell. |
 
 ```sh
-cargo test --workspace        # 1165 tests across the unit and integration suites, 0 failures
+cargo test --workspace        # 1246 tests across the unit and integration suites, 0 failures
 cargo clippy --workspace --all-targets
 cargo fmt --check
 ```
