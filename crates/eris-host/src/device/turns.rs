@@ -1928,33 +1928,6 @@ impl TurnHub {
         // and went dumb" report. The browser lane has always carried this; the
         // device lane never did. Read here because the turn below runs in a closure
         // that moves what it captures.
-        // The objective this daemon is working toward, when one is set. A turn
-        // that carries it is told what it is for and given a round budget sized to
-        // finish it, which is what "work through to completion" needs from a single
-        // turn: the loop is the round budget and the objective, not a background
-        // process the operator cannot see.
-        // The objective this daemon is working toward, read straight from the same
-        // settings table every other switch lives in. A turn that carries it is told
-        // what it is for and given a round budget sized to finish, which is what
-        // "work through to completion" needs: the loop is the objective plus the
-        // budget, not a background process the operator cannot see.
-        let goal: Option<String> = store
-            .db()
-            .with_conn(|conn| {
-                let found: Result<String, _> = conn.query_row(
-                    "SELECT value FROM settings WHERE key = ?1",
-                    rusqlite::params![crate::device::handlers::GOAL_SETTING],
-                    |row| row.get(0),
-                );
-                match found {
-                    Ok(value) => Ok(Some(value)),
-                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                    Err(error) => Err(error),
-                }
-            })
-            .ok()
-            .flatten()
-            .filter(|objective: &String| !objective.trim().is_empty());
         let carried_history = match conversation.as_ref() {
             Some(write) => match crate::web::chat::load(store.db(), &write.conversation) {
                 Ok(rows) => crate::web::chat::history(&rows, &write.answer_id),
@@ -1962,9 +1935,17 @@ impl TurnHub {
             },
             None => Vec::new(),
         };
-        /// Rounds a goal turn may spend. Deep enough to finish a real job, shallow
-        /// enough that a runaway objective stops on its own.
-        const GOAL_ROUNDS: usize = 60;
+        // The objective this daemon is working toward, when one is set. A turn
+        // that carries it is told what it is for and given a round budget sized to
+        // finish it, which is what "work through to completion" needs from a single
+        // turn: the loop is the round budget and the objective, not a background
+        // process the operator cannot see.
+        //
+        // Read through `crate::goal` rather than straight out of the settings table,
+        // because that is where the small-talk gate lives. A greeting carries no
+        // task, so with a goal in the prompt the only instruction left is the
+        // objective: "Sup" became a warehouse sweep, twice, and the gate is the fix.
+        let goal = crate::goal::for_turn(store.db(), &prompt);
 
         let turn_task = tokio::task::spawn_blocking(move || {
             let TurnPolicy {
@@ -2006,24 +1987,10 @@ impl TurnHub {
             };
             // A goal turn is allowed to keep working. The cap exists so a goal that
             // will never finish cannot spend a night of tokens, not to interrupt a
-            // job halfway.
-            let max_rounds = if goal.is_some() {
-                max_rounds.max(GOAL_ROUNDS)
-            } else {
-                max_rounds
-            };
-            let system = match &goal {
-                Some(objective) => {
-                    let base = system.clone().unwrap_or_default();
-                    Some(format!(
-                        "{base}\n\n## Objective\n\n{objective}\n\nKeep working toward that \
-                         objective with the tools available and do not stop to ask whether to \
-                         continue. When you run out of rounds or the work is done, say what is \
-                         finished and exactly what is left."
-                    ))
-                }
-                None => system,
-            };
+            // job halfway. A greeting carries no goal, so it keeps the operator's
+            // budget instead of being handed sixty rounds to spend on a "Sup".
+            let max_rounds = crate::goal::rounds(max_rounds, goal.is_some());
+            let system = crate::goal::with_objective(system, goal.as_deref());
             let settings = crate::web::chat::TurnSettings {
                 tools,
                 max_rounds,

@@ -6,6 +6,32 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A greeting is not a work order.** A goal used to ride every turn, and a message
+  with no task in it left the objective as the only actionable instruction in the
+  prompt: "Sup" came back as a warehouse sweep with sixty rounds of budget behind
+  it. A turn whose text is nothing but a greeting or an acknowledgement no longer
+  carries the objective and keeps the operator's own round budget. Anything with a
+  word of work in it still carries the goal, which is the direction that costs
+  nothing to get wrong. `build 169`.
+
+- **The objective has a page, not just a command.** It was reachable only by typing
+  `/goal` at a phone, which is how a goal came to be set for nine hours and
+  forgotten. Settings now has an Objective card on the Assistant tab that shows what
+  a turn would carry, saves it, and clears it, and the write is audited by length
+  rather than by text. `build 169`.
+
+- **`/goal` works in the browser.** `/help` has listed it since build 149 while the
+  browser answered that the daemon does not implement it. It now sets, reports and
+  clears the same row the phone writes. The difference is what happens next: a
+  command in the browser is answered before a turn exists, so the objective is
+  stored and the next message carries it, rather than starting the work
+  immediately the way `/goal` on the phone does. `build 169`.
+
+- **The browser lane carries the goal at all.** Until now only the device lane read
+  it, so a goal set from the dashboard would have done nothing. Both lanes read it
+  through one module, so the instruction text, the round budget and the greeting
+  gate cannot drift apart. `build 169`.
+
 - **The daemon learns from a finished turn.** After an answer settles, a background
   worker queues the exchange, reviews it once with a tool-less model call, and
   writes a class-level procedure into `~/.config/kallisti/skills` when the exchange

@@ -47,6 +47,7 @@ pub mod db;
 pub mod device;
 pub mod doctor;
 pub mod error;
+pub mod goal;
 pub mod greeting;
 pub mod inbox;
 pub mod learning;

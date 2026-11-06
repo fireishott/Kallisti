@@ -1766,6 +1766,8 @@ pub enum SettingsGroup {
     Permissions,
     /// The assistant's identity: the persona text and its switch.
     Persona,
+    /// The objective every turn carries until it is cleared.
+    Goal,
     /// The generated line on an empty conversation: its switch, model, window.
     Greeting,
     /// Cron schedules and their run history.
@@ -1778,12 +1780,13 @@ pub enum SettingsGroup {
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Provider,
         Self::Accounts,
         Self::Workspace,
         Self::Permissions,
         Self::Persona,
+        Self::Goal,
         Self::Greeting,
         Self::Schedules,
         Self::Skills,
@@ -1797,6 +1800,7 @@ impl SettingsGroup {
             Self::Workspace => "workspace",
             Self::Permissions => "permissions",
             Self::Persona => "persona",
+            Self::Goal => "goal",
             Self::Greeting => "greeting",
             Self::Schedules => "schedules",
             Self::Skills => "skills",
@@ -1823,6 +1827,7 @@ impl SettingsGroup {
                 "sandbox_mode" | "approval_policy" | "autopilot_ceiling" | "telemetry"
             ),
             Self::Persona => matches!(field, "persona_text" | "persona_enabled"),
+            Self::Goal => matches!(field, "goal_text" | "goal_action"),
             Self::Greeting => matches!(
                 field,
                 "greeting_enabled" | "greeting_model" | "greeting_refresh"
@@ -1854,6 +1859,7 @@ impl SettingsGroup {
             Self::Workspace => "workspace saved",
             Self::Permissions => "permissions saved",
             Self::Persona => "assistant identity saved",
+            Self::Goal => "objective saved",
             Self::Greeting => "greeting saved",
             Self::Schedules => "schedules saved",
             Self::Skills => "skills saved",
@@ -2004,6 +2010,8 @@ pub struct SettingsView {
     pub persona_text: String,
     /// Whether the persona is switched on.
     pub persona_enabled: bool,
+    /// The objective every turn carries, or empty when no goal is set.
+    pub goal_objective: String,
     /// Whether the model's reasoning is shown in a collapsed bubble.
     pub show_reasoning: bool,
     /// Whether the dashboard streams answers to the browser.
@@ -2145,6 +2153,7 @@ impl SettingsView {
             assistant_name: crate::persona::DEFAULT_ASSISTANT_NAME.to_owned(),
             persona_text: String::new(),
             persona_enabled: true,
+            goal_objective: String::new(),
             show_reasoning: true,
             streaming: true,
             show_quota: false,
@@ -2342,7 +2351,9 @@ impl SettingsTab {
     pub fn for_group(group: SettingsGroup) -> Self {
         match group {
             SettingsGroup::Provider | SettingsGroup::Accounts => Self::Models,
-            SettingsGroup::Persona | SettingsGroup::Greeting => Self::Assistant,
+            SettingsGroup::Persona | SettingsGroup::Goal | SettingsGroup::Greeting => {
+                Self::Assistant
+            }
             SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
             SettingsGroup::Workspace | SettingsGroup::Permissions => Self::System,
         }
@@ -2357,7 +2368,9 @@ impl SettingsTab {
     pub fn for_saved(saved: &str) -> Self {
         match saved {
             "provider" | "accounts" | "providers" | "tools" | "aux" | "models" => Self::Models,
-            "persona" | "reasoning" | "streaming" | "quota" | "greeting" => Self::Assistant,
+            "persona" | "reasoning" | "streaming" | "quota" | "greeting" | "goal" => {
+                Self::Assistant
+            }
             "memory" => Self::Memory,
             "device" | "devices" => Self::Devices,
             "schedules" | "skills" | "mcp" | "automation" => Self::Automation,
@@ -2400,9 +2413,8 @@ impl SettingsTab {
             | "account_paste" => Self::Models,
             "persona_text" | "persona_enabled" | "assistant_name" | "reply_state"
             | "show_reasoning" | "streaming" | "show_quota" | "show_tool_log" | "tool_log_mode"
-            | "greeting_enabled" | "greeting_model" | "greeting_refresh" | "chat_hint" => {
-                Self::Assistant
-            }
+            | "greeting_enabled" | "greeting_model" | "greeting_refresh" | "chat_hint"
+            | "goal_text" | "goal_action" => Self::Assistant,
             "memory_backend" | "memory_vault" => Self::Memory,
             "device_listen" | "device_relay" | "notify_on_reply" | "notify_scope"
             | "notify_devices" => Self::Devices,
@@ -3001,6 +3013,52 @@ fn quota_group(view: &SettingsView) -> Markup {
             }
             div .actions {
                 button type="submit" { "Save quota line" }
+            }
+        }
+    }
+}
+
+/// The objective the daemon works toward, and the button that clears it.
+///
+/// One textarea and two submits rather than a switch and a text field: a goal is
+/// the text or it is nothing, so an empty box saved is a cleared goal and there is
+/// no third state to explain. The clear button is only drawn when there is
+/// something to clear, since a "Clear" that does nothing is a lie about the state.
+fn goal_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    let set = !view.goal_objective.trim().is_empty();
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_GOAL) novalidate {
+            (group_region(view, SettingsGroup::Goal))
+            div .field {
+                label for="goal_text" { "Objective" }
+                textarea id="goal_text" name="goal_text" rows="4" spellcheck="false"
+                    autofocus[focuses("goal_text")] { (view.goal_objective) }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("goal_text")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "What a turn should keep working toward. Saving it starts nothing on its own: "
+                    "the next message is the one that carries it. Blank clears it. The limit is "
+                    (crate::goal::MAX_OBJECTIVE_CHARS) " characters."
+                }
+            }
+            @if set {
+                p .small {
+                    "Set. Every message carries it until it is cleared, and the round budget is "
+                    "raised to " (crate::goal::ROUNDS) " so a real job can finish in one turn."
+                }
+            } @else {
+                p .small { "No objective is set. Turns answer the message in front of them." }
+            }
+            div .actions {
+                button type="submit" { "Save objective" }
+                @if set {
+                    button type="submit" class="secondary" name="goal_action" value="clear" {
+                        "Clear"
+                    }
+                }
             }
         }
     }
@@ -3962,6 +4020,18 @@ fn tab_assistant(view: &SettingsView) -> Markup {
                 "it is the one setting that changes how the model talks rather than what it can reach."
             }
             (persona_group(view))
+        }
+
+        section .card aria-labelledby="goal-heading" {
+            h2 id="goal-heading" { "Objective" }
+            p .small {
+                "What this assistant is working toward. While an objective is set, every message "
+                "carries it and the turn is allowed a longer round budget, so a job can be finished "
+                "in one go rather than waiting for the next prompt. A greeting does not carry it: "
+                "with nothing else to act on, an objective in the prompt is the only instruction "
+                "left, and the answer to a plain hello becomes a progress report."
+            }
+            (goal_group(view))
         }
 
         section .card aria-labelledby="reasoning-heading" {

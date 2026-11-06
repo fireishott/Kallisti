@@ -1335,6 +1335,134 @@ fn closing_chunk(reason: &str) -> serde_json::Value {
 // What a device turn carries
 // ---------------------------------------------------------------------------
 
+/// Run one device turn to completion and hand back nothing.
+///
+/// Every assertion in the goal tests is about what the provider was told, so the
+/// turn has to be finished before the recording is read. Draining the stream is
+/// what settles the row; polling the database would be the same wait with more
+/// ways to be flaky.
+async fn drain_turn(harness: &Harness, token: &str, auth: &[(&str, String)], text: &str) {
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            auth,
+            Some(&serde_json::json!({ "text": text }).to_string()),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        token,
+        None,
+    )
+    .await;
+    let _ = stream.frames_until_end(Duration::from_secs(10)).await;
+}
+
+/// A greeting is not a work order.
+///
+/// With a goal set, the objective is the only actionable instruction in the prompt,
+/// so "Sup" was answered with a warehouse sweep and sixty rounds of budget. The gate
+/// is what stops it, and this is the proof: the same daemon, the same goal, one
+/// greeting and one real instruction, and only the second carries the block.
+#[tokio::test]
+async fn a_greeting_does_not_carry_the_objective_and_a_task_does() {
+    let provider = StubProvider::start(&["ok"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    harness
+        .engine
+        .set_setting("goal.objective", "inspect the warehouse")
+        .expect("a goal row");
+
+    drain_turn(&harness, &token, &auth, "Sup").await;
+    drain_turn(&harness, &token, &auth, "sweep the warehouse for gaps").await;
+
+    let seen = provider.bodies();
+    assert_eq!(seen.len(), 2, "two turns, two provider calls");
+    assert!(
+        !seen[0].contains("## Objective"),
+        "a greeting carries no objective: {}",
+        seen[0]
+    );
+    assert!(
+        !seen[0].contains("inspect the warehouse"),
+        "and not the text of one either: {}",
+        seen[0]
+    );
+    assert!(
+        seen[1].contains("## Objective"),
+        "a real instruction still carries it: {}",
+        seen[1]
+    );
+    assert!(
+        seen[1].contains("inspect the warehouse"),
+        "with the objective in it: {}",
+        seen[1]
+    );
+
+    harness.stop();
+}
+
+/// Clearing the goal is what turns the behaviour off, and it is one setting.
+#[tokio::test]
+async fn a_cleared_goal_is_not_carried_at_all() {
+    let provider = StubProvider::start(&["ok"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    harness
+        .engine
+        .set_setting("goal.objective", "inspect the warehouse")
+        .expect("a goal row");
+
+    // `/goal stop` is the phone's own route to the same row, so it is what a
+    // cleared goal looks like from the surface that set it.
+    let response = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"/goal stop"}"#))
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+    let done = frames.last().expect("a terminal frame");
+    assert!(
+        done.data["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Goal cleared")),
+        "the command says what it did: {:?}",
+        done.data["text"]
+    );
+
+    drain_turn(&harness, &token, &auth, "sweep the warehouse for gaps").await;
+
+    let seen = provider.bodies();
+    assert_eq!(seen.len(), 1, "the command cost no model call");
+    assert!(
+        !seen[0].contains("## Objective"),
+        "a cleared goal is not in the prompt: {}",
+        seen[0]
+    );
+
+    harness.stop();
+}
+
 #[tokio::test]
 async fn a_turn_that_reasons_streams_reasoning_frames() {
     let provider = ScriptedProvider::start(vec![vec![

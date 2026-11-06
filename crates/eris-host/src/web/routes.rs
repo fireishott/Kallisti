@@ -34,14 +34,14 @@ use crate::admin::{
     ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LEARNING, ROUTE_LEARNING_CURATOR,
     ROUTE_LEARNING_SAVE, ROUTE_LEARNING_SKILL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS,
     ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GREETING,
-    ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
-    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD,
-    ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
-    ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
-    ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
-    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
-    VERSION, session_path,
+    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL,
+    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
+    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
+    ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT,
+    ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA,
+    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
+    ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -116,6 +116,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_WORKSPACE, post(save_workspace))
         .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
         .route(ROUTE_SETTINGS_PERSONA, post(save_persona))
+        .route(ROUTE_SETTINGS_GOAL, post(save_goal))
         .route(ROUTE_SETTINGS_REASONING, post(save_reasoning))
         .route(ROUTE_SETTINGS_STREAMING, post(save_streaming))
         .route(ROUTE_SETTINGS_QUOTA, post(save_quota))
@@ -770,6 +771,10 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .map_err(|error| form_error(&error))?
             .as_deref(),
     );
+    // The objective every turn carries until it is cleared. Read through
+    // `crate::goal` so the page shows exactly what a turn would be given, rather
+    // than a second copy of the same rule that can drift from it.
+    view.goal_objective = crate::goal::stored(engine.db()).unwrap_or_default();
     view.greeting_model = engine
         .setting(crate::greeting::SETTING_GREETING_MODEL)
         .map_err(|error| form_error(&error))?
@@ -3746,6 +3751,7 @@ async fn save_device_listen(
 const SAVED_DEVICE: &str = "/dashboard/settings?saved=device";
 const SAVED_PERMISSIONS: &str = "/dashboard/settings?saved=permissions";
 const SAVED_PERSONA: &str = "/dashboard/settings?saved=persona";
+const SAVED_GOAL: &str = "/dashboard/settings?saved=goal";
 
 /// The group named by `?saved=`, when it names one this build knows.
 fn saved_group(uri: &Uri) -> Option<SettingsGroup> {
@@ -3760,6 +3766,7 @@ fn saved_group(uri: &Uri) -> Option<SettingsGroup> {
             "workspace" => Some(SettingsGroup::Workspace),
             "permissions" => Some(SettingsGroup::Permissions),
             "persona" => Some(SettingsGroup::Persona),
+            "goal" => Some(SettingsGroup::Goal),
             "greeting" => Some(SettingsGroup::Greeting),
             "schedules" => Some(SettingsGroup::Schedules),
             "skills" => Some(SettingsGroup::Skills),
@@ -5743,6 +5750,75 @@ async fn save_persona(
     see_other(SAVED_PERSONA)
 }
 
+/// The body ceiling for the objective form: twice the accepted text, which leaves
+/// room for the field name and the action button without leaving room for an
+/// accidental paste of somebody's whole notebook.
+const GOAL_BODY_BYTES: usize = crate::goal::MAX_OBJECTIVE_CHARS * 8;
+
+/// `POST /dashboard/settings/goal` - the objective every turn carries.
+///
+/// Two ways in and one rule: the textarea saves what it holds, and the Clear button
+/// asks for the empty state. Saving an empty box is also a clear, so the two cannot
+/// disagree about what "no goal" looks like.
+///
+/// The audit line carries the length and whether a goal is set, never the objective
+/// itself: the text is the operator's plan, and a settings log is not where a plan
+/// belongs. The same reasoning the persona write uses.
+async fn save_goal(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields_within(&headers, body, GOAL_BODY_BYTES).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    let clearing = field(&fields, "goal_action").trim() == "clear";
+    let objective = if clearing {
+        String::new()
+    } else {
+        field(&fields, "goal_text").trim().to_owned()
+    };
+    let characters = objective.chars().count();
+    if characters > crate::goal::MAX_OBJECTIVE_CHARS {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("goal_text"),
+                "goal_too_long",
+                format!(
+                    "the objective is {characters} characters and the limit is {}",
+                    crate::goal::MAX_OBJECTIVE_CHARS
+                ),
+            ),
+        );
+    }
+
+    if let Err(error) = store::settings_put(state.engine.db(), crate::goal::SETTING, &objective) {
+        return store_failure(&request_id.0, crate::goal::SETTING, error);
+    }
+    // A greeting must not resume the work, so clearing the goal is the only thing
+    // that stops it: the page says as much, and the notice below repeats it rather
+    // than leaving the operator to guess why turns went quiet.
+    let detail = format!("set={}; characters={characters}", !objective.is_empty());
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.goal", Some(&detail))
+    {
+        return audit_failure(&request_id.0, "settings.goal", error);
+    }
+
+    see_other(SAVED_GOAL)
+}
+
 /// A permission refusal in the words of the dashboard, not the wizard.
 ///
 /// The engine's `full` message says "onboarding cannot select", which is the
@@ -7226,6 +7302,7 @@ fn command_effect(
         "stop" => stop_turn(state, current),
         "model" => set_model(state, current, &command.argument),
         "memory" => set_memory(state, current, &command.argument),
+        "goal" => set_goal(state, current, &command.argument),
         // Unreachable while `immediate` handles every name outside the list, and
         // answered honestly rather than with a panic if that ever changes.
         other => Ok((current.to_owned(), crate::commands::unsupported(other))),
@@ -7413,6 +7490,77 @@ fn set_memory(
     Ok((current.to_owned(), text))
 }
 
+/// `/goal <objective>`, `/goal status`, `/goal stop` on the browser lane.
+///
+/// The same three answers the phone gets, against the same `settings` row, because
+/// a goal is one objective for the whole daemon and not a per-surface note. What
+/// differs is what happens next: the device lane also starts the turn that begins
+/// the work, and this lane does not, because a command here is answered before a
+/// turn exists. The objective is stored, and the next message is the one that
+/// carries it. Saying so is better than letting the operator type a goal and watch
+/// nothing happen.
+fn set_goal(
+    state: &AppState,
+    current: &str,
+    argument: &str,
+) -> Result<(String, String), FormError> {
+    let argument = argument.trim();
+    match argument {
+        "" | "status" => Ok((
+            current.to_owned(),
+            match crate::goal::stored(state.engine.db()) {
+                Some(objective) => format!(
+                    "Working toward: {objective}\nEvery message carries it, except a greeting."
+                ),
+                None => "No goal is set. `/goal <objective>` sets one.".to_owned(),
+            },
+        )),
+        "stop" | "clear" => {
+            if let Err(error) = store::settings_put(state.engine.db(), crate::goal::SETTING, "") {
+                return Err(FormError::new(
+                    None,
+                    "settings_write_failed",
+                    error.to_string(),
+                ));
+            }
+            Ok((
+                current.to_owned(),
+                "Goal cleared. Messages no longer carry it.".to_owned(),
+            ))
+        }
+        objective => {
+            let length = objective.chars().count();
+            if length > crate::goal::MAX_OBJECTIVE_CHARS {
+                return Err(FormError::new(
+                    Some("goal"),
+                    "goal_too_long",
+                    format!(
+                        "the objective is {length} characters; the limit is {}",
+                        crate::goal::MAX_OBJECTIVE_CHARS
+                    ),
+                ));
+            }
+            if let Err(error) =
+                store::settings_put(state.engine.db(), crate::goal::SETTING, objective)
+            {
+                return Err(FormError::new(
+                    None,
+                    "settings_write_failed",
+                    error.to_string(),
+                ));
+            }
+            Ok((
+                current.to_owned(),
+                format!(
+                    "Working toward: {objective}\nEvery message from here carries it, and the \
+                     turn is allowed a longer round budget. `/goal stop` clears it."
+                ),
+            ))
+        }
+    }
+}
+
+///
 /// `POST /dashboard/chat/send`.
 ///
 /// Two modes, one validation path. A browser that asked for the event stream gets
@@ -8508,6 +8656,12 @@ fn spawn_turn(
             .flatten()
             .as_deref(),
     );
+    // The objective this turn carries, when one is set and the message is not
+    // only a greeting. Both readings come from `crate::goal`, the same seam the
+    // device lane uses, so a `/goal` set on the phone reaches this browser and a
+    // gate fixed once is fixed on both surfaces.
+    let goal = crate::goal::for_turn(state.engine.db(), &question);
+    let tool_rounds = crate::goal::rounds(tool_rounds, goal.is_some());
     let stored_enabled = state
         .engine
         .setting(crate::persona::SETTING_PERSONA_ENABLED)
@@ -8804,6 +8958,13 @@ fn spawn_turn(
         // What the page can draw, said to the model: a workspace path in
         // `![caption](path)` or `[name](path)` becomes a thumbnail or a chip.
         let system = crate::persona::PersonaConfig::with_capabilities(system);
+
+        // The objective, appended last for the same reason the device lane puts it
+        // last: a block the model reads first is the one it follows, and a goal set
+        // an hour ago should not outrank the sentence the operator just typed.
+        // `goal` is already `None` for a greeting, so this is where "Sup" stops
+        // meaning "sweep the warehouse".
+        let system = crate::goal::with_objective(system, goal.as_deref());
 
         // The dispatch surface, when this turn may dispatch at all. Both gates
         // are checked here and again in the turn: the operator's switch, and the

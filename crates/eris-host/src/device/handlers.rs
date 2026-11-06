@@ -819,6 +819,10 @@ pub async fn create_turn(
 // Slash commands over /v1
 // ---------------------------------------------------------------------------
 
+/// The setting a goal lives in, re-exported from [`crate::goal`] so this listener
+/// and the browser cannot name two different rows.
+pub const GOAL_SETTING: &str = crate::goal::SETTING;
+
 /// Answer a message that is a slash command.
 ///
 /// No provider is called and no token is spent: the reply is written as the
@@ -835,9 +839,6 @@ pub async fn create_turn(
 /// behind the admin scope. A slash command is not a second path into them, so it
 /// is refused by name whatever the token holds, rather than silently skipped or
 /// emulated into something that looks like it worked.
-/// The setting a goal lives in. One active goal per daemon.
-pub const GOAL_SETTING: &str = "goal.objective";
-
 fn run_command(
     service: &DeviceService,
     device_id: &str,

@@ -2057,3 +2057,209 @@ fn the_rail_order_is_a_setting_the_rail_itself_writes() {
         "the choice leaves an audit row"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The objective: a setting that changes what every turn is for
+// ---------------------------------------------------------------------------
+
+/// The objective is a page control, not only a slash command.
+///
+/// It used to be reachable by typing `/goal` at a phone and nowhere else, which is
+/// how it came to be set for nine hours and forgotten. The card is the fix for the
+/// finding half of that, and this walks the whole round trip: save, see it, and
+/// clear it from the same form.
+#[test]
+fn the_objective_card_saves_shows_and_clears() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let objective = "inspect the warehouse for gaps";
+
+    // Nothing set: the card says so and offers no Clear button to press.
+    let empty = block_on(send(
+        &app,
+        Call::get_owned(settings_tab_path("assistant"))
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(empty.status, StatusCode::OK, "{}", empty.body);
+    assert!(
+        empty.body.contains(&format!(
+            r#"action="{}""#,
+            crate::admin::ROUTE_SETTINGS_GOAL
+        )),
+        "the objective form is on the assistant tab: {}",
+        empty.body
+    );
+    assert!(
+        empty.body.contains("No objective is set"),
+        "the empty state is stated: {}",
+        empty.body
+    );
+    assert!(
+        !empty.body.contains(r#"name="goal_action" value="clear""#),
+        "there is nothing to clear, so no Clear button is drawn: {}",
+        empty.body
+    );
+
+    // A save writes the row and lands on its own card.
+    let saved = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_GOAL,
+            &format!("goal_text={}", encode(objective)),
+        )
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
+    assert!(
+        saved.location().unwrap_or_default().contains("saved=goal"),
+        "the redirect names the group: {:?}",
+        saved.location()
+    );
+    assert_eq!(
+        crate::goal::stored(engine.db()).as_deref(),
+        Some(objective),
+        "the row holds what was typed"
+    );
+
+    // The card now pre-fills the textarea and offers the way out. The redirect
+    // target is followed rather than the bare tab, because the notice rides on
+    // `?saved=` and a plain tab load is a page with nothing to announce.
+    let set = block_on(send(
+        &app,
+        Call::get_owned(format!("{ROUTE_SETTINGS}?saved=goal"))
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert!(
+        set.body.contains(objective),
+        "the stored objective is pre-filled: {}",
+        set.body
+    );
+    assert!(
+        set.body.contains("objective saved"),
+        "the notice is rendered: {}",
+        set.body
+    );
+    assert!(
+        set.body.contains(r#"name="goal_action" value="clear""#),
+        "a set goal can be cleared from the page: {}",
+        set.body
+    );
+
+    // Clear is its own press, and it is the empty state rather than a second
+    // setting that means the same thing.
+    let cleared = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_GOAL,
+            &format!("goal_text={}&goal_action=clear", encode(objective)),
+        )
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(cleared.status, StatusCode::SEE_OTHER, "{}", cleared.body);
+    assert_eq!(
+        crate::goal::stored(engine.db()),
+        None,
+        "clear empties the row even when the textarea still held the objective"
+    );
+
+    // The write is audited, and the audit says nothing about the plan itself.
+    let rows = super::harness::audit_rows(engine.db());
+    let goal_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.action == "settings.goal")
+        .collect();
+    assert_eq!(goal_rows.len(), 2, "one row per save");
+    assert!(
+        goal_rows.iter().all(|row| !row
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains(objective)),
+        "the audit records a length, not the operator's plan: {goal_rows:?}"
+    );
+}
+
+/// An objective longer than the compiler will take is refused by field with both
+/// numbers, and nothing is written.
+#[test]
+fn an_oversized_objective_is_refused_by_the_page() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let long = "x".repeat(crate::goal::MAX_OBJECTIVE_CHARS + 1);
+    let refused = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_GOAL,
+            &format!("goal_text={}", encode(&long)),
+        )
+        .html()
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(
+        refused.body.contains("goal_too_long"),
+        "the refusal names the code: {}",
+        refused.body
+    );
+    assert!(
+        refused
+            .body
+            .contains(&(crate::goal::MAX_OBJECTIVE_CHARS + 1).to_string()),
+        "and carries the number that failed: {}",
+        refused.body
+    );
+    assert_eq!(
+        crate::goal::stored(engine.db()),
+        None,
+        "nothing was written"
+    );
+}
+
+/// `/goal` is a browser command too, and it answers with the same three states the
+/// phone does.
+///
+/// The reply is a transcript row, not a response body: a command is answered by the
+/// daemon before a turn exists, and the page behind the redirect is where the
+/// operator reads it. So each press is checked twice, once for the row and once for
+/// the setting the row is about.
+#[test]
+fn the_goal_command_sets_reports_and_clears() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let press = |text: &str| {
+        let reply = block_on(send(
+            &app,
+            Call::post(
+                crate::admin::ROUTE_CHAT_SEND,
+                &format!("message={}", encode(text)),
+            )
+            .cookie(Some(&cookie)),
+        ));
+        assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+        let rows = crate::web::chat::load(engine.db(), crate::web::chat::CONVERSATION_ID)
+            .expect("a readable transcript");
+        let last = rows.last().expect("a transcript row");
+        assert_eq!(
+            last.role,
+            crate::web::chat::Role::Assistant,
+            "the daemon spoke"
+        );
+        last.body.clone()
+    };
+
+    let body = press("/goal status");
+    assert!(body.contains("No goal is set"), "{body}");
+
+    let body = press("/goal inspect the warehouse");
+    assert!(body.contains("Working toward"), "{body}");
+    assert_eq!(
+        crate::goal::stored(engine.db()).as_deref(),
+        Some("inspect the warehouse")
+    );
+
+    let body = press("/goal status");
+    assert!(body.contains("inspect the warehouse"), "{body}");
+
+    let body = press("/goal stop");
+    assert!(body.contains("Goal cleared"), "{body}");
+    assert_eq!(crate::goal::stored(engine.db()), None);
+}

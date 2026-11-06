@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 168;
+pub const BUILD: u32 = 169;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -166,6 +166,14 @@ pub const ROUTE_SETTINGS_PERMISSIONS: &str = "/dashboard/settings/permissions";
 
 /// `POST /dashboard/settings/persona` - the assistant's identity.
 pub const ROUTE_SETTINGS_PERSONA: &str = "/dashboard/settings/persona";
+
+/// `POST /dashboard/settings/goal` - the objective every turn carries.
+///
+/// A page form as well as a `/goal` command, because the objective changes what
+/// every turn is for and it used to be reachable only by typing a slash command at
+/// a phone. A setting with no page is one the operator cannot find, and a goal
+/// nobody can find is a goal nobody can clear.
+pub const ROUTE_SETTINGS_GOAL: &str = "/dashboard/settings/goal";
 
 /// `POST /dashboard/settings/reasoning` - show or hide the thinking bubble.
 pub const ROUTE_SETTINGS_REASONING: &str = "/dashboard/settings/reasoning";
@@ -377,6 +385,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_WORKSPACE,
     ROUTE_SETTINGS_PERMISSIONS,
     ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_GOAL,
     ROUTE_SETTINGS_REASONING,
     ROUTE_SETTINGS_STREAMING,
     ROUTE_SETTINGS_QUOTA,
