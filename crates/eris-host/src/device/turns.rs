@@ -932,6 +932,7 @@ impl TurnStore {
             })
             .unwrap_or_default();
         let primary = primary.unwrap_or_default();
+        let stored_model = self.qualify_model(&stored_model, &registry, &primary);
         let choice = crate::web::chat::split_model_value(&stored_model, &registry, &primary);
         // The chosen provider's own entry. A registry with entries and no match
         // falls back the way `resolve` does, so the endpoint a turn reaches is the
@@ -971,6 +972,65 @@ impl TurnStore {
             direct: crate::providers::direct_of(chosen),
             project: crate::providers::project_of(chosen),
         }))
+    }
+
+    /// A model id with the provider that actually serves it in front of it.
+    ///
+    /// Conversations written before a turn could name its own provider recorded a
+    /// bare id, because the picker's value was split on the way out and only the
+    /// model half was kept. Re-read as a bare id it resolves to the primary, which
+    /// on an install whose primary has moved sends a MiniMax model to a gateway
+    /// that never served one. The catalogues are the answer: a provider that
+    /// publishes the id is the provider that can be asked for it, and the primary
+    /// wins a tie because that is what a bare id meant before the column existed.
+    fn qualify_model(
+        &self,
+        model: &str,
+        registry: &[crate::providers::Provider],
+        primary: &str,
+    ) -> String {
+        let model = model.trim();
+        if model.is_empty()
+            || model
+                .split_once('/')
+                .is_some_and(|(head, _)| registry.iter().any(|provider| provider.id == head))
+        {
+            return model.to_owned();
+        }
+        let publishes = |provider: &crate::providers::Provider, model: &str| -> bool {
+            let key = crate::onboarding::SetupEngine::provider_catalog_key(&provider.id);
+            self.db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT value FROM settings WHERE key = ?1",
+                        params![key],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                })
+                .ok()
+                .flatten()
+                .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+                .is_some_and(|catalogue| catalogue.iter().any(|id| id == model))
+        };
+        // The primary first: a bare id was the primary's model by definition
+        // before a conversation could carry one of its own.
+        if let Some(chosen) = registry.iter().find(|provider| provider.id == primary)
+            && publishes(chosen, model)
+        {
+            return format!("{primary}/{model}");
+        }
+        let mut owners = registry
+            .iter()
+            .filter(|provider| publishes(provider, model))
+            .map(|provider| provider.id.clone());
+        match (owners.next(), owners.next()) {
+            // Exactly one provider serves it, so that is the provider the id meant.
+            (Some(only), None) => format!("{only}/{model}"),
+            // None or several: leave it exactly as it was read, so the existing
+            // fallback decides rather than a guess made here.
+            _ => model.to_owned(),
+        }
     }
 
     /// Which model a turn should run on, or `None` when the daemon has no default
@@ -2714,6 +2774,75 @@ mod tests {
             store.status(&job).expect("status").as_deref(),
             Some("running"),
             "progress frames do not settle the job"
+        );
+    }
+
+    /// A conversation recorded before a turn could name its provider holds a bare
+    /// id, and a bare id resolved to the primary is how a MiniMax model ends up
+    /// asked for at a gateway that never served one. The catalogue decides.
+    #[test]
+    fn a_bare_recorded_model_is_qualified_by_the_provider_that_publishes_it() {
+        let (store, _) = store(DEFAULT_SSE_BUFFER);
+        let registry = vec![
+            crate::providers::Provider {
+                id: "cmc".to_owned(),
+                name: "Command Code".to_owned(),
+                base_url: "https://cmc.example/v1".to_owned(),
+                key_ref: "env:CMC_KEY".to_owned(),
+                dialect: None,
+                reasoning_split: None,
+                direct: None,
+                project: None,
+            },
+            crate::providers::Provider {
+                id: "mm".to_owned(),
+                name: "MiniMax".to_owned(),
+                base_url: "https://mm.example/v1".to_owned(),
+                key_ref: "env:MM_KEY".to_owned(),
+                dialect: None,
+                reasoning_split: None,
+                direct: None,
+                project: None,
+            },
+        ];
+        for (provider, models) in [
+            ("cmc", vec!["deepseek-v4.1-flash"]),
+            ("mm", vec!["MiniMax-M3.1-Flash"]),
+        ] {
+            store
+                .db()
+                .with_conn(|conn| {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                        params![
+                            crate::onboarding::SetupEngine::provider_catalog_key(provider),
+                            serde_json::to_string(&models).expect("json")
+                        ],
+                    )?;
+                    Ok(())
+                })
+                .expect("catalogue row");
+        }
+
+        assert_eq!(
+            store.qualify_model("MiniMax-M3.1-Flash", &registry, "cmc"),
+            "mm/MiniMax-M3.1-Flash",
+            "the one provider that publishes it is the one to ask"
+        );
+        assert_eq!(
+            store.qualify_model("deepseek-v4.1-flash", &registry, "cmc"),
+            "cmc/deepseek-v4.1-flash",
+            "a model the primary publishes is the primary's"
+        );
+        assert_eq!(
+            store.qualify_model("mm/MiniMax-M3.1-Flash", &registry, "cmc"),
+            "mm/MiniMax-M3.1-Flash",
+            "a value that already names a provider is left alone"
+        );
+        assert_eq!(
+            store.qualify_model("nobody-publishes-this", &registry, "cmc"),
+            "nobody-publishes-this",
+            "nothing known leaves the existing fallback to decide"
         );
     }
 
