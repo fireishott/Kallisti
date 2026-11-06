@@ -1341,6 +1341,36 @@ fn closing_chunk(reason: &str) -> serde_json::Value {
 /// turn has to be finished before the recording is read. Draining the stream is
 /// what settles the row; polling the database would be the same wait with more
 /// ways to be flaky.
+async fn drain_turn_in(
+    harness: &Harness,
+    token: &str,
+    auth: &[(&str, String)],
+    conversation: &str,
+    text: &str,
+) {
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            auth,
+            Some(&serde_json::json!({ "text": text, "conversation": conversation }).to_string()),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        token,
+        None,
+    )
+    .await;
+    let _ = stream.frames_until_end(Duration::from_secs(10)).await;
+}
+
 async fn drain_turn(harness: &Harness, token: &str, auth: &[(&str, String)], text: &str) {
     let response = harness
         .request(
@@ -2435,6 +2465,200 @@ async fn a_duplicate_project_name_is_refused_by_code() {
         1,
         "the refusals added no rows"
     );
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Two chats, two models
+// ---------------------------------------------------------------------------
+
+/// A chat keeps the model it is on when another chat picks one.
+///
+/// The phone's picker writes the daemon default, because that is the only row it
+/// has ever written, and every turn read only that. So: start chat A on the
+/// default, pick another provider's model in chat B, come back to A, and A's next
+/// turn went to B's model - the model "switching itself" under one conversation.
+///
+/// The fix is that a turn resolves its model from the conversation it is writing
+/// into, and the picker's write is taken once, by the next turn, as a pin. This is
+/// the regression test: A must still be on A's model after B moved the default.
+#[tokio::test]
+async fn a_chat_keeps_its_model_when_another_chat_picks_one() {
+    let provider = StubProvider::start(&["ok"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let chat_a = a_conversation(&harness);
+    let chat_b = a_conversation(&harness);
+
+    // A starts on the daemon default, exactly as a new chat does.
+    drain_turn_in(&harness, &token, &auth, &chat_a, "first task in A").await;
+
+    // The picker in B: the default moves, and the pin waits for a turn.
+    eris_host::web::store::settings_put(
+        harness.engine.db(),
+        eris_host::onboarding::SETTING_MODEL,
+        "p8-other",
+    )
+    .expect("the default model moves");
+    eris_host::web::store::settings_put(
+        harness.engine.db(),
+        eris_host::device::turns::SETTING_PENDING_MODEL,
+        "p8-other",
+    )
+    .expect("the pin is written");
+
+    // B's turn is the one that takes the pin.
+    drain_turn_in(&harness, &token, &auth, &chat_b, "task in B").await;
+
+    // And A, coming back, is still on A's model.
+    drain_turn_in(&harness, &token, &auth, &chat_a, "second task in A").await;
+
+    let seen = provider.bodies();
+    assert_eq!(seen.len(), 3, "three turns, three provider calls");
+    assert!(
+        seen[0].contains("p8-model"),
+        "A's first turn is on the default: {}",
+        seen[0]
+    );
+    assert!(
+        seen[1].contains("p8-other"),
+        "B's turn is on the model B picked: {}",
+        seen[1]
+    );
+    assert!(
+        seen[2].contains("p8-model"),
+        "A's next turn is still A's model, not the one B chose: {}",
+        seen[2]
+    );
+    assert!(
+        !seen[2].contains("p8-other"),
+        "and not the other chat's: {}",
+        seen[2]
+    );
+
+    // The conversation says which model it is on, so a client can draw the badge
+    // for the chat it reopened rather than the daemon's default.
+    let listed = harness
+        .request("GET", &format!("/v1/conversations/{chat_a}"), &auth, None)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert!(
+        listed.json()["model"]
+            .as_str()
+            .is_some_and(|model| model.contains("p8-model")),
+        "the conversation reports its own model: {}",
+        listed.body
+    );
+
+    // The pin is a one-turn thing: it is gone once a turn has taken it, so it
+    // cannot follow the operator into the next chat they open.
+    let left: i64 = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM settings WHERE key = ?1",
+                [eris_host::device::turns::SETTING_PENDING_MODEL],
+                |row| row.get(0),
+            )
+        })
+        .expect("the settings row count");
+    assert_eq!(left, 0, "the pin was consumed by exactly one turn");
+
+    // B is on B's model and stayed there too.
+    let listed = harness
+        .request("GET", &format!("/v1/conversations/{chat_b}"), &auth, None)
+        .await;
+    assert!(
+        listed.json()["model"]
+            .as_str()
+            .is_some_and(|model| model.contains("p8-other")),
+        "B reports the model it picked: {}",
+        listed.body
+    );
+
+    harness.stop();
+}
+
+/// Two chats can be in flight at once, and neither is the other's orphan.
+///
+/// The report was that the first chat "seemed hung" when a second one started.
+/// The two turns are separate jobs with separate streams, and the page that comes
+/// back to the first one has to find a finished answer rather than a row that is
+/// still streaming with nothing writing it.
+#[tokio::test]
+async fn two_chats_run_at_once_and_both_settle() {
+    let provider = StubProvider::start(&["a"], Duration::from_millis(120)).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let first = a_conversation(&harness);
+    let second = a_conversation(&harness);
+    // Two turns queued before either is drained: the second must not wait for the
+    // first, and the first must not be cancelled by the second.
+    let mut jobs = Vec::new();
+    for (conversation, text) in [(&first, "first chat"), (&second, "second chat")] {
+        let response = harness
+            .request(
+                "POST",
+                "/v1/turns",
+                &auth,
+                Some(
+                    &serde_json::json!({ "text": text, "conversation": conversation }).to_string(),
+                ),
+            )
+            .await;
+        assert_eq!(response.status, 202, "{}", response.body);
+        jobs.push(
+            response.json()["job_id"]
+                .as_str()
+                .expect("a job id")
+                .to_owned(),
+        );
+    }
+    let [job_one, job_two] = <[String; 2]>::try_from(jobs).expect("two jobs");
+    for job in [job_one, job_two] {
+        let mut stream = Sse::open(
+            harness.addr,
+            &format!("/v1/turns/{job}/events"),
+            &token,
+            None,
+        )
+        .await;
+        let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+        assert_eq!(
+            frames.last().map(|frame| frame.event.as_str()),
+            Some("done"),
+            "the turn finished: {frames:?}"
+        );
+    }
+
+    // Both transcripts carry a complete answer, so a page that comes back to the
+    // first chat is not looking at a row that never settles.
+    for conversation in [first, second] {
+        let read = harness
+            .request(
+                "GET",
+                &format!("/v1/conversations/{conversation}"),
+                &auth,
+                None,
+            )
+            .await;
+        assert_eq!(read.status, 200, "{}", read.body);
+        let messages = read.json()["messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let answer = messages
+            .iter()
+            .find(|row| row["role"] == "assistant")
+            .expect("an answer row");
+        assert_eq!(answer["state"], "complete", "{}", read.body);
+    }
 
     harness.stop();
 }

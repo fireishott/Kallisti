@@ -7660,7 +7660,12 @@ async fn chat_send(
     // than silently replaced, because a picker that lies about itself is worse
     // than one that is missing.
     let requested = field(&fields, "model").trim().to_owned();
-    let model = match resolve_chat_model(&state, &requested, &config.model) {
+    let model = match resolve_chat_model(
+        &state,
+        &requested,
+        &config.model,
+        field(&fields, "conversation"),
+    ) {
         Ok(model) => model,
         Err(error) => return fail_dashboard(&state, wants_html(&headers), error),
     };
@@ -7893,9 +7898,21 @@ fn resolve_chat_model(
     state: &AppState,
     requested: &str,
     default_model: &str,
+    conversation: &str,
 ) -> Result<String, FormError> {
     if requested.is_empty() {
-        return Ok(default_model.to_owned());
+        // Two chats, two providers. The composer sends nothing when the operator
+        // did not touch the picker, and the picker used to be filled from the
+        // daemon default, so every conversation answered on whichever model a
+        // different tab had chosen last. The conversation's own record is the
+        // answer: it is what this chat last ran on, and it falls back to the
+        // default only for a chat that has never had a turn.
+        return Ok(
+            crate::web::chat::conversation_model(state.engine.db(), conversation)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| default_model.to_owned()),
+        );
     }
     if requested.len() > 200 {
         return Err(FormError::new(

@@ -6,6 +6,21 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **Two chats, two models.** A chat kept the model it started on only until
+  another chat picked one. The phone's picker writes the daemon default, because
+  that is the only row it has ever written, and every turn read only that row: so
+  starting a second chat on another provider moved the first chat's next turn onto
+  that provider, and the transcript showed a conversation answering on a model
+  nobody chose for it. A turn now resolves its model from the conversation it is
+  writing into, the picker's write is taken once by the next turn as a pin, and the
+  conversation reports the model it is on. `build 171`.
+
+- **A conversation's model survives a reload.** The browser composer already
+  restored what a conversation last ran on; a send that left the picker alone still
+  fell back to the global default, so a page reopened after another tab changed the
+  default quoted the wrong model. The fallback is the conversation's own record
+  now. `build 171`.
+
 - **A deleted chat stays deleted.** The phone's delete called `DELETE
   /v1/sessions/{id}`, which this daemon only answered with `GET` for a device
   session, so the client dropped its own row and then failed the sync: "Removed

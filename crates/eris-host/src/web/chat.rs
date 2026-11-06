@@ -877,6 +877,24 @@ pub fn touch_conversation(db: &Db, id: &str) -> Result<(), DbError> {
 ///
 /// An empty value clears the row back to "never recorded", which reads as the
 /// configured default.
+pub fn conversation_model(db: &Db, id: &str) -> Result<Option<String>, DbError> {
+    db.with_conn(|conn| {
+        let stored: Option<Option<String>> = conn
+            .query_row(
+                "SELECT model FROM chat_conversations WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored
+            .flatten()
+            .map(|model| model.trim().to_owned())
+            .filter(|model| !model.is_empty()))
+    })
+}
+
+/// Record which model a conversation is on, so the next turn in it answers with
+/// the same one.
 pub fn set_conversation_model(db: &Db, id: &str, model: &str) -> Result<(), DbError> {
     let model = model.trim();
     db.with_conn(|conn| {

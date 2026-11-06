@@ -270,6 +270,20 @@ pub async fn set_model(
     if let Err(error) = engine.store_model(&model) {
         return model_write_refusal(error).into_response();
     }
+    // The default moves for new chats, which is what this row has always meant.
+    // The pin is what makes the choice belong to the chat the operator is in: the
+    // next turn takes it, records it on its conversation, and clears it, so two
+    // chats on two providers stop fighting over one row.
+    if let Err(error) = store::settings_put(
+        service.engine().db(),
+        crate::device::turns::SETTING_PENDING_MODEL,
+        &model,
+    ) {
+        return DeviceError::db_unavailable(format!(
+            "the default model was stored but the pin for this chat could not be: {error}"
+        ))
+        .into_response();
+    }
     if let Err(error) = audit(
         &service,
         token.device_id(),

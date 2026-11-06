@@ -59,6 +59,14 @@ pub const LEASE_SECONDS: i64 = 60;
 /// How long a device session lives before the device has to start a new one.
 pub const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// The model a phone's picker just chose, waiting for the turn that will use it.
+///
+/// `POST /v1/models` has written the daemon default since the control surface
+/// existed, and a default is a thing every chat shares. This row is the pin that
+/// write actually meant: taken by the next turn, cleared as it is taken, and
+/// recorded on that turn's conversation so the chat keeps it afterwards.
+pub const SETTING_PENDING_MODEL: &str = "device.model_pending";
+
 /// Which frame this is. The names are the wire names and the stored kinds, and
 /// they are the same names the browser's turn stream sends for the same events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -869,6 +877,25 @@ impl TurnStore {
     /// but only to seed a registry on an install that has none - exactly what they
     /// are for.
     pub fn provider_config(&self) -> Result<Option<ProviderConfig>, DbError> {
+        self.provider_config_for(None)
+    }
+
+    /// A turn's provider settings, where the model belongs to the conversation.
+    ///
+    /// A phone picked a model once and every chat moved to it, because the picker
+    /// writes the daemon's default and the turn read only that. Two chats on two
+    /// providers then fought over one row: the second pick retargeted the first
+    /// conversation's next turn, and the first chat's own model was never read at
+    /// all. Handing a turn the model of the conversation it is writing into is what
+    /// makes two chats independent.
+    ///
+    /// The order is: the pin the picker just made, taken once and only by a turn;
+    /// then what this conversation last answered with; then the daemon default,
+    /// which is what a brand-new chat starts on.
+    pub fn provider_config_for(
+        &self,
+        conversation: Option<&str>,
+    ) -> Result<Option<ProviderConfig>, DbError> {
         let read = |conn: &mut Connection, key: &str| -> rusqlite::Result<Option<String>> {
             conn.query_row(
                 "SELECT value FROM settings WHERE key = ?1",
@@ -887,7 +914,7 @@ impl TurnStore {
                     read(conn, crate::providers::SETTING_PRIMARY)?,
                 ))
             })?;
-        let Some(stored_model) = stored_model.filter(|model| !model.trim().is_empty()) else {
+        let Some(stored_model) = self.turn_model(conversation, stored_model)? else {
             return Ok(None);
         };
         // A registry that does not parse is a configuration mistake the settings
@@ -944,6 +971,62 @@ impl TurnStore {
             direct: crate::providers::direct_of(chosen),
             project: crate::providers::project_of(chosen),
         }))
+    }
+
+    /// Which model a turn should run on, or `None` when the daemon has no default
+    /// and no conversation to consult.
+    ///
+    /// The picker in a phone's chat writes one model for the daemon, because that
+    /// is the only row it has ever written. Taking it here, once, and only for a
+    /// turn, is what turns that write into a pin for the chat the operator is in
+    /// rather than a switch that moves every other chat. The floor under it is the
+    /// conversation's own record, and under that the default a new chat starts on.
+    fn turn_model(
+        &self,
+        conversation: Option<&str>,
+        stored: Option<String>,
+    ) -> Result<Option<String>, DbError> {
+        let clean = |model: Option<String>| {
+            model
+                .map(|model| model.trim().to_owned())
+                .filter(|model| !model.is_empty())
+        };
+        // A read that names no conversation is a settings read, not a turn, and it
+        // must not swallow the pin: `/v1/models` answering its own question would
+        // spend the picker's write before any turn could use it.
+        if let Some(conversation) = conversation {
+            if let Some(pinned) = self.take_pending_model()? {
+                return Ok(Some(pinned));
+            }
+            if let Some(recorded) = crate::web::chat::conversation_model(self.db(), conversation)? {
+                return Ok(Some(recorded));
+            }
+        }
+        Ok(clean(stored))
+    }
+
+    /// The model the picker pinned for the next turn, consumed.
+    ///
+    /// Read and cleared in one statement so two turns cannot both take it: a pin
+    /// belongs to one chat, and a second turn that also claimed it would put the
+    /// first chat's pick on the second chat's transcript.
+    fn take_pending_model(&self) -> Result<Option<String>, DbError> {
+        self.db.with_conn(|conn| {
+            let found: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key = ?1",
+                    params![SETTING_PENDING_MODEL],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            conn.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                params![SETTING_PENDING_MODEL],
+            )?;
+            Ok(found
+                .map(|model| model.trim().to_owned())
+                .filter(|model| !model.is_empty()))
+        })
     }
 
     /// Every job of one device that has not settled yet, newest first.
@@ -1420,9 +1503,20 @@ impl TurnHub {
             return;
         };
 
+        // The conversation this turn writes into, named before the provider is
+        // resolved so the model can be that conversation's rather than the
+        // daemon's. A turn with no conversation is a session of its own and has no
+        // record to prefer, which leaves it on the default.
+        let turn_conversation = conversation
+            .as_ref()
+            .map(|write| write.conversation.clone());
         let config = {
             let store = store.clone();
-            tokio::task::spawn_blocking(move || store.provider_config()).await
+            let turn_conversation = turn_conversation.clone();
+            tokio::task::spawn_blocking(move || {
+                store.provider_config_for(turn_conversation.as_deref())
+            })
+            .await
         };
         let config = match config {
             Ok(Ok(Some(config))) => config,

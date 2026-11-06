@@ -703,7 +703,13 @@ pub async fn create_turn(
             // only while the pin is on the primary: a conversation the composer
             // moved to a second provider would claim the first one's window and
             // the meter in the client would lie about what the turn can hold.
-            let turn_provider = store.provider_config().ok().flatten();
+            // Resolved for this conversation, not for the daemon: a chat the
+            // operator moved to another provider keeps that model when they come
+            // back to it, and a second chat picking one does not move this one.
+            let turn_provider = store
+                .provider_config_for(Some(conversation_id))
+                .ok()
+                .flatten();
             let model = turn_provider
                 .as_ref()
                 .map(|config| config.model.clone())
@@ -744,7 +750,15 @@ pub async fn create_turn(
             // what this conversation is actually on when the operator comes back
             // to it, instead of quietly moving it to the global default.
             let _ = chat::name_from_first_message(db, conversation_id, &text);
-            let _ = chat::set_conversation_model(db, conversation_id, &model);
+            // Recorded provider-qualified, because that is the shape the next turn
+            // resolves: a bare id would be re-read against whichever provider the
+            // registry happens to offer first, and two providers publishing one
+            // model id is exactly the case this chat is allowed to be on.
+            let recorded = turn_provider
+                .as_ref()
+                .map(|config| format!("{}/{}", config.provider_id, config.model))
+                .unwrap_or_default();
+            let _ = chat::set_conversation_model(db, conversation_id, &recorded);
             let _ = chat::touch_conversation(db, conversation_id);
             // The naming role, when the operator pinned one. A role on the primary
             // is a no-op, so this is `None` on every install that never chose a
@@ -1560,6 +1574,11 @@ pub async fn conversation(
         "ok": true,
         "id": row.id,
         "title": row.title,
+        // The model this conversation is on, provider-qualified, so a client can
+        // draw the right badge for the chat it reopened instead of the daemon's
+        // default or the one another chat picked. Additive: a client that does
+        // not read it keeps working.
+        "model": row.model,
         "messages": messages,
         "truncated": truncated || bounded.omitted > 0,
         // Older messages left out to fit the read, and tool outputs cut to their
