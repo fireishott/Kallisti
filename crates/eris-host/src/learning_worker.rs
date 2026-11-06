@@ -601,6 +601,15 @@ fn production_runner(request: &WorkRequest) -> Result<WorkOutput, (String, Strin
 /// listeners and a review that takes a minute is simply the next tick's
 /// predecessor.
 pub async fn run(state: crate::admin::AppState) {
+    // Claim what is already on disk before the first tick. A skill the operator
+    // wrote is recorded as theirs once, at startup, so the first review never
+    // guesses and the page can count the library it inherited.
+    if let Some(shelf) = Shelf::for_engine(&state.engine) {
+        match learning::sync_library(&state.engine.db(), &shelf.dir) {
+            Ok(rows) => tracing::info!(rows, library = %shelf.dir.display(), "learning: ledger seeded"),
+            Err(error) => tracing::warn!(%error, "learning: the ledger could not be seeded"),
+        }
+    }
     let worker = Arc::new(LearningWorker::production(state.engine.clone()));
     let mut interval = tokio::time::interval(TICK);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

@@ -46,6 +46,10 @@ mod settings;
 #[cfg(test)]
 mod activity;
 
+/// The learning loop's page and its three controls.
+#[cfg(test)]
+mod learning_page;
+
 /// Phase 2: the Sessions list, the session detail page, and job cancellation.
 #[cfg(test)]
 mod sessions;
