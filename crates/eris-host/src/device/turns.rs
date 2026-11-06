@@ -1572,6 +1572,18 @@ impl TurnHub {
             }
         };
 
+        // Which endpoint and model this turn resolved to, and for which chat.
+        // One line per turn, and the only record that answers "why did it go
+        // there" without a second round trip: a model that lands on the wrong
+        // provider is a 400 from an API the operator never chose, and the error
+        // body names the model but not the endpoint that refused it.
+        tracing::info!(
+            provider = %config.provider_id,
+            model = %config.model,
+            conversation = turn_conversation.as_deref().unwrap_or("-"),
+            "device turn resolved its provider"
+        );
+
         // The identity: read from the file now, on this turn, so an edit is live
         // without a restart. `None` is the ordinary "no persona" case and the
         // turn goes ahead with no system message at all.
