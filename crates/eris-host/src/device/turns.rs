@@ -980,25 +980,21 @@ impl TurnStore {
     /// bare id, because the picker's value was split on the way out and only the
     /// model half was kept. Re-read as a bare id it resolves to the primary, which
     /// on an install whose primary has moved sends a MiniMax model to a gateway
-    /// that never served one. The catalogues are the answer: a provider that
-    /// publishes the id is the provider that can be asked for it, and the primary
-    /// wins a tie because that is what a bare id meant before the column existed.
+    /// that never served one.
+    ///
+    /// The rule itself lives in [`crate::web::chat::qualify_with`], because the
+    /// browser reads the same recorded value and had the same trap: `deepseek` is
+    /// both a provider on this daemon and a publisher name inside CommandCode's
+    /// own model ids. What this adds is the catalogue lookup, from the settings
+    /// rows the probe writes.
     fn qualify_model(
         &self,
         model: &str,
         registry: &[crate::providers::Provider],
         primary: &str,
     ) -> String {
-        let model = model.trim();
-        if model.is_empty()
-            || model
-                .split_once('/')
-                .is_some_and(|(head, _)| registry.iter().any(|provider| provider.id == head))
-        {
-            return model.to_owned();
-        }
-        let publishes = |provider: &crate::providers::Provider, model: &str| -> bool {
-            let key = crate::onboarding::SetupEngine::provider_catalog_key(&provider.id);
+        crate::web::chat::qualify_with(model, registry, primary, |provider, model| {
+            let key = crate::onboarding::SetupEngine::provider_catalog_key(provider);
             self.db
                 .with_conn(|conn| {
                     conn.query_row(
@@ -1012,25 +1008,7 @@ impl TurnStore {
                 .flatten()
                 .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
                 .is_some_and(|catalogue| catalogue.iter().any(|id| id == model))
-        };
-        // The primary first: a bare id was the primary's model by definition
-        // before a conversation could carry one of its own.
-        if let Some(chosen) = registry.iter().find(|provider| provider.id == primary)
-            && publishes(chosen, model)
-        {
-            return format!("{primary}/{model}");
-        }
-        let mut owners = registry
-            .iter()
-            .filter(|provider| publishes(provider, model))
-            .map(|provider| provider.id.clone());
-        match (owners.next(), owners.next()) {
-            // Exactly one provider serves it, so that is the provider the id meant.
-            (Some(only), None) => format!("{only}/{model}"),
-            // None or several: leave it exactly as it was read, so the existing
-            // fallback decides rather than a guess made here.
-            _ => model.to_owned(),
-        }
+        })
     }
 
     /// Which model a turn should run on, or `None` when the daemon has no default
@@ -2804,10 +2782,24 @@ mod tests {
                 direct: None,
                 project: None,
             },
+            // The provider whose name collides with a publisher's. This is the
+            // whole point of the case below: `deepseek` is an endpoint here and a
+            // publisher inside CommandCode's own model ids.
+            crate::providers::Provider {
+                id: "deepseek".to_owned(),
+                name: "DeepSeek".to_owned(),
+                base_url: "https://api.deepseek.com/".to_owned(),
+                key_ref: "env:DEEPSEEK_API_KEY".to_owned(),
+                dialect: None,
+                reasoning_split: None,
+                direct: None,
+                project: None,
+            },
         ];
         for (provider, models) in [
-            ("cmc", vec!["deepseek-v4.1-flash"]),
+            ("cmc", vec!["deepseek/deepseek-v4.1-flash"]),
             ("mm", vec!["MiniMax-M3.1-Flash"]),
+            ("deepseek", vec!["deepseek-flash", "deepseek-v4-pro"]),
         ] {
             store
                 .db()
@@ -2830,9 +2822,17 @@ mod tests {
             "the one provider that publishes it is the one to ask"
         );
         assert_eq!(
-            store.qualify_model("deepseek-v4.1-flash", &registry, "cmc"),
-            "cmc/deepseek-v4.1-flash",
-            "a model the primary publishes is the primary's"
+            store.qualify_model("MiniMax-M3.1-Flash", &registry, "cmc"),
+            "mm/MiniMax-M3.1-Flash",
+            "a model the primary does not publish is the one that does"
+        );
+        // The CommandCode shape: the model id itself carries a slash, and its
+        // publisher shares a name with a provider on this daemon. Splitting it
+        // without the catalogue sends it to api.deepseek.com, which answers 400.
+        assert_eq!(
+            store.qualify_model("deepseek/deepseek-v4.1-flash", &registry, "cmc"),
+            "cmc/deepseek/deepseek-v4.1-flash",
+            "a publisher-qualified id is one model on the provider that serves it"
         );
         assert_eq!(
             store.qualify_model("mm/MiniMax-M3.1-Flash", &registry, "cmc"),

@@ -6,6 +6,16 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A model id with a slash in it is not a provider name.** CommandCode serves
+  `deepseek/deepseek-v4.1-flash`, where the head is the publisher; this daemon also
+  has a provider called `deepseek`, pointing at api.deepseek.com. A conversation
+  that recorded that id was read as `provider/model` and sent to DeepSeek's own API,
+  which answered `400: the supported API model names are deepseek-flash,
+  deepseek-v4-pro`. The catalogues now decide: a head is a provider only when that
+  provider publishes the tail, and otherwise the whole string is one model on
+  whichever provider publishes it. Both lanes read a recorded model through that
+  rule. `build 173`.
+
 - **Two chats, two models.** A chat kept the model it started on only until
   another chat picked one. The phone's picker writes the daemon default, because
   that is the only row it has ever written, and every turn read only that row: so

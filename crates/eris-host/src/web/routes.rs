@@ -7907,12 +7907,35 @@ fn resolve_chat_model(
         // different tab had chosen last. The conversation's own record is the
         // answer: it is what this chat last ran on, and it falls back to the
         // default only for a chat that has never had a turn.
-        return Ok(
-            crate::web::chat::conversation_model(state.engine.db(), conversation)
+        // A recorded value goes through the catalogue before it is used: an id
+        // like `deepseek/deepseek-v4.1-flash` is one CommandCode model whose
+        // publisher happens to share a name with this daemon's `deepseek`
+        // provider, and splitting it without asking the catalogues sends the turn
+        // to api.deepseek.com asking for a model it does not serve.
+        let recorded = crate::web::chat::conversation_model(state.engine.db(), conversation)
+            .ok()
+            .flatten();
+        if let Some(recorded) = recorded {
+            let registry = chat::provider_registry(&state.engine).unwrap_or_default();
+            let primary = state
+                .engine
+                .setting(crate::providers::SETTING_PRIMARY)
                 .ok()
                 .flatten()
-                .unwrap_or_else(|| default_model.to_owned()),
-        );
+                .unwrap_or_default();
+            return Ok(chat::qualify_with(
+                &recorded,
+                &registry,
+                &primary,
+                |provider, model| {
+                    state
+                        .engine
+                        .provider_catalog(provider)
+                        .is_ok_and(|catalogue| catalogue.iter().any(|id| id == model))
+                },
+            ));
+        }
+        return Ok(default_model.to_owned());
     }
     if requested.len() > 200 {
         return Err(FormError::new(

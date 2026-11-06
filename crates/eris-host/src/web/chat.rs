@@ -2698,6 +2698,83 @@ pub struct ModelChoice {
 /// spells its ids with slashes, and reading those as providers would silently
 /// re-point every existing install at nothing.
 #[must_use]
+pub fn qualify_with<F>(
+    value: &str,
+    registry: &[crate::providers::Provider],
+    primary: &str,
+    publishes: F,
+) -> String
+where
+    F: Fn(&str, &str) -> bool,
+{
+    let value = value.trim();
+    if value.is_empty() {
+        return String::new();
+    }
+    // A model id this daemon publishes can itself contain a slash. CommandCode
+    // serves `deepseek/deepseek-v4.1-flash`, where the head is the publisher and
+    // not an endpoint - and this daemon also happens to have a provider called
+    // `deepseek`, pointing at api.deepseek.com. Read as `provider/model` that id
+    // goes to DeepSeek's own API asking for a model only the gateway serves, and
+    // the answer is a 400 naming DeepSeek's catalogue. A head is only a provider
+    // when that provider publishes the tail; otherwise the whole string is one
+    // model id and the provider that publishes it is the one to ask.
+    if let Some((head, tail)) = value.split_once('/') {
+        if !tail.trim().is_empty()
+            && registry.iter().any(|provider| provider.id == head)
+            && !publishes(head, tail.trim())
+            && let Some(owner) = owner_of(value, registry, primary, &publishes)
+        {
+            return format!("{owner}/{value}");
+        }
+        return value.to_owned();
+    }
+    // A bare id is the primary's by definition, and that is what every install
+    // believed until a conversation could carry one of its own. Only a model the
+    // primary does not serve needs naming, and only when one other provider does.
+    if registry
+        .iter()
+        .any(|provider| provider.id == primary && publishes(&provider.id, value))
+    {
+        return value.to_owned();
+    }
+    match owner_of(value, registry, primary, &publishes) {
+        Some(owner) => format!("{owner}/{value}"),
+        None => value.to_owned(),
+    }
+}
+
+/// The provider that publishes `model` as one id, preferring the primary.
+///
+/// A catalogue is the only thing that can answer this: an id with a slash in it
+/// is either `provider/model` or one model whose publisher put a slash in its
+/// name, and nothing about the string itself says which.
+fn owner_of<F>(
+    model: &str,
+    registry: &[crate::providers::Provider],
+    primary: &str,
+    publishes: &F,
+) -> Option<String>
+where
+    F: Fn(&str, &str) -> bool,
+{
+    if registry
+        .iter()
+        .any(|provider| provider.id == primary && publishes(&provider.id, model))
+    {
+        return Some(primary.to_owned());
+    }
+    let mut owners: Vec<String> = registry
+        .iter()
+        .filter(|provider| publishes(&provider.id, model))
+        .map(|provider| provider.id.clone())
+        .collect();
+    // Exactly one publisher is the answer the caller meant. Several is a question
+    // this function is not allowed to answer, so it declines and lets the existing
+    // fallback decide rather than picking on the caller's behalf.
+    (owners.len() == 1).then(|| owners.remove(0))
+}
+
 pub fn split_model_value(
     value: &str,
     registry: &[crate::providers::Provider],
@@ -5462,6 +5539,61 @@ mod tests {
                  "key_ref":"env:COMMANDCODE_API_KEY"}]"#,
         )
         .expect("the fixture registry validates")
+    }
+
+    /// A model id with a slash in it is not a provider name until the catalogue
+    /// says so. CommandCode serves `deepseek/deepseek-v4.1-flash`, and this daemon
+    /// also has a provider called `deepseek`; splitting that id blind sent the turn
+    /// to api.deepseek.com, which answered 400 with its own model list.
+    #[test]
+    fn a_publisher_qualified_id_is_not_read_as_a_provider() {
+        let registry = vec![
+            provider("cmc", "https://api.commandcode.ai/provider/v1"),
+            provider("deepseek", "https://api.deepseek.com/"),
+        ];
+        let catalogues: Vec<(&str, Vec<&str>)> = vec![
+            ("cmc", vec!["deepseek/deepseek-v4.1-flash"]),
+            ("deepseek", vec!["deepseek-flash", "deepseek-v4-pro"]),
+        ];
+        let publishes = |provider: &str, model: &str| {
+            catalogues
+                .iter()
+                .any(|(id, models)| *id == provider && models.contains(&model))
+        };
+        assert_eq!(
+            super::qualify_with("deepseek/deepseek-v4.1-flash", &registry, "cmc", publishes),
+            "cmc/deepseek/deepseek-v4.1-flash",
+            "the provider that publishes the whole id is the one to ask"
+        );
+        // A head that really does name the provider is left exactly as written.
+        assert_eq!(
+            super::qualify_with("deepseek/deepseek-flash", &registry, "cmc", publishes),
+            "deepseek/deepseek-flash"
+        );
+        assert_eq!(
+            super::qualify_with("deepseek-v4-pro", &registry, "cmc", publishes),
+            "deepseek/deepseek-v4-pro",
+            "a bare id only another provider serves is named for that provider"
+        );
+        assert_eq!(
+            super::qualify_with("unpublished", &registry, "cmc", publishes),
+            "unpublished",
+            "nothing known is left to the existing fallback"
+        );
+    }
+
+    /// One registry entry, for the qualification tests.
+    fn provider(id: &str, base_url: &str) -> crate::providers::Provider {
+        crate::providers::Provider {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            base_url: base_url.to_owned(),
+            key_ref: "env:TEST_KEY".to_owned(),
+            dialect: None,
+            reasoning_split: None,
+            direct: None,
+            project: None,
+        }
     }
 
     #[test]
