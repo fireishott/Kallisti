@@ -1522,6 +1522,35 @@ impl TurnHub {
         // workspace file belongs in this prompt too.
         let system = crate::persona::PersonaConfig::with_capabilities(system);
 
+        // The operator's skill library, offered exactly as the browser offers it.
+        //
+        // The old shape said the phone had "no view for" a procedure. That stopped
+        // being true when the learning loop started writing skills: the surface
+        // that catches most of the operator's work is the one that most needs the
+        // lesson, and `read_skill` is a read with no approval to park. The catalog
+        // is names and descriptions only; a body is read on demand, within the
+        // same caps as the dashboard.
+        let skills_enabled = crate::skills::enabled(
+            crate::web::store::settings_get(store.db(), crate::skills::SETTING_ENABLED)
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        let skills_dir = crate::web::store::settings_get(store.db(), crate::skills::SETTING_DIR)
+            .ok()
+            .flatten();
+        let skills_catalog = crate::skills::catalog_for(store.db(), skills_enabled, skills_dir.as_deref());
+        let skills = skills_catalog
+            .is_some()
+            .then(|| crate::skills::Access::new(store.db().clone(), skills_dir.clone()));
+        let system = match skills_catalog {
+            Some(catalog) => Some(match system {
+                Some(system) => format!("{system}\n\n{catalog}"),
+                None => catalog,
+            }),
+            None => system,
+        };
+
         // The database the dispatch desk will write with. Cloned here because
         // `store` itself is moved into the writer below.
         let desk_db = store.db().clone();
@@ -2198,10 +2227,9 @@ impl TurnHub {
                 // sandbox, and an answer row to count children against.
                 desk.as_ref(),
                 attach_target.as_ref(),
-                // The phone gets the same turn loop but not the skill library:
-                // reading a procedure is a capability this surface has no view
-                // for, so it is not offered.
-                None,
+                // The same catalog the browser carries: names and descriptions
+                // are in the prompt above, and a body is read on demand.
+                skills.as_ref(),
                 settings,
                 // A phone can ask now. The question parks this turn's thread, goes
                 // out as an `asked` frame on the job stream and is written to the

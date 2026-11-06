@@ -702,9 +702,11 @@ pub fn parse_review(raw: &str) -> Result<Review, ReviewError> {
             if body.chars().count() < 40 || body.len() > MAX_BODY_BYTES {
                 return Err(ReviewError::BadBody { min: 40 });
             }
-            if section.is_some() {
-                return Err(ReviewError::BadSection(section.unwrap_or_default()));
-            }
+            // A model that fills `section` on a create is being helpful, not
+            // wrong: the section names where the lesson would go if this were an
+            // append, and a new skill's body already carries its own headings.
+            // Refusing the whole review over a harmless extra field threw away a
+            // real lesson once; the field is dropped instead.
         }
         Action::Append => {
             if body.chars().count() < 10 || body.len() > MAX_APPEND_BYTES {
@@ -727,7 +729,7 @@ pub fn parse_review(raw: &str) -> Result<Review, ReviewError> {
         key,
         name,
         description,
-        section,
+        section: (action == Action::Append).then_some(section).flatten(),
         body,
         reason: clip(
             value
@@ -1225,9 +1227,9 @@ Reply with ONE JSON object and nothing else:\n\
 \"description\":\"One sentence, at most 60 characters, ends with a period.\",\
 \"section\":\"Pitfalls|Procedure|When to Use|Verification|Quick Reference\",\
 \"body\":\"markdown\",\"reason\":\"one short sentence\"}\n\n\
-For append, body is only the text to add under section. For create, body is the whole procedure \
-with '## When to Use' and '## Procedure' sections and short bullets. For none, all other fields \
-may be omitted.";
+For append, body is only the text to add under section. For create, omit section entirely and put \
+the whole procedure in body, with '## When to Use' and '## Procedure' headings and short bullets. \
+For none, all other fields may be omitted.";
 
 /// The user message: the exchange, then the skills an append may target.
 #[must_use]
@@ -1586,6 +1588,26 @@ mod tests {
         assert_eq!(review.action, Action::Create);
         assert_eq!(review.key, "deploy-host");
         assert_eq!(review.section, None);
+    }
+
+    #[test]
+    fn a_create_may_carry_a_section_and_the_section_is_dropped() {
+        let mut value: serde_json::Value = serde_json::from_str(&reviewed("create")).unwrap();
+        value["section"] = serde_json::json!("Procedure");
+        let review = parse_review(&value.to_string()).expect("a create");
+        assert_eq!(review.action, Action::Create);
+        assert_eq!(review.section, None);
+    }
+
+    #[test]
+    fn an_append_accepts_every_section_the_library_names() {
+        for section in SECTIONS {
+            let mut value: serde_json::Value = serde_json::from_str(&reviewed("append")).unwrap();
+            value["section"] = serde_json::json!(section);
+            let review = parse_review(&value.to_string())
+                .unwrap_or_else(|error| panic!("{section}: {error}"));
+            assert_eq!(review.section.as_deref(), Some(section));
+        }
     }
 
     #[test]
