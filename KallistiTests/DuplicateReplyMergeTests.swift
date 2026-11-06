@@ -88,4 +88,95 @@ struct DuplicateReplyMergeTests {
 
         #expect(merged.count == 2, "unrelated replies from different jobs must both survive")
     }
+
+    // MARK: - A live turn survives a transcript refresh
+
+    /// The live row is the one every arriving frame names. A merge that adopts
+    /// the daemon's row for the same job retargets the stream at a row that is
+    /// no longer in the conversation: the bubble freezes on its last painted
+    /// text while the turn runs on, and only a reload shows progress. That is
+    /// the "I have to leave the chat and come back" report (2026-11-06).
+    @Test("A live streaming placeholder survives a refresh and keeps its id")
+    func livePlaceholderSurvivesRefresh() {
+        let job = UUID()
+        let userId = UUID()
+        let placeholder = Message(
+            id: UUID(), sender: .herald,
+            content: "Morning, Curtis.",
+            jobID: job, isStreaming: true
+        )
+        let serverRow = Message(
+            id: UUID(), sender: .herald,
+            content: "Morning, Curtis. Let me get into the warehouse and see where the tinfoil indicator stands.",
+            jobID: job, isStreaming: true
+        )
+        let localConversation = Conversation(
+            id: UUID(), title: "Test",
+            messages: [
+                Message(id: userId, sender: .user, content: "Good morning", status: .sending),
+                placeholder,
+            ]
+        )
+        let refreshedConversation = Conversation(
+            id: localConversation.id, title: "Test",
+            messages: [
+                Message(id: userId, sender: .user, content: "Good morning", status: .sent),
+                serverRow,
+            ]
+        )
+        let store = ChatStore(heraldClient: MockHeraldClient(), persistence: MockPersistence())
+        store.markLiveStreamForTesting(placeholderID: placeholder.id, jobID: job)
+        let merged = store.mergeConversationMetadata(
+            from: localConversation,
+            into: refreshedConversation
+        )?.messages ?? []
+
+        let replies = merged.filter { $0.sender == .herald && $0.jobID == job }
+        #expect(replies.count == 1, "one projection per turn, got \(replies.count)")
+        #expect(replies.first?.id == placeholder.id,
+                "the live row's id is what the stream writes through")
+        #expect(replies.first?.content.contains("tinfoil indicator") == true,
+                "the server's newer text is folded into the live row")
+        #expect(replies.first?.isStreaming == true)
+    }
+
+    @Test("Without a live consumer the server row is authoritative")
+    func serverRowWinsWithNoLiveConsumer() {
+        let job = UUID()
+        let userId = UUID()
+        let placeholder = Message(
+            id: UUID(), sender: .herald,
+            content: "Morning, Curtis.",
+            jobID: job, isStreaming: true
+        )
+        let serverRow = Message(
+            id: UUID(), sender: .herald,
+            content: "Morning, Curtis. Let me get into the warehouse and see where the tinfoil indicator stands.",
+            jobID: job, isStreaming: true
+        )
+        let localConversation = Conversation(
+            id: UUID(), title: "Test",
+            messages: [
+                Message(id: userId, sender: .user, content: "Good morning", status: .sending),
+                placeholder,
+            ]
+        )
+        let refreshedConversation = Conversation(
+            id: localConversation.id, title: "Test",
+            messages: [
+                Message(id: userId, sender: .user, content: "Good morning", status: .sent),
+                serverRow,
+            ]
+        )
+        let store = ChatStore(heraldClient: MockHeraldClient(), persistence: MockPersistence())
+        let merged = store.mergeConversationMetadata(
+            from: localConversation,
+            into: refreshedConversation
+        )?.messages ?? []
+
+        let replies = merged.filter { $0.sender == .herald && $0.jobID == job }
+        #expect(replies.count == 1)
+        #expect(replies.first?.id == serverRow.id,
+                "with nothing reading the stream the daemon's row is the transcript")
+    }
 }

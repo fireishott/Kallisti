@@ -302,6 +302,25 @@ final class ChatStore {
     var streamingMessageID: UUID? {
         activeStreams.values.first ?? pendingStreamPlaceholders.first
     }
+    /// How many stream consumers are reading a turn in this process right now.
+    ///
+    /// `activeStreams` records which placeholder a turn writes to, but it is
+    /// cleared only by a terminal frame. A socket that ends quietly leaves that
+    /// mapping in place, so ownership alone cannot answer "are frames still
+    /// arriving". This counter can: it is raised for the lifetime of the
+    /// consumer task and lowered before the post-stream refresh runs.
+    private var liveStreamConsumers = 0
+
+    /// Test seam: register (or release) a live consumer so a merge can be
+    /// exercised without starting a real turn.
+    func markLiveStreamForTesting(placeholderID: UUID? = nil, jobID: UUID? = nil) {
+        if let placeholderID, let jobID {
+            liveStreamConsumers += 1
+            activeStreams[jobID] = placeholderID
+        } else {
+            liveStreamConsumers = max(0, liveStreamConsumers - 1)
+        }
+    }
 
     /// After `messageSent`, if no real progress (text/reasoning delta, tool
     /// activity, or finish) arrives within this window, the job is treated as
@@ -2380,8 +2399,10 @@ final class ChatStore {
         var consumerFinished = false
         let consumerTask = Task { [weak self] in
             guard let self else { return }
+            self.liveStreamConsumers += 1
             defer {
                 consumerFinished = true
+                self.liveStreamConsumers = max(0, self.liveStreamConsumers - 1)
                 // A stream can end without an ending: a dropped socket, a resumed
                 // connection that starts at the live tail, an app that was
                 // suspended mid-turn. The daemon may well have finished - the 19:38
@@ -5449,6 +5470,46 @@ final class ChatStore {
         guard var refreshedConversation else { return localConversation }
         guard let localConversation else { return refreshedConversation }
 
+        // A live turn's row is the projection for that job. Every frame this
+        // process is receiving is addressed to the placeholder's id, so it has
+        // to survive a refresh; the daemon's own row for the same job is a
+        // snapshot of the same turn and must not replace it mid-stream. Only a
+        // consumer that is actually reading counts: once the socket has gone
+        // there are no frames to protect, and the server's row is the better
+        // answer.
+        let liveStreamPlaceholders: Set<UUID> =
+            liveStreamConsumers > 0
+                ? Set(activeStreams.values).union(pendingStreamPlaceholders)
+                : []
+        // Fold what a server twin knows into the live row without giving up its
+        // identity: longer streamed text that the twin has caught up on, files
+        // the live pipeline has not seen, and receipts from frames it missed.
+        func absorb(_ source: Message, into target: Message) -> Message {
+            var merged = target
+            let sourceText = source.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let targetText = merged.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if sourceText.count > targetText.count, sourceText.hasPrefix(targetText) {
+                merged.content = source.content
+            }
+            var attachments = merged.attachments
+            for attachment in source.attachments
+            where attachments.contains(where: {
+                $0.fileName == attachment.fileName && $0.mediaURL == attachment.mediaURL
+            }) == false {
+                attachments.append(attachment)
+            }
+            merged.attachments = attachments
+            var activities = merged.toolActivities
+            for activity in source.toolActivities
+            where activities.contains(where: {
+                $0.label == activity.label && $0.resultPreview == activity.resultPreview
+            }) == false {
+                activities.append(activity)
+            }
+            merged.toolActivities = activities
+            return merged
+        }
+
         // Build N+: refuse to merge across different conversations.  The
         // polling timer and stall-loop poll both call this with
         // `self.conversation` as the `from` — if the user switched
@@ -5771,6 +5832,11 @@ final class ChatStore {
         for message in localConversation.messages {
             if segmentedLocalIDs.contains(message.id) { continue }
             if refreshedIDs.contains(message.id) { continue }
+            // A live placeholder is never matched onto a refreshed row: its id
+            // is the handle the stream is writing through. Letting a content
+            // fingerprint claim it here is what silently retargeted every later
+            // frame at a row that was no longer in the conversation.
+            let isLivePlaceholder = liveStreamPlaceholders.contains(message.id)
             // Build 102 P0-C: clientMessageID is the AUTHORITATIVE identity for
             // a user row. When the refreshed conversation carries a server
             // twin with the same clientMessageID+sender, the local optimistic
@@ -5780,7 +5846,8 @@ final class ChatStore {
             // logic below.  This is checked BEFORE the jobID+sender path so
             // a user prompt is matched to its server twin even when the
             // server's jobID lookup is stale or missing.
-            if let clientMsgID = message.clientMessageID,
+            if isLivePlaceholder == false,
+               let clientMsgID = message.clientMessageID,
                refreshedClientMessageKeys.contains("\(clientMsgID.uuidString)|\(message.sender)") {
                 // Find the matching refreshed index — there must be exactly
                 // one (the server twin), claim it, and record the mapping.
@@ -5827,7 +5894,8 @@ final class ChatStore {
                     "B28: preserving local terminal row \(message.id.uuidString.prefix(8)) (jobId=\(jobID.uuidString.prefix(8))) despite refreshed jobKey match — local content is non-empty"
                 )
             }
-            if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            if isLivePlaceholder == false,
+               !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                let candidates = refreshedIndicesByFingerprint[Self.messageFingerprint(message)] {
                 // Claim the first row this fingerprint owns that no other local
                 // message has taken, so a question asked twice in one chat maps
@@ -6093,6 +6161,24 @@ final class ChatStore {
             let existing = refreshedConversation.messages[existingIndex]
             let existingLen = existing.content.trimmingCharacters(in: .whitespacesAndNewlines).count
             let candidateLen = message.content.trimmingCharacters(in: .whitespacesAndNewlines).count
+            // A live row and a server snapshot are not a tie to break by
+            // content length. The live row's id is what every arriving frame
+            // names, so it stays the representative and absorbs the snapshot;
+            // dropping it here is what froze the bubble on a stale partial
+            // answer until the operator reloaded the transcript.
+            let existingIsLive = liveStreamPlaceholders.contains(existing.id)
+            let candidateIsLive = liveStreamPlaceholders.contains(message.id)
+            if existingIsLive != candidateIsLive {
+                if existingIsLive {
+                    refreshedConversation.messages[existingIndex] = absorb(message, into: existing)
+                    duplicateIndices.append(index)
+                } else {
+                    refreshedConversation.messages[index] = absorb(existing, into: message)
+                    duplicateIndices.append(existingIndex)
+                    bestIndexForJob[jobID] = index
+                }
+                continue
+            }
             // B84: a still-streaming row is the CURRENT projection of the turn —
             // keep it even when the server's persisted copy has more text, so a
             // mid-turn refresh can't replace the live bubble (with its reasoning

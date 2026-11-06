@@ -1201,49 +1201,139 @@ actor ErisClient {
     /// a reasoning fragment and a finished tool call without either being dropped
     /// (which is what `default: return nil` used to do) or pretending to be a
     /// text delta.
+    /// How many times one turn's stream may be re-opened after the socket drops.
+    ///
+    /// A phone loses its connection for ordinary reasons - a tunnel hiccup, a
+    /// radio handover, the app going quiet for a second - and a turn runs for
+    /// minutes. Ending the turn on the first dropped byte is what made a long
+    /// turn look dead until the conversation was reopened: the daemon already
+    /// held the answer, the phone had simply stopped asking for it.
+    private static let maximumStreamResumes = 3
+
+    /// The last `id:` an event carried, per turn.
+    ///
+    /// Kept here rather than in a view model because it is a wire fact: it has
+    /// to survive the stream being re-opened, and it is the only thing that lets
+    /// `Last-Event-ID` mean anything. Cleared when the turn ends or the daemon
+    /// says the cursor fell out of its retained window.
+    private var turnCursors: [String: Int] = [:]
+
+    /// The SSE `id:` prefix, allocated once rather than per line.
+    private static let sequencePrefix = Data("id:".utf8)
+
+    /// Remember the sequence number a line carried, so a re-open can ask for
+    /// everything strictly after it. A line that is not an `id:` is ignored.
+    private func noteSequence(_ line: Data, turnID: String) {
+        guard line.starts(with: Self.sequencePrefix) else { return }
+        let text = String(decoding: line.dropFirst(Self.sequencePrefix.count), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let seq = Int(text) { turnCursors[turnID] = seq }
+    }
+
+    /// Whether a failure mid-stream is worth re-opening the stream for.
+    ///
+    /// A dropped socket is; a malformed frame is the daemon's bug and re-opening
+    /// would just re-deliver it. Cancellation is the caller's own stop.
+    private static func isResumableDrop(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let url = error as? URLError { return url.code != .cancelled }
+        if let eris = error as? ErisError { return eris.isTransport }
+        return false
+    }
+
     private func streamEvents(
         turnID: String,
         into continuation: AsyncThrowingStream<ErisFrameOutcome, Error>.Continuation
     ) async throws {
         let route = ErisRoute.events(turnID: turnID)
-        var (bytes, status) = try await openStream(
-            try await authorizedRequest(route: route, form: nil, accept: "text/event-stream")
-        )
-        if status == 401 {
-            _ = try await refresh()
-            (bytes, status) = try await openStream(
-                try await authorizedRequest(route: route, form: nil, accept: "text/event-stream")
+        for attempt in 0...Self.maximumStreamResumes {
+            let cursor = turnCursors[turnID]
+            let headers = cursor.map { ["Last-Event-ID": String($0)] } ?? [:]
+            var (bytes, status) = try await openStream(
+                try await authorizedRequest(
+                    route: route,
+                    form: nil,
+                    accept: "text/event-stream",
+                    extraHeaders: headers
+                )
             )
-        }
-        guard (200..<300).contains(status) else {
-            let body = await collect(bytes: bytes, limit: Self.maximumErrorBodyBytes)
-            throw Self.serverError(status: status, data: body)
-        }
+            if status == 401 {
+                _ = try await refresh()
+                (bytes, status) = try await openStream(
+                    try await authorizedRequest(
+                        route: route,
+                        form: nil,
+                        accept: "text/event-stream",
+                        extraHeaders: headers
+                    )
+                )
+            }
+            guard (200..<300).contains(status) else {
+                let body = await collect(bytes: bytes, limit: Self.maximumErrorBodyBytes)
+                // A resume point older than the retained window means the frames
+                // are gone, not that the turn cannot be read again. Forget the
+                // cursor so the next read starts at the tail, and let the caller
+                // reconcile from the transcript, which is where those frames went.
+                if status == 409 { turnCursors[turnID] = nil }
+                throw Self.serverError(status: status, data: body)
+            }
 
-        var decoder = ErisSSEDecoder()
-        var pending = Data()
-        for try await byte in bytes {
-            if Task.isCancelled {
+            var decoder = ErisSSEDecoder()
+            var pending = Data()
+            do {
+                for try await byte in bytes {
+                    if Task.isCancelled {
+                        continuation.finish()
+                        return
+                    }
+                    pending.append(byte)
+                    // Complete the line on the newline, so a frame that straddles
+                    // two chunks is decoded once, when its blank-line terminator
+                    // lands.
+                    guard byte == 0x0A else { continue }
+                    let chunk = pending
+                    pending.removeAll(keepingCapacity: true)
+                    noteSequence(chunk, turnID: turnID)
+                    if emit(try decoder.consume(chunk), into: continuation) {
+                        turnCursors[turnID] = nil
+                        return
+                    }
+                }
+                if !pending.isEmpty {
+                    noteSequence(pending, turnID: turnID)
+                    if emit(try decoder.consume(pending), into: continuation) {
+                        turnCursors[turnID] = nil
+                        return
+                    }
+                }
+                if emit(try decoder.finish(), into: continuation) {
+                    turnCursors[turnID] = nil
+                    return
+                }
+                // A byte sequence that ends cleanly is not a turn that ended:
+                // the daemon closes this stream only after a terminal frame. A
+                // proxy reaping an idle socket or a radio handover produces this
+                // exact shape, and treating it as "finished" left the chat on a
+                // partial answer until it was reloaded. Ask for everything after
+                // the last frame seen; with no frame at all there is nothing to
+                // resume from.
+                guard turnCursors[turnID] != nil,
+                      attempt < Self.maximumStreamResumes else {
+                    continuation.finish()
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(300))
+            } catch is CancellationError {
                 continuation.finish()
                 return
-            }
-            pending.append(byte)
-            // Complete the line on the newline, so a frame that straddles two
-            // chunks is decoded once, when its blank-line terminator lands.
-            guard byte == 0x0A else { continue }
-            let chunk = pending
-            pending.removeAll(keepingCapacity: true)
-            if emit(try decoder.consume(chunk), into: continuation) {
-                return
+            } catch {
+                guard Self.isResumableDrop(error) else { throw error }
+                guard attempt < Self.maximumStreamResumes else { throw error }
+                // Re-open from the last frame actually seen. The daemon replays
+                // strictly after that id, so nothing is delivered twice.
+                try? await Task.sleep(for: .milliseconds(300))
             }
         }
-        if !pending.isEmpty, emit(try decoder.consume(pending), into: continuation) {
-            return
-        }
-        if emit(try decoder.finish(), into: continuation) {
-            return
-        }
-        continuation.finish()
     }
 
     /// Yield outcomes, and report whether a terminal one ended the stream.
