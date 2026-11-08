@@ -40,6 +40,15 @@ pub const ACCESS_TTL: Duration = Duration::from_secs(60 * 60);
 /// Refresh token lifetime: thirty days, per device.
 pub const REFRESH_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
+/// How long a retired verifier keeps answering "revoked" before it is swept.
+///
+/// Ten minutes: long enough that a rotation or a revoke this process just
+/// performed still reads as retired rather than unknown to a caller holding
+/// the old bearer, short enough that a refresh every hour does not leave a
+/// growing pile of hashes behind it. The device listener maps both answers to
+/// `token_invalid`, so the wire sees one code either way.
+pub const RETIRED_GRACE: Duration = Duration::from_secs(10 * 60);
+
 /// Which token this is. Stored, so a refresh token cannot be used as an access
 /// token even if it leaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,6 +356,19 @@ impl TokenService {
         self.verify(presented, TokenKind::Refresh)
     }
 
+    /// Delete the verifier rows that can no longer answer a live token, and
+    /// that were retired at least `grace` ago. Returns how many rows went.
+    ///
+    /// Verification reads every row so a retired token answers "revoked"
+    /// rather than "unknown"; each such row is then a hash on every device
+    /// request, and the daemon only gets slower the longer it runs. The boot
+    /// path and a successful rotation both call this, which keeps the set to
+    /// the tokens that are still live plus the last `grace` of retirements.
+    pub fn prune_dead_tokens(&self, grace: Duration) -> Result<usize, AuthError> {
+        let grace = time::Duration::seconds(i64::try_from(grace.as_secs()).unwrap_or(i64::MAX));
+        self.store.prune_dead_tokens(now() - grace)
+    }
+
     /// Retire the presented refresh token and mint a new pair for the same
     /// device and the same scope set.
     ///
@@ -377,6 +399,13 @@ impl TokenService {
         )?;
         self.store
             .audit(origin.actor(), "auth.rotate", Some(&verified.device_id))?;
+        // A device that refreshes hourly retires two rows on every refresh, and
+        // every retired row is a hash on every later verification. Sweeping them
+        // here keeps that set to the tokens that are still live. Best effort: a
+        // failed sweep must not fail a rotation that already happened.
+        if let Err(error) = self.prune_dead_tokens(RETIRED_GRACE) {
+            tracing::warn!(%error, "could not prune retired token verifiers");
+        }
         Ok(MintedPair { access, refresh })
     }
 
@@ -677,6 +706,72 @@ fn revoked_is_rejected_immediately() {
             .code(),
         "device_revoked"
     );
+}
+
+#[cfg(test)]
+#[test]
+fn a_swept_verifier_stops_being_hashed_and_the_live_pair_survives() {
+    use crate::auth::ScopeSet;
+    use crate::db::Db;
+
+    use super::{TokenOrigin, TokenService};
+
+    let service = TokenService::new(Db::open_in_memory().expect("db"));
+    let device = service.register_device("phone", "ios").expect("device");
+    let pair = service
+        .mint_pair(&device, ScopeSet::device_default(), TokenOrigin::Device)
+        .expect("pair");
+    let rotated = service.rotate(pair.refresh.token()).expect("rotate");
+
+    // The retired refresh row is what the sweep exists for. Zero grace makes the
+    // just-retired row eligible, so this asserts the delete rather than waiting
+    // ten minutes for it.
+    let removed = service
+        .prune_dead_tokens(Duration::ZERO)
+        .expect("prune retired verifiers");
+    assert!(removed >= 1, "the rotated refresh row must be swept");
+    assert_eq!(
+        service
+            .verify_refresh(pair.refresh.token())
+            .expect_err("a swept row is unknown")
+            .code(),
+        "token_invalid"
+    );
+
+    // What is still live is the pair the rotation minted, and only that.
+    service
+        .verify_access(rotated.access.token())
+        .expect("the new access token still verifies");
+    service
+        .verify_refresh(rotated.refresh.token())
+        .expect("the new refresh token still verifies");
+}
+
+#[cfg(test)]
+#[test]
+fn a_sweep_never_deletes_a_live_row() {
+    use crate::auth::ScopeSet;
+    use crate::db::Db;
+
+    use super::{TokenOrigin, TokenService};
+
+    let service = TokenService::new(Db::open_in_memory().expect("db"));
+    let device = service.register_device("phone", "ios").expect("device");
+    let pair = service
+        .mint_pair(&device, ScopeSet::device_default(), TokenOrigin::Device)
+        .expect("pair");
+
+    // Nothing is retired yet: neither the access row nor the refresh row may go.
+    let removed = service
+        .prune_dead_tokens(Duration::ZERO)
+        .expect("prune nothing");
+    assert_eq!(removed, 0, "a live pair must survive a sweep");
+    service
+        .verify_access(pair.access.token())
+        .expect("access still verifies");
+    service
+        .verify_refresh(pair.refresh.token())
+        .expect("refresh still verifies");
 }
 
 #[cfg(test)]

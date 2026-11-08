@@ -169,11 +169,17 @@ impl AuthStore {
 
     /// Every token row, retired ones included. Verification needs the retired
     /// rows so it can answer "revoked" instead of "unknown".
+    ///
+    /// Newest first, because a verification hashes until the first match: the
+    /// token a device is using right now is the row minted most recently, so
+    /// this order keeps the common case at one hash instead of one per row.
+    /// It is presentation only - every verifier is salted, so no two rows can
+    /// match the same presented value.
     pub fn token_rows(&self) -> Result<Vec<StoredToken>, AuthError> {
         let rows = self.db.with_conn(|conn| {
             let mut statement = conn.prepare(
                 "SELECT id, device_id, kind, token_hash, scope, expires_at, rotated_at, revoked_at \
-                 FROM auth_tokens ORDER BY created_at, id",
+                 FROM auth_tokens ORDER BY created_at DESC, id",
             )?;
             let mut rows = statement.query([])?;
             let mut out = Vec::new();
@@ -192,6 +198,33 @@ impl AuthStore {
             Ok(out)
         })?;
         Ok(rows)
+    }
+
+    /// Delete the verifier rows that can never match a live bearer again:
+    /// rows revoked, rotated or expired before `retired_before`, and every
+    /// row of a revoked device.
+    ///
+    /// Verification reads every row so a retired token answers "revoked"
+    /// rather than "unknown". That is the right answer, but it makes every
+    /// retired row a hash on every device request, and each refresh mints a
+    /// new pair and retires the old one. Without this sweep the table grows
+    /// without bound and the daemon gets slower the longer it runs. The
+    /// cutoff keeps the final `retired_before` window answerable, which is
+    /// the span an operator's own test sits in; both answers are the same
+    /// `token_invalid` on the wire.
+    pub fn prune_dead_tokens(&self, retired_before: OffsetDateTime) -> Result<usize, AuthError> {
+        let cutoff = format_timestamp(retired_before);
+        let deleted = self.db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM auth_tokens \
+                 WHERE (revoked_at IS NOT NULL AND julianday(revoked_at) < julianday(?1)) \
+                    OR (rotated_at IS NOT NULL AND julianday(rotated_at) < julianday(?1)) \
+                    OR (expires_at IS NOT NULL AND julianday(expires_at) < julianday(?1)) \
+                    OR device_id IN (SELECT id FROM devices WHERE revoked_at IS NOT NULL)",
+                params![cutoff],
+            )
+        })?;
+        Ok(deleted)
     }
 
     /// Retire one token by revocation. `false` when it was already retired.

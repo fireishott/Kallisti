@@ -482,6 +482,19 @@ fn run_serve(
         Err(error) => eprintln!("eris serve: could not settle interrupted scheduled runs: {error}"),
     }
 
+    // Every retired token verifier is one more Argon2 hash on every device
+    // request, because verification scans the rows to answer "revoked" rather
+    // than "unknown". A device that refreshes hourly retires two rows each
+    // time, so the set only grows while the daemon runs; swept here, and again
+    // after each rotation, it stays the tokens that are still live.
+    match eris_host::auth::TokenService::new(db.clone())
+        .prune_dead_tokens(eris_host::auth::token::RETIRED_GRACE)
+    {
+        Ok(0) => {}
+        Ok(count) => eprintln!("eris serve: pruned {count} retired token verifier(s)"),
+        Err(error) => eprintln!("eris serve: could not prune retired token verifiers: {error}"),
+    }
+
     // A refused send used to leave the files it had already written, and their
     // `chat_attachments` rows, with no message to belong to. The request path no
     // longer writes anything it might have to take back, so what is left here is
