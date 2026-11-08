@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 174;
+pub const BUILD: u32 = 175;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -288,6 +288,13 @@ pub const ROUTE_LEARNING_SKILL: &str = "/dashboard/learning/skill";
 /// `POST /dashboard/learning/curator` - run one maintenance pass now.
 pub const ROUTE_LEARNING_CURATOR: &str = "/dashboard/learning/curator";
 
+/// `GET /dashboard/env` and `POST /dashboard/env` - the environment file the
+/// daemon reads at start, and the one form that writes a line into it.
+pub const ROUTE_ENV: &str = "/dashboard/env";
+
+/// `POST /dashboard/env/delete` - remove one variable from the environment file.
+pub const ROUTE_ENV_DELETE: &str = "/dashboard/env/delete";
+
 /// `GET /dashboard/activity` - the audit trail, newest first.
 pub const ROUTE_ACTIVITY: &str = "/dashboard/activity";
 
@@ -358,6 +365,7 @@ pub const ALL_GET_ROUTES: &[&str] = &[
     ROUTE_SETTINGS,
     ROUTE_ACTIVITY,
     ROUTE_BACKUPS,
+    ROUTE_ENV,
     CSS_ROUTE,
 ];
 
@@ -396,6 +404,8 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_TOOLS,
     ROUTE_SETTINGS_PROVIDERS,
     ROUTE_SETTINGS_PROVIDERS_PROBE,
+    ROUTE_ENV,
+    ROUTE_ENV_DELETE,
     ROUTE_SETTINGS_PROVIDERS_ADD,
     ROUTE_SETTINGS_PROVIDERS_EDIT,
     ROUTE_SETTINGS_PROVIDERS_DELETE,

@@ -123,6 +123,18 @@ pub fn remember_env(name: &str, value: &str) {
     }
 }
 
+/// Forget a variable this process was handed after it started.
+///
+/// `remember_env` exists so a value written to `eris.env` resolves without a
+/// restart. Deleting that line again has to undo the same thing, or a removed
+/// credential would go on authenticating turns until the next start - the worst
+/// of both worlds: gone from the file an operator inspects, and still live.
+pub fn forget_env(name: &str) {
+    if let Ok(mut map) = late_env().write() {
+        map.remove(name);
+    }
+}
+
 /// One environment lookup for every `env:` reference this process resolves.
 ///
 /// The late overlay first - a value this process was handed after it started -

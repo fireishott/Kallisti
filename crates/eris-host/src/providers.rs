@@ -336,6 +336,147 @@ fn pasted_key_is_writable(value: &str) -> bool {
         })
 }
 
+/// The longest value the environment editor will write.
+///
+/// A key is a few dozen characters and a certificate is a few kilobytes; anything
+/// past this is a paste accident, and `eris.env` is read by systemd at every start.
+pub const ENV_VALUE_LIMIT: usize = 8 * 1024;
+
+/// The longest name the environment editor will write.
+pub const ENV_NAME_LIMIT: usize = 64;
+
+/// Names an operator form may not write.
+///
+/// `eris.env` is a systemd `EnvironmentFile`, so a line here is a line in the
+/// daemon's own environment at the next start. These are the ones that would
+/// change how the daemon itself runs rather than give a tool a credential: the
+/// shell's own identity, the loader, the logging filter, and every name this
+/// build reads for its own configuration.
+const RESERVED_ENV_NAMES: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "PWD",
+    "OLDPWD",
+    "TERM",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "RUST_LOG",
+    "RUST_BACKTRACE",
+    "RUST_MIN_STACK",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+];
+
+/// Why an operator form's name or value was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvRefusal {
+    /// The field the refusal is about.
+    pub field: &'static str,
+    /// One sentence a person can act on.
+    pub message: String,
+}
+
+/// Whether one name is writable through the environment editor.
+///
+/// A name has to be something a shell would export and this daemon would not read
+/// for itself: letters, digits and underscore, not starting with a digit, and not
+/// one of the reserved ones or a prefix that belongs to this build.
+#[must_use]
+pub fn env_name_refusal(name: &str) -> Option<EnvRefusal> {
+    let refusal = |message: String| {
+        Some(EnvRefusal {
+            field: "env_name",
+            message,
+        })
+    };
+    if name.is_empty() {
+        return refusal("the variable needs a name, such as OPENAI_API_KEY".to_owned());
+    }
+    if name.len() > ENV_NAME_LIMIT {
+        return refusal(format!(
+            "that name is longer than {ENV_NAME_LIMIT} characters"
+        ));
+    }
+    let mut chars = name.chars();
+    let starts_well = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    if !starts_well || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return refusal(format!(
+            "`{name}` is not a variable name: use letters, digits and underscore, and do not start with a digit"
+        ));
+    }
+    let upper = name.to_ascii_uppercase();
+    if RESERVED_ENV_NAMES.contains(&upper.as_str()) {
+        return refusal(format!(
+            "`{name}` is set by the unit that runs this daemon, and a line in this file would shadow it at the next start"
+        ));
+    }
+    for prefix in ["KALLISTI_", "ERIS_", "SYSTEMD_", "LD_", "DYLD_"] {
+        if upper.starts_with(prefix) {
+            return refusal(format!(
+                "`{name}` is in the `{prefix}` namespace, which this build reads for its own configuration"
+            ));
+        }
+    }
+    None
+}
+
+/// Quote one value the way a systemd `EnvironmentFile` reads it back.
+///
+/// Double quotes with backslash escapes are the one form systemd unescapes, and
+/// they are what lets a password with `#`, `$` or a space survive the file. A name
+/// this daemon writes through the provider form stays unquoted because its
+/// character set forbids every character quoting exists for; this is for the
+/// general editor, where the value is the operator's.
+#[must_use]
+pub fn quote_env_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Whether one value can be written through the environment editor.
+#[must_use]
+pub fn env_value_refusal(value: &str) -> Option<EnvRefusal> {
+    if value.is_empty() {
+        return Some(EnvRefusal {
+            field: "env_value",
+            message: "the variable needs a value".to_owned(),
+        });
+    }
+    if value.len() > ENV_VALUE_LIMIT {
+        return Some(EnvRefusal {
+            field: "env_value",
+            message: format!("that value is longer than {ENV_VALUE_LIMIT} bytes"),
+        });
+    }
+    if value.contains('\0') || value.contains('\n') || value.contains('\r') {
+        return Some(EnvRefusal {
+            field: "env_value",
+            message: "a value cannot contain a newline or a NUL: one line, one variable"
+                .to_owned(),
+        });
+    }
+    None
+}
+
 /// Write one `NAME=value` line into the environment file, atomically.
 ///
 /// The whole file is rewritten through a sibling temporary at mode 0600 and
@@ -343,13 +484,96 @@ fn pasted_key_is_writable(value: &str) -> bool {
 /// the next start. An existing line for the same name is replaced rather than
 /// duplicated: systemd takes the last one, and two lines for one name is two
 /// answers in one file.
-fn write_env_entry(env_file: &std::path::Path, name: &str, value: &str) -> std::io::Result<()> {
+pub(crate) fn write_env_entry(
+    env_file: &std::path::Path,
+    name: &str,
+    value: &str,
+) -> std::io::Result<()> {
+    upsert_env_line(env_file, name, &format!("{name}={value}"))
+}
+
+/// Write one `NAME="value"` line, quoting the value.
+///
+/// The general editor takes any value a person can type, so the value is quoted
+/// and escaped rather than restricted: the provider filter above exists because a
+/// pasted key has a narrow alphabet, and making an operator mangle a password to
+/// fit it would be a worse trade.
+pub(crate) fn write_env_secret(
+    env_file: &std::path::Path,
+    name: &str,
+    value: &str,
+) -> std::io::Result<()> {
+    upsert_env_line(env_file, name, &format!("{name}={}", quote_env_value(value)))
+}
+
+/// Remove one `NAME=...` line. `false` when the name was not in the file.
+pub(crate) fn delete_env_entry(
+    env_file: &std::path::Path,
+    name: &str,
+) -> std::io::Result<bool> {
+    let existing = match std::fs::read_to_string(env_file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let mut out = String::with_capacity(existing.len());
+    let mut removed = false;
+    for line in existing.lines() {
+        let is_ours = line
+            .split_once('=')
+            .is_some_and(|(key, _)| key.trim() == name);
+        if is_ours {
+            removed = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !removed {
+        return Ok(false);
+    }
+    write_env_body(env_file, &out)?;
+    Ok(true)
+}
+
+/// Every name in the environment file, in file order, with no values.
+///
+/// Values never leave this module through this function: the page lists what is
+/// set, and a value that reached a render function would be one screenshot away
+/// from a log.
+#[must_use]
+pub fn env_names(env_file: &std::path::Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(env_file) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((key, _)) = trimmed.split_once('=') {
+            let key = key.trim();
+            if !key.is_empty() && !names.iter().any(|seen: &String| seen == key) {
+                names.push(key.to_owned());
+            }
+        }
+    }
+    names
+}
+
+/// Write one rendered `NAME=value` line, replacing any line with that name.
+fn upsert_env_line(
+    env_file: &std::path::Path,
+    name: &str,
+    rendered: &str,
+) -> std::io::Result<()> {
     let existing = match std::fs::read_to_string(env_file) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
     };
-    let mut out = String::with_capacity(existing.len() + value.len() + name.len() + 2);
+    let mut out = String::with_capacity(existing.len() + rendered.len() + 1);
     let mut replaced = false;
     for line in existing.lines() {
         let is_ours = line
@@ -357,9 +581,7 @@ fn write_env_entry(env_file: &std::path::Path, name: &str, value: &str) -> std::
             .is_some_and(|(key, _)| key.trim() == name);
         if is_ours {
             if !replaced {
-                out.push_str(name);
-                out.push('=');
-                out.push_str(value);
+                out.push_str(rendered);
                 out.push('\n');
                 replaced = true;
             }
@@ -369,12 +591,14 @@ fn write_env_entry(env_file: &std::path::Path, name: &str, value: &str) -> std::
         out.push('\n');
     }
     if !replaced {
-        out.push_str(name);
-        out.push('=');
-        out.push_str(value);
+        out.push_str(rendered);
         out.push('\n');
     }
+    write_env_body(env_file, &out)
+}
 
+/// Replace the environment file with `body` through a 0600 sibling and a rename.
+fn write_env_body(env_file: &std::path::Path, body: &str) -> std::io::Result<()> {
     let temp = env_file.with_extension(format!("tmp-{}", std::process::id()));
     {
         use std::io::Write as _;
@@ -385,7 +609,7 @@ fn write_env_entry(env_file: &std::path::Path, name: &str, value: &str) -> std::
             .truncate(true)
             .mode(0o600)
             .open(&temp)?;
-        file.write_all(out.as_bytes())?;
+        file.write_all(body.as_bytes())?;
         file.sync_all()?;
     }
     std::fs::rename(&temp, env_file)

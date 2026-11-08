@@ -46,6 +46,11 @@ mod settings;
 #[cfg(test)]
 mod activity;
 
+/// The environment page: the file it writes, the names it lists, and the
+/// refusals that keep the daemon's own variables out of it.
+#[cfg(test)]
+mod env_page;
+
 /// The learning loop's page and its three controls.
 #[cfg(test)]
 mod learning_page;

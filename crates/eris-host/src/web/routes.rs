@@ -31,7 +31,8 @@ use crate::admin::{
     ROUTE_BACKUPS_RESTORE, ROUTE_CHAT, ROUTE_CHAT_ANSWER, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE,
     ROUTE_CHAT_FILE, ROUTE_CHAT_ID, ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW,
     ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_SORT, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD,
-    ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LEARNING, ROUTE_LEARNING_CURATOR,
+    ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_ENV, ROUTE_ENV_DELETE, ROUTE_JOB_CANCEL,
+    ROUTE_LEARNING, ROUTE_LEARNING_CURATOR,
     ROUTE_LEARNING_SAVE, ROUTE_LEARNING_SKILL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS,
     ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
     ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL,
@@ -57,7 +58,7 @@ use crate::web::chat;
 use crate::web::proxy::ClientContext;
 use crate::web::store;
 use crate::web::templates::{
-    ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
+    ActivityView, EnvRow, EnvView, env_page, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
     DashboardView, DeviceRow, DevicesView, FormError, IssuedCodeView, LearningView,
     SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView, activity_page,
     backups_page, chat_page, dashboard_page, devices_page, error_page, learning_page, login_page,
@@ -141,6 +142,8 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_SCHEDULES, post(save_schedules))
         .route(ROUTE_SETTINGS_SKILLS, post(save_skills))
         .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
+        .route(ROUTE_ENV, get(environment).post(save_environment))
+        .route(ROUTE_ENV_DELETE, post(delete_environment))
         .route(ROUTE_LEARNING, get(learning))
         .route(ROUTE_LEARNING_SAVE, post(save_learning))
         .route(ROUTE_LEARNING_SKILL, post(learning_skill))
@@ -1531,6 +1534,249 @@ async fn devices(
     match build_devices_view(&state) {
         Ok(view) => page(devices_page(&view)),
         Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Environment
+// ---------------------------------------------------------------------------
+//
+// The file this page writes is the one systemd reads at start (`eris.env`), so a
+// line here is a line in the daemon's own environment at the next start. Three
+// claims hold the page together:
+//
+// - the list carries names and never values. Nothing on this surface can read a
+//   value back, so a screenshot, a log line or a page cache cannot carry a key;
+// - a saved value is sealed at mode 0600 and remembered for this run, so the next
+//   provider call resolves it without waiting for a restart;
+// - a removed value leaves the file and the overlay together, so it stops
+//   authenticating on the next call rather than on the next start.
+
+/// `GET /dashboard/env` - the environment file, and the one form that writes it.
+async fn environment(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match build_env_view(&state, &uri) {
+        Ok(view) => page(env_page(&view)),
+        Err(error) => refusal(error),
+    }
+}
+
+/// `POST /dashboard/env` - add or replace one variable.
+///
+/// The name is checked before the value, and both before the file is touched: a
+/// refused form must not leave a half written line behind. The value is never
+/// echoed, logged or audited; the audit row carries the name.
+async fn save_environment(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_env(&state, as_html, error),
+    };
+
+    let name = field(&fields, "env_name").trim().to_owned();
+    let value = field(&fields, "env_value").to_owned();
+
+    if let Some(refusal) = crate::providers::env_name_refusal(&name)
+        .or_else(|| crate::providers::env_value_refusal(&value))
+    {
+        return fail_env(
+            &state,
+            as_html,
+            FormError::new(Some(refusal.field), "env_invalid", refusal.message),
+        );
+    }
+
+    let env_file = state.engine.paths().env_file.clone();
+    if let Err(error) = crate::providers::write_env_secret(&env_file, &name, &value) {
+        return ApiError::internal(
+            request_id.0,
+            format!("the variable could not be written to {}: {error}", env_file.display()),
+        )
+        .into_response();
+    }
+    // The file is a startup mechanism; the overlay is what makes the value work
+    // in the run that wrote it. Both hold the same value, so a restart changes
+    // nothing an operator can observe.
+    crate::oauth::credential::remember_env(&name, &value);
+    if let Err(error) = AuthStore::new(state.engine.db().clone()).audit(
+        "loopback",
+        "environment.set",
+        Some(&name),
+    ) {
+        return ApiError::internal(
+            request_id.0,
+            format!("the variable is saved but the audit row was not: {error}"),
+        )
+        .into_response();
+    }
+
+    if as_html {
+        return see_other_to(format!("{ROUTE_ENV}?saved={name}"));
+    }
+    axum::Json(serde_json::json!({ "ok": true, "name": name })).into_response()
+}
+
+/// `POST /dashboard/env/delete` - remove one variable.
+async fn delete_environment(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_env(&state, as_html, error),
+    };
+    let name = field(&fields, "env_name").trim().to_owned();
+    if name.is_empty() {
+        return fail_env(
+            &state,
+            as_html,
+            FormError::new(Some("env_name"), "env_missing", "no variable was named"),
+        );
+    }
+    let env_file = state.engine.paths().env_file.clone();
+    match crate::providers::delete_env_entry(&env_file, &name) {
+        Ok(true) => {}
+        Ok(false) => {
+            return fail_env(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("env_name"),
+                    "env_unknown",
+                    format!("`{name}` is not in the environment file"),
+                ),
+            );
+        }
+        Err(error) => {
+            return ApiError::internal(
+                request_id.0,
+                format!("the variable could not be removed from {}: {error}", env_file.display()),
+            )
+            .into_response();
+        }
+    }
+    // The overlay is the half that is still live. Dropping it here is what makes
+    // a removal mean something before the next restart.
+    crate::oauth::credential::forget_env(&name);
+    if let Err(error) = AuthStore::new(state.engine.db().clone()).audit(
+        "loopback",
+        "environment.delete",
+        Some(&name),
+    ) {
+        return ApiError::internal(
+            request_id.0,
+            format!("the variable is removed but the audit row was not: {error}"),
+        )
+        .into_response();
+    }
+
+    if as_html {
+        return see_other_to(format!("{ROUTE_ENV}?deleted={name}"));
+    }
+    axum::Json(serde_json::json!({ "ok": true, "name": name })).into_response()
+}
+
+/// The environment page's view: names in the file, plus the names this process
+/// inherited that the file does not carry.
+fn build_env_view(state: &AppState, uri: &Uri) -> Result<EnvView, FormError> {
+    let mut view = EnvView::new(state.engine.state().map_err(|error| form_error(&error))?);
+    view.chrome = state.chrome();
+
+    let env_file = state.engine.paths().env_file.clone();
+    let names = crate::providers::env_names(&env_file);
+
+    let raw = store::settings_get(state.engine.db(), crate::providers::SETTING_REGISTRY)
+        .map_err(|error| db_error(&error))?;
+    let providers = raw
+        .as_deref()
+        .map(crate::providers::parse)
+        .transpose()
+        .map_err(|error| FormError::new(None, "registry_unreadable", error.message))?
+        .unwrap_or_default();
+
+    for name in names {
+        let reference = format!("env:{name}");
+        let used_by = providers
+            .iter()
+            .filter(|provider| provider.key_ref.trim() == reference)
+            .map(|provider| provider.id.clone())
+            .collect();
+        view.rows.push(EnvRow {
+            name,
+            in_file: true,
+            used_by,
+        });
+    }
+
+    // The daemon's own environment, names only: a key that came from the unit
+    // file is real and worth showing, and this page must not claim the file is
+    // the only place a variable can live.
+    let mut inherited: Vec<String> = std::env::vars()
+        .map(|(name, _)| name)
+        .filter(|name| {
+            let upper = name.to_ascii_uppercase();
+            (upper.contains("KEY")
+                || upper.contains("TOKEN")
+                || upper.contains("SECRET")
+                || upper.contains("PASSWORD")
+                || upper.contains("USER"))
+                && !name.starts_with("KALLISTI_")
+                && !view.rows.iter().any(|row| &row.name == name)
+        })
+        .collect();
+    inherited.sort();
+    inherited.dedup();
+    for name in inherited {
+        view.rows.push(EnvRow {
+            name,
+            in_file: false,
+            used_by: Vec::new(),
+        });
+    }
+
+    if let Some(saved) = query_value(uri, "saved") {
+        view.notice = Some(format!("`{saved}` is saved. Its value is not shown again."));
+    } else if let Some(deleted) = query_value(uri, "deleted") {
+        view.notice = Some(format!("`{deleted}` is removed."));
+    }
+    Ok(view)
+}
+
+/// One refused environment form: the page back with the message, or the JSON body.
+fn fail_env(state: &AppState, as_html: bool, error: FormError) -> Response {
+    let status = failure_status(&error.code);
+    if as_html {
+        match build_env_view(state, &Uri::from_static(ROUTE_ENV)) {
+            Ok(mut view) => {
+                view.error = Some(error);
+                page_with_status(env_page(&view), status)
+            }
+            Err(build_error) => refusal(build_error),
+        }
+    } else {
+        refusal(error)
     }
 }
 

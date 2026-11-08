@@ -885,12 +885,14 @@ pub enum Nav {
     Activity,
     /// The archive list, the create button, and the restore form.
     Backups,
+    /// The environment file the daemon reads at start, and the form that writes it.
+    Environment,
 }
 
 impl Nav {
     /// Every entry, in display order. Every one of them is a page: the nav has
     /// no placeholder in it.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Chat,
         Self::Dashboard,
         Self::Sessions,
@@ -899,6 +901,7 @@ impl Nav {
         Self::Learning,
         Self::Activity,
         Self::Backups,
+        Self::Environment,
     ];
 
     /// The path this section is served at.
@@ -913,6 +916,7 @@ impl Nav {
             Self::Learning => crate::admin::ROUTE_LEARNING,
             Self::Activity => crate::admin::ROUTE_ACTIVITY,
             Self::Backups => crate::admin::ROUTE_BACKUPS,
+            Self::Environment => crate::admin::ROUTE_ENV,
         }
     }
 
@@ -928,6 +932,7 @@ impl Nav {
             Self::Learning => "Learning",
             Self::Activity => "Activity",
             Self::Backups => "Backups",
+            Self::Environment => "Environment",
         }
     }
 }
@@ -5291,6 +5296,153 @@ impl DevicesView {
             notice: None,
         }
     }
+}
+
+/// One variable in `eris.env`, as the page lists it.
+///
+/// There is no value field on purpose. Nothing on this surface can read a value
+/// back, so the type that reaches a render function cannot carry one either - a
+/// screenshot or a `dbg!` would have nothing to leak.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvRow {
+    /// The variable name.
+    pub name: String,
+    /// Whether the line is in the file, which is also whether it can be removed
+    /// from this page.
+    pub in_file: bool,
+    /// The provider ids whose registry entry names this variable.
+    pub used_by: Vec<String>,
+}
+
+/// The environment page: what is in the file, and the one form that writes it.
+#[derive(Debug, Clone)]
+pub struct EnvView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every variable, names only.
+    pub rows: Vec<EnvRow>,
+    /// A success line, naming what the redirect just did.
+    pub notice: Option<String>,
+    /// Why the last write was refused.
+    pub error: Option<FormError>,
+}
+
+impl EnvView {
+    /// An empty view for a given state.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            rows: Vec::new(),
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The environment page: the list, the remove buttons, and the form.
+pub fn env_page(view: &EnvView) -> Markup {
+    let body = html! {
+        h1 { "Environment" }
+        p .lede {
+            "The variables this daemon reads from its environment file. A value is written once, "
+            "sealed into the file at mode 0600, and never shown again: this page can list a name "
+            "and cannot read a value, and only the name is ever audited or logged."
+        }
+        (alert_region(view.error.as_ref(), view.notice.as_deref()))
+        section .card aria-labelledby="env-list-heading" {
+            h2 id="env-list-heading" { "In the environment" }
+            @if view.rows.is_empty() {
+                p .small {
+                    "Nothing is set yet. A variable added below is usable by the next provider call "
+                    "and is read by the daemon again at its next start."
+                }
+            } @else {
+                form method="post" action=(crate::admin::ROUTE_ENV_DELETE) novalidate {
+                    table {
+                        thead {
+                            tr {
+                                th { "Name" }
+                                th { "Value" }
+                                th { "Used by" }
+                                th { "Action" }
+                            }
+                        }
+                        tbody {
+                            @for row in &view.rows {
+                                tr {
+                                    td .mono { (row.name) }
+                                    td .small {
+                                        @if row.in_file { "set" } @else { "daemon environment" }
+                                    }
+                                    td .small {
+                                        @if row.used_by.is_empty() {
+                                            "not referenced"
+                                        } @else {
+                                            (row.used_by.join(", "))
+                                        }
+                                    }
+                                    td {
+                                        @if row.in_file {
+                                            button type="submit" class="danger"
+                                                name="env_name" value=(row.name) { "Remove" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    p .small {
+                        "Removing a line deletes the value from the file and from this process at "
+                        "the same time, so whatever needed it fails on its next call instead of "
+                        "using a credential the file no longer lists."
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="env-add-heading" {
+            h2 id="env-add-heading" { "Add or replace a variable" }
+            form method="post" action=(crate::admin::ROUTE_ENV) novalidate {
+                div .field {
+                    label for="env_name" { "Name" }
+                    input type="text" id="env_name" name="env_name" value=""
+                        autocomplete="off" autocapitalize="characters" spellcheck="false"
+                        maxlength=(crate::providers::ENV_NAME_LIMIT) required;
+                    span .hint {
+                        "Letters, digits and underscore, such as ANTHROPIC_API_KEY. A name that is "
+                        "already set is replaced, which is also how you rotate a key."
+                    }
+                }
+                div .field {
+                    label for="env_value" { "Value" }
+                    input type="password" id="env_value" name="env_value" value=""
+                        autocomplete="new-password" spellcheck="false" required;
+                    span .hint {
+                        "A key, a username, a password or a token. It is written quoted, so a `#`, "
+                        "a space and a quote all survive the file. It is never shown again."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save variable" }
+                }
+                p .small {
+                    "The file is read by systemd at the daemon's next start. A value saved now also "
+                    "works immediately: the daemon keeps it for the rest of this run, so a provider "
+                    "call does not need a restart to see it."
+                }
+            }
+        }
+    };
+    shell(
+        "Environment",
+        view.state,
+        Some(Nav::Environment),
+        body,
+        &view.chrome,
+    )
 }
 
 /// The devices page: the table, the one-shot code when there is one, and the
