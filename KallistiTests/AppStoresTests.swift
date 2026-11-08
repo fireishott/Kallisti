@@ -3564,7 +3564,15 @@ final class RefreshCountingBootstrapService: SessionBootstrapServiceProtocol {
         return legacyTokens
     }
 
-    func revokeCurrentSession(accessToken: String?) async throws {}
+    /// The revoke half of the same spy: an unpair that never tells the daemon
+    /// leaves a device row behind on the host.
+    private(set) var revokeCalls = 0
+    private(set) var lastRevokedToken: String?
+
+    func revokeCurrentSession(accessToken: String?) async throws {
+        revokeCalls += 1
+        lastRevokedToken = accessToken
+    }
 }
 
 @Suite("One refresher")
@@ -3633,5 +3641,70 @@ struct OneRefresherTests {
         #expect(bootstrap.refreshCalls == 1)
         let access = await secureStore.retrieve(key: "session.accessToken")
         #expect(access == "legacy-access")
+    }
+}
+
+// MARK: - Unpair
+
+/// Disconnect has to clear every half of the pair and still tell the host.
+///
+/// The reported bug: the Connect Host screen read "No Host" while the phone was
+/// talking to its daemon, and the Disconnect row under it left the device paired.
+/// Two causes, both pinned here - the screen's state came from a relay host row
+/// an Eris daemon never fills, and `clearLocalPairing` deleted the session
+/// accounts while leaving the Eris transport's metadata and daemon address behind.
+@Suite("Unpair")
+struct UnpairTests {
+    @Test @MainActor
+    func disconnectClearsThePairAndTellsTheDaemonWithTheTokenItHeld() async throws {
+        let suiteName = "unpair-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        persistence.savePairedRelayConfiguration(
+            PairedRelayConfiguration(
+                baseURLString: "http://192.168.68.51:7341/v1",
+                hostDisplayName: "fih-ai-host",
+                pairedAt: .now
+            )
+        )
+
+        let secureStore = MockSecureStore()
+        await secureStore.store(key: "session.accessToken", value: "old-access")
+        await secureStore.store(key: "session.refreshToken", value: "old-refresh")
+
+        let bootstrap = RefreshCountingBootstrapService()
+        let sessionStore = AppSessionStore(
+            bootstrapService: bootstrap,
+            syncCoordinator: MockSyncCoordinator(),
+            secureStore: secureStore,
+            persistence: persistence,
+            notificationService: MockNotificationService(),
+            environmentProvider: { .development }
+        )
+        let pairingStore = PairingStore(
+            pairingService: MockPairingService(),
+            sessionStore: sessionStore,
+            persistence: persistence,
+            environmentProvider: { .development },
+            relayBaseURLProvider: { "http://192.168.68.51:7341/v1" }
+        )
+
+        #expect(pairingStore.isPaired, "the fixture starts paired")
+
+        await pairingStore.disconnect()
+
+        // Local state first: the pair is gone whether or not the host answers.
+        #expect(pairingStore.isPaired == false, "the pair is cleared by disconnect")
+        #expect(persistence.loadPairedRelayConfiguration() == nil, "the stored pair is cleared")
+        let access = await secureStore.retrieve(key: "session.accessToken")
+        let refresh = await secureStore.retrieve(key: "session.refreshToken")
+        #expect(access == nil, "the bearer is deleted")
+        #expect(refresh == nil, "the refresh token is deleted")
+
+        // The host is told once, with the bearer the device held before the clear.
+        #expect(bootstrap.revokeCalls == 1, "the daemon is told once")
+        #expect(bootstrap.lastRevokedToken == "old-access", "the pre-clear bearer is what travels")
+        #expect(pairingStore.lastErrorMessage == nil, "a clean revoke says nothing")
     }
 }

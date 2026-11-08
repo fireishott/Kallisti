@@ -214,6 +214,19 @@ final class ErisDaemonStore {
         phase = .unpaired
     }
 
+    /// Forget the remembered daemon address, without touching credentials.
+    ///
+    /// The unpair path deletes the Keychain pair through `KeychainErisTokenStore`,
+    /// but this store also remembers the address in UserDefaults so a relaunch can
+    /// reach the listener without re-reading a QR code. Left behind, that address
+    /// is half a pairing: an app that knows where a daemon is and cannot sign in
+    /// to it. There is no instance to ask here, because the caller may not hold
+    /// one - the address is the only thing it left.
+    static func clearRememberedAddress(_ defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: DefaultsKey.baseURL)
+        defaults.removeObject(forKey: DefaultsKey.lastSession)
+    }
+
     /// One transport per daemon address, kept for the life of the store.
     ///
     /// `ErisClient` is an actor whose refresh is single-flight *within one

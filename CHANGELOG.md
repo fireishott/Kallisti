@@ -24,6 +24,17 @@ One refresher, so a paired device cannot strand itself.
   minted per call), and `AppSessionStore` asks that transport for the bearer instead of
   rotating a copy of its own. `build 149`.
 
+- **Disconnect actually disconnects, and the Connect Host screen tells the truth.**
+  That screen read only the relay-shaped host row, which an Eris daemon never fills,
+  so a paired phone showed "No Host" with a Disconnect row under it. The row also
+  asked the host to revoke first and cleared local state afterwards, so a slow,
+  sleeping or unauthenticated daemon left the screen unchanged and the device still
+  paired. State now comes from the pair itself and shows the daemon address;
+  Disconnect clears both halves of the pair (the session accounts, the Eris metadata
+  and the remembered daemon address) and then tells the host, and says so on screen
+  when the host could not be reached. `build 150`.
+
+
 ## [1.4.15] - 2026-10-27
 
 Two fixes that pair with daemon 1.4.12 build 125.

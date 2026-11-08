@@ -174,6 +174,19 @@ final class AppSessionStore {
         }
     }
 
+    /// Revoke this device on the daemon with a bearer the caller already holds.
+    ///
+    /// `revokeCurrentSession()` reads the bearer at call time, which is right for a
+    /// sign-out that happens before anything is deleted. An unpair clears local
+    /// state first and tells the daemon second, so it has to carry the token it
+    /// held a moment ago: by the time this request runs the Keychain has none.
+    ///
+    /// Throws, so the caller can say the host was not told. The value is never
+    /// logged.
+    func revokeSession(accessToken: String?) async throws {
+        try await bootstrapService.revokeCurrentSession(accessToken: accessToken)
+    }
+
     func clearSession() async {
         await secureStore.delete(key: SecureKeys.accessToken)
         await secureStore.delete(key: SecureKeys.refreshToken)

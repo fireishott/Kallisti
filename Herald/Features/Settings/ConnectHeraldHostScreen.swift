@@ -13,12 +13,12 @@ struct ConnectKallistiHostScreen: View {
             ScrollView {
                 VStack(spacing: Design.Spacing.lg) {
                     hostStatusCard
-                    if hostStore.currentHost == nil {
+                    if !isPaired {
                         setupCard
                     }
                     actionsCard
 
-                    if let errorMessage = hostStore.lastErrorMessage {
+                    if let errorMessage = hostStore.lastErrorMessage ?? pairingStore.lastErrorMessage {
                         errorBanner(message: errorMessage)
                     }
                 }
@@ -75,6 +75,15 @@ struct ConnectKallistiHostScreen: View {
                         icon: "clock",
                         label: host.lastSeenAt?.formatted(date: .abbreviated, time: .shortened) ?? "Just now"
                     )
+                }
+                .padding(.top, Design.Spacing.xs)
+            } else if isPaired, let address = pairedAddress {
+                // A paired daemon fills no relay host row, so the address is the
+                // only detail there is. Showing nothing read as "No Host" with a
+                // Disconnect button under it, which is the shape of a broken page.
+                VStack(spacing: 0) {
+                    Divider().overlay(Design.Colors.divider)
+                    detailRow(icon: "network", label: address)
                 }
                 .padding(.top, Design.Spacing.xs)
             }
@@ -134,12 +143,21 @@ struct ConnectKallistiHostScreen: View {
                     dismiss()
                 }
             } label: {
-                actionRow(
-                    icon: "rectangle.portrait.and.arrow.right",
-                    label: "Disconnect",
-                    color: Design.Colors.danger
-                )
+                if pairingStore.isWorking {
+                    actionRow(
+                        icon: "hourglass",
+                        label: "Disconnecting",
+                        color: Design.Colors.secondaryForeground
+                    )
+                } else {
+                    actionRow(
+                        icon: "rectangle.portrait.and.arrow.right",
+                        label: "Disconnect",
+                        color: Design.Colors.danger
+                    )
+                }
             }
+            .disabled(pairingStore.isWorking)
         }
         .background(Design.Colors.surface)
         .overlay(
@@ -219,7 +237,25 @@ struct ConnectKallistiHostScreen: View {
 
     // MARK: - Status Helpers
 
+    /// Whether this device is paired to a host daemon, whatever the relay host row says.
+    ///
+    /// This screen exists to connect and disconnect the host, so the pair IS the
+    /// state it reports. It used to read only the relay-shaped host row, which an
+    /// Eris daemon never fills, so a phone that was talking to its daemon read "No
+    /// Host" with a Disconnect button underneath it. `isPaired` is the pairing the
+    /// app actually uses; the online check is a second chance for a host row that
+    /// does arrive.
+    private var isPaired: Bool {
+        pairingStore.isPaired || hostStore.connectionState == .online
+    }
+
+    /// The address this device is paired to, when the pair remembers one.
+    private var pairedAddress: String? {
+        pairingStore.pairedRelayConfiguration?.baseURLString
+    }
+
     private var statusColor: Color {
+        if isPaired { return Design.Colors.success }
         switch hostStore.connectionState {
         case .online:
             return Design.Colors.success
@@ -231,6 +267,7 @@ struct ConnectKallistiHostScreen: View {
     }
 
     private var statusIcon: String {
+        if isPaired { return "checkmark.circle.fill" }
         switch hostStore.connectionState {
         case .online:
             return "checkmark.circle.fill"
@@ -244,6 +281,7 @@ struct ConnectKallistiHostScreen: View {
     }
 
     private var statusTitle: String {
+        if isPaired { return "Connected" }
         switch hostStore.connectionState {
         case .online:
             return "Connected"
@@ -257,6 +295,9 @@ struct ConnectKallistiHostScreen: View {
     }
 
     private var statusSubtitle: String {
+        if isPaired {
+            return (pairedAddress.map { "Paired to \($0)" }) ?? "Paired to your Agent host"
+        }
         switch hostStore.connectionState {
         case .online:
             return "Your Agent is ready"
