@@ -5,6 +5,25 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.16] - 2026-11-08
+
+One refresher, so a paired device cannot strand itself.
+
+### Fixed
+
+- **A device no longer loses its pairing to a refresh race.** The daemon retires a
+  refresh token the moment it rotates it, and it rotates on both
+  `/v1/token/refresh` and the legacy `/v1/auth/refresh`. The app ran both lanes: the
+  Eris transport rotated through the device route while `AppSessionStore` rotated the
+  same pair through the legacy spelling. Whichever refreshed second presented a token
+  the daemon had already retired, was answered `401 token_invalid`, and retried five to
+  nine times before the app parked on "Authentication Failed" - and pairing again was
+  the only way back, which is why new codes were being minted daily. Two changes make
+  one refresher: `ErisDaemonStore` now caches one transport per daemon address (the
+  client's refresh is single-flight only inside one instance, and a client was being
+  minted per call), and `AppSessionStore` asks that transport for the bearer instead of
+  rotating a copy of its own. `build 149`.
+
 ## [1.4.15] - 2026-10-27
 
 Two fixes that pair with daemon 1.4.12 build 125.

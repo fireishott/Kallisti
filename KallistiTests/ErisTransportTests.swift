@@ -559,4 +559,53 @@ struct ErisClientTests {
             Issue.record("expected an ErisError, got \(error)")
         }
     }
+
+    /// Two concurrent refreshes on ONE client must rotate once.
+    ///
+    /// `ErisClient` is an actor whose refresh is single-flight inside one
+    /// instance, and the app now caches one instance per daemon address instead
+    /// of minting a client per call. That cache is what turns this per-object
+    /// promise into an app-wide one: the daemon retires each presented refresh
+    /// token, so a burst of 401s that each rotated would leave every lane but the
+    /// first holding a token that can never refresh again.
+    @Test func concurrentRefreshesOnOneClientRotateOnce() async throws {
+        let rotations = ErisStubTurnCounter()
+        let store = InMemoryErisTokenStore(
+            stored: ErisStoredTokens(
+                baseURL: Self.base,
+                tokens: ErisTokenPair(
+                    accessToken: "access-1",
+                    refreshToken: "refresh-1",
+                    deviceID: "device-1",
+                    scopes: ["chat"],
+                    expiresAt: nil
+                )
+            )
+        )
+
+        ErisStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v1/token/refresh" else {
+                return (200, Data("{}".utf8))
+            }
+            _ = rotations.next()
+            // Long enough that the second caller is inside `refresh()` while the
+            // first is still waiting on the socket, which is the shape of a 401
+            // burst when a sleeping daemon wakes.
+            Thread.sleep(forTimeInterval: 0.15)
+            let body = #"{"access_token":"access-2","refresh_token":"refresh-2","expires_at":"2026-12-08T00:00:00Z"}"#
+            return (200, Data(body.utf8))
+        }
+        defer { ErisStubURLProtocol.handler = nil }
+
+        let client = ErisClient(baseURL: Self.base, tokenStore: store, session: Self.stubSession())
+        async let first = client.refresh()
+        async let second = client.refresh()
+        let (one, two) = try await (first, second)
+
+        #expect(one.accessToken == "access-2")
+        #expect(two.accessToken == "access-2")
+        // Incremented once if the two callers shared one rotation, so the next
+        // value is 2 and not 3.
+        #expect(rotations.next() == 2, "one rotation for two concurrent refreshes")
+    }
 }

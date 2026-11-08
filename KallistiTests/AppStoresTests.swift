@@ -3536,3 +3536,102 @@ struct B40ConversationMergeTests {
         #expect(merged?.messages.first?.timestamp == originalTime)
     }
 }
+
+// MARK: - One refresher
+
+@MainActor
+final class RefreshCountingBootstrapService: SessionBootstrapServiceProtocol {
+    private(set) var refreshCalls = 0
+
+    private var legacyTokens: AuthTokens {
+        AuthTokens(
+            accessToken: "legacy-access",
+            refreshToken: "legacy-refresh",
+            expiresAt: .now.addingTimeInterval(600)
+        )
+    }
+
+    func registerDevice(_ request: DeviceRegistrationRequest) async throws -> SessionBootstrapResponse {
+        SessionBootstrapResponse(state: AppSessionState(deviceRegistered: true), tokens: legacyTokens)
+    }
+
+    func loadSession(accessToken: String?) async throws -> AppSessionState {
+        AppSessionState()
+    }
+
+    func refreshAuth(refreshToken: String) async throws -> AuthTokens {
+        refreshCalls += 1
+        return legacyTokens
+    }
+
+    func revokeCurrentSession(accessToken: String?) async throws {}
+}
+
+@Suite("One refresher")
+struct OneRefresherTests {
+    /// A paired store holding a refresh token, plus the spy that watches the
+    /// legacy lane. The Keychain is a mock; nothing here touches a network.
+    @MainActor
+    private func fixture() async -> (AppSessionStore, RefreshCountingBootstrapService, MockSecureStore) {
+        let secureStore = MockSecureStore()
+        await secureStore.store(key: "session.accessToken", value: "old-access")
+        await secureStore.store(key: "session.refreshToken", value: "old-refresh")
+
+        let suiteName = "one-refresher-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let bootstrap = RefreshCountingBootstrapService()
+        let store = AppSessionStore(
+            bootstrapService: bootstrap,
+            syncCoordinator: MockSyncCoordinator(),
+            secureStore: secureStore,
+            persistence: UserDefaultsAppPersistenceStore(defaults: defaults),
+            notificationService: MockNotificationService(),
+            environmentProvider: { .development }
+        )
+        return (store, bootstrap, secureStore)
+    }
+
+    @Test @MainActor
+    func theTransportOwnsRotationAndTheLegacyLaneStaysQuiet() async throws {
+        let (store, bootstrap, secureStore) = await fixture()
+
+        // The Eris transport answered, so it owns the rotation and has already
+        // written the new pair into the shared Keychain accounts.
+        store.tokenRefresher = {
+            AuthTokens(
+                accessToken: "eris-access",
+                refreshToken: "eris-refresh",
+                expiresAt: .now.addingTimeInterval(3600)
+            )
+        }
+
+        await store.refreshAccessTokenIfNeeded()
+
+        #expect(
+            bootstrap.refreshCalls == 0,
+            "the session store must not rotate on /v1/auth/refresh while the Eris transport is the refresher"
+        )
+        let access = await secureStore.retrieve(key: "session.accessToken")
+        let refresh = await secureStore.retrieve(key: "session.refreshToken")
+        #expect(access == "eris-access")
+        #expect(refresh == "eris-refresh")
+    }
+
+    @Test @MainActor
+    func theLegacyLaneIsReachedOnlyWhenNoTransportCanAnswer() async throws {
+        let (store, bootstrap, secureStore) = await fixture()
+
+        // nil means "no paired Eris transport to own this" - an unpaired launch
+        // or a mock environment. There is no second lane to collide with, so the
+        // legacy spelling is still the refresher.
+        store.tokenRefresher = { nil as AuthTokens? }
+
+        await store.refreshAccessTokenIfNeeded()
+
+        #expect(bootstrap.refreshCalls == 1)
+        let access = await secureStore.retrieve(key: "session.accessToken")
+        #expect(access == "legacy-access")
+    }
+}

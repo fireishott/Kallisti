@@ -26,6 +26,21 @@ final class AppSessionStore {
     private let notificationService: any NotificationServiceProtocol
     private let environmentProvider: @MainActor () -> AppEnvironment
 
+    /// The one authority allowed to rotate this device's refresh token.
+    ///
+    /// The daemon retires a refresh token the instant it rotates it, and it
+    /// rotates on BOTH `/v1/token/refresh` and the legacy `/v1/auth/refresh`.
+    /// Two live refreshers therefore cannot both hold that pair: the slower one
+    /// presents a token the daemon has already retired, is answered
+    /// `401 token_invalid`, and the only way back is a new pairing code. The Eris
+    /// transport owns rotation for every request the app makes, so this store
+    /// asks it for the bearer instead of POSTing the legacy spelling itself.
+    ///
+    /// `nil` keeps the legacy call for the cases where no Eris transport can own
+    /// it - a mock environment, or a launch before a daemon is paired - and is
+    /// safe there because in those cases there is no second lane to collide with.
+    var tokenRefresher: (@MainActor () async throws -> AuthTokens?)?
+
     init(
         bootstrapService: any SessionBootstrapServiceProtocol,
         syncCoordinator: any SyncCoordinatorProtocol,
@@ -123,14 +138,27 @@ final class AppSessionStore {
     }
 
     func refreshAccessTokenIfNeeded() async {
-        guard let refreshToken = await currentRefreshToken() else { return }
-
         do {
-            let tokens = try await bootstrapService.refreshAuth(refreshToken: refreshToken)
+            guard let tokens = try await refreshedTokens() else { return }
             try await persist(tokens: tokens)
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+    }
+
+    /// Rotate the bearer through the one lane that owns rotation.
+    ///
+    /// The Eris transport is asked first because it is the only refresher the
+    /// daemon can retire safely: it caches one client, so one rotation is in
+    /// flight at a time. The legacy spelling is the fallback only when no Eris
+    /// transport answered - no paired daemon, or a mock - never as a second
+    /// opinion after a real refusal.
+    private func refreshedTokens() async throws -> AuthTokens? {
+        guard let storedRefreshToken = await currentRefreshToken() else { return nil }
+        if let tokenRefresher, let tokens = try await tokenRefresher() {
+            return tokens
+        }
+        return try await bootstrapService.refreshAuth(refreshToken: storedRefreshToken)
     }
 
     func applyPairedSession(state: AppSessionState, tokens: AuthTokens) async {
@@ -205,10 +233,8 @@ final class AppSessionStore {
     }
 
     private func attemptRefreshAndReload(installationID: UUID) async -> Bool {
-        guard let refreshToken = await currentRefreshToken() else { return false }
-
         do {
-            let tokens = try await bootstrapService.refreshAuth(refreshToken: refreshToken)
+            guard let tokens = try await refreshedTokens() else { return false }
             try await persist(tokens: tokens)
             try await loadAndApplySessionState(installationID: installationID)
             return true

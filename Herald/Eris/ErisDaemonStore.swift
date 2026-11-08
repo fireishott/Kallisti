@@ -67,7 +67,8 @@ final class ErisDaemonStore {
     }
 
     /// A transport for the paired daemon, or nil when none is paired. Callers
-    /// share the store's token store, so a refresh is one piece of state.
+    /// share the store's token store *and* one transport instance, so a refresh
+    /// is one rotation for the whole app rather than one per caller.
     func clientForPairedDaemon() -> ErisClient? {
         guard let baseURL = pairedBaseURL else { return nil }
         return makeClient(baseURL: baseURL)
@@ -205,6 +206,7 @@ final class ErisDaemonStore {
 
     private func dropStoredPair() async {
         await tokenStore.clear()
+        transportCache.removeAll()
         defaults.removeObject(forKey: DefaultsKey.lastSession)
         defaults.removeObject(forKey: DefaultsKey.baseURL)
         sensorUpload?.stop()
@@ -212,8 +214,26 @@ final class ErisDaemonStore {
         phase = .unpaired
     }
 
+    /// One transport per daemon address, kept for the life of the store.
+    ///
+    /// `ErisClient` is an actor whose refresh is single-flight *within one
+    /// instance*. Minting a client per call therefore minted a private
+    /// single-flight guard per call: every concurrent 401 refreshed on its own,
+    /// the daemon retired each refresh token the moment it rotated it, and every
+    /// lane but the first was left presenting a retired token. That is the
+    /// 401 storm that ended on "Authentication Failed" and needed a new pairing
+    /// code. Cache the instance so "single-flight" is a property of the app and
+    /// not of a temporary object.
+    private var transportCache: [String: ErisClient] = [:]
+
     private func makeClient(baseURL: URL) -> ErisClient {
-        ErisClient(baseURL: baseURL, tokenStore: tokenStore, session: session)
+        let key = baseURL.absoluteString
+        if let cached = transportCache[key] {
+            return cached
+        }
+        let client = ErisClient(baseURL: baseURL, tokenStore: tokenStore, session: session)
+        transportCache[key] = client
+        return client
     }
 
     private func remember(address url: URL) {

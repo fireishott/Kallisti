@@ -821,6 +821,32 @@ final class AppContainer {
             return client
         }
 
+        // One refresher, by construction. `AppSessionStore` used to rotate the
+        // device bearer on its own through the legacy `/v1/auth/refresh` lane
+        // while `ErisClient` rotated through `/v1/token/refresh`. The daemon now
+        // rotates on both spellings and retires the presented token at once, so
+        // whichever lane went second presented a retired token, was answered
+        // `401 token_invalid`, and left the app on "Authentication Failed" until
+        // a new pairing code was minted. The Eris client owns rotation for every
+        // request it makes and caches one transport, so the session store asks it
+        // for the bearer and never rotates a second copy.
+        //
+        // A nil answer means there is no paired Eris transport to own the
+        // rotation, which is the only case the legacy spelling still serves.
+        sessionStore.tokenRefresher = { @MainActor in
+            guard let client = await erisHeraldClient.client() else { return nil }
+            let pair = try await client.refresh()
+            var refreshToken = pair.refreshToken ?? ""
+            if refreshToken.isEmpty {
+                refreshToken = await sessionStore.currentRefreshToken() ?? ""
+            }
+            return AuthTokens(
+                accessToken: pair.accessToken,
+                refreshToken: refreshToken,
+                expiresAt: pair.expiresAt ?? .now
+            )
+        }
+
         // Eris attachment bytes. A history row resolves to
         // `GET /v1/attachments/{id}` on the paired daemon, which takes the device
         // bearer. AttachmentService only holds the relay and native tokens, so the
