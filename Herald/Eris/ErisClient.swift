@@ -131,7 +131,7 @@ enum ErisRoute: Equatable, Sendable {
     /// `GET /v1/skills` - the skill library.
     case skills
     /// `GET`, `PUT` or `DELETE /v1/skills/{key}` - one skill's body, rewritten or
-    /// archived.
+    /// deleted.
     ///
     /// The verb rides as data for the same reason `cronJob` carries one: the
     /// daemon binds three verbs to this one path, and a case per verb would spell
@@ -927,15 +927,16 @@ actor ErisClient {
         ) as ErisControlSkillSaved
     }
 
-    /// `DELETE /v1/skills/{key}` - archive one skill.
+    /// `DELETE /v1/skills/{key}` - delete one skill permanently.
     ///
-    /// The daemon moves the body into its archive and answers with where it went,
-    /// so nothing here is a destructive delete and nothing says it is.
-    func deleteControlSkill(key: String) async throws -> ErisControlSkillArchived {
+    /// The daemon removes the skill directory and drops the learning ledger row,
+    /// then answers with the path it destroyed. This is irreversible, so every
+    /// caller has to confirm before it is sent.
+    func deleteControlSkill(key: String) async throws -> ErisControlSkillRemoved {
         try await sendJSON(
             route: .skill(key: key, verb: "DELETE"),
             body: ErisControlEmpty()
-        ) as ErisControlSkillArchived
+        ) as ErisControlSkillRemoved
     }
 
     /// `GET /v1/aux` - the roles, and the ids a picker may choose from.

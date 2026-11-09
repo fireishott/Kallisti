@@ -8,7 +8,7 @@ import Foundation
 /// Reading is universal; writing is not. The relay and DSH transports are
 /// read-only by design, so their affordances are hidden rather than failing. The
 /// Eris control plane is the one transport with a write behind it, and it carries
-/// both a body rewrite (`PUT /v1/skills/{key}`) and an archive move
+/// both a body rewrite (`PUT /v1/skills/{key}`) and a permanent delete
 /// (`DELETE /v1/skills/{key}`).
 @MainActor
 @Observable
@@ -21,7 +21,7 @@ final class SkillsStore {
     /// app invented, so an older daemon still lists.
     struct HeraldSkill: Decodable, Identifiable, Hashable {
         /// The directory name the daemon addresses the skill by. This is the
-        /// identity on the wire, and the only thing a write or an archive may
+        /// identity on the wire, and the only thing a write or a delete may
         /// name.
         ///
         /// It is not the display name. A learned skill can be filed under
@@ -141,7 +141,7 @@ final class SkillsStore {
     var erisSkillsProvider: (@MainActor () async throws -> [HeraldSkill])?
     var erisSkillDetailProvider: (@MainActor (String) async throws -> SkillDetail)?
 
-    /// Eris control-plane writes: a body rewrite and an archive move.
+    /// Eris control-plane writes: a body rewrite and a permanent delete.
     ///
     /// Both are nil on every other transport, and that nil is what hides the
     /// affordances: a relay or DSH connection shows no editor and no swipe action
@@ -155,7 +155,7 @@ final class SkillsStore {
     /// both allow it before an editor is drawn.
     var canEditSkills: Bool { erisSkillSave != nil }
 
-    /// Whether this transport can archive a skill.
+    /// Whether this transport can delete a skill.
     var canDeleteSkills: Bool { erisSkillDelete != nil }
 
     /// Raised when a write is attempted on a transport that can only read.
@@ -271,9 +271,9 @@ final class SkillsStore {
         try await erisSkillSave(key, content)
     }
 
-    /// Archive one skill, then drop the row once the daemon confirmed.
+    /// Delete one skill permanently, then drop the row once the daemon confirmed.
     ///
-    /// The row leaves the list only on a 200, so a refused archive leaves the
+    /// The row leaves the list only on a 200, so a refused delete leaves the
     /// list exactly as it was and the view still has a sentence to show.
     func deleteSkill(key: String) async throws {
         guard let erisSkillDelete else { throw SkillsStoreError.readOnlyTransport }

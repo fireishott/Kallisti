@@ -152,13 +152,13 @@ struct ErisControlSkillSaved: Decodable, Sendable {
 
 /// `DELETE /v1/skills/{key}` response.
 ///
-/// `archived` is the relative path the body moved to, which is what makes the
-/// confirmation wording honest: the skill is moved into the daemon's archive, not
-/// destroyed, and the daemon can restore it.
-struct ErisControlSkillArchived: Decodable, Sendable {
+/// `removed` is the path the daemon destroyed. The skill directory is gone and
+/// its learning ledger row is dropped, so the confirmation wording has to say
+/// that plainly: there is no undo behind it.
+struct ErisControlSkillRemoved: Decodable, Sendable {
     let ok: Bool
     let key: String
-    let archived: String
+    let removed: String
 }
 
 /// `GET /v1/skills`. A library that cannot be read answers `ok: true` with

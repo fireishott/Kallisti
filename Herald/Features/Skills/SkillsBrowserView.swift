@@ -4,11 +4,11 @@ struct SkillsBrowserView: View {
     @Environment(SkillsStore.self) private var skillsStore
 
     /// The row a confirmation is currently about. Held so the dialog can name the
-    /// skill and the archive can be run against the row it was raised for.
-    @State private var pendingArchive: SkillsStore.HeraldSkill?
-    @State private var showArchiveConfirmation = false
-    @State private var archiveError: String?
-    @State private var showArchiveError = false
+    /// skill and the delete can be run against the row it was raised for.
+    @State private var pendingDelete: SkillsStore.HeraldSkill?
+    @State private var showDeleteConfirmation = false
+    @State private var deleteError: String?
+    @State private var showDeleteError = false
 
     var body: some View {
         Group {
@@ -56,15 +56,15 @@ struct SkillsBrowserView: View {
                             }
                         }
                         .swipeActions(edge: .trailing) {
-                            // Only a transport that can archive, and only a skill
+                            // Only a transport that can delete, and only a skill
                             // the daemon called editable. Everywhere else the row
                             // has no swipe at all rather than one that fails.
                             if skillsStore.canDeleteSkills && skill.editable {
                                 Button(role: .destructive) {
-                                    pendingArchive = skill
-                                    showArchiveConfirmation = true
+                                    pendingDelete = skill
+                                    showDeleteConfirmation = true
                                 } label: {
-                                    Label("Archive", systemImage: "archivebox")
+                                    Label("Delete", systemImage: "trash")
                                 }
                             }
                         }
@@ -79,27 +79,28 @@ struct SkillsBrowserView: View {
         }
         .refreshable { await skillsStore.loadSkills(force: true) }
         .task { await skillsStore.loadSkills() }
-        // The wording is the contract: the daemon moves the body into its
-        // archive. Nothing is erased and the daemon can restore it.
+        // The wording is the contract: the daemon destroys the skill directory
+        // and drops its learning ledger row. Nothing is kept, so nothing here
+        // may promise a way back.
         .confirmationDialog(
-            "Archive \(pendingArchive?.name ?? "skill")?",
-            isPresented: $showArchiveConfirmation,
+            "Delete \(pendingDelete?.name ?? "skill")?",
+            isPresented: $showDeleteConfirmation,
             titleVisibility: .visible,
-            presenting: pendingArchive
+            presenting: pendingDelete
         ) { skill in
-            Button("Archive", role: .destructive) {
-                Task { await archive(skill) }
+            Button("Delete", role: .destructive) {
+                Task { await delete(skill) }
             }
             Button("Cancel", role: .cancel) {
-                pendingArchive = nil
+                pendingDelete = nil
             }
         } message: { skill in
-            Text("'\(skill.name)' is moved into the daemon's archive. Nothing is erased, and the skill can be restored from the daemon.")
+            Text("'\(skill.name)' is deleted from the daemon. This cannot be undone.")
         }
-        .alert("Could not archive the skill", isPresented: $showArchiveError) {
-            Button("OK", role: .cancel) { archiveError = nil }
+        .alert("Could not delete the skill", isPresented: $showDeleteError) {
+            Button("OK", role: .cancel) { deleteError = nil }
         } message: {
-            Text(archiveError ?? "")
+            Text(deleteError ?? "")
         }
     }
 
@@ -112,17 +113,17 @@ struct SkillsBrowserView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " / ")
     }
 
-    /// Archive one skill and let the store drop the row.
+    /// Delete one skill and let the store drop the row.
     ///
     /// A refusal is shown rather than swallowed: the row stays, and the sentence
     /// is the daemon's own.
-    private func archive(_ skill: SkillsStore.HeraldSkill) async {
+    private func delete(_ skill: SkillsStore.HeraldSkill) async {
         do {
             try await skillsStore.deleteSkill(key: skill.key)
-            pendingArchive = nil
+            pendingDelete = nil
         } catch {
-            archiveError = SkillsStore.refusal(error)
-            showArchiveError = true
+            deleteError = SkillsStore.refusal(error)
+            showDeleteError = true
         }
     }
 }

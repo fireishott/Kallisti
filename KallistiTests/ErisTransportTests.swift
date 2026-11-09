@@ -561,7 +561,7 @@ struct ErisClientTests {
     }
 }
 
-// MARK: - Skills: editing and archiving (moved from ErisDeviceAPITests.swift)
+// MARK: - Skills: editing and deleting (moved from ErisDeviceAPITests.swift)
 
 /// Stubs every request in this file's transport suite.
 ///
@@ -645,7 +645,7 @@ final class ErisDeviceAPIStub: URLProtocol, @unchecked Sendable {
 /// alphanumerics plus dash, underscore and dot. A learned skill filed under
 /// `pre-theater-dinner-planning` but named "Pre-Theater Dinner Planning" is the
 /// case that fails the moment a client puts the name on the wire, so these pin the
-/// key as the only address a write or an archive may carry.
+/// key as the only address a write or a delete may carry.
 ///
 /// The same suite holds the rest of the editing contract, because both halves are
 /// the same wire: the four fields decode as absent on an older daemon rather than
@@ -699,13 +699,13 @@ struct ErisSkillAddressingTests {
         #expect(rows[0].editable)
     }
 
-    @Test("the save and the archive name the key, never the display name")
-    func writeAndArchiveAddressTheKey() async throws {
+    @Test("the save and the delete name the key, never the display name")
+    func writeAndDeleteAddressTheKey() async throws {
         ErisDeviceAPIStub.reset()
         ErisDeviceAPIStub.handler = { request in
             let body = request.httpMethod == "PUT"
                 ? #"{"ok":true,"key":"pre-theater-dinner-planning","bytes":9}"#
-                : #"{"ok":true,"key":"pre-theater-dinner-planning","archived":".archive/pre-theater-dinner-planning-20261108-210000"}"#
+                : #"{"ok":true,"key":"pre-theater-dinner-planning","removed":".skills/pre-theater-dinner-planning"}"#
             return (200, Data(body.utf8))
         }
         defer { ErisDeviceAPIStub.reset() }
@@ -724,6 +724,29 @@ struct ErisSkillAddressingTests {
             #expect(!entry.1.contains("%20"))
             #expect(!entry.1.contains(" "))
         }
+    }
+
+    /// The delete is a `DELETE` on the key, and its answer is the path the daemon
+    /// removed. The body carries `removed` and nothing else, because the skill
+    /// directory is gone: there is no path left behind to restore from.
+    @Test("the delete removes the skill and reports the path it removed")
+    func deleteReportsTheRemovedPath() async throws {
+        ErisDeviceAPIStub.reset()
+        ErisDeviceAPIStub.handler = { _ in
+            (200, Data(#"{"ok":true,"key":"pre-theater-dinner-planning","removed":".skills/pre-theater-dinner-planning"}"#.utf8))
+        }
+        defer { ErisDeviceAPIStub.reset() }
+
+        let removed = try await Self.client()
+            .deleteControlSkill(key: "pre-theater-dinner-planning")
+        #expect(removed.ok)
+        #expect(removed.key == "pre-theater-dinner-planning")
+        #expect(removed.removed == ".skills/pre-theater-dinner-planning")
+
+        let seen = ErisDeviceAPIStub.snapshot()
+        #expect(seen.count == 1)
+        #expect(seen[0].0 == "DELETE")
+        #expect(seen[0].1 == "/v1/skills/pre-theater-dinner-planning")
     }
 
     /// A daemon that predates the editing lane sends none of the four fields. It
@@ -797,7 +820,7 @@ struct ErisSkillAddressingTests {
 
     /// A skill that is no longer on the daemon refuses with its own sentence too,
     /// so the row stays put and the screen can say why.
-    @Test("an unknown skill surfaces the daemon's sentence on an archive")
+    @Test("an unknown skill surfaces the daemon's sentence on a delete")
     func unknownSkillSurfacesTheDaemonSentence() async throws {
         ErisDeviceAPIStub.reset()
         ErisDeviceAPIStub.handler = { _ in
@@ -807,7 +830,7 @@ struct ErisSkillAddressingTests {
 
         do {
             _ = try await Self.client().deleteControlSkill(key: "ghost")
-            Issue.record("a 404 archive must throw")
+            Issue.record("a 404 delete must throw")
         } catch {
             let eris = try #require(error as? ErisError)
             #expect(eris.status == 404)

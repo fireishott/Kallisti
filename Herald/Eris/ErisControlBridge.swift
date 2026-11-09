@@ -103,7 +103,7 @@ enum ErisControlMapping {
     /// no editor rather than claiming every skill is an operator skill.
     ///
     /// The key is carried always: it is the daemon's own address for the row, and
-    /// the display name is not, which is why every write and archive names this.
+    /// the display name is not, which is why every write and delete names this.
     static func skill(_ wire: ErisControlSkill) -> SkillsStore.HeraldSkill {
         SkillsStore.HeraldSkill(
             key: wire.key,
