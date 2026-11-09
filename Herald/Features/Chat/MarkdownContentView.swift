@@ -90,29 +90,99 @@ struct MarkdownContentView: View {
 
     @ViewBuilder
     private func proseView(_ text: String, isLast: Bool) -> some View {
-        if showCursor && isLast {
-            HStack(alignment: .lastTextBaseline, spacing: 0) {
-                formattedText(text)
-                BlinkingCursor()
+        // Block constructs are not inline markdown, so the attributed-string
+        // parser leaves `##`, `- ` and `1.` on screen as literal syntax. Classify
+        // the lines and render the shape: a heading is a heading, a list is a
+        // list, and the answer reads like the thing that wrote it.
+        let groups = groupProseLines(parseBlockLines(text))
+        VStack(alignment: .leading, spacing: Design.Spacing.xxs) {
+            ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+                let cursor = showCursor && isLast && index == groups.count - 1
+                switch group {
+                case .text(let run):
+                    HStack(alignment: .lastTextBaseline, spacing: 0) {
+                        inlineText(run, font: Design.Typography.body, color: textColor)
+                        if cursor { BlinkingCursor() }
+                    }
+                case .block(let line):
+                    blockLineView(line, cursor: cursor)
+                }
             }
-        } else {
-            formattedText(text)
         }
     }
 
-    private func formattedText(_ text: String) -> Text {
+    @ViewBuilder
+    private func blockLineView(_ line: MarkdownBlockLine, cursor: Bool) -> some View {
+        switch line {
+        case .heading(let level, let text):
+            HStack(alignment: .lastTextBaseline, spacing: 0) {
+                inlineText(text, font: headingFont(level), color: textColor)
+                if cursor { BlinkingCursor() }
+            }
+            .padding(.top, level <= 2 ? Design.Spacing.xs : Design.Spacing.xxs)
+
+        case .bullet(let text, let depth):
+            HStack(alignment: .firstTextBaseline, spacing: Design.Spacing.xs) {
+                Text("\u{2022}")
+                    .font(Design.Typography.body)
+                    .foregroundColor(Design.Colors.secondaryForeground)
+                inlineText(text, font: Design.Typography.body, color: textColor)
+                if cursor { BlinkingCursor() }
+            }
+            .padding(.leading, CGFloat(depth) * Design.Spacing.md)
+
+        case .numbered(let number, let text, let depth):
+            HStack(alignment: .firstTextBaseline, spacing: Design.Spacing.xs) {
+                Text("\(number).")
+                    .font(Design.Typography.body)
+                    .foregroundColor(Design.Colors.secondaryForeground)
+                inlineText(text, font: Design.Typography.body, color: textColor)
+                if cursor { BlinkingCursor() }
+            }
+            .padding(.leading, CGFloat(depth) * Design.Spacing.md)
+
+        case .quote(let text):
+            HStack(alignment: .top, spacing: Design.Spacing.sm) {
+                Rectangle()
+                    .fill(Design.Colors.borderStrong)
+                    .frame(width: 2)
+                inlineText(text, font: Design.Typography.body, color: Design.Colors.secondaryForeground)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+
+        case .rule:
+            Rectangle()
+                .fill(Design.Colors.border)
+                .frame(height: 0.5)
+                .padding(.vertical, Design.Spacing.xs)
+
+        case .blank, .paragraph:
+            // Paragraph and blank lines are grouped into `.text` runs before
+            // this point; these arms exist so the switch stays exhaustive.
+            EmptyView()
+        }
+    }
+
+    private func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1: return .system(size: 20, weight: .semibold, design: .serif)
+        case 2: return .system(size: 17, weight: .semibold, design: .serif)
+        default: return Design.Typography.headline
+        }
+    }
+
+    private func inlineText(_ text: String, font: Font, color: Color) -> Text {
         if let attributed = try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
             return Text(attributed)
-                .font(Design.Typography.body)
-                .foregroundColor(textColor)
-        } else {
-            return Text(text)
-                .font(Design.Typography.body)
-                .foregroundColor(textColor)
+                .font(font)
+                .foregroundColor(color)
         }
+        return Text(text)
+            .font(font)
+            .foregroundColor(color)
     }
 
     // MARK: - Inline Image

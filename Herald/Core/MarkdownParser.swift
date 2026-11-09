@@ -334,3 +334,131 @@ private func parseMarkdownWithoutThinking(_ content: String, isStreaming: Bool =
 
     return segments
 }
+
+// MARK: - Block Lines
+
+/// One line of prose, classified by the block construct it starts with.
+///
+/// `AttributedString(markdown:)` in `.inlineOnlyPreservingWhitespace` mode
+/// deliberately leaves block markers (headings, list dashes, quotes) as literal
+/// characters. Prose therefore has to be split into lines here so the view can
+/// render the shape instead of printing the syntax. The parser segment boundaries
+/// (tables, code, images) are unchanged; this only classifies the prose between
+/// them.
+enum MarkdownBlockLine: Equatable {
+    case heading(level: Int, text: String)
+    case bullet(text: String, depth: Int)
+    case numbered(number: String, text: String, depth: Int)
+    case quote(text: String)
+    case rule
+    case paragraph(String)
+    case blank
+}
+
+/// Classifies every line of one prose segment.
+func parseBlockLines(_ prose: String) -> [MarkdownBlockLine] {
+    prose.components(separatedBy: "\n").map(classifyBlockLine)
+}
+
+private func classifyBlockLine(_ line: String) -> MarkdownBlockLine {
+    let body = String(line.drop { $0 == " " || $0 == "\t" })
+    let depth = min(3, (line.count - body.count) / 2)
+    let trimmed = body.trimmingCharacters(in: .whitespaces)
+    if trimmed.isEmpty { return .blank }
+
+    // Heading: one to six `#` followed by whitespace.
+    let hashes = body.prefix { $0 == "#" }.count
+    if (1...6).contains(hashes) {
+        let afterHashes = body.dropFirst(hashes)
+        if let first = afterHashes.first, first == " " || first == "\t" {
+            return .heading(
+                level: hashes,
+                text: String(afterHashes).trimmingCharacters(in: .whitespaces)
+            )
+        }
+    }
+
+    // Horizontal rule: three or more of the same marker, spaces ignored.
+    let ruleMarks = trimmed.filter { $0 != " " }
+    if ruleMarks.count >= 3,
+       let mark = ruleMarks.first,
+       ruleMarks.allSatisfy({ $0 == mark }),
+       "-*_".contains(mark) {
+        return .rule
+    }
+
+    // Quote: `>` at the start of the line, with or without a space.
+    if body.hasPrefix(">") {
+        let after = body.dropFirst()
+        if after.isEmpty || after.first == " " || after.first == "\t" {
+            return .quote(text: String(after).trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    // Bullet: `-`, `*` or `+` followed by whitespace.
+    if let first = body.first, "-*+".contains(first) {
+        let after = body.dropFirst()
+        if let spacer = after.first, spacer == " " || spacer == "\t" {
+            return .bullet(
+                text: String(after).trimmingCharacters(in: .whitespaces),
+                depth: depth
+            )
+        }
+    }
+
+    // Ordered item: one to three digits, then `.` or `)`, then whitespace.
+    let digits = body.prefix { $0.isNumber }
+    if (1...3).contains(digits.count) {
+        let afterDigits = body.dropFirst(digits.count)
+        if let punctuation = afterDigits.first, punctuation == "." || punctuation == ")" {
+            let afterPunctuation = afterDigits.dropFirst()
+            if let spacer = afterPunctuation.first, spacer == " " || spacer == "\t" {
+                return .numbered(
+                    number: String(digits),
+                    text: String(afterPunctuation).trimmingCharacters(in: .whitespaces),
+                    depth: depth
+                )
+            }
+        }
+    }
+
+    return .paragraph(line)
+}
+
+/// A renderable unit of prose: one or more paragraph lines that flow as a single
+/// text run, or one structural block that owns its own layout.
+///
+/// Paragraph lines are grouped so an ordinary paragraph still renders as one
+/// text with its own line spacing. Block constructs are what break the run.
+enum MarkdownProseGroup: Equatable {
+    case text(String)
+    case block(MarkdownBlockLine)
+}
+
+/// Coalesces classified lines into render groups.
+func groupProseLines(_ lines: [MarkdownBlockLine]) -> [MarkdownProseGroup] {
+    var groups: [MarkdownProseGroup] = []
+    var run: [String] = []
+
+    func flushRun() {
+        guard !run.isEmpty else { return }
+        groups.append(.text(run.joined(separator: "\n")))
+        run = []
+    }
+
+    for line in lines {
+        switch line {
+        case .paragraph(let text):
+            run.append(text)
+        case .blank:
+            // Keep the paragraph break inside the run; a blank line between
+            // paragraphs is still prose, not a layout block of its own.
+            run.append("")
+        default:
+            flushRun()
+            groups.append(.block(line))
+        }
+    }
+    flushRun()
+    return groups
+}

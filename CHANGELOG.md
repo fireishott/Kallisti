@@ -11,6 +11,13 @@ One refresher, so a paired device cannot strand itself.
 
 ### Fixed
 
+- **Chat prose renders the markdown it is given.** Headings, bullet and numbered
+  lists, quotes and rules were going through the inline-only attributed-string pass,
+  which leaves `## `, `- ` and `1.` on screen as literal syntax; table cells never
+  parsed their links at all. Prose is now classified line by line: headings get
+  heading type, lists get a bullet or a number, quotes get a rule, and table cells
+  parse the same inline markdown as the body. `build 155`.
+
 - **A device no longer loses its pairing to a refresh race.** The daemon retires a
   refresh token the moment it rotates it, and it rotates on both
   `/v1/token/refresh` and the legacy `/v1/auth/refresh`. The app ran both lanes: the
