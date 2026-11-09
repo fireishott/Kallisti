@@ -162,7 +162,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
             ROUTE_SKILLS_SAVE,
             post(save_skill).layer(DefaultBodyLimit::max(SKILL_FORM_BYTES)),
         )
-        .route(ROUTE_SKILLS_DELETE, post(archive_skill))
+        .route(ROUTE_SKILLS_DELETE, post(delete_skill))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
         .route(ROUTE_SESSION, get(session_detail))
@@ -1519,13 +1519,13 @@ fn saved_skill_path(key: &str) -> String {
     format!("{ROUTE_SKILLS}?saved=write&edit={key}")
 }
 
-/// The redirect after one skill is archived.
+/// The redirect after one skill is deleted.
 #[must_use]
-fn archived_skill_path(archived: &str) -> String {
-    format!("{ROUTE_SKILLS}?saved=archived&archived={archived}")
+fn deleted_skill_path(removed: &str) -> String {
+    format!("{ROUTE_SKILLS}?saved=deleted&removed={removed}")
 }
 
-/// `GET /dashboard/skills` - the library, one editor, and the archive button.
+/// `GET /dashboard/skills` - the library, one editor, and the delete button.
 ///
 /// `?edit=<key>` names the skill in the editor; without it the first skill in the
 /// list is, because a page with no editor would make every save a second request.
@@ -1540,9 +1540,9 @@ async fn skills_page_handler(
     }
     let notice = match query.get("saved").map(String::as_str) {
         Some("write") => Some("The skill file is saved.".to_owned()),
-        Some("archived") => Some(match query.get("archived") {
-            Some(path) => format!("The skill is archived at `{path}`. Nothing was deleted."),
-            None => "The skill is archived under the library, so nothing was deleted.".to_owned(),
+        Some("deleted") => Some(match query.get("removed") {
+            Some(path) => format!("The skill is deleted. `{path}` is gone."),
+            None => "The skill is deleted.".to_owned(),
         }),
         _ => None,
     };
@@ -1610,7 +1610,7 @@ async fn save_skill(
 /// carries `confirm=true` and calls [`crate::skills::delete`], which is the same
 /// function `DELETE /v1/skills/{key}` calls. A confirmation is a page state rather
 /// than a script, so it works with JavaScript off.
-async fn archive_skill(
+async fn delete_skill(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
     headers: HeaderMap,
@@ -1637,17 +1637,17 @@ async fn archive_skill(
         .ok()
         .flatten();
     match crate::skills::delete(state.engine.db(), stored.as_deref(), &key) {
-        Ok(archived) => {
-            let detail = format!("archive {key} -> {archived}");
+        Ok(removed) => {
+            let detail = format!("delete {key} ({removed})");
             if let Err(error) =
                 state
                     .engine
                     .auth()
-                    .audit("loopback", "skills.archive", Some(&detail))
+                    .audit("loopback", "skills.delete", Some(&detail))
             {
-                return audit_failure(&request_id.0, "skills.archive", error);
+                return audit_failure(&request_id.0, "skills.delete", error);
             }
-            see_other_to(archived_skill_path(&archived))
+            see_other_to(deleted_skill_path(&removed))
         }
         Err(error) => fail_skills(&state, as_html, skill_form_error(error), None),
     }

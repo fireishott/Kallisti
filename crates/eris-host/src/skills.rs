@@ -685,24 +685,22 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), SkillError> {
     })
 }
 
-/// Remove one skill from the library by moving it into `.archive/`.
+/// Delete one skill from the library, for real.
 ///
-/// This is the whole of a delete: nothing is unlinked, because the invariant this
-/// daemon keeps is that anything that stopped being a skill is still a file on
-/// disk. The move is [`crate::learning::archive`], which already stamps the
-/// directory and suffixes a collision, so there is one implementation of it.
+/// The directory and its `SKILL.md` are removed from disk, and the ledger row is
+/// dropped so the curator and the learning loop cannot file the key back. This is
+/// irreversible: the `.archive/` directory is the curator's ageing attic, not a
+/// trash can, and [`crate::learning::restore`] has nothing to put back once this
+/// has run. An operator who wants a copy keeps one before pressing the button.
 ///
-/// The ledger row is dropped rather than marked archived. An archived row is what
-/// the curator and the review worker look at when they consider a key, and a row
-/// that still exists is a key they can write again; forgetting it is what makes
-/// the deletion stick. The directory in `.archive/` is the undo, and
-/// [`crate::learning::restore`] is the way back.
+/// The ledger row goes first. A row that outlives its directory is a key the
+/// learning loop may write again, which would look like a delete that failed.
 ///
 /// # Errors
 ///
 /// [`SkillError::KeyInvalid`], [`SkillError::Unknown`] when the key names nothing
-/// in the library, [`SkillError::Symlink`], [`SkillError::Io`], or
-/// [`SkillError::Db`] when the ledger row cannot be dropped.
+/// in the library, [`SkillError::Symlink`], [`SkillError::Io`] when the directory
+/// cannot be removed, or [`SkillError::Db`] when the ledger row cannot be dropped.
 pub fn delete(db: &Db, stored_dir: Option<&str>, key: &str) -> Result<String, SkillError> {
     let key = key.trim();
     if !valid_key(key) {
@@ -717,25 +715,15 @@ pub fn delete(db: &Db, stored_dir: Option<&str>, key: &str) -> Result<String, Sk
             key: key.to_owned(),
         });
     }
-    directory_in_library(&dir, key)?;
-    let shelf =
-        crate::learning::Shelf::new(dir.clone(), crate::learning::Shelf::history_beside(db));
-    let archived = crate::learning::archive(&shelf, key).map_err(|error| match error {
-        crate::learning::LearningError::Refused(_) => SkillError::Unknown {
-            key: key.to_owned(),
-        },
-        other => SkillError::Io {
-            path: dir.join(key).display().to_string(),
-            detail: other.to_string(),
-        },
-    })?;
+    let target = directory_in_library(&dir, key)?;
     if crate::learning::usage(db, key).ok().flatten().is_some() {
         crate::learning::forget(db, key)?;
     }
-    // The page and the phone both want a path they can print, and a path relative
-    // to the library is the one that stays short and carries no home directory.
-    let relative = archived.strip_prefix(&dir).unwrap_or(&archived);
-    Ok(relative.display().to_string())
+    std::fs::remove_dir_all(&target).map_err(|error| SkillError::Io {
+        path: target.display().to_string(),
+        detail: error.to_string(),
+    })?;
+    Ok(target.display().to_string())
 }
 
 /// The tool name, in one place because the spec and the dispatcher must agree.
@@ -1217,27 +1205,21 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn deleting_a_skill_moves_it_into_the_archive_and_out_of_the_list() {
+    fn deleting_a_skill_removes_its_directory_from_disk() {
         let (_dir, library) = scratch();
         write_skill(&library, "deploy", "description: Ship it", "steps");
         let db = db();
         let raw = library.display().to_string();
 
-        let archived = delete(&db, Some(&raw), "deploy").expect("the delete");
+        let removed = delete(&db, Some(&raw), "deploy").expect("the delete");
         assert!(
-            archived.starts_with(crate::learning::ARCHIVE_DIR),
-            "the answer is a path under .archive: {archived}"
+            removed.ends_with("/deploy"),
+            "the answer names the directory that went: {removed}"
         );
+        assert!(!library.join("deploy").exists(), "the directory is gone");
         assert!(
-            archived.starts_with(&format!("{}/deploy-", crate::learning::ARCHIVE_DIR)),
-            "the archived directory carries the key and a stamp: {archived}"
-        );
-        assert!(!library.join("deploy").exists(), "the skill is out");
-        let moved = library.join(&archived);
-        assert!(moved.is_dir(), "the directory still exists: {archived}");
-        assert!(
-            moved.join(FILE_NAME).is_file(),
-            "the file came with it: {archived}"
+            !library.join(crate::learning::ARCHIVE_DIR).exists(),
+            "a delete is not an archive: nothing is left in .archive/"
         );
 
         let (skills, _) = list(&db, Some(&raw)).expect("the library");
@@ -1245,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_learned_skill_drops_its_ledger_row() {
+    fn deleting_a_learned_skill_drops_its_ledger_row_and_its_files() {
         let (_dir, library) = scratch();
         write_skill(&library, "learned-one", "description: Learned", "steps");
         let db = db();
@@ -1265,6 +1247,10 @@ mod tests {
                 .expect("db")
                 .is_none(),
             "the row is dropped, so the loop cannot grow the skill back"
+        );
+        assert!(
+            !library.join("learned-one").exists(),
+            "a learned skill is deleted for real, not archived"
         );
     }
 

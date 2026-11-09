@@ -7115,7 +7115,7 @@ async fn a_skill_write_replaces_the_body_and_refuses_what_it_cannot_take() {
 }
 
 #[tokio::test]
-async fn deleting_a_skill_archives_it_and_names_the_path() {
+async fn deleting_a_skill_removes_it_and_names_the_path() {
     let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
     let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
     let (_dir, library) = skill_library(&harness);
@@ -7129,17 +7129,17 @@ async fn deleting_a_skill_archives_it_and_names_the_path() {
     let body = response.json();
     assert_eq!(body["ok"], true);
     assert_eq!(body["key"], "deploy");
-    let archived = body["archived"]
+    let removed = body["removed"]
         .as_str()
-        .expect("the answer names where it went");
+        .expect("the answer names what was removed");
     assert!(
-        archived.starts_with(".archive/deploy-"),
-        "the path is relative to the library and stamped: {archived}"
+        removed.ends_with("/deploy"),
+        "the path names the skill's own directory: {removed}"
     );
-    assert!(!library.join("deploy").exists(), "it left the library");
+    assert!(!library.join("deploy").exists(), "the directory is gone");
     assert!(
-        library.join(archived).join("SKILL.md").is_file(),
-        "the directory still exists at {archived}"
+        !library.join(eris_host::learning::ARCHIVE_DIR).exists(),
+        "a delete is not an archive: nothing lands in .archive/"
     );
 
     // The list no longer carries it.

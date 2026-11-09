@@ -4928,17 +4928,18 @@ pub fn skills_page(view: &SkillsView) -> Markup {
         (alert_region(error, view.notice.as_deref()))
         @if let Some(key) = &view.confirming {
             section .card aria-labelledby="skills-confirm" {
-                h2 id="skills-confirm" { "Archive " code { (key) } "?" }
+                h2 id="skills-confirm" { "Delete " code { (key) } "?" }
                 p {
-                    "The directory moves into " code { ".archive/" } " under the library and the "
-                    "skill leaves the list and the model's catalog. Nothing is deleted: the file "
-                    "stays on disk, and the Learning page's restore is the way back."
+                    "This deletes " code { (key) } " and nothing else: its own directory under the "
+                    "library, with its " code { "SKILL.md" } " inside it. The library and every "
+                    "other skill stay where they are. It cannot be undone, and for a learned skill "
+                    "the ledger row goes too, so the learning loop cannot write it back."
                 }
                 div .actions {
                     form method="post" action=(crate::admin::ROUTE_SKILLS_DELETE) {
                         input type="hidden" name="key" value=(key);
                         input type="hidden" name="confirm" value="true";
-                        button .danger type="submit" { "Move it to .archive/" }
+                        button .danger type="submit" { "Delete it" }
                     }
                     a .button.secondary href=(crate::admin::ROUTE_SKILLS) { "Keep it" }
                 }

@@ -113,18 +113,20 @@ is not in your hand.
   per skill holding a `SKILL.md`. The prompt carries names and descriptions only;
   the model calls `read_skill` to pull one in when the task fits, on the dashboard
   and the phone. Each skill has its own switch.
-- **Editing and archiving a skill.** A skill can be rewritten and removed from the
+- **Editing and deleting a skill.** A skill can be rewritten and deleted from the
   daemon, the dashboard and the phone, because a procedure that has gone wrong is
   worse than no procedure. `PUT /v1/skills/{key}` replaces the whole `SKILL.md`
   atomically: a temporary file in the skill's own directory, then a rename, so a
   crash leaves the previous version intact. It refuses a key that is not a slug, a
   blank body, a body over 64 KiB, and a symlinked skill directory or file, because a
   rename through a link writes the link's target instead of the skill. `DELETE
-  /v1/skills/{key}` moves the directory into `.archive/` and is therefore a delete
-  the operator can undo; for a learned skill it also drops the ledger row, which is
-  what stops the curator or the learning loop filing it straight back. Both verbs
-  are `admin`-only, and the dashboard page at `/dashboard/skills` is the same two
-  calls behind the session cookie, with no JavaScript.
+  /v1/skills/{key}` deletes that one skill: its own directory under the library, with
+  its file, and nothing else. The library and every other skill are untouched, and
+  the removal is permanent, so for a learned skill the ledger row goes too, which is
+  what stops the curator or the learning loop writing it back. Both verbs are
+  `admin`-only, and the dashboard page at `/dashboard/skills` is the same two calls
+  behind the session cookie, with a per-skill editor, a per-skill delete that asks
+  twice, and no JavaScript.
 - **A learning loop.** When an answer settles, a background worker reviews the
   exchange once, with no tools, and writes a class-level procedure into the library
   only when it taught something durable. It creates and appends, and never edits a
@@ -361,19 +363,20 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 
-Shipped and running: **Kallisti-Eris 1.4.15, build 175**, with the cron scheduler and
+Shipped and running: **Kallisti-Eris 1.4.15, build 176**, with the cron scheduler and
 the skills library switched on. The web client is server-rendered HTML with an inlined
 stylesheet and one script, so a transcript renders on a browser with no scripting and a
 turn that is already running can be reattached to.
 
-Build 175 is the skills library becoming editable. A procedure can be rewritten whole
-from the dashboard or the phone and removed into `.archive/`, a learned skill included,
-without the curator or the learning loop bringing it back. The same build puts a
-ceiling on the round budget: an ordinary question keeps the operator's `tool_rounds`,
-and only a turn whose message names a long job is raised, up to a
-`goal_rounds_ceiling` the operator sets in Settings. Before that, every non-greeting
-turn was raised to 60 rounds, so a question that needed no tools could spend a
-half-hour doing them.
+Build 175 opened the skills library for editing, and build 176 made the delete a real
+one. A procedure can be rewritten whole from the dashboard or the phone, and deleted
+outright: that skill's own directory and its `SKILL.md`, with the library and every
+other skill left alone. A learned skill takes its ledger row with it, so the curator
+and the learning loop cannot write it back. The same build puts a ceiling on the round
+budget: an ordinary question keeps the operator's `tool_rounds`, and only a turn whose
+message names a long job is raised, up to a `goal_rounds_ceiling` the operator sets in
+Settings. Before that, every non-greeting turn was raised to 60 rounds, so a question
+that needed no tools could spend a half-hour doing them.
 
 The last eight builds are mostly the transcript. A conversation is a fixed box the size
 of the viewport with the transcript as its only scroller, so the composer cannot end up

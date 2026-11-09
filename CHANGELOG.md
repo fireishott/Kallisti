@@ -6,21 +6,23 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
-- **A skill can be rewritten and removed.** The library was read-only: the daemon
+- **A skill can be rewritten and deleted.** The library was read-only: the daemon
   listed a skill and served its body, the dashboard had switches and a directory, and
   the phone could only browse. So a procedure that had gone wrong could not be fixed,
   and one that should not exist could not be taken out. `PUT /v1/skills/{key}` now
   replaces the whole `SKILL.md` through a temporary file in the skill's own directory
   and a rename, and refuses a key that is not a slug, a blank body, a body over 64 KiB,
   and a symlinked directory or file, since a rename through a link writes the link's
-  target. `DELETE /v1/skills/{key}` moves the directory into `.archive/` rather than
-  unlinking it, so the removal is undoable, and it drops the ledger row for a learned
-  skill, which is what stops the curator and the learning loop filing it back. Both
+  target. `DELETE /v1/skills/{key}` deletes that one skill for good: its own directory
+  and its file, with the library and every other skill untouched, and it drops the
+  ledger row for a learned skill, which is what stops the curator and the learning
+  loop writing it back. An archive that could be undone was shipped in `build 175` and
+  replaced in `build 176`; there is no undo now, which is what a delete means. Both
   verbs are `admin`-only on the device API, and `/dashboard/skills` is the same two
-  calls behind the session cookie with an editor, a two-press archive and no
-  JavaScript. `GET /v1/skills` now says whether each skill is the operator's or
-  learned, whether it is active, stale or archived, whether it is pinned, and whether
-  it can be rewritten from here. `build 175`.
+  calls behind the session cookie with a per-skill editor, a per-skill delete that
+  asks twice, and no JavaScript. `GET /v1/skills` now says whether each skill is the
+  operator's or learned, whether it is active, stale or archived, whether it is
+  pinned, and whether it can be rewritten from here. `build 176`.
 
 - **A question no longer gets a long job's budget.** A turn "carried a goal" unless it
   was small talk, and a goal turn was raised to sixty rounds, so the operator's

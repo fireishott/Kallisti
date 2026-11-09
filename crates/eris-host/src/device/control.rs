@@ -855,12 +855,12 @@ pub async fn skill_write(
     }
 }
 
-/// `DELETE /v1/skills/{key}` - archive one skill and drop its ledger row.
+/// `DELETE /v1/skills/{key}` - delete one skill for good and drop its ledger row.
 ///
-/// Nothing is unlinked. The directory moves into `.archive/` under the library,
-/// which is the daemon's whole definition of a delete, and the answer names the
-/// path it landed on so a client can state that the skill was archived rather
-/// than destroyed.
+/// The directory and its `SKILL.md` are removed from disk. This is not an archive
+/// move: `.archive/` is the curator's ageing attic, and nothing about a delete is
+/// reversible. The answer names the directory that went, so a client can say what
+/// was destroyed rather than imply it can be restored.
 pub async fn skill_delete(
     State(service): State<DeviceService>,
     Path(key): Path<String>,
@@ -876,15 +876,15 @@ pub async fn skill_delete(
     let engine = service.engine();
     let stored = stored_skill_dir(engine);
     match skills::delete(engine.db(), stored.as_deref(), &key) {
-        Ok(archived) => {
-            let detail = format!("archive {key} -> {archived}");
+        Ok(removed) => {
+            let detail = format!("delete {key} ({removed})");
             if let Err(error) = audit(&service, token.device_id(), AUDIT_SKILLS, &detail) {
                 return error.into_response();
             }
             axum::Json(serde_json::json!({
                 "ok": true,
                 "key": key,
-                "archived": archived,
+                "removed": removed,
             }))
             .into_response()
         }

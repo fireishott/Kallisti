@@ -85,7 +85,7 @@ fn the_page_lists_a_skill_with_its_editor_and_its_delete_control() {
 }
 
 #[test]
-fn a_post_edits_the_file_and_a_second_post_archives_the_skill() {
+fn a_post_edits_the_file_and_a_second_post_deletes_the_skill() {
     let (_dir, _engine, app, cookie, library) = app_with_library();
     seed_skill(&library, "deploy", "Deploy", "Ship it.", "1. old step");
 
@@ -113,8 +113,8 @@ fn a_post_edits_the_file_and_a_second_post_archives_the_skill() {
     ));
     assert!(page.body.contains("Edited in the page."), "{}", page.body);
 
-    // The first delete press only asks: nothing moves, and the page says what a
-    // delete does here.
+    // The first delete press only asks: nothing is removed, and the page says
+    // exactly what a delete does here.
     let ask = block_on(send(
         &app,
         Call::post(ROUTE_SKILLS_DELETE, "key=deploy")
@@ -122,10 +122,20 @@ fn a_post_edits_the_file_and_a_second_post_archives_the_skill() {
             .cookie(Some(&cookie)),
     ));
     assert_eq!(ask.status, StatusCode::OK, "{}", ask.body);
-    assert!(ask.body.contains("Archive"), "{}", ask.body);
+    assert!(ask.body.contains("skills-confirm"), "{}", ask.body);
     assert!(
-        ask.body.contains("Move it to .archive/"),
-        "the confirmation names the move: {}",
+        ask.body.contains(">Delete ") || ask.body.contains("Delete <code>"),
+        "the confirmation is titled a delete: {}",
+        ask.body
+    );
+    assert!(
+        ask.body.contains("and nothing else"),
+        "the confirmation says the library is not the target: {}",
+        ask.body
+    );
+    assert!(
+        ask.body.contains("cannot be undone"),
+        "the confirmation says it is permanent: {}",
         ask.body
     );
     assert!(
@@ -133,7 +143,7 @@ fn a_post_edits_the_file_and_a_second_post_archives_the_skill() {
         "the first press writes nothing"
     );
 
-    // The second press archives it and returns to the list.
+    // The second press deletes it and returns to the list.
     let confirm = block_on(send(
         &app,
         Call::post(ROUTE_SKILLS_DELETE, "key=deploy&confirm=true")
@@ -143,19 +153,15 @@ fn a_post_edits_the_file_and_a_second_post_archives_the_skill() {
     assert_eq!(confirm.status, StatusCode::SEE_OTHER, "{}", confirm.body);
     let location = confirm.location().unwrap_or_default();
     assert!(location.starts_with(ROUTE_SKILLS), "{location}");
-    assert!(location.contains("saved=archived"), "{location}");
+    assert!(location.contains("saved=deleted"), "{location}");
     assert!(
         !library.join("deploy").exists(),
         "the skill left the library"
     );
-    let archive = library.join(ARCHIVE_DIR);
-    let moved: Vec<String> = std::fs::read_dir(&archive)
-        .expect("the archive directory")
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(moved.len(), 1, "{moved:?}");
-    assert!(moved[0].starts_with("deploy-"), "{moved:?}");
+    assert!(
+        !library.join(ARCHIVE_DIR).exists(),
+        "a delete is not an archive: nothing lands in .archive/"
+    );
 
     let page = block_on(send(
         &app,
