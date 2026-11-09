@@ -61,6 +61,12 @@ fn the_learning_page_lists_learned_skills_and_reviews() {
     assert!(page.contains("Ship behind the guard."), "{page}");
     assert!(page.contains("the operator corrected the order"), "{page}");
     assert!(page.contains("Run a pass now"), "{page}");
+    // A learned skill needs a way out, and it is the same delete the skills page
+    // performs: a link to that page's confirmation, not a second implementation.
+    assert!(
+        page.contains("/dashboard/skills?delete=guard-first"),
+        "the row carries the delete link: {page}"
+    );
 }
 
 #[test]

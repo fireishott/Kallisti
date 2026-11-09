@@ -4779,6 +4779,13 @@ pub fn learning_page(view: &LearningView) -> Markup {
                                             }
                                         }
                                     }
+                                    // The delete a learned skill needs is the same one the
+                                    // skills page performs, so this is a link to that page's
+                                    // confirmation rather than a second implementation of it.
+                                    a .button.danger
+                                        href=(format!("{}?delete={}", crate::admin::ROUTE_SKILLS, row.key)) {
+                                        "Delete"
+                                    }
                                 }
                             }
                         }

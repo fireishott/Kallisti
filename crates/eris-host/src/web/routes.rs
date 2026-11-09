@@ -1547,7 +1547,11 @@ async fn skills_page_handler(
         _ => None,
     };
     let edit = query.get("edit").map(String::as_str);
-    match build_skills_view(&state, notice, edit, None, None) {
+    // `?delete=<key>` is how another page asks this one to run its confirmation:
+    // the Learning page sends a learned skill here instead of growing a second
+    // delete of its own.
+    let confirming = query.get("delete").cloned();
+    match build_skills_view(&state, notice, edit, confirming, None) {
         Ok(view) => page(skills_page(&view)),
         Err(error) => refusal(error),
     }

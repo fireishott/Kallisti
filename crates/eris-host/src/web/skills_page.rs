@@ -181,6 +181,30 @@ fn a_post_edits_the_file_and_a_second_post_deletes_the_skill() {
 }
 
 #[test]
+fn a_delete_link_from_another_page_renders_the_confirmation() {
+    let (_dir, _engine, app, cookie, library) = app_with_library();
+    seed_skill(&library, "deploy", "Deploy", "Ship it.", "1. step");
+
+    let ask = block_on(send(
+        &app,
+        Call::get("/dashboard/skills?delete=deploy")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(ask.status, StatusCode::OK, "{}", ask.body);
+    assert!(ask.body.contains("skills-confirm"), "{}", ask.body);
+    assert!(
+        ask.body.contains("cannot be undone"),
+        "the confirmation says it is permanent: {}",
+        ask.body
+    );
+    assert!(
+        library.join("deploy").is_dir(),
+        "asking for the confirmation deletes nothing"
+    );
+}
+
+#[test]
 fn an_edit_that_names_no_skill_is_a_not_found() {
     let (_dir, _engine, app, cookie, _library) = app_with_library();
     let body = format!(
