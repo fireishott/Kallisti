@@ -188,6 +188,30 @@ fi
 # --- 4. Directories, config template, key file -------------------------------
 
 CONFIG_DIR="$HOME/.config/kallisti"
+# --- Default skills -------------------------------------------------------
+# The daemon reads its library from "$CONFIG_DIR/skills" and seeds nothing by
+# itself, so an install that skipped this step would hand a new user an empty
+# library and a capability the app advertises but cannot answer for. Copy the
+# tracked skills in without ever clobbering one the operator has edited.
+seed_default_skills() {
+    src="$REPO_ROOT/skills"
+    if [ ! -d "$src" ]; then
+        return 0
+    fi
+    mkdir -p "$CONFIG_DIR/skills"
+    for dir in "$src"/*/; do
+        [ -f "$dir/SKILL.md" ] || continue
+        name=$(basename "$dir")
+        if [ -e "$CONFIG_DIR/skills/$name" ]; then
+            printf 'skills: keeping existing %s\n' "$name"
+            continue
+        fi
+        cp -R "$dir" "$CONFIG_DIR/skills/$name"
+        printf 'skills: installed %s\n' "$name"
+    done
+}
+seed_default_skills
+
 STATE_DIR="$HOME/.local/share/kallisti"
 WORKSPACE="$HOME/kallisti-workspace"
 ENV_FILE="$CONFIG_DIR/eris.env"
