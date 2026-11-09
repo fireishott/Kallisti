@@ -6,6 +6,15 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A wrapped turn answers in short bullets instead of a wall of prose.** The
+  three closing instructions (the wrap-up, the spent notice and the last-resort
+  ask) ordered "one plain paragraph of prose, with no headings and no section
+  list". That is the wall of text the operator kept rejecting: on every long
+  tool turn the closing round is the only answer he reads, and the instruction
+  overrode the persona's bullet rule at exactly that moment. They now ask for at
+  most six short lines, one fact per line, and keep the bans on headings, next
+  steps and permission asks. `build 180`.
+
 - **The last round before the answer still has tools.** The lookahead used to take
   the tools away two rounds early, so a turn that read for thirteen rounds could
   describe the job it never did, which is how "provide me a pdf plan" came back as

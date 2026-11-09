@@ -4687,10 +4687,10 @@ const LAST_ACTION: &str = "Your tool budget for this turn has one round left wit
 /// answer. It reports; it never hands the work back, and it never writes a next
 /// step for a later turn.
 const WRAP_UP: &str = "Your tool budget for this turn is nearly spent and the tools are now \
-     withdrawn. Stop exploring and answer now, in one plain paragraph of prose, with no tool \
-     calls and no headings and no section list. Say what you did and what it proves. Report only: \
-     do not hand the work back, do not ask for permission, and do not write next steps for a \
-     later turn.";
+     withdrawn. Stop exploring and answer now, with no tool calls. Use short bullets: at most \
+     six lines, one fact per line, no headings and no section list, and no paragraph longer than \
+     three lines. Say what you did and what it proves. Report only: do not hand the work back, do \
+     not ask for permission, and do not write next steps for a later turn.";
 
 /// The instruction the tool-free round opens with.
 ///
@@ -4698,16 +4698,16 @@ const WRAP_UP: &str = "Your tool budget for this turn is nearly spent and the to
 /// on the wire that markup arrives as the answer. Telling it the budget is spent
 /// is what turns "reaching for a tool I cannot have" into "say what I found".
 const BUDGET_SPENT: &str = "Your tool budget for this turn is spent and no more tools are \
-     available. Answer now in one plain paragraph of prose, with no headings and no section \
-     list. Do not request or write out any further tool calls.";
+     available. Answer now in short bullets: at most six lines, one fact per line, no headings \
+     and no section list. Do not request or write out any further tool calls.";
 
 /// The instruction the last-resort answer round opens with.
 ///
 /// Reached only when the tool-free round produced nothing usable, so this states
 /// the output shape rather than relying on the model to infer it a second time.
-const ANSWER_NOW: &str = "Answer in one plain paragraph of prose only, with no tool calls, no \
-     headings and no section list. Report only: do not ask for permission and do not write next \
-     steps for a later turn.";
+const ANSWER_NOW: &str = "Answer in short bullets only, at most six lines, one fact per line, \
+     with no tool calls, no headings and no section list. Report only: do not ask for permission \
+     and do not write next steps for a later turn.";
 
 /// What a turn says when its budget ran out and it produced no prose of its own.
 ///
@@ -7017,6 +7017,28 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The closing instruction is the last thing a long turn reads, and it used
+    /// to ask for one plain paragraph. That is the wall of prose the operator
+    /// rejected: the closing rounds must ask for short bullets instead, while
+    /// still banning the next-step footer.
+    #[test]
+    fn the_closing_prompts_ask_for_short_bullets_not_a_wall() {
+        for prompt in [WRAP_UP, BUDGET_SPENT, ANSWER_NOW] {
+            assert!(
+                prompt.contains("bullets"),
+                "the closing instruction asks for bullets: {prompt}"
+            );
+            assert!(
+                prompt.contains("six"),
+                "and bounds the answer to six lines: {prompt}"
+            );
+            assert!(
+                !prompt.contains("one plain paragraph"),
+                "a plain paragraph is the wall the operator rejects: {prompt}"
+            );
+        }
     }
 
     /// The same turn, but the model does what it was told.
