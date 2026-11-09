@@ -168,6 +168,107 @@ struct ErisSettingsCatalogueTests {
     }
 }
 
+// MARK: - The goal round ceiling
+//
+// `tools.goal_rounds_ceiling` is the most rounds a goal turn may be raised to,
+// which is a different number from `tool_rounds`: that one is the budget an
+// ordinary turn gets. It is an `int` in the record like any other, and that is the
+// point of this suite. The phone needs no row of its own for it; the two things it
+// has to get right are the range the daemon published and the sentence it says
+// when a typed number falls outside that range. A daemon that predates the key
+// sends no entry, so the screen draws no row rather than a zero.
+
+private let goalCeilingJSON = #"""
+{
+  "ok": true,
+  "capabilities": [
+    {"key":"tool_rounds","label":"Tool turns","group":"models","type":"int","writable":true,
+     "value":"8","options":null,"min":1,"max":16},
+    {"key":"tools.goal_rounds_ceiling","label":"Goal rounds ceiling","group":"models","type":"int",
+     "writable":true,"value":"60","options":null,"min":1,"max":120}
+  ]
+}
+"""#
+
+@Suite("Eris goal round ceiling")
+struct ErisGoalRoundCeilingTests {
+
+    private func ceilingSnapshot() throws -> ErisSettingsSnapshot {
+        try JSONDecoder().decode(ErisSettingsSnapshot.self, from: Data(goalCeilingJSON.utf8))
+    }
+
+    /// The row the screen draws: the daemon's label, the daemon's tab, the
+    /// daemon's current value and the daemon's range. None of it is a default
+    /// this app invented.
+    @Test("the ceiling arrives as an int row in the tab the daemon chose")
+    func ceilingIsAnIntRow() throws {
+        let settings = try ceilingSnapshot()
+        let field = try #require(settings.field("tools.goal_rounds_ceiling"))
+        #expect(field.kind == .int)
+        #expect(field.label == "Goal rounds ceiling")
+        #expect(field.group == "models")
+        #expect(field.writable)
+        #expect(field.value == "60")
+        #expect(field.intValue == 60)
+        #expect(field.min == 1)
+        #expect(field.max == 120)
+        // It is a row in the Models tab, not a field the phone files elsewhere.
+        #expect(settings.groups.first { $0.id == "models" }?.fields.contains(field) == true)
+    }
+
+    /// An older daemon does not know the key, so the record carries no entry and
+    /// the screen draws no row. That is why the value is never defaulted on this
+    /// side: a zero would be a ceiling somebody could save.
+    @Test("a daemon without the key draws no row instead of a zero")
+    func olderDaemonHasNoRow() throws {
+        let body = #"{"ok":true,"capabilities":[{"key":"tool_rounds","label":"Tool turns","group":"models","type":"int","writable":true,"value":"8","options":null,"min":1,"max":16}]}"#
+        let settings = try JSONDecoder().decode(ErisSettingsSnapshot.self, from: Data(body.utf8))
+        #expect(settings.field("tools.goal_rounds_ceiling") == nil)
+    }
+
+    /// A number outside the published range is named and not written, which is
+    /// what the web form's `min`/`max` input and the route's own refusal do. The
+    /// sentence is built from the range the record carried, so it cannot drift
+    /// from the daemon's.
+    @Test("a whole number outside the published range is named, not replaced")
+    func outOfRangeIsRefused() throws {
+        let settings = try ceilingSnapshot()
+        let field = try #require(settings.field("tools.goal_rounds_ceiling"))
+        #expect(field.numberRefusal(1) == nil)
+        #expect(field.numberRefusal(60) == nil)
+        #expect(field.numberRefusal(120) == nil)
+        #expect(field.numberRefusal(0) == "needs a whole number from 1 to 120.")
+        #expect(field.numberRefusal(121) == "needs a whole number from 1 to 120.")
+        #expect(field.numberRefusal(-4) == "needs a whole number from 1 to 120.")
+    }
+
+    /// A field with no published bound is not given one by this app: the record
+    /// said nothing, so nothing is refused.
+    @Test("an unbounded int field refuses nothing")
+    func noBoundsRefusesNothing() throws {
+        let body = #"{"ok":true,"capabilities":[{"key":"some.int","label":"Some int","group":"system","type":"int","writable":true,"value":"0","options":null}]}"#
+        let settings = try JSONDecoder().decode(ErisSettingsSnapshot.self, from: Data(body.utf8))
+        let field = try #require(settings.field("some.int"))
+        #expect(field.numberRefusal(0) == nil)
+        #expect(field.numberRefusal(1_000_000) == nil)
+    }
+
+    /// The write body is the dotted key and a number spelled the way the daemon's
+    /// parser reads it. `.number` bounds the value as the last guard on the way
+    /// out, so even a caller that skipped the refusal cannot send 200.
+    @Test("the write carries the dotted key and a ranged value")
+    func writeCarriesTheKeyAndARangedValue() throws {
+        let settings = try ceilingSnapshot()
+        let field = try #require(settings.field("tools.goal_rounds_ceiling"))
+        #expect(
+            ErisSettingWrite.number(field.key, 45, min: field.min, max: field.max).fields
+                == ["tools.goal_rounds_ceiling": "45"]
+        )
+        #expect(ErisSettingWrite.number(field.key, 200, min: field.min, max: field.max).value == "120")
+        #expect(ErisSettingWrite.number(field.key, 0, min: field.min, max: field.max).value == "1")
+    }
+}
+
 // MARK: - The switch that gates `full`
 //
 // `sandbox=full` is refused until the daemon's full-access switch is on, and that
