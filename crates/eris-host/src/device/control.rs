@@ -60,6 +60,9 @@ const AUDIT_MODELS: &str = "settings.device_models";
 const AUDIT_SCHEDULES: &str = "settings.device_schedules";
 /// See [`AUDIT_MODELS`].
 const AUDIT_AUX: &str = "settings.device_aux";
+/// See [`AUDIT_MODELS`]. One action for both skill writes, because the trail
+/// line already says which one happened.
+const AUDIT_SKILLS: &str = "settings.device_skills";
 
 /// The fields a `PATCH /v1/cron/{id}` body may carry, for a refusal that names
 /// them.
@@ -629,6 +632,13 @@ pub async fn skills_list(State(service): State<DeviceService>, headers: HeaderMa
                         "path": skill.path,
                         "enabled": skill.enabled,
                         "bytes": skill.bytes,
+                        "origin": match skill.origin {
+                            crate::learning::Origin::Agent => "learned",
+                            crate::learning::Origin::Operator => "operator",
+                        },
+                        "state": skill.state.as_str(),
+                        "pinned": skill.pinned,
+                        "editable": skill.editable,
                     })
                 })
                 .collect();
@@ -698,6 +708,187 @@ pub async fn skill_detail(
             error.to_string(),
         )
         .into_response(),
+    }
+}
+
+/// The body `PUT /v1/skills/{key}` accepts: the whole file, and nothing else.
+#[derive(Debug, Default, serde::Deserialize)]
+struct SkillWriteBody {
+    /// The complete `SKILL.md`, frontmatter included.
+    #[serde(default)]
+    content: String,
+}
+
+/// The ceiling on one write's request body.
+///
+/// The semantic cap is [`skills::MAX_SKILL_BYTES`], checked on the decoded text;
+/// this one only bounds what this route will read off the wire, because JSON
+/// escaping can cost several bytes per content byte (a newline is two, a quote
+/// is two, a control character is six).
+const SKILL_BODY_BYTES: usize = 4 * skills::MAX_SKILL_BYTES as usize + 4096;
+
+/// Map a skill refusal onto the wire, with the code a client branches on.
+///
+/// The codes are the closed set a phone acts on: a key its own validator allowed
+/// and this one did not (`skill_key_invalid`), a body it sent empty
+/// (`skill_content_empty`), a body over the cap (`skill_content_too_large`), and
+/// a key that names nothing here (`skill_unknown`). A library that cannot be read
+/// keeps the spelling `GET /v1/skills/{key}` already uses.
+fn skill_failure(error: skills::SkillError) -> DeviceError {
+    use axum::http::StatusCode;
+    match error {
+        skills::SkillError::KeyInvalid { key } => DeviceError::new(
+            StatusCode::BAD_REQUEST,
+            "skill_key_invalid",
+            format!(
+                "`{key}` is not a usable skill key: letters, digits, dash, underscore or dot, at \
+                 most 80 characters, and not starting with a dot"
+            ),
+        ),
+        skills::SkillError::Empty { key } => DeviceError::new(
+            StatusCode::BAD_REQUEST,
+            "skill_content_empty",
+            format!("the body of `{key}` is blank, and a SKILL.md must carry its procedure"),
+        ),
+        skills::SkillError::BodyTooLarge { bytes, limit } => DeviceError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "skill_content_too_large",
+            format!("the body is {bytes} bytes, over the {limit}-byte ceiling for a skill"),
+        ),
+        skills::SkillError::Unknown { key } => DeviceError::new(
+            StatusCode::NOT_FOUND,
+            "skill_unknown",
+            format!("no skill named `{key}` is in this library"),
+        ),
+        skills::SkillError::Symlink { path } => DeviceError::new(
+            StatusCode::BAD_REQUEST,
+            "skill_symlink_refused",
+            format!("`{path}` is a symlink, and this daemon does not write or archive through one"),
+        ),
+        skills::SkillError::NoLibrary { path } => DeviceError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "skill_library_missing",
+            format!("the skill library `{path}` is not a directory"),
+        ),
+        other => DeviceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "skill_io_failed",
+            other.to_string(),
+        ),
+    }
+}
+
+/// The stored library directory, as both skill writes read it.
+fn stored_skill_dir(engine: &SetupEngine) -> Option<String> {
+    engine.setting(skills::SETTING_DIR).ok().flatten()
+}
+
+/// `PUT /v1/skills/{key}` - replace one skill's whole file.
+///
+/// The body is `{"content": "<the complete SKILL.md>"}` and it is written as
+/// given. The write is [`skills::write`], the same function the dashboard's edit
+/// form calls, so the two surfaces cannot disagree about what a valid body is or
+/// where it lands.
+pub async fn skill_write(
+    State(service): State<DeviceService>,
+    Path(key): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    use axum::http::StatusCode;
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    // A body sent with the wrong type is refused by name rather than decoded as
+    // JSON, so a client that forgot the header is told which header to send
+    // instead of being told its content was empty. A request with no type at all
+    // is decoded anyway: a bare `PUT -d` from a shell script is a JSON body.
+    if let Some(value) = headers.get(axum::http::header::CONTENT_TYPE) {
+        let value = value.to_str().unwrap_or_default().to_ascii_lowercase();
+        if !value.starts_with("application/json") {
+            return DeviceError::new(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "skill_content_type",
+                "a skill write takes `Content-Type: application/json` with {\"content\": \
+                 \"<the complete SKILL.md>\"}",
+            )
+            .into_response();
+        }
+    }
+    if body.len() > SKILL_BODY_BYTES {
+        return DeviceError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "skill_content_too_large",
+            format!(
+                "the request body is over the {SKILL_BODY_BYTES}-byte ceiling for a skill write"
+            ),
+        )
+        .into_response();
+    }
+    let parsed: SkillWriteBody = match serde_json::from_slice(&body) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return DeviceError::new(
+                StatusCode::BAD_REQUEST,
+                "skill_content_invalid",
+                format!("the body is not the JSON object a skill write takes: {error}"),
+            )
+            .into_response();
+        }
+    };
+    let engine = service.engine();
+    let stored = stored_skill_dir(engine);
+    match skills::write(engine.db(), stored.as_deref(), &key, &parsed.content) {
+        Ok(bytes) => {
+            let detail = format!("write {key} ({bytes} bytes)");
+            if let Err(error) = audit(&service, token.device_id(), AUDIT_SKILLS, &detail) {
+                return error.into_response();
+            }
+            axum::Json(serde_json::json!({ "ok": true, "key": key, "bytes": bytes }))
+                .into_response()
+        }
+        Err(error) => skill_failure(error).into_response(),
+    }
+}
+
+/// `DELETE /v1/skills/{key}` - archive one skill and drop its ledger row.
+///
+/// Nothing is unlinked. The directory moves into `.archive/` under the library,
+/// which is the daemon's whole definition of a delete, and the answer names the
+/// path it landed on so a client can state that the skill was archived rather
+/// than destroyed.
+pub async fn skill_delete(
+    State(service): State<DeviceService>,
+    Path(key): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let engine = service.engine();
+    let stored = stored_skill_dir(engine);
+    match skills::delete(engine.db(), stored.as_deref(), &key) {
+        Ok(archived) => {
+            let detail = format!("archive {key} -> {archived}");
+            if let Err(error) = audit(&service, token.device_id(), AUDIT_SKILLS, &detail) {
+                return error.into_response();
+            }
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "key": key,
+                "archived": archived,
+            }))
+            .into_response()
+        }
+        Err(error) => skill_failure(error).into_response(),
     }
 }
 

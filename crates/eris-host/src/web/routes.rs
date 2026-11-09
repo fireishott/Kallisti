@@ -42,7 +42,7 @@ use crate::admin::{
     ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
     ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
-    VERSION, session_path,
+    ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -61,8 +61,9 @@ use crate::web::templates::{
     ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
     DashboardView, DeviceRow, DevicesView, EnvRow, EnvView, FormError, IssuedCodeView,
     LearningView, SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView,
-    activity_page, backups_page, chat_page, dashboard_page, devices_page, env_page, error_page,
-    learning_page, login_page, session_page, sessions_page, settings_page, setup_page, type_badge,
+    SkillEditor, SkillsView, activity_page, backups_page, chat_page, dashboard_page, devices_page,
+    env_page, error_page, learning_page, login_page, session_page, sessions_page, settings_page,
+    setup_page, skills_page, type_badge,
 };
 use crate::web::wallpaper;
 
@@ -80,6 +81,12 @@ fn context_of(context: Option<Extension<ClientContext>>) -> ClientContext {
 
 /// The upload ceiling for one form post. Every field is a short string.
 const MAX_BODY_BYTES: usize = 16 * 1024;
+
+/// The ceiling on one skill edit's form body.
+///
+/// The semantic cap is [`crate::skills::MAX_SKILL_BYTES`], checked on the decoded
+/// text; this one pads for form encoding, which can spend three bytes per byte.
+const SKILL_FORM_BYTES: usize = 3 * crate::skills::MAX_SKILL_BYTES as usize + 8 * 1024;
 
 /// The ceiling on one chat send: every attachment the turn may carry, plus the
 /// multipart framing and the text fields around them.
@@ -148,6 +155,14 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_LEARNING_SAVE, post(save_learning))
         .route(ROUTE_LEARNING_SKILL, post(learning_skill))
         .route(ROUTE_LEARNING_CURATOR, post(run_learning_curator))
+        .route(ROUTE_SKILLS, get(skills_page_handler))
+        // The editor carries a whole file, which is far larger than the 16 KiB
+        // the other forms allow, so this one route states its own ceiling.
+        .route(
+            ROUTE_SKILLS_SAVE,
+            post(save_skill).layer(DefaultBodyLimit::max(SKILL_FORM_BYTES)),
+        )
+        .route(ROUTE_SKILLS_DELETE, post(archive_skill))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
         .route(ROUTE_SESSION, get(session_detail))
@@ -250,6 +265,9 @@ fn failure_status(code: &str) -> StatusCode {
         "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
         "wizard_locked" | "step_out_of_order" | "step_incomplete" => StatusCode::CONFLICT,
         "no_session" => StatusCode::FORBIDDEN,
+        // A delete that names a skill the library does not hold is a 404 on the
+        // page too, not a 400: the path is well formed and the row is absent.
+        "skill_unknown" => StatusCode::NOT_FOUND,
         "db_error" | "session_db_error" | "first_run_file_failed" => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
@@ -1488,6 +1506,272 @@ fn fail_learning(state: &AppState, as_html: bool, error: FormError) -> Response 
         }
     } else {
         refusal(error)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Skills
+// ---------------------------------------------------------------------------
+
+/// The redirect after one skill file saves, back to that skill's editor.
+#[must_use]
+fn saved_skill_path(key: &str) -> String {
+    format!("{ROUTE_SKILLS}?saved=write&edit={key}")
+}
+
+/// The redirect after one skill is archived.
+#[must_use]
+fn archived_skill_path(archived: &str) -> String {
+    format!("{ROUTE_SKILLS}?saved=archived&archived={archived}")
+}
+
+/// `GET /dashboard/skills` - the library, one editor, and the archive button.
+///
+/// `?edit=<key>` names the skill in the editor; without it the first skill in the
+/// list is, because a page with no editor would make every save a second request.
+async fn skills_page_handler(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let notice = match query.get("saved").map(String::as_str) {
+        Some("write") => Some("The skill file is saved.".to_owned()),
+        Some("archived") => Some(match query.get("archived") {
+            Some(path) => format!("The skill is archived at `{path}`. Nothing was deleted."),
+            None => "The skill is archived under the library, so nothing was deleted.".to_owned(),
+        }),
+        _ => None,
+    };
+    let edit = query.get("edit").map(String::as_str);
+    match build_skills_view(&state, notice, edit, None, None) {
+        Ok(view) => page(skills_page(&view)),
+        Err(error) => refusal(error),
+    }
+}
+
+/// `POST /dashboard/skills/save` - replace one skill's whole file.
+///
+/// The write is [`crate::skills::write`], the same function `PUT /v1/skills/{key}`
+/// calls: the two surfaces cannot disagree about what a body is, where it lands,
+/// or which keys exist.
+async fn save_skill(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields_within(&headers, body, SKILL_FORM_BYTES).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_skills(&state, as_html, error, None),
+    };
+    let key = field(&fields, "key").to_owned();
+    // Not trimmed: the file is the operator's text, and a leading blank line is
+    // theirs to keep. The empty check is the service's, on `trim()`.
+    let content = fields.get("content").cloned().unwrap_or_default();
+    let stored = state
+        .engine
+        .setting(crate::skills::SETTING_DIR)
+        .ok()
+        .flatten();
+    match crate::skills::write(state.engine.db(), stored.as_deref(), &key, &content) {
+        Ok(bytes) => {
+            let detail = format!("write {key} ({bytes} bytes)");
+            if let Err(error) = state
+                .engine
+                .auth()
+                .audit("loopback", "skills.write", Some(&detail))
+            {
+                return audit_failure(&request_id.0, "skills.write", error);
+            }
+            see_other_to(saved_skill_path(&key))
+        }
+        // The refusal keeps the draft in the box. Losing what the operator typed
+        // to a validation error would teach them to write elsewhere.
+        Err(error) => fail_skills(
+            &state,
+            as_html,
+            skill_form_error(error),
+            Some((&key, &content)),
+        ),
+    }
+}
+
+/// `POST /dashboard/skills/delete` - archive one skill, in two presses.
+///
+/// The first press renders the confirmation and writes nothing. The second
+/// carries `confirm=true` and calls [`crate::skills::delete`], which is the same
+/// function `DELETE /v1/skills/{key}` calls. A confirmation is a page state rather
+/// than a script, so it works with JavaScript off.
+async fn archive_skill(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_skills(&state, as_html, error, None),
+    };
+    let key = field(&fields, "key").to_owned();
+    if !flag(&fields, "confirm") {
+        return match build_skills_view(&state, None, Some(&key), Some(key.clone()), None) {
+            Ok(view) => page(skills_page(&view)),
+            Err(error) => refusal(error),
+        };
+    }
+    let stored = state
+        .engine
+        .setting(crate::skills::SETTING_DIR)
+        .ok()
+        .flatten();
+    match crate::skills::delete(state.engine.db(), stored.as_deref(), &key) {
+        Ok(archived) => {
+            let detail = format!("archive {key} -> {archived}");
+            if let Err(error) =
+                state
+                    .engine
+                    .auth()
+                    .audit("loopback", "skills.archive", Some(&detail))
+            {
+                return audit_failure(&request_id.0, "skills.archive", error);
+            }
+            see_other_to(archived_skill_path(&archived))
+        }
+        Err(error) => fail_skills(&state, as_html, skill_form_error(error), None),
+    }
+}
+
+/// Build the skills page.
+///
+/// A library that cannot be listed still draws: the directory is a setting this
+/// page sits beside, and a page that refused to render would hide the field that
+/// fixes it. The row that could not be listed is the notice instead.
+fn build_skills_view(
+    state: &AppState,
+    notice: Option<String>,
+    edit: Option<&str>,
+    confirming: Option<String>,
+    draft: Option<(&str, &str)>,
+) -> Result<SkillsView, FormError> {
+    let engine = &state.engine;
+    let db = engine.db();
+    let mut view = SkillsView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.chrome = state.chrome();
+    let stored = engine.setting(crate::skills::SETTING_DIR).ok().flatten();
+    view.enabled = crate::skills::enabled(
+        engine
+            .setting(crate::skills::SETTING_ENABLED)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    view.library = crate::skills::library_dir(stored.as_deref())
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_default();
+    view.notice = notice;
+    view.confirming = confirming;
+    let (skills, _library) = match crate::skills::list(db, stored.as_deref()) {
+        Ok(found) => found,
+        Err(error) => {
+            view.error = Some(FormError::new(
+                None,
+                "library_unreadable",
+                error.to_string(),
+            ));
+            return Ok(view);
+        }
+    };
+    // The named skill, else the first one. `draft` is what a failed save tried to
+    // write, so the box keeps the operator's text and not the file they replaced.
+    let selected = match draft {
+        Some((key, content)) => {
+            skills
+                .iter()
+                .find(|skill| skill.key == key)
+                .map(|skill| SkillEditor {
+                    key: skill.key.clone(),
+                    path: skill.path.clone(),
+                    content: content.to_owned(),
+                    bytes: content.len() as u64,
+                })
+        }
+        None => edit
+            .and_then(|key| skills.iter().find(|skill| skill.key == key))
+            .or_else(|| skills.first())
+            .and_then(|skill| {
+                std::fs::read_to_string(&skill.path)
+                    .ok()
+                    .map(|content| SkillEditor {
+                        key: skill.key.clone(),
+                        path: skill.path.clone(),
+                        content,
+                        bytes: skill.bytes,
+                    })
+            }),
+    };
+    view.editing = selected;
+    view.skills = skills;
+    Ok(view)
+}
+
+/// A refusal on the skills page, rendered where the operator already is.
+fn fail_skills(
+    state: &AppState,
+    as_html: bool,
+    error: FormError,
+    draft: Option<(&str, &str)>,
+) -> Response {
+    let status = failure_status(&error.code);
+    if as_html {
+        let edit = draft.map(|(key, _)| key);
+        match build_skills_view(state, None, edit, None, draft) {
+            Ok(mut view) => {
+                view.error = Some(error);
+                page_with_status(skills_page(&view), status)
+            }
+            Err(build_error) => refusal(build_error),
+        }
+    } else {
+        refusal(error)
+    }
+}
+
+/// Map a skill refusal onto the page's form shape, with the code it carries.
+fn skill_form_error(error: crate::skills::SkillError) -> FormError {
+    let field = match error {
+        crate::skills::SkillError::KeyInvalid { .. } => Some("key"),
+        crate::skills::SkillError::Empty { .. }
+        | crate::skills::SkillError::BodyTooLarge { .. } => Some("content"),
+        _ => None,
+    };
+    FormError::new(field, skill_code(&error), error.to_string())
+}
+
+/// The code a page prints for a skill refusal, spelled as the device API spells
+/// it so one client-side vocabulary covers both surfaces.
+fn skill_code(error: &crate::skills::SkillError) -> &'static str {
+    match error {
+        crate::skills::SkillError::KeyInvalid { .. } => "skill_key_invalid",
+        crate::skills::SkillError::Empty { .. } => "skill_content_empty",
+        crate::skills::SkillError::BodyTooLarge { .. } => "skill_content_too_large",
+        crate::skills::SkillError::Unknown { .. } => "skill_unknown",
+        crate::skills::SkillError::Symlink { .. } => "skill_symlink_refused",
+        crate::skills::SkillError::NoLibrary { .. } => "skill_library_missing",
+        crate::skills::SkillError::TooLarge { .. }
+        | crate::skills::SkillError::Io { .. }
+        | crate::skills::SkillError::Db(_) => "skill_io_failed",
     }
 }
 

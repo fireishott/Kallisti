@@ -55,6 +55,10 @@ mod env_page;
 #[cfg(test)]
 mod learning_page;
 
+/// The skills page: the library, its editor, and the archive button.
+#[cfg(test)]
+mod skills_page;
+
 /// Phase 2: the Sessions list, the session detail page, and job cancellation.
 #[cfg(test)]
 mod sessions;

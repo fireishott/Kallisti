@@ -23,10 +23,15 @@
 //! - **Switched off means absent.** A disabled skill is not in the catalog and
 //!   cannot be read by name. Half-off is not a state.
 //!
-//! Nothing here writes to a skill directory. Management is a switch per skill plus
-//! a rescan; editing the file is the operator's own business, in their own editor.
+//! A skill is editable and removable from the daemon since P22: [`write`] replaces
+//! the whole file atomically, and [`delete`] moves the directory into `.archive/`
+//! rather than unlinking it. Both live here rather than in a route, so the device
+//! API and the dashboard cannot drift apart, and both are one implementation of
+//! the same rule: a write never follows a symlink, never leaves the library, and a
+//! delete is a move, because nothing in this daemon deletes.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::db::Db;
@@ -92,6 +97,37 @@ pub enum SkillError {
         /// The ceiling that was applied.
         limit: u64,
     },
+    /// The key is not a plain slug, so it cannot name a directory here.
+    #[error(
+        "`{key}` is not a usable skill key: letters, digits, dash, underscore or dot, at most 80 \
+         characters, and not starting with a dot"
+    )]
+    KeyInvalid {
+        /// What the caller asked for.
+        key: String,
+    },
+    /// The body handed to a write carried no procedure.
+    #[error("the body of `{key}` is blank, and a SKILL.md must carry its procedure")]
+    Empty {
+        /// The skill the write named.
+        key: String,
+    },
+    /// The body handed to a write is over [`MAX_SKILL_BYTES`].
+    #[error(
+        "the body is {bytes} bytes, over the {limit}-byte ceiling for a skill; nothing was written"
+    )]
+    BodyTooLarge {
+        /// The size that was offered.
+        bytes: u64,
+        /// The ceiling that was applied.
+        limit: u64,
+    },
+    /// The path involved is a symlink, and this module will not follow one.
+    #[error("`{path}` is a symlink, and this daemon does not write or archive through a link")]
+    Symlink {
+        /// The path that was checked.
+        path: String,
+    },
     /// The file exists and could not be read.
     #[error("{path}: {detail}")]
     Io {
@@ -120,6 +156,17 @@ pub struct Skill {
     pub enabled: bool,
     /// The file's size in bytes.
     pub bytes: u64,
+    /// Who wrote it: the operator, or the learning loop. Taken from the ledger,
+    /// and a skill the ledger has never seen is the operator's.
+    pub origin: crate::learning::Origin,
+    /// Where it is in the lifecycle: active, stale, or archived.
+    pub state: crate::learning::State,
+    /// Whether automatic work is forbidden from touching it.
+    pub pinned: bool,
+    /// Whether this daemon will accept a write to it. A skill listed here has a
+    /// file this daemon can replace, so the answer is yes for every row; the
+    /// field is published anyway, so a client never has to infer it from a state.
+    pub editable: bool,
 }
 
 /// Whether the feature is on at all.
@@ -292,6 +339,13 @@ fn describe(dir: &Path, key: &str, enabled: bool) -> Option<Skill> {
         path: path.display().to_string(),
         enabled,
         bytes: meta.len(),
+        // The ledger overlay happens in `list`, which is the only caller with a
+        // database. A skill with no row keeps exactly these values, which is the
+        // documented default: the operator's, active, unpinned.
+        origin: crate::learning::Origin::Operator,
+        state: crate::learning::State::Active,
+        pinned: false,
+        editable: true,
     })
 }
 
@@ -333,6 +387,22 @@ pub fn list(db: &Db, stored_dir: Option<&str>) -> Result<(Vec<Skill>, PathBuf), 
         let on = skill_enabled(switches.get(&setting_key(&key)).map(String::as_str));
         if let Some(skill) = describe(&dir, &key, on) {
             out.push(skill);
+        }
+    }
+    // The ledger is the only place origin, state and pinning are recorded, and a
+    // skill it has never seen is the operator's: the loop cannot have written a
+    // file it did not write. A ledger that cannot be read is not a reason to hide
+    // the library, so the default stands and the page still draws.
+    let ledger: BTreeMap<String, crate::learning::Usage> = crate::learning::rows(db)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| (row.key.clone(), row))
+        .collect();
+    for skill in &mut out {
+        if let Some(row) = ledger.get(&skill.key) {
+            skill.origin = row.created_by;
+            skill.state = row.state;
+            skill.pinned = row.pinned;
         }
     }
     out.sort_by(|a, b| a.key.cmp(&b.key));
@@ -447,6 +517,225 @@ fn floor_boundary(text: &str, limit: usize) -> usize {
         cut -= 1;
     }
     cut
+}
+
+// ---------------------------------------------------------------------------
+// Writing a skill, and the archive move that stands in for a delete
+// ---------------------------------------------------------------------------
+
+/// Refuse a library entry that is a link before anything else judges the key.
+///
+/// [`list`] skips a link, so an entry that is one is absent from the membership
+/// check and would answer "no such skill" for a path that exists on disk. Naming
+/// the refusal here is what makes the answer the useful one: the operator is told
+/// the daemon will not write through a link, not that their directory vanished.
+fn refuse_linked_entry(library: &Path, key: &str) -> Result<(), SkillError> {
+    let target = library.join(key);
+    match std::fs::symlink_metadata(&target) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(SkillError::Symlink {
+            path: target.display().to_string(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// The skill's directory, resolved and checked: inside the library, and not a
+/// link.
+///
+/// A key that passes [`valid_key`] cannot walk out of the library by spelling,
+/// but the directory it names can still be a symlink, and a symlink is how a
+/// write would land somewhere the operator never pointed at. Both the directory
+/// and the file inside it are checked, and the real path is re-tested against the
+/// library for the case where the link is reached through a parent.
+fn directory_in_library(library: &Path, key: &str) -> Result<PathBuf, SkillError> {
+    let target = library.join(key);
+    let Ok(meta) = std::fs::symlink_metadata(&target) else {
+        return Err(SkillError::Unknown {
+            key: key.to_owned(),
+        });
+    };
+    if meta.file_type().is_symlink() {
+        return Err(SkillError::Symlink {
+            path: target.display().to_string(),
+        });
+    }
+    if !meta.is_dir() {
+        return Err(SkillError::Unknown {
+            key: key.to_owned(),
+        });
+    }
+    let root = std::fs::canonicalize(library).map_err(|error| SkillError::Io {
+        path: library.display().to_string(),
+        detail: error.to_string(),
+    })?;
+    let real = std::fs::canonicalize(&target).map_err(|error| SkillError::Io {
+        path: target.display().to_string(),
+        detail: error.to_string(),
+    })?;
+    if !real.starts_with(&root) {
+        return Err(SkillError::Symlink {
+            path: target.display().to_string(),
+        });
+    }
+    // A skill file that is itself a link would be replaced through the link by a
+    // plain rename, which writes the link's target instead of the skill.
+    let file = real.join(FILE_NAME);
+    if let Ok(meta) = std::fs::symlink_metadata(&file)
+        && meta.file_type().is_symlink()
+    {
+        return Err(SkillError::Symlink {
+            path: file.display().to_string(),
+        });
+    }
+    Ok(real)
+}
+
+/// Replace one skill's whole file, atomically.
+///
+/// The body is the complete `SKILL.md`, frontmatter included, and it is written
+/// exactly as given: this module does not compose a file the operator did not
+/// write. The temporary file sits in the skill's own directory so the rename is
+/// a rename and not a copy, the old file is replaced in one step, and a crash
+/// between the two leaves the previous version intact.
+///
+/// # Errors
+///
+/// [`SkillError::KeyInvalid`], [`SkillError::Empty`], [`SkillError::BodyTooLarge`],
+/// [`SkillError::Unknown`] for a key that names nothing in the library,
+/// [`SkillError::Symlink`] when either path is a link, and [`SkillError::Io`].
+pub fn write(
+    db: &Db,
+    stored_dir: Option<&str>,
+    key: &str,
+    content: &str,
+) -> Result<u64, SkillError> {
+    let key = key.trim();
+    if !valid_key(key) {
+        return Err(SkillError::KeyInvalid {
+            key: key.to_owned(),
+        });
+    }
+    if content.trim().is_empty() {
+        return Err(SkillError::Empty {
+            key: key.to_owned(),
+        });
+    }
+    let bytes = content.len() as u64;
+    if bytes > MAX_SKILL_BYTES {
+        return Err(SkillError::BodyTooLarge {
+            bytes,
+            limit: MAX_SKILL_BYTES,
+        });
+    }
+    let (skills, dir) = list(db, stored_dir)?;
+    refuse_linked_entry(&dir, key)?;
+    if !skills.iter().any(|skill| skill.key == key) {
+        return Err(SkillError::Unknown {
+            key: key.to_owned(),
+        });
+    }
+    let directory = directory_in_library(&dir, key)?;
+    let path = directory.join(FILE_NAME);
+    write_atomic(&path, content)?;
+    // The ledger learns about the write after the bytes are in place, and a
+    // ledger that refuses must not turn a completed write into a failure: the
+    // same best-effort contract as a read. `record_written` only updates a row
+    // that exists, so editing the operator's own skill creates no row and its
+    // origin stays the operator's.
+    let (fields, _) = split(content);
+    let _ = crate::learning::record_written(db, key, fields.get("description").map(String::as_str));
+    Ok(bytes)
+}
+
+/// Write one file through a temporary in the same directory, then rename.
+fn write_atomic(path: &Path, text: &str) -> Result<(), SkillError> {
+    let directory = path.parent().unwrap_or(Path::new("."));
+    let temporary = directory.join(format!(".{FILE_NAME}.{}.tmp", std::process::id()));
+    // A temporary from an earlier crash is replaced rather than appended to.
+    let _ = std::fs::remove_file(&temporary);
+    let written = (|| -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            // A skill is the operator's own text and is read by their editor, so
+            // it is created world-readable and never executable, whatever the
+            // process umask says.
+            options.mode(0o644);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(SkillError::Io {
+            path: temporary.display().to_string(),
+            detail: error.to_string(),
+        });
+    }
+    std::fs::rename(&temporary, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        SkillError::Io {
+            path: path.display().to_string(),
+            detail: error.to_string(),
+        }
+    })
+}
+
+/// Remove one skill from the library by moving it into `.archive/`.
+///
+/// This is the whole of a delete: nothing is unlinked, because the invariant this
+/// daemon keeps is that anything that stopped being a skill is still a file on
+/// disk. The move is [`crate::learning::archive`], which already stamps the
+/// directory and suffixes a collision, so there is one implementation of it.
+///
+/// The ledger row is dropped rather than marked archived. An archived row is what
+/// the curator and the review worker look at when they consider a key, and a row
+/// that still exists is a key they can write again; forgetting it is what makes
+/// the deletion stick. The directory in `.archive/` is the undo, and
+/// [`crate::learning::restore`] is the way back.
+///
+/// # Errors
+///
+/// [`SkillError::KeyInvalid`], [`SkillError::Unknown`] when the key names nothing
+/// in the library, [`SkillError::Symlink`], [`SkillError::Io`], or
+/// [`SkillError::Db`] when the ledger row cannot be dropped.
+pub fn delete(db: &Db, stored_dir: Option<&str>, key: &str) -> Result<String, SkillError> {
+    let key = key.trim();
+    if !valid_key(key) {
+        return Err(SkillError::KeyInvalid {
+            key: key.to_owned(),
+        });
+    }
+    let (skills, dir) = list(db, stored_dir)?;
+    refuse_linked_entry(&dir, key)?;
+    if !skills.iter().any(|skill| skill.key == key) {
+        return Err(SkillError::Unknown {
+            key: key.to_owned(),
+        });
+    }
+    directory_in_library(&dir, key)?;
+    let shelf =
+        crate::learning::Shelf::new(dir.clone(), crate::learning::Shelf::history_beside(db));
+    let archived = crate::learning::archive(&shelf, key).map_err(|error| match error {
+        crate::learning::LearningError::Refused(_) => SkillError::Unknown {
+            key: key.to_owned(),
+        },
+        other => SkillError::Io {
+            path: dir.join(key).display().to_string(),
+            detail: other.to_string(),
+        },
+    })?;
+    if crate::learning::usage(db, key).ok().flatten().is_some() {
+        crate::learning::forget(db, key)?;
+    }
+    // The page and the phone both want a path they can print, and a path relative
+    // to the library is the one that stays short and carries no home directory.
+    let relative = archived.strip_prefix(&dir).unwrap_or(&archived);
+    Ok(relative.display().to_string())
 }
 
 /// The tool name, in one place because the spec and the dispatcher must agree.
@@ -727,5 +1016,305 @@ mod tests {
         );
         let missing = access.call(&serde_json::json!({ "key": "nope" }));
         assert!(missing.is_error);
+    }
+
+    // -----------------------------------------------------------------------
+    // The write path
+    // -----------------------------------------------------------------------
+
+    /// A complete SKILL.md, which is what a write takes.
+    fn full_skill(name: &str, description: &str, body: &str) -> String {
+        format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n")
+    }
+
+    #[test]
+    fn a_write_refuses_a_key_that_is_not_a_slug() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "deploy", "description: Ship it", "steps");
+        let db = db();
+        let raw = library.display().to_string();
+        for key in ["../escape", "a/b", ".hidden", "", "with space"] {
+            assert!(
+                matches!(
+                    write(&db, Some(&raw), key, &full_skill("X", "Y", "body")),
+                    Err(SkillError::KeyInvalid { .. })
+                ),
+                "{key} must be refused before any file is touched"
+            );
+        }
+        assert_eq!(
+            read(&db, Some(&raw), "deploy").expect("the untouched skill"),
+            "steps"
+        );
+    }
+
+    #[test]
+    fn a_write_refuses_an_empty_body() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "deploy", "description: Ship it", "steps");
+        let db = db();
+        let raw = library.display().to_string();
+        for body in ["", "   ", "\n\n\t\n"] {
+            assert!(
+                matches!(
+                    write(&db, Some(&raw), "deploy", body),
+                    Err(SkillError::Empty { .. })
+                ),
+                "{body:?} must be refused"
+            );
+        }
+        assert_eq!(
+            read(&db, Some(&raw), "deploy").expect("the untouched skill"),
+            "steps"
+        );
+    }
+
+    #[test]
+    fn a_write_refuses_a_body_over_the_ceiling() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "deploy", "description: Ship it", "steps");
+        let db = db();
+        let raw = library.display().to_string();
+        let huge = "x".repeat((MAX_SKILL_BYTES + 1) as usize);
+        assert!(matches!(
+            write(&db, Some(&raw), "deploy", &huge),
+            Err(SkillError::BodyTooLarge { .. })
+        ));
+        assert_eq!(
+            read(&db, Some(&raw), "deploy").expect("the untouched skill"),
+            "steps"
+        );
+    }
+
+    #[test]
+    fn a_write_replaces_the_whole_file_and_reports_its_size() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "deploy", "description: Ship it", "old steps");
+        let db = db();
+        let raw = library.display().to_string();
+        let text = full_skill("Deploy", "Ship it carefully", "new steps entirely");
+
+        let bytes = write(&db, Some(&raw), "deploy", &text).expect("the write");
+        assert_eq!(bytes, text.len() as u64);
+
+        let on_disk = std::fs::read_to_string(library.join("deploy").join(FILE_NAME))
+            .expect("the file is there");
+        assert_eq!(on_disk, text, "the body is written exactly as offered");
+        let (skills, _) = list(&db, Some(&raw)).expect("the library");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].bytes, text.len() as u64);
+        assert_eq!(skills[0].description.as_deref(), Some("Ship it carefully"));
+
+        // No temporary is left behind, in the skill directory or the library.
+        let leftovers: Vec<String> = std::fs::read_dir(library.join("deploy"))
+            .expect("the skill dir")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != FILE_NAME)
+            .collect();
+        assert!(leftovers.is_empty(), "a temporary is left: {leftovers:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_written_skill_is_readable_and_not_executable() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_dir, library) = scratch();
+        write_skill(&library, "deploy", "description: Ship it", "steps");
+        let db = db();
+        let raw = library.display().to_string();
+        write(
+            &db,
+            Some(&raw),
+            "deploy",
+            &full_skill("Deploy", "Ship it", "new"),
+        )
+        .expect("the write");
+        let mode = std::fs::metadata(library.join("deploy").join(FILE_NAME))
+            .expect("the file")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o644, "a skill file is 0644, got {mode:o}");
+    }
+
+    #[test]
+    fn a_write_to_an_unknown_key_is_refused() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "deploy", "description: Ship it", "steps");
+        let db = db();
+        let raw = library.display().to_string();
+        assert!(matches!(
+            write(
+                &db,
+                Some(&raw),
+                "no-such-skill",
+                &full_skill("X", "Y", "body")
+            ),
+            Err(SkillError::Unknown { .. })
+        ));
+        assert!(
+            !library.join("no-such-skill").exists(),
+            "a refused write creates nothing"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_skill_directory_is_refused_rather_than_followed() {
+        let (root, library) = scratch();
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("the outside dir");
+        std::fs::write(
+            outside.join(FILE_NAME),
+            full_skill("Linked", "A link", "outside the library"),
+        )
+        .expect("the outside file");
+        std::os::unix::fs::symlink(&outside, library.join("linked")).expect("the link");
+        let db = db();
+        let raw = library.display().to_string();
+
+        assert!(matches!(
+            write(&db, Some(&raw), "linked", &full_skill("X", "Y", "body")),
+            Err(SkillError::Symlink { .. })
+        ));
+        assert!(matches!(
+            delete(&db, Some(&raw), "linked"),
+            Err(SkillError::Symlink { .. })
+        ));
+        let untouched = std::fs::read_to_string(outside.join(FILE_NAME)).expect("the outside file");
+        assert!(
+            untouched.contains("outside the library"),
+            "the link target must not be written through: {untouched}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_skill_file_is_refused_rather_than_followed() {
+        let (root, library) = scratch();
+        let outside = root.path().join("outside.md");
+        std::fs::write(&outside, "not a skill").expect("the outside file");
+        let directory = library.join("deploy");
+        std::fs::create_dir_all(&directory).expect("the skill dir");
+        std::os::unix::fs::symlink(&outside, directory.join(FILE_NAME)).expect("the link");
+        let db = db();
+        let raw = library.display().to_string();
+
+        assert!(matches!(
+            write(&db, Some(&raw), "deploy", &full_skill("X", "Y", "body")),
+            Err(SkillError::Symlink { .. })
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&outside).expect("the outside file"),
+            "not a skill",
+            "the link target must not be written through"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The archive delete
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deleting_a_skill_moves_it_into_the_archive_and_out_of_the_list() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "deploy", "description: Ship it", "steps");
+        let db = db();
+        let raw = library.display().to_string();
+
+        let archived = delete(&db, Some(&raw), "deploy").expect("the delete");
+        assert!(
+            archived.starts_with(crate::learning::ARCHIVE_DIR),
+            "the answer is a path under .archive: {archived}"
+        );
+        assert!(
+            archived.starts_with(&format!("{}/deploy-", crate::learning::ARCHIVE_DIR)),
+            "the archived directory carries the key and a stamp: {archived}"
+        );
+        assert!(!library.join("deploy").exists(), "the skill is out");
+        let moved = library.join(&archived);
+        assert!(moved.is_dir(), "the directory still exists: {archived}");
+        assert!(
+            moved.join(FILE_NAME).is_file(),
+            "the file came with it: {archived}"
+        );
+
+        let (skills, _) = list(&db, Some(&raw)).expect("the library");
+        assert!(skills.is_empty(), "the skill is gone from the list");
+    }
+
+    #[test]
+    fn deleting_a_learned_skill_drops_its_ledger_row() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "learned-one", "description: Learned", "steps");
+        let db = db();
+        let raw = library.display().to_string();
+        crate::learning::record_created(&db, "learned-one", Some("Learned"), None)
+            .expect("a ledger row");
+        assert!(
+            crate::learning::usage(&db, "learned-one")
+                .expect("db")
+                .is_some(),
+            "the row exists before the delete"
+        );
+
+        delete(&db, Some(&raw), "learned-one").expect("the delete");
+        assert!(
+            crate::learning::usage(&db, "learned-one")
+                .expect("db")
+                .is_none(),
+            "the row is dropped, so the loop cannot grow the skill back"
+        );
+    }
+
+    #[test]
+    fn deleting_an_unknown_key_is_refused() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "deploy", "description: Ship it", "steps");
+        let db = db();
+        let raw = library.display().to_string();
+        assert!(matches!(
+            delete(&db, Some(&raw), "no-such-skill"),
+            Err(SkillError::Unknown { .. })
+        ));
+        assert!(matches!(
+            delete(&db, Some(&raw), "../escape"),
+            Err(SkillError::KeyInvalid { .. })
+        ));
+        assert!(library.join("deploy").is_dir(), "nothing was moved");
+    }
+
+    #[test]
+    fn the_ledger_decides_origin_state_and_pinning() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "operator-one", "description: Mine", "steps");
+        write_skill(&library, "learned-one", "description: Its", "steps");
+        let db = db();
+        let raw = library.display().to_string();
+        crate::learning::record_created(&db, "learned-one", Some("Its"), None)
+            .expect("a ledger row");
+        crate::learning::set_pinned(&db, "learned-one", true).expect("pin");
+        crate::learning::set_state(&db, "learned-one", crate::learning::State::Stale)
+            .expect("state");
+
+        let (skills, _) = list(&db, Some(&raw)).expect("the library");
+        let operator = skills
+            .iter()
+            .find(|skill| skill.key == "operator-one")
+            .expect("the operator skill");
+        assert_eq!(operator.origin, crate::learning::Origin::Operator);
+        assert_eq!(operator.state, crate::learning::State::Active);
+        assert!(!operator.pinned, "no row means unpinned");
+        assert!(operator.editable);
+
+        let learned = skills
+            .iter()
+            .find(|skill| skill.key == "learned-one")
+            .expect("the learned skill");
+        assert_eq!(learned.origin, crate::learning::Origin::Agent);
+        assert_eq!(learned.state, crate::learning::State::Stale);
+        assert!(learned.pinned);
+        assert!(learned.editable);
     }
 }

@@ -288,6 +288,19 @@ pub const ROUTE_LEARNING_SKILL: &str = "/dashboard/learning/skill";
 /// `POST /dashboard/learning/curator` - run one maintenance pass now.
 pub const ROUTE_LEARNING_CURATOR: &str = "/dashboard/learning/curator";
 
+/// `GET /dashboard/skills` - the whole library: every skill, its file, an editor
+/// and the archive button. The page the library never had, next to Learning in
+/// the nav because the two answer the same question from different ends: this one
+/// is what is on disk, that one is what the loop did.
+pub const ROUTE_SKILLS: &str = "/dashboard/skills";
+
+/// `POST /dashboard/skills/save` - replace one skill's whole file.
+pub const ROUTE_SKILLS_SAVE: &str = "/dashboard/skills/save";
+
+/// `POST /dashboard/skills/delete` - archive one skill into `.archive/`. Two
+/// posts: the first asks, the second carries `confirm=true`.
+pub const ROUTE_SKILLS_DELETE: &str = "/dashboard/skills/delete";
+
 /// `GET /dashboard/env` and `POST /dashboard/env` - the environment file the
 /// daemon reads at start, and the one form that writes a line into it.
 pub const ROUTE_ENV: &str = "/dashboard/env";
@@ -419,6 +432,8 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_ACCOUNTS_REGISTER,
     ROUTE_SETTINGS_SCHEDULES,
     ROUTE_SETTINGS_SKILLS,
+    ROUTE_SKILLS_SAVE,
+    ROUTE_SKILLS_DELETE,
     ROUTE_SIDEBAR,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",

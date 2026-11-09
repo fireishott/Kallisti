@@ -881,6 +881,8 @@ pub enum Nav {
     Settings,
     /// What the daemon learned, and the loop's two controls.
     Learning,
+    /// The skill library itself: every file, an editor, and the archive button.
+    Skills,
     /// The audit trail.
     Activity,
     /// The archive list, the create button, and the restore form.
@@ -892,13 +894,14 @@ pub enum Nav {
 impl Nav {
     /// Every entry, in display order. Every one of them is a page: the nav has
     /// no placeholder in it.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Chat,
         Self::Dashboard,
         Self::Sessions,
         Self::Devices,
         Self::Settings,
         Self::Learning,
+        Self::Skills,
         Self::Activity,
         Self::Backups,
         Self::Environment,
@@ -914,6 +917,7 @@ impl Nav {
             Self::Devices => crate::admin::ROUTE_DEVICES,
             Self::Settings => crate::admin::ROUTE_SETTINGS,
             Self::Learning => crate::admin::ROUTE_LEARNING,
+            Self::Skills => crate::admin::ROUTE_SKILLS,
             Self::Activity => crate::admin::ROUTE_ACTIVITY,
             Self::Backups => crate::admin::ROUTE_BACKUPS,
             Self::Environment => crate::admin::ROUTE_ENV,
@@ -930,6 +934,7 @@ impl Nav {
             Self::Devices => "Devices",
             Self::Settings => "Settings",
             Self::Learning => "Learning",
+            Self::Skills => "Skills",
             Self::Activity => "Activity",
             Self::Backups => "Backups",
             Self::Environment => "Environment",
@@ -4840,6 +4845,201 @@ pub fn learning_page(view: &LearningView) -> Markup {
         body,
         &view.chrome,
     )
+}
+
+/// One skill's file, as the editor renders it.
+///
+/// The text is the whole `SKILL.md`, frontmatter included: the form replaces the
+/// file, so what the box holds is what the file holds. Reading it for one skill at
+/// a time is deliberate. The library on this host is a hundred files and about a
+/// megabyte, and a page that carried every body in a textarea would be a page
+/// nobody waits for.
+#[derive(Debug, Clone)]
+pub struct SkillEditor {
+    /// The skill's key.
+    pub key: String,
+    /// The file being edited, so the page can name it.
+    pub path: String,
+    /// The whole file.
+    pub content: String,
+    /// Its size on disk, as it was read.
+    pub bytes: u64,
+}
+
+/// Everything the skills page needs.
+#[derive(Debug, Clone)]
+pub struct SkillsView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every skill in the library, by key.
+    pub skills: Vec<crate::skills::Skill>,
+    /// The library directory the page names.
+    pub library: String,
+    /// Whether the catalog is switched on for turns.
+    pub enabled: bool,
+    /// The skill whose file is in the editor, when one is selected.
+    pub editing: Option<SkillEditor>,
+    /// The key waiting for a second press before it is archived.
+    pub confirming: Option<String>,
+    /// A success line, when a form just saved.
+    pub notice: Option<String>,
+    /// A failure to show.
+    pub error: Option<FormError>,
+}
+
+impl SkillsView {
+    /// An empty view, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            skills: Vec::new(),
+            library: String::new(),
+            enabled: true,
+            editing: None,
+            confirming: None,
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The skills page: every file in the library, one editor, one archive button.
+///
+/// The page is the library's own surface and it says what the daemon actually
+/// does: a save replaces the whole file, and a delete moves the directory into
+/// `.archive/` under the library rather than unlinking it. The second press is a
+/// real state of the page rather than a script, so the confirmation works with
+/// JavaScript off, which is the rule every page here keeps.
+pub fn skills_page(view: &SkillsView) -> Markup {
+    let error = view.error.as_ref();
+    let body = html! {
+        h1 { "Skills" }
+        p .lede {
+            "Every procedure in this library, with the file behind it. A skill is a directory "
+            "holding a " code { "SKILL.md" } ", and the editor below replaces that whole file. "
+            "Delete moves the directory into " code { ".archive/" } " instead of destroying it: "
+            "an archived skill is still on this disk, and the Learning page restores a learned "
+            "one from there."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        @if let Some(key) = &view.confirming {
+            section .card aria-labelledby="skills-confirm" {
+                h2 id="skills-confirm" { "Archive " code { (key) } "?" }
+                p {
+                    "The directory moves into " code { ".archive/" } " under the library and the "
+                    "skill leaves the list and the model's catalog. Nothing is deleted: the file "
+                    "stays on disk, and the Learning page's restore is the way back."
+                }
+                div .actions {
+                    form method="post" action=(crate::admin::ROUTE_SKILLS_DELETE) {
+                        input type="hidden" name="key" value=(key);
+                        input type="hidden" name="confirm" value="true";
+                        button .danger type="submit" { "Move it to .archive/" }
+                    }
+                    a .button.secondary href=(crate::admin::ROUTE_SKILLS) { "Keep it" }
+                }
+            }
+        }
+        section .card aria-labelledby="skills-library" {
+            h2 id="skills-library" { "Library" }
+            @if !view.enabled {
+                p .small {
+                    "The catalog is switched off on the settings page, so turns are not offered "
+                    "any of these. The files are unaffected."
+                }
+            }
+            @if view.skills.is_empty() {
+                p .empty {
+                    strong { "No skills in this library" }
+                    "The directory " code .mono { (view.library) } " holds no directory with a "
+                    code { "SKILL.md" } " in it. The settings page sets the library."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Skill" }
+                            th scope="col" { "Origin" }
+                            th scope="col" { "State" }
+                            th scope="col" { "Size" }
+                            th scope="col" { "Control" }
+                        }
+                    }
+                    tbody {
+                        @for skill in &view.skills {
+                            tr {
+                                td {
+                                    a .mono href=(format!("{}?edit={}", crate::admin::ROUTE_SKILLS, skill.key)) {
+                                        (skill.key)
+                                    }
+                                    @if let Some(description) = &skill.description {
+                                        p .small { (description) }
+                                    } @else {
+                                        p .small { "no description in the file" }
+                                    }
+                                }
+                                td {
+                                    @if skill.origin == crate::learning::Origin::Agent {
+                                        span .tag { "learned" }
+                                    } @else {
+                                        span .tag { "operator" }
+                                    }
+                                }
+                                td {
+                                    (skill.state.as_str())
+                                    @if skill.pinned { " " span .tag { "pinned" } }
+                                }
+                                td .mono .small { (skill.bytes) " bytes" }
+                                td {
+                                    a .button.secondary
+                                        href=(format!("{}?edit={}", crate::admin::ROUTE_SKILLS, skill.key)) {
+                                        "Edit"
+                                    }
+                                    form .inline-form method="post"
+                                        action=(crate::admin::ROUTE_SKILLS_DELETE) novalidate {
+                                        input type="hidden" name="key" value=(skill.key);
+                                        button type="submit" class="danger" { "Delete" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p .small {
+                "Library: " code .mono { (view.library) } ", " (view.skills.len()) " skill(s)."
+            }
+        }
+        @if let Some(editor) = &view.editing {
+            section .card aria-labelledby="skills-editor" {
+                h2 id="skills-editor" { "Edit " code { (editor.key) } }
+                form method="post" action=(crate::admin::ROUTE_SKILLS_SAVE) novalidate {
+                    input type="hidden" name="key" value=(editor.key);
+                    div .field {
+                        label for="skill_content" { "The whole file" }
+                        textarea id="skill_content" name="content" rows="24" spellcheck="false"
+                            autofocus[error.is_some_and(|error| error.field.as_deref() == Some("content"))] {
+                            (editor.content)
+                        }
+                        span .hint {
+                            (editor.path) " is " (editor.bytes) " bytes. This box is the whole "
+                            "file, frontmatter included, and a save replaces it in one step: the "
+                            "previous version is not kept by this page."
+                        }
+                    }
+                    div .actions {
+                        button type="submit" { "Save the file" }
+                        a .button.secondary href=(crate::admin::ROUTE_SKILLS) { "Cancel" }
+                    }
+                }
+            }
+        }
+    };
+    shell("Skills", view.state, Some(Nav::Skills), body, &view.chrome)
 }
 
 /// Everything the backups page needs.
@@ -10353,6 +10553,52 @@ mod tests {
         );
         assert!(page.contains("Run a pass now"), "{page}");
         assert!(page.contains(r#"href="/dashboard/learning""#) || page.contains("Learning"));
+    }
+
+    #[test]
+    fn the_skills_page_offers_the_file_and_calls_the_delete_an_archive() {
+        let mut view = SkillsView::new(SetupState::Ready);
+        view.library = "/home/operator/.config/kallisti/skills".to_owned();
+        view.skills = vec![crate::skills::Skill {
+            key: "deploy".to_owned(),
+            name: "Deploy".to_owned(),
+            description: Some("Ship it behind the guard.".to_owned()),
+            path: "skills/deploy/SKILL.md".to_owned(),
+            enabled: true,
+            bytes: 42,
+            origin: crate::learning::Origin::Operator,
+            state: crate::learning::State::Active,
+            pinned: false,
+            editable: true,
+        }];
+        view.editing = Some(SkillEditor {
+            key: "deploy".to_owned(),
+            path: "skills/deploy/SKILL.md".to_owned(),
+            content: "---\nname: Deploy\n---\n\n1. step\n".to_owned(),
+            bytes: 42,
+        });
+        let page = skills_page(&view).into_string();
+
+        // The row states what the file is and who wrote it.
+        assert!(page.contains("deploy"), "{page}");
+        assert!(page.contains("Ship it behind the guard."), "{page}");
+        assert!(page.contains("operator"), "{page}");
+        assert!(page.contains("42"), "{page}");
+        // Both forms, and the editor carrying the whole file rather than a body.
+        assert!(
+            page.contains(r#"action="/dashboard/skills/save""#),
+            "{page}"
+        );
+        assert!(page.contains(r#"name="content""#), "{page}");
+        assert!(page.contains("name: Deploy"), "{page}");
+        assert!(
+            page.contains(r#"action="/dashboard/skills/delete""#),
+            "{page}"
+        );
+        // The page says what a delete is here: a move into `.archive/`.
+        assert!(page.contains(".archive/"), "{page}");
+        // The nav entry, beside Learning.
+        assert!(page.contains(r#"href="/dashboard/skills""#), "{page}");
     }
 
     #[test]

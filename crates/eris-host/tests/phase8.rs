@@ -6947,3 +6947,369 @@ async fn the_command_table_is_readable_over_the_device_surface() {
 
     harness.stop();
 }
+
+// ---------------------------------------------------------------------------
+// Skills: the four fields the list grew, and the write/archive pair
+// ---------------------------------------------------------------------------
+
+/// A skill library inside the harness' own temporary root.
+///
+/// Without this the library resolves to the daemon's real `~/.config` skills, and
+/// a test would write into the operator's own shelf. The caller keeps the returned
+/// directory alive for the length of the test.
+fn skill_library(harness: &Harness) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("a temp library root");
+    let library = dir.path().join("skills");
+    std::fs::create_dir_all(&library).expect("the library");
+    harness
+        .engine
+        .set_setting(
+            eris_host::skills::SETTING_DIR,
+            &library.display().to_string(),
+        )
+        .expect("the library setting");
+    (dir, library)
+}
+
+/// One skill directory with a complete `SKILL.md`.
+fn seed_skill_file(library: &std::path::Path, key: &str, name: &str, description: &str) -> String {
+    let directory = library.join(key);
+    std::fs::create_dir_all(&directory).expect("the skill directory");
+    let text = format!("---\nname: {name}\ndescription: {description}\n---\n\n1. do the thing\n");
+    std::fs::write(directory.join("SKILL.md"), &text).expect("the skill file");
+    text
+}
+
+/// The admin bearer, as the header list every request below carries.
+fn admin_auth(harness: &Harness) -> Vec<(&'static str, String)> {
+    let (_, token) = harness.device_with_admin_token("iPad");
+    vec![("authorization", format!("Bearer {token}"))]
+}
+
+#[tokio::test]
+async fn the_skill_list_carries_origin_state_and_pinning_for_both_kinds() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_dir, library) = skill_library(&harness);
+    seed_skill_file(
+        &library,
+        "operator-one",
+        "Operator One",
+        "A skill the operator wrote",
+    );
+    seed_skill_file(
+        &library,
+        "learned-one",
+        "Learned One",
+        "A skill the loop wrote",
+    );
+    let db = harness.engine.db();
+    eris_host::learning::record_created(db, "learned-one", Some("A skill the loop wrote"), None)
+        .expect("a ledger row");
+    eris_host::learning::set_pinned(db, "learned-one", true).expect("pin");
+    eris_host::learning::set_state(db, "learned-one", eris_host::learning::State::Stale)
+        .expect("state");
+    let auth = admin_auth(&harness);
+
+    let response = harness.request("GET", "/v1/skills", &auth, None).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    let rows = body["skills"].as_array().expect("a skill list");
+
+    let operator = rows
+        .iter()
+        .find(|row| row["key"] == "operator-one")
+        .unwrap_or_else(|| panic!("the operator skill is listed: {body}"));
+    assert_eq!(operator["origin"], "operator");
+    assert_eq!(operator["state"], "active");
+    assert_eq!(operator["pinned"], false);
+    assert_eq!(operator["editable"], true);
+    // The shape it already published is unchanged.
+    assert_eq!(operator["name"], "Operator One");
+    assert_eq!(operator["enabled"], true);
+    assert!(operator["bytes"].as_u64().unwrap_or_default() > 0);
+
+    let learned = rows
+        .iter()
+        .find(|row| row["key"] == "learned-one")
+        .unwrap_or_else(|| panic!("the learned skill is listed: {body}"));
+    assert_eq!(learned["origin"], "learned");
+    assert_eq!(learned["state"], "stale");
+    assert_eq!(learned["pinned"], true);
+    assert_eq!(learned["editable"], true);
+
+    assert_eq!(provider.hits(), 0, "reading the library costs no tokens");
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_skill_write_replaces_the_body_and_refuses_what_it_cannot_take() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_dir, library) = skill_library(&harness);
+    seed_skill_file(&library, "deploy", "Deploy", "Ship it");
+    let auth = admin_auth(&harness);
+
+    let text = "---\nname: Deploy\ndescription: Ship it carefully\n---\n\n1. new step\n";
+    let body = serde_json::json!({ "content": text }).to_string();
+    let response = harness
+        .request("PUT", "/v1/skills/deploy", &auth, Some(&body))
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let written = response.json();
+    assert_eq!(written["ok"], true);
+    assert_eq!(written["key"], "deploy");
+    assert_eq!(written["bytes"], text.len() as u64);
+    assert_eq!(
+        std::fs::read_to_string(library.join("deploy").join("SKILL.md")).expect("the file"),
+        text,
+        "the file is exactly what the caller sent"
+    );
+
+    // An empty body, by content and by absent field, is one refusal.
+    for body in [
+        serde_json::json!({ "content": "   " }).to_string(),
+        serde_json::json!({}).to_string(),
+    ] {
+        let response = harness
+            .request("PUT", "/v1/skills/deploy", &auth, Some(&body))
+            .await;
+        assert_eq!(response.status, 400, "{}", response.body);
+        assert_eq!(response.json()["code"], "skill_content_empty");
+    }
+
+    // A key this daemon will not spell.
+    let body = serde_json::json!({ "content": "x" }).to_string();
+    let response = harness
+        .request("PUT", "/v1/skills/a%2Fb", &auth, Some(&body))
+        .await;
+    assert_eq!(response.status, 400, "{}", response.body);
+    assert_eq!(response.json()["code"], "skill_key_invalid");
+
+    // A key that names nothing in the library is a 404, not a new skill.
+    let response = harness
+        .request("PUT", "/v1/skills/no-such-skill", &auth, Some(&body))
+        .await;
+    assert_eq!(response.status, 404, "{}", response.body);
+    assert_eq!(response.json()["code"], "skill_unknown");
+    assert!(
+        !library.join("no-such-skill").exists(),
+        "nothing was created"
+    );
+
+    // Over the cap: 413, and the file keeps what it had.
+    let huge = "y".repeat((eris_host::skills::MAX_SKILL_BYTES + 1) as usize);
+    let body = serde_json::json!({ "content": huge }).to_string();
+    let response = harness
+        .request("PUT", "/v1/skills/deploy", &auth, Some(&body))
+        .await;
+    assert_eq!(response.status, 413, "{}", response.body);
+    assert_eq!(response.json()["code"], "skill_content_too_large");
+    assert_eq!(
+        std::fs::read_to_string(library.join("deploy").join("SKILL.md")).expect("the file"),
+        text
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn deleting_a_skill_archives_it_and_names_the_path() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_dir, library) = skill_library(&harness);
+    seed_skill_file(&library, "deploy", "Deploy", "Ship it");
+    let auth = admin_auth(&harness);
+
+    let response = harness
+        .request("DELETE", "/v1/skills/deploy", &auth, None)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["key"], "deploy");
+    let archived = body["archived"]
+        .as_str()
+        .expect("the answer names where it went");
+    assert!(
+        archived.starts_with(".archive/deploy-"),
+        "the path is relative to the library and stamped: {archived}"
+    );
+    assert!(!library.join("deploy").exists(), "it left the library");
+    assert!(
+        library.join(archived).join("SKILL.md").is_file(),
+        "the directory still exists at {archived}"
+    );
+
+    // The list no longer carries it.
+    let response = harness.request("GET", "/v1/skills", &auth, None).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let keys: Vec<String> = response.json()["skills"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|row| row["key"].as_str().map(str::to_owned))
+        .collect();
+    assert!(!keys.contains(&"deploy".to_owned()), "{keys:?}");
+
+    // Deleting it again is a 404, and an unusable key is a 400.
+    let response = harness
+        .request("DELETE", "/v1/skills/deploy", &auth, None)
+        .await;
+    assert_eq!(response.status, 404, "{}", response.body);
+    assert_eq!(response.json()["code"], "skill_unknown");
+    let response = harness
+        .request("DELETE", "/v1/skills/a%2Fb", &auth, None)
+        .await;
+    assert_eq!(response.status, 400, "{}", response.body);
+    assert_eq!(response.json()["code"], "skill_key_invalid");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_skill_writes_refuse_a_token_without_the_admin_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_dir, library) = skill_library(&harness);
+    seed_skill_file(&library, "deploy", "Deploy", "Ship it");
+    let (_, chat_token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {chat_token}"))];
+
+    let body = serde_json::json!({ "content": "---\nname: Deploy\n---\n\nnew\n" }).to_string();
+    let put = harness
+        .request("PUT", "/v1/skills/deploy", &auth, Some(&body))
+        .await;
+    assert_eq!(put.status, 403, "{}", put.body);
+    assert_eq!(put.json()["code"], "scope_denied");
+    let delete = harness
+        .request("DELETE", "/v1/skills/deploy", &auth, None)
+        .await;
+    assert_eq!(delete.status, 403, "{}", delete.body);
+    assert_eq!(delete.json()["code"], "scope_denied");
+
+    assert!(
+        library.join("deploy").join("SKILL.md").is_file(),
+        "a refused token changes nothing on disk"
+    );
+
+    // No bearer at all is the 401 every other route answers.
+    for method in ["PUT", "DELETE"] {
+        let anonymous = harness
+            .request(method, "/v1/skills/deploy", &[], None)
+            .await;
+        assert_eq!(anonymous.status, 401, "{method}: {}", anonymous.body);
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+    }
+
+    harness.stop();
+}
+
+/// The skill write and archive are admin-only, and the refusals do nothing.
+///
+/// The library here is a temp directory: without `skills.dir` the service
+/// resolves the operator's real `~/.config` shelf, and a test that passes on a
+/// host with skills would edit them.
+#[tokio::test]
+async fn a_chat_token_cannot_rewrite_or_archive_a_skill() {
+    let harness = Harness::start("http://127.0.0.1:1", DEFAULT_SSE_BUFFER).await;
+    let library = harness._dir.path().join("skills");
+    std::fs::create_dir_all(library.join("deploy")).expect("skill directory");
+    std::fs::write(
+        library.join("deploy").join("SKILL.md"),
+        "---\nname: Deploy\n---\n\n1. ship\n",
+    )
+    .expect("skill file");
+    harness
+        .engine
+        .set_setting(
+            eris_host::skills::SETTING_DIR,
+            &library.display().to_string(),
+        )
+        .expect("library setting");
+
+    let (_, chat) = harness.device_with_token("phone");
+    let (_, admin) = harness.device_with_admin_token("admin");
+    let rewritten = r#"{"content":"---\nname: Deploy\n---\n\n2. ship harder\n"}"#;
+
+    // No bearer: the same 401 every other route answers.
+    for method in ["PUT", "DELETE"] {
+        let anonymous = harness
+            .request(method, "/v1/skills/deploy", &[], Some(rewritten))
+            .await;
+        assert_eq!(anonymous.status, 401, "{method}: {}", anonymous.body);
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+    }
+
+    // A real token without admin: 403, and it says why.
+    for method in ["PUT", "DELETE"] {
+        let refused = harness
+            .request(
+                method,
+                "/v1/skills/deploy",
+                &[
+                    ("authorization", format!("Bearer {chat}")),
+                    ("content-type", "application/json".to_owned()),
+                ],
+                Some(rewritten),
+            )
+            .await;
+        assert_eq!(refused.status, 403, "{method}: {}", refused.body);
+        assert_eq!(refused.json()["code"], "scope_denied");
+    }
+
+    // Neither refusal touched the file or moved it.
+    let untouched =
+        std::fs::read_to_string(library.join("deploy").join("SKILL.md")).expect("still there");
+    assert!(untouched.contains("1. ship"), "{untouched}");
+    assert!(!library.join(".archive").exists(), "nothing was archived");
+
+    // The admin token does what the chat token was refused: rewrite, then archive.
+    let saved = harness
+        .request(
+            "PUT",
+            "/v1/skills/deploy",
+            &[
+                ("authorization", format!("Bearer {admin}")),
+                ("content-type", "application/json".to_owned()),
+            ],
+            Some(rewritten),
+        )
+        .await;
+    assert_eq!(saved.status, 200, "{}", saved.body);
+    assert_eq!(saved.json()["ok"], true);
+    assert_eq!(saved.json()["key"], "deploy");
+    let edited = std::fs::read_to_string(library.join("deploy").join("SKILL.md")).expect("edited");
+    assert!(edited.contains("2. ship harder"), "{edited}");
+
+    let archived = harness
+        .request(
+            "DELETE",
+            "/v1/skills/deploy",
+            &[("authorization", format!("Bearer {admin}"))],
+            None,
+        )
+        .await;
+    assert_eq!(archived.status, 200, "{}", archived.body);
+    let answered = archived.json();
+    assert_eq!(answered["ok"], true);
+    assert_eq!(answered["key"], "deploy");
+    let moved = answered["archived"].as_str().expect("an archive path");
+    assert!(moved.contains(".archive/"), "{moved}");
+    assert!(
+        !library.join("deploy").exists(),
+        "the skill left the library"
+    );
+    assert!(
+        library
+            .join(".archive")
+            .read_dir()
+            .expect("archive")
+            .count()
+            >= 1,
+        "the directory is in the archive"
+    );
+
+    harness.stop();
+}

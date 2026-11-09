@@ -417,7 +417,8 @@ pub const ROUTE_CRON_ITEM: &str = "/v1/cron/{id}";
 /// `GET /v1/skills` - the skill library as the model catalog sees it.
 pub const ROUTE_SKILLS: &str = "/v1/skills";
 
-/// `GET /v1/skills/{key}` - one skill's body.
+/// `GET`, `PUT` and `DELETE /v1/skills/{key}` - one skill's body, its
+/// replacement, and the archive move that stands in for a delete.
 pub const ROUTE_SKILL_ITEM: &str = "/v1/skills/{key}";
 
 /// `GET` and `POST /v1/aux` - the auxiliary role pins, and one role's write.
@@ -1171,7 +1172,12 @@ pub fn router(service: DeviceService) -> Router {
             patch(control::patch_cron).delete(control::delete_cron),
         )
         .route(ROUTE_SKILLS, get(control::skills_list))
-        .route(ROUTE_SKILL_ITEM, get(control::skill_detail))
+        .route(
+            ROUTE_SKILL_ITEM,
+            get(control::skill_detail)
+                .put(control::skill_write)
+                .delete(control::skill_delete),
+        )
         .route(ROUTE_AUX, get(control::aux_roles).post(control::set_aux))
         .route(ROUTE_GW_HEALTH, get(gateway::gw_health))
         .route(ROUTE_GW_PREFLIGHT, get(gateway::gw_restart_preflight))
