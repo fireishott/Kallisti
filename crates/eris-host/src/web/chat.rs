@@ -4653,11 +4653,13 @@ pub fn drive_tool_loop(
 /// things in one paragraph: say the budget is nearly gone so this reads as the
 /// last chance rather than a hint, say what to do with what has already been
 /// found, and say what not to do, because a model told only "the tools are gone"
-/// writes the call it could not make and calls that an answer.
+/// writes the call it could not make and calls that an answer. It reports; it
+/// never hands the work back, and it never writes a next step for a later turn.
 const WRAP_UP: &str = "Your tool budget for this turn is nearly spent and the tools are now \
-     withdrawn. Stop exploring and answer now, in plain prose, with no tool calls: what you \
-     found, what you changed, what is still unfinished, and the exact next step so the work can \
-     be picked up from this message.";
+     withdrawn. Stop exploring and answer now, in one plain paragraph of prose, with no tool \
+     calls and no headings and no section list. Say what you did and what it proves. Report only: \
+     do not hand the work back, do not ask for permission, and do not write next steps for a \
+     later turn.";
 
 /// The instruction the tool-free round opens with.
 ///
@@ -4665,16 +4667,16 @@ const WRAP_UP: &str = "Your tool budget for this turn is nearly spent and the to
 /// on the wire that markup arrives as the answer. Telling it the budget is spent
 /// is what turns "reaching for a tool I cannot have" into "say what I found".
 const BUDGET_SPENT: &str = "Your tool budget for this turn is spent and no more tools are \
-     available. Answer in plain prose now: what you found, what you changed, and what is still \
-     unfinished. Do not request or write out any further tool calls.";
+     available. Answer now in one plain paragraph of prose, with no headings and no section \
+     list. Do not request or write out any further tool calls.";
 
 /// The instruction the last-resort answer round opens with.
 ///
 /// Reached only when the tool-free round produced nothing usable, so this states
 /// the output shape rather than relying on the model to infer it a second time.
-const ANSWER_NOW: &str = "Answer in plain prose only, with no tool calls. Summarize what this \
-     turn changed or found, name anything that is unfinished, and state the exact next step so \
-     the work can be picked up from this message.";
+const ANSWER_NOW: &str = "Answer in one plain paragraph of prose only, with no tool calls, no \
+     headings and no section list. Report only: do not ask for permission and do not write next \
+     steps for a later turn.";
 
 /// What a turn says when its budget ran out and it produced no prose of its own.
 ///
@@ -4716,9 +4718,7 @@ fn capped_notice(records: &[ToolRecord], rounds: usize, max_rounds: usize) -> St
             out.push_str(&format!("\nLast result from {}: {excerpt}", last.name));
         }
     }
-    out.push_str(
-        "\nNothing above was undone. Continue and I will pick up from here with a fresh budget.",
-    );
+    out.push_str("\nNothing above was undone.");
     out
 }
 
@@ -6729,8 +6729,8 @@ mod tests {
             outcome.text
         );
         assert!(
-            outcome.text.contains("Continue"),
-            "the notice says how to pick the job back up: {}",
+            !outcome.text.contains("Continue"),
+            "the notice must not ask the operator to nudge the job along: {}",
             outcome.text
         );
 
