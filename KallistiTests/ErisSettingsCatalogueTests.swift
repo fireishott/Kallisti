@@ -213,7 +213,8 @@ struct ErisGoalRoundCeilingTests {
         #expect(field.min == 1)
         #expect(field.max == 120)
         // It is a row in the Models tab, not a field the phone files elsewhere.
-        #expect(settings.groups.first { $0.id == "models" }?.fields.contains(field) == true)
+        let models = settings.groups.first(where: { $0.id == "models" })
+        #expect(models?.fields.contains(field) == true)
     }
 
     /// An older daemon does not know the key, so the record carries no entry and
