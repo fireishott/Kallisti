@@ -166,6 +166,27 @@ pub const DEFAULT_TOOL_ROUNDS: usize = 12;
 /// [`DEFAULT_TOOL_ROUNDS`] is what keeps an ordinary question cheap.
 pub const MAX_TOOL_ROUNDS_CEILING: u32 = 99_999;
 
+/// `settings` row: the most a long-job turn may be raised to.
+///
+/// Separate from [`SETTING_TOOL_ROUNDS`] because the two answer different
+/// questions. `tools.max_rounds` is what an ordinary turn gets; this is the
+/// largest budget a turn that asked for a long job may be lifted to.
+pub const SETTING_GOAL_ROUNDS_CEILING: &str = "tools.goal_rounds_ceiling";
+
+/// The default goal raise ceiling.
+///
+/// Equal to [`crate::goal::ROUNDS`] on purpose: shipping this setting changes no
+/// turn until an operator dials it down.
+pub const DEFAULT_GOAL_ROUNDS_CEILING: usize = crate::goal::ROUNDS;
+
+/// The most an operator may set the goal raise ceiling to.
+///
+/// Well past [`DEFAULT_GOAL_ROUNDS_CEILING`], because the ceiling is what bounds
+/// a long job the operator explicitly asked for, and a number that silently
+/// truncates a real migration is worse than one they chose. The ordinary budget
+/// stays the default for every other turn.
+pub const MAX_GOAL_ROUNDS_CEILING: u32 = 120;
+
 /// Whether tools are enabled, from a stored value.
 ///
 /// Anything but an explicit `false` leaves them on: a corrupt row must not
@@ -183,6 +204,20 @@ pub fn max_rounds(stored: Option<&str>) -> usize {
         .and_then(|raw| raw.parse::<u32>().ok())
         .filter(|rounds| *rounds >= 1 && *rounds <= MAX_TOOL_ROUNDS_CEILING)
         .map_or(DEFAULT_TOOL_ROUNDS, |rounds| rounds as usize)
+}
+
+/// The goal raise ceiling, clamped to the range the form accepts.
+///
+/// An absent or unreadable row is [`DEFAULT_GOAL_ROUNDS_CEILING`], so a corrupt
+/// value leaves long jobs on the number the daemon shipped with rather than
+/// silently lifting them to the maximum.
+#[must_use]
+pub fn goal_rounds_ceiling(stored: Option<&str>) -> usize {
+    stored
+        .map(str::trim)
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .filter(|ceiling| *ceiling >= 1 && *ceiling <= MAX_GOAL_ROUNDS_CEILING)
+        .map_or(DEFAULT_GOAL_ROUNDS_CEILING, |ceiling| ceiling as usize)
 }
 
 /// Where a turn may work, and how much it may do there.
@@ -1333,5 +1368,39 @@ mod tests {
             !confined.contains(&"run_command".to_owned()),
             "a tool the sandbox refuses must not be offered: {confined:?}"
         );
+    }
+
+    /// An absent row is the shipped default, which is the goal budget itself.
+    #[test]
+    fn the_goal_ceiling_defaults_to_the_goal_budget() {
+        assert_eq!(super::goal_rounds_ceiling(None), 60);
+        assert_eq!(
+            super::goal_rounds_ceiling(None),
+            crate::goal::ROUNDS,
+            "shipping the setting changes no turn until it is dialled down"
+        );
+        assert_eq!(super::goal_rounds_ceiling(Some("  ")), 60);
+        assert_eq!(super::goal_rounds_ceiling(Some("sixty")), 60);
+    }
+
+    /// A value inside the range is read as written, padding and all.
+    #[test]
+    fn a_goal_ceiling_inside_the_range_is_parsed() {
+        assert_eq!(super::goal_rounds_ceiling(Some("25")), 25);
+        assert_eq!(super::goal_rounds_ceiling(Some(" 90 ")), 90);
+        assert_eq!(super::goal_rounds_ceiling(Some("1")), 1);
+        assert_eq!(
+            super::goal_rounds_ceiling(Some(&super::MAX_GOAL_ROUNDS_CEILING.to_string())),
+            super::MAX_GOAL_ROUNDS_CEILING as usize
+        );
+    }
+
+    /// Outside the range is the default, not the nearest edge: a zero or a huge
+    /// number is a typing mistake, not an instruction to lift every long job.
+    #[test]
+    fn a_goal_ceiling_outside_the_range_falls_back_to_the_default() {
+        assert_eq!(super::goal_rounds_ceiling(Some("0")), 60);
+        assert_eq!(super::goal_rounds_ceiling(Some("121")), 60);
+        assert_eq!(super::goal_rounds_ceiling(Some("99999")), 60);
     }
 }

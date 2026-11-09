@@ -1758,6 +1758,10 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
     (crate::onboarding::SETTING_MODEL, "model"),
     (crate::tools::SETTING_TOOLS_ENABLED, "tools_enabled"),
     (crate::tools::SETTING_TOOL_ROUNDS, "tool_rounds"),
+    (
+        crate::tools::SETTING_GOAL_ROUNDS_CEILING,
+        "goal_rounds_ceiling",
+    ),
     (crate::subagents::SETTING_AGENTS_ENABLED, "agents_enabled"),
     (crate::persona::SETTING_ASSISTANT_NAME, "assistant_name"),
     (crate::persona::SETTING_PERSONA_ENABLED, "persona_enabled"),

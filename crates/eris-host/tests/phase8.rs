@@ -3537,6 +3537,7 @@ async fn settings_require_a_bearer_and_the_admin_scope() {
             "capabilities",
             "clock_format",
             "full_access",
+            "goal_rounds_ceiling",
             "listen",
             "memory",
             "model",
@@ -3556,6 +3557,11 @@ async fn settings_require_a_bearer_and_the_admin_scope() {
     assert_eq!(body["memory"], "gbrain");
     assert_eq!(body["tools_enabled"], true);
     assert_eq!(body["tool_rounds"], 12);
+    assert_eq!(
+        body["goal_rounds_ceiling"], 60,
+        "the long-job ceiling ships at the goal raise it was before the setting \
+         existed, so no turn changes until it is dialled down"
+    );
     assert!(body["timezone"].as_str().is_some());
     assert_eq!(body["clock_format"], "24h", "the clock default: {body}");
     assert_eq!(body["push"]["notify_on_reply"], true);

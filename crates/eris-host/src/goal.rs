@@ -12,19 +12,28 @@
 //! shipped the goal without a gate and build 150 wired it to every turn; the
 //! operator got a sixty-round status report per salutation.
 //!
-//! There are two deliberate halves here:
+//! There are three deliberate pieces here:
 //!
 //! - [`block`] is the text a goal turn is given. It is one function so the device
 //!   lane and the browser lane cannot drift into two different instructions.
 //! - [`is_small_talk`] is the gate. It is closed-set and deterministic on purpose:
 //!   no model call, no heuristic on message length alone, and no clock. The same
 //!   message is a greeting on every turn, so a test can assert it.
+//! - [`wants_long_job`] is a separate, budget-only signal. It never changes the
+//!   prompt: it decides whether the round raise applies, so an ordinary question
+//!   keeps the operator's `tools.max_rounds` and only an explicit long job is
+//!   lifted toward `tools.goal_rounds_ceiling`.
 
 /// The `settings` row a goal lives in. One active goal per daemon.
 pub const SETTING: &str = "goal.objective";
 
-/// Rounds a goal turn may spend. Deep enough to finish a real job, shallow enough
-/// that a runaway objective stops on its own.
+/// Rounds a long-job turn may spend by default. Deep enough to finish a real job,
+/// shallow enough that a runaway objective stops on its own.
+///
+/// This is the size of the raise, not the budget: an ordinary turn gets the
+/// operator's `tools.max_rounds`, and only a turn that asks for a long job is
+/// lifted to this, capped by `tools.goal_rounds_ceiling` (which defaults to this
+/// value, so the ceiling changes nothing until an operator dials it down).
 pub const ROUNDS: usize = 60;
 
 /// The longest objective the settings form accepts.
@@ -93,15 +102,18 @@ pub fn with_objective(system: Option<String>, objective: Option<&str>) -> Option
     }
 }
 
-/// Rounds a turn gets: the operator's budget, raised to [`ROUNDS`] when the turn
-/// carries a goal.
+/// Rounds a turn gets: the operator's `budget` for an ordinary turn, or the goal
+/// raise for a turn that asked for a long job.
 ///
-/// A goal turn is allowed to keep working. The cap exists so a goal that will
-/// never finish cannot spend a night of tokens, not to interrupt a job halfway.
+/// The operator's `budget` is a ceiling for ordinary turns: nothing here raises
+/// it. Only a long-job turn ([`wants_long_job`]) is lifted past it, and only as
+/// far as `ceiling`, which is the operator's `tools.goal_rounds_ceiling` and
+/// defaults to [`ROUNDS`]. A budget already above the raise is left where it is
+/// rather than lowered, so an operator who typed a bigger number keeps it.
 #[must_use]
-pub fn rounds(budget: usize, carries_goal: bool) -> usize {
-    if carries_goal {
-        budget.max(ROUNDS)
+pub fn rounds(budget: usize, raise: bool, ceiling: usize) -> usize {
+    if raise {
+        budget.max(ROUNDS.min(ceiling))
     } else {
         budget
     }
@@ -204,6 +216,56 @@ pub fn is_small_talk(text: &str) -> bool {
         return false;
     }
     words.iter().all(|word| SMALL_TALK.contains(word))
+}
+
+/// The words that mark a message as an explicit request for a long job.
+///
+/// Closed on purpose, and the default is NO raise. A marker that is absent leaves
+/// the turn on the operator's ordinary budget, which is the cheap direction: an
+/// ordinary question answered with the budget the operator set is the outcome this
+/// list exists to produce, and a long job refused the raise only costs a second
+/// ask. Substring matching, so "planning", "researched" and "refactoring" all
+/// count without a second spelling each.
+const LONG_JOB_MARKERS: &[&str] = &[
+    "plan",
+    "planning",
+    "research",
+    "audit",
+    "investigate",
+    "compare",
+    "design",
+    "build",
+    "migrate",
+    "refactor",
+    "set up",
+    "setup",
+    "step by step",
+    "take your time",
+    "go deep",
+    "thorough",
+    "in depth",
+    "full breakdown",
+    "write a plan",
+    "figure out",
+];
+
+/// Whether this message is an explicit request for a long job.
+///
+/// This is the second, separate signal for the round raise. It says nothing about
+/// whether the turn carries the goal block: [`for_turn`] and [`is_small_talk`]
+/// still decide that alone, so the prompt content is exactly what it was before
+/// this gate existed. What changes is the budget: an ordinary question keeps
+/// `tools.max_rounds`, and only a message that names a long job is lifted toward
+/// `tools.goal_rounds_ceiling`.
+///
+/// Case-insensitive and closed-set, so the same message is the same answer on
+/// every turn and a test can assert it. Empty text asks for nothing.
+#[must_use]
+pub fn wants_long_job(message: &str) -> bool {
+    let lowered = message.to_lowercase();
+    LONG_JOB_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
 }
 
 #[cfg(test)]
@@ -311,11 +373,66 @@ mod tests {
         assert!(system.starts_with("## Objective"), "{system}");
     }
 
-    /// The budget is raised for a goal turn and left alone for every other one.
+    /// The budget is raised only for a long-job turn, and only as far as the
+    /// operator's ceiling allows.
     #[test]
-    fn the_budget_only_moves_up_for_a_goal_turn() {
-        assert_eq!(rounds(12, false), 12);
-        assert_eq!(rounds(12, true), ROUNDS);
-        assert_eq!(rounds(ROUNDS + 5, true), ROUNDS + 5);
+    fn the_budget_only_moves_up_for_a_long_job() {
+        // No raise: the operator's budget is the ceiling for an ordinary turn,
+        // whatever it is and whatever the goal ceiling says.
+        assert_eq!(rounds(12, false, ROUNDS), 12);
+        assert_eq!(rounds(25, false, 120), 25);
+
+        // A raise lands on the default goal budget.
+        assert_eq!(rounds(12, true, ROUNDS), ROUNDS);
+        assert_eq!(rounds(12, true, 120), ROUNDS);
+
+        // Dialled down, the raise stops at the ceiling instead.
+        assert_eq!(rounds(1, true, 25), 25);
+        assert_eq!(rounds(1, true, 1), 1);
+
+        // A budget already above the ceiling is not lowered by the raise, and a
+        // raise never takes rounds away from anyone.
+        assert_eq!(rounds(12, true, 1), 12);
+        assert_eq!(rounds(80, true, 30), 80);
+        assert_eq!(rounds(ROUNDS + 5, true, ROUNDS), ROUNDS + 5);
+    }
+
+    /// A message that names a long job is the only thing that lifts the budget.
+    #[test]
+    fn a_planning_request_wants_a_long_job_and_a_question_does_not() {
+        assert!(wants_long_job("plan the theater night"));
+        assert!(wants_long_job("Plan the theater night"));
+        assert!(wants_long_job("PLAN the theater night"));
+
+        assert!(!wants_long_job("what time does the garage close"));
+        assert!(!wants_long_job("good morning"));
+        assert!(!wants_long_job("Sup"));
+        assert!(!wants_long_job(""));
+    }
+
+    /// The list is closed and substring matched, so the spellings a person types
+    /// land on the same answer without a second table entry.
+    #[test]
+    fn the_long_job_markers_cover_the_requested_words() {
+        for message in [
+            "do a full audit of the warehouse",
+            "research the venue options",
+            "compare these two providers",
+            "design the schema",
+            "build me a plan",
+            "migrate the database",
+            "refactor the collector",
+            "set up the tunnel",
+            "walk me through it step by step",
+            "take your time",
+            "go deep on this",
+            "be thorough",
+            "an in depth read",
+            "give me a full breakdown",
+            "write a plan",
+            "figure out why it fails",
+        ] {
+            assert!(wants_long_job(message), "{message} is a long job");
+        }
     }
 }

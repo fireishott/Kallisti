@@ -2353,6 +2353,13 @@ fn read_tool_rounds(engine: &SetupEngine) -> Result<String, DeviceError> {
     )
 }
 
+fn read_goal_rounds_ceiling(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::tools::goal_rounds_ceiling(
+        row_of(engine, crate::tools::SETTING_GOAL_ROUNDS_CEILING)?.as_deref(),
+    )
+    .to_string())
+}
+
 fn read_sandbox(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(engine
         .permissions()
@@ -2586,6 +2593,19 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::tools::SETTING_TOOL_ROUNDS,
         writable: true,
         read: read_tool_rounds,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "goal_rounds_ceiling",
+        label: "Long job ceiling",
+        group: "models",
+        // Bounds are `tools::goal_rounds_ceiling`'s own: it reads 1 to this
+        // ceiling and falls back to the default outside it, so the form and the
+        // reader refuse the same numbers.
+        kind: SettingKind::Int(1, crate::tools::MAX_GOAL_ROUNDS_CEILING),
+        row: crate::tools::SETTING_GOAL_ROUNDS_CEILING,
+        writable: true,
+        read: read_goal_rounds_ceiling,
         normalize: None,
     },
     SettingSpec {
@@ -3043,6 +3063,9 @@ fn read_settings(service: &DeviceService) -> Result<serde_json::Value, DeviceErr
         crate::tools::enabled(stored(crate::tools::SETTING_TOOLS_ENABLED)?.as_deref());
     let tool_rounds =
         crate::tools::max_rounds(stored(crate::tools::SETTING_TOOL_ROUNDS)?.as_deref());
+    let goal_rounds_ceiling = crate::tools::goal_rounds_ceiling(
+        stored(crate::tools::SETTING_GOAL_ROUNDS_CEILING)?.as_deref(),
+    );
     let timezone = crate::zone::Zone::parse(stored(crate::zone::SETTING_TIMEZONE)?.as_deref());
     let clock =
         crate::zone::ClockFormat::parse(stored(crate::zone::SETTING_CLOCK_FORMAT)?.as_deref());
@@ -3079,6 +3102,7 @@ fn read_settings(service: &DeviceService) -> Result<serde_json::Value, DeviceErr
         "memory": memory.as_str(),
         "tools_enabled": tools_enabled,
         "tool_rounds": tool_rounds,
+        "goal_rounds_ceiling": goal_rounds_ceiling,
         "approval": permissions.approval_policy.as_str(),
         "timezone": timezone.as_str(),
         "clock_format": clock.as_str(),
@@ -7502,6 +7526,56 @@ mod tests {
         }
     }
 
+    /// The long-job ceiling is a first-class device setting: the phone writes it
+    /// with the same key the browser does, and reads it back by name.
+    #[tokio::test]
+    async fn the_goal_rounds_ceiling_is_written_and_echoed() {
+        let fx = fixture();
+        // The shipped default, before anything is written.
+        let before = read_settings(&fx.service).expect("the snapshot");
+        assert_eq!(
+            before["goal_rounds_ceiling"],
+            serde_json::json!(crate::tools::DEFAULT_GOAL_ROUNDS_CEILING),
+            "the default ceiling is reported before a write"
+        );
+        assert!(
+            accepted_settings().contains(&"goal_rounds_ceiling"),
+            "POST /v1/settings accepts the key"
+        );
+
+        let (status, changed) = send(
+            &fx.service,
+            "POST",
+            "/v1/settings",
+            &fx.admin,
+            r#"{"goal_rounds_ceiling":"30"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{changed}");
+        assert_eq!(
+            changed["changed"],
+            serde_json::json!(["goal_rounds_ceiling"])
+        );
+
+        let after = read_settings(&fx.service).expect("the snapshot");
+        assert_eq!(after["goal_rounds_ceiling"], serde_json::json!(30));
+        assert_eq!(
+            fx.service
+                .engine()
+                .setting(crate::tools::SETTING_GOAL_ROUNDS_CEILING)
+                .expect("readable"),
+            Some("30".to_owned()),
+            "the write lands on the row both surfaces read"
+        );
+        let record = after["capabilities"].as_array().expect("a record");
+        let entry = record
+            .iter()
+            .find(|entry| entry["key"] == "goal_rounds_ceiling")
+            .expect("the capability is in the record");
+        assert_eq!(entry["value"], "30", "the record reads the same row");
+        assert_eq!(entry["writable"], true);
+    }
+
     #[tokio::test]
     async fn a_value_outside_a_setting_own_range_is_refused_by_name() {
         let fx = fixture();
@@ -7509,6 +7583,9 @@ mod tests {
             ("tool_rounds", "0", "1"),
             ("tool_rounds", "100000", "99999"),
             ("tool_rounds", "twelve", "whole number"),
+            ("goal_rounds_ceiling", "0", "1"),
+            ("goal_rounds_ceiling", "121", "120"),
+            ("goal_rounds_ceiling", "sixty", "whole number"),
             ("clock_format", "13h", "12h"),
             ("push_notify_scope", "everyone", "origin"),
             ("conversation_sort", "sideways", "updated"),

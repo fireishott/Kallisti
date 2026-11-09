@@ -762,6 +762,17 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .map(|stored| crate::tools::max_rounds(Some(&stored)))
         .unwrap_or_else(|| crate::tools::DEFAULT_TOOL_ROUNDS)
         .to_string();
+    // Beside the budget rather than in its own group, because the two are one
+    // decision: the budget is what a turn gets, and this caps the raise a long
+    // job may ask for. Read through the same resolver the turn reads, so the page
+    // shows exactly the number a turn would use.
+    view.goal_rounds_ceiling = crate::tools::goal_rounds_ceiling(
+        engine
+            .setting(crate::tools::SETTING_GOAL_ROUNDS_CEILING)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    )
+    .to_string();
     view.agents_enabled = crate::subagents::enabled(
         engine
             .setting(crate::subagents::SETTING_AGENTS_ENABLED)
@@ -4789,6 +4800,24 @@ async fn save_tools(
             );
         }
     };
+    let raw_ceiling = field(&fields, "goal_rounds_ceiling").trim().to_owned();
+    let goal_ceiling: u32 = match raw_ceiling.parse::<u32>() {
+        Ok(ceiling) if (1..=crate::tools::MAX_GOAL_ROUNDS_CEILING).contains(&ceiling) => ceiling,
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("goal_rounds_ceiling"),
+                    "goal_rounds_ceiling_invalid",
+                    format!(
+                        "the long-job ceiling must be a whole number from 1 to {}",
+                        crate::tools::MAX_GOAL_ROUNDS_CEILING
+                    ),
+                ),
+            );
+        }
+    };
 
     if let Err(error) = store::settings_put(
         state.engine.db(),
@@ -4803,6 +4832,17 @@ async fn save_tools(
         &rounds.to_string(),
     ) {
         return store_failure(&request_id.0, crate::tools::SETTING_TOOL_ROUNDS, error);
+    }
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::tools::SETTING_GOAL_ROUNDS_CEILING,
+        &goal_ceiling.to_string(),
+    ) {
+        return store_failure(
+            &request_id.0,
+            crate::tools::SETTING_GOAL_ROUNDS_CEILING,
+            error,
+        );
     }
     if let Err(error) = store::settings_put(state.engine.db(), chat::SETTING_SHOW_TOOL_LOG, mode) {
         return store_failure(&request_id.0, chat::SETTING_SHOW_TOOL_LOG, error);
@@ -4826,7 +4866,8 @@ async fn save_tools(
         "loopback",
         "settings.tools",
         Some(&format!(
-            "enabled={enabled}; max_rounds={rounds}; run_log={mode}; agents={agents}"
+            "enabled={enabled}; max_rounds={rounds}; goal_ceiling={goal_ceiling}; \
+             run_log={mode}; agents={agents}"
         )),
     ) {
         return audit_failure(&request_id.0, "settings.tools", error);
@@ -8945,12 +8986,24 @@ fn spawn_turn(
             .flatten()
             .as_deref(),
     );
+    let goal_rounds_ceiling = crate::tools::goal_rounds_ceiling(
+        state
+            .engine
+            .setting(crate::tools::SETTING_GOAL_ROUNDS_CEILING)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
     // The objective this turn carries, when one is set and the message is not
     // only a greeting. Both readings come from `crate::goal`, the same seam the
     // device lane uses, so a `/goal` set on the phone reaches this browser and a
     // gate fixed once is fixed on both surfaces.
     let goal = crate::goal::for_turn(state.engine.db(), &question);
-    let tool_rounds = crate::goal::rounds(tool_rounds, goal.is_some());
+    // The raise is conditional: an ordinary question keeps the operator's budget,
+    // and only a message that names a long job is lifted, as far as the ceiling
+    // setting allows. The goal block in the prompt is unchanged by this.
+    let raise = goal.is_some() && crate::goal::wants_long_job(&question);
+    let tool_rounds = crate::goal::rounds(tool_rounds, raise, goal_rounds_ceiling);
     let stored_enabled = state
         .engine
         .setting(crate::persona::SETTING_PERSONA_ENABLED)

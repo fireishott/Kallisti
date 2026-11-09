@@ -419,6 +419,13 @@ pub struct TurnPolicy {
     pub tools: bool,
     /// How many tool rounds it may take before the last one must answer.
     pub max_rounds: usize,
+    /// The most a long-job turn may be raised to, resolved from
+    /// `tools.goal_rounds_ceiling`.
+    ///
+    /// Separate from `max_rounds` because it bounds a different number: the
+    /// budget above is what an ordinary turn gets, and this only caps the raise
+    /// a turn that explicitly asked for a long job is handed.
+    pub goal_rounds_ceiling: usize,
     /// How many tokens a device turn's prompt may occupy before the loop cuts
     /// tool results to fit. Resolved from the registry the same way the browser
     /// resolves it, so a phone turn protects the same window.
@@ -448,6 +455,7 @@ impl Default for TurnPolicy {
             approval_policy: crate::onboarding::permissions::ApprovalPolicy::Ask,
             tools: true,
             max_rounds: crate::tools::DEFAULT_TOOL_ROUNDS,
+            goal_rounds_ceiling: crate::tools::DEFAULT_GOAL_ROUNDS_CEILING,
             // No engine, no window: the loop runs exactly as it did before the
             // budget existed rather than cutting a result against a guess.
             context_budget: None,
@@ -483,6 +491,9 @@ impl TurnPolicy {
             tools: crate::tools::enabled(setting(crate::tools::SETTING_TOOLS_ENABLED).as_deref()),
             max_rounds: crate::tools::max_rounds(
                 setting(crate::tools::SETTING_TOOL_ROUNDS).as_deref(),
+            ),
+            goal_rounds_ceiling: crate::tools::goal_rounds_ceiling(
+                setting(crate::tools::SETTING_GOAL_ROUNDS_CEILING).as_deref(),
             ),
             // The same window the browser sizes against, resolved through the
             // registry entry the model pin names. A device turn that ignored the
@@ -2097,6 +2108,7 @@ impl TurnHub {
                 approval_policy,
                 tools,
                 max_rounds,
+                goal_rounds_ceiling,
                 context_budget,
                 show_reasoning,
                 show_tool_log,
@@ -2129,11 +2141,14 @@ impl TurnHub {
                         .to_owned(),
                 }
             };
-            // A goal turn is allowed to keep working. The cap exists so a goal that
-            // will never finish cannot spend a night of tokens, not to interrupt a
-            // job halfway. A greeting carries no goal, so it keeps the operator's
-            // budget instead of being handed sixty rounds to spend on a "Sup".
-            let max_rounds = crate::goal::rounds(max_rounds, goal.is_some());
+            // A long-job turn is allowed to keep working. The raise is conditional:
+            // an ordinary question keeps the operator's budget, and only a message
+            // that names a long job is lifted, as far as the ceiling setting allows.
+            // The cap exists so a goal that will never finish cannot spend a night
+            // of tokens, not to interrupt a job halfway. A greeting carries no goal
+            // and asks for nothing, so it is handed neither.
+            let raise = goal.is_some() && crate::goal::wants_long_job(&prompt);
+            let max_rounds = crate::goal::rounds(max_rounds, raise, goal_rounds_ceiling);
             let system = crate::goal::with_objective(system, goal.as_deref());
             let settings = crate::web::chat::TurnSettings {
                 tools,

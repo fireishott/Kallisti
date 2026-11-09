@@ -2085,6 +2085,12 @@ pub struct SettingsView {
     pub tools_enabled: bool,
     /// How many tool rounds one turn may take.
     pub tool_rounds: String,
+    /// The most a long-job turn may be raised to.
+    ///
+    /// Sits beside `tool_rounds` because the two are one decision: the budget is
+    /// per turn, and this is the largest a turn that asked for a long job may be
+    /// lifted to.
+    pub goal_rounds_ceiling: String,
     /// Whether a turn may dispatch subagents.
     pub agents_enabled: bool,
     /// Whether a generated line is written on an empty conversation at all.
@@ -2188,6 +2194,7 @@ impl SettingsView {
             model_selection: String::new(),
             tools_enabled: true,
             tool_rounds: crate::tools::DEFAULT_TOOL_ROUNDS.to_string(),
+            goal_rounds_ceiling: crate::tools::DEFAULT_GOAL_ROUNDS_CEILING.to_string(),
             agents_enabled: true,
             greeting_enabled: false,
             greeting_model: crate::greeting::INHERIT.to_owned(),
@@ -2410,6 +2417,7 @@ impl SettingsTab {
             | "provider_edit_id"
             | "tools_enabled"
             | "tool_rounds"
+            | "goal_rounds_ceiling"
             | "agents_enabled"
             | "aux_primary"
             | "aux_model"
@@ -3583,6 +3591,26 @@ fn tools_group(view: &SettingsView) -> Markup {
                     "How many times the model may call a tool before the last round is forced to "
                     "answer with what it has. Each round is a billed provider call. The ceiling is "
                     (crate::tools::MAX_TOOL_ROUNDS_CEILING) "."
+                }
+            }
+            div .field {
+                // The label is the same words the device capability record uses, so
+                // the phone and the dashboard name this field identically.
+                label for="goal_rounds_ceiling" { "Long job ceiling" }
+                input id="goal_rounds_ceiling" type="number" name="goal_rounds_ceiling"
+                    value=(view.goal_rounds_ceiling)
+                    min="1" max=(crate::tools::MAX_GOAL_ROUNDS_CEILING) step="1"
+                    autofocus[focuses("goal_rounds_ceiling")];
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("goal_rounds_ceiling")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "The budget above is what every ordinary turn gets. The most a long job turn "
+                    "may be raised to: a message that explicitly asks for a long job (a plan, a "
+                    "research pass, a migration) is lifted to at most this many rounds instead, so "
+                    "an ordinary question cannot spend it. The range is 1 to "
+                    (crate::tools::MAX_GOAL_ROUNDS_CEILING) ", default "
+                    (crate::tools::DEFAULT_GOAL_ROUNDS_CEILING) "."
                 }
             }
             div .actions {

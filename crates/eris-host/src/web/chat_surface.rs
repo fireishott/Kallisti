@@ -529,7 +529,7 @@ fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
         &app,
         Call::post(
             ROUTE_SETTINGS_TOOLS,
-            "tools_enabled=true&tool_rounds=4&tool_log=off",
+            "tools_enabled=true&tool_rounds=4&tool_log=off&goal_rounds_ceiling=60",
         )
         .html()
         .cookie(Some(&cookie)),
@@ -644,7 +644,7 @@ fn the_shell_tells_the_script_which_run_log_mode_is_stored() {
         &app,
         Call::post(
             ROUTE_SETTINGS_TOOLS,
-            "tools_enabled=true&tool_log=summary&tool_rounds=12",
+            "tools_enabled=true&tool_log=summary&tool_rounds=12&goal_rounds_ceiling=60",
         )
         .html()
         .cookie(Some(&cookie)),
@@ -954,7 +954,7 @@ fn summary_mode_collapses_the_whole_turn_to_one_line_naming_the_last_call() {
         &app,
         Call::post(
             ROUTE_SETTINGS_TOOLS,
-            "tools_enabled=true&tool_rounds=4&tool_log=summary",
+            "tools_enabled=true&tool_rounds=4&tool_log=summary&goal_rounds_ceiling=60",
         )
         .html()
         .cookie(Some(&cookie)),
@@ -1973,7 +1973,7 @@ fn tool_settings_round_trip_and_a_bad_budget_is_refused_by_field() {
         &app,
         Call::post(
             crate::admin::ROUTE_SETTINGS_TOOLS,
-            "tools_enabled=true&tool_rounds=20",
+            "tools_enabled=true&tool_rounds=20&goal_rounds_ceiling=45",
         )
         .cookie(cookie),
     ));
@@ -1983,6 +1983,12 @@ fn tool_settings_round_trip_and_a_bad_budget_is_refused_by_field() {
         Some("20".to_owned())
     );
     assert_eq!(
+        engine
+            .setting(crate::tools::SETTING_GOAL_ROUNDS_CEILING)
+            .unwrap(),
+        Some("45".to_owned())
+    );
+    assert_eq!(
         engine.setting(crate::tools::SETTING_TOOLS_ENABLED).unwrap(),
         Some("true".to_owned())
     );
@@ -1990,7 +1996,11 @@ fn tool_settings_round_trip_and_a_bad_budget_is_refused_by_field() {
     // Off is stored as off, not as an absent row.
     block_on(send(
         &app,
-        Call::post(crate::admin::ROUTE_SETTINGS_TOOLS, "tool_rounds=8").cookie(cookie),
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_TOOLS,
+            "tool_rounds=8&goal_rounds_ceiling=45",
+        )
+        .cookie(cookie),
     ));
     assert_eq!(
         engine.setting(crate::tools::SETTING_TOOLS_ENABLED).unwrap(),
@@ -2000,7 +2010,11 @@ fn tool_settings_round_trip_and_a_bad_budget_is_refused_by_field() {
 
     let refused = block_on(send(
         &app,
-        Call::post(crate::admin::ROUTE_SETTINGS_TOOLS, "tool_rounds=0").cookie(cookie),
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_TOOLS,
+            "tool_rounds=0&goal_rounds_ceiling=45",
+        )
+        .cookie(cookie),
     ));
     assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
     assert_eq!(refused.json()["field"], "tool_rounds");
@@ -2009,6 +2023,74 @@ fn tool_settings_round_trip_and_a_bad_budget_is_refused_by_field() {
         Some("8".to_owned()),
         "a refusal leaves the stored budget alone"
     );
+}
+
+/// The long-job ceiling is a form field like the budget beside it: saved when it
+/// is a number in range, refused by name when it is not, and drawn on the page
+/// from what the turn would actually read.
+#[test]
+fn the_goal_rounds_ceiling_round_trips_and_is_refused_outside_its_range() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+    let form = |body: &str| {
+        block_on(send(
+            &app,
+            Call::post(crate::admin::ROUTE_SETTINGS_TOOLS, body).cookie(cookie),
+        ))
+    };
+
+    let saved = form("tools_enabled=true&tool_rounds=25&goal_rounds_ceiling=30");
+    assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
+    assert_eq!(
+        engine
+            .setting(crate::tools::SETTING_GOAL_ROUNDS_CEILING)
+            .unwrap(),
+        Some("30".to_owned())
+    );
+    assert_eq!(
+        engine.setting(crate::tools::SETTING_TOOL_ROUNDS).unwrap(),
+        Some("25".to_owned()),
+        "the budget beside it is saved in the same post"
+    );
+
+    // The page draws the stored value, not a shipped default.
+    let page = block_on(send(&app, Call::get(ROUTE_SETTINGS).html().cookie(cookie)));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(r#"name="goal_rounds_ceiling""#),
+        "the field is on the settings form"
+    );
+    assert!(
+        page.body.contains(r#"value="30""#),
+        "the form shows the stored ceiling"
+    );
+
+    for bad in ["0", "121", "", "thirty"] {
+        let refused = form(&format!(
+            "tools_enabled=true&tool_rounds=25&goal_rounds_ceiling={bad}"
+        ));
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{bad} is not a ceiling: {}",
+            refused.body
+        );
+        assert_eq!(refused.json()["field"], "goal_rounds_ceiling");
+        assert_eq!(
+            engine
+                .setting(crate::tools::SETTING_GOAL_ROUNDS_CEILING)
+                .unwrap(),
+            Some("30".to_owned()),
+            "{bad} leaves the stored ceiling alone"
+        );
+    }
+
+    // The top of the range is accepted, so the bound is inclusive as stated.
+    let top = form(&format!(
+        "tools_enabled=true&tool_rounds=25&goal_rounds_ceiling={}",
+        crate::tools::MAX_GOAL_ROUNDS_CEILING
+    ));
+    assert_eq!(top.status, StatusCode::SEE_OTHER, "{}", top.body);
 }
 
 #[test]

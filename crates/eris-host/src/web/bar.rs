@@ -222,7 +222,7 @@ fn turning_dispatching_off_removes_it_from_the_full_offering() {
         &app,
         Call::post(
             ROUTE_SETTINGS_TOOLS,
-            "tools_enabled=true&tool_log=full&tool_rounds=12",
+            "tools_enabled=true&tool_log=full&tool_rounds=12&goal_rounds_ceiling=60",
         )
         .html()
         .cookie(Some(&cookie)),
@@ -274,7 +274,7 @@ fn turning_dispatching_off_removes_it_from_the_full_offering() {
         &app,
         Call::post(
             ROUTE_SETTINGS_TOOLS,
-            "tools_enabled=true&tool_log=full&tool_rounds=12&agents_enabled=true",
+            "tools_enabled=true&tool_log=full&tool_rounds=12&goal_rounds_ceiling=60&agents_enabled=true",
         )
         .html()
         .cookie(Some(&cookie)),
