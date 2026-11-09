@@ -201,6 +201,7 @@ pub fn setting_key(key: &str) -> String {
 pub fn default_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let owned = home.join(".config/kallisti/skills");
+    seed_owned(&owned);
     if owned.is_dir() {
         return Some(owned);
     }
@@ -209,6 +210,38 @@ pub fn default_dir() -> Option<PathBuf> {
         return Some(inherited);
     }
     Some(owned)
+}
+
+/// The skills this daemon ships with, compiled into the binary.
+///
+/// The library is a directory the daemon reads and never writes, so a fresh
+/// install used to start with an empty one and a capability the iOS app
+/// advertises with nothing behind it. Shipping the file in the repo is not
+/// enough on its own: a prebuilt-binary install never sees the checkout. The
+/// body is therefore `include_str!` at the same path the repo tracks, so the
+/// binary and the tracked file cannot drift, and the seed only ever writes
+/// into the owned directory, never over an operator's own copy.
+const DEFAULT_SKILLS: &[(&str, &str)] = &[(
+    "herald-ios",
+    include_str!("../../../skills/herald-ios/SKILL.md"),
+)];
+
+/// Place the shipped skills into the owned library on first run.
+///
+/// Best effort by design: a read-only or unwritable `$HOME` leaves the library
+/// as it was and the catalog simply names fewer skills, which is a smaller
+/// failure than refusing to boot.
+fn seed_owned(dir: &Path) {
+    for (key, body) in DEFAULT_SKILLS {
+        let target = dir.join(key);
+        let path = target.join(FILE_NAME);
+        if path.exists() {
+            continue;
+        }
+        if std::fs::create_dir_all(&target).is_ok() {
+            let _ = std::fs::write(&path, body);
+        }
+    }
 }
 
 /// Whether a legacy library is clean enough to inherit automatically.
@@ -1302,5 +1335,30 @@ mod tests {
         assert_eq!(learned.state, crate::learning::State::Stale);
         assert!(learned.pinned);
         assert!(learned.editable);
+    }
+
+    /// A fresh install used to start with an empty library, so the capability
+    /// the app advertises had nothing behind it. The seed must create the
+    /// directory, write the shipped body, and then never touch it again: a
+    /// second run leaves an operator's edited copy exactly as they left it.
+    #[test]
+    fn the_shipped_skills_are_seeded_once_and_an_operators_copy_wins() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let library = dir.path().join("skills");
+        assert!(!library.exists(), "the library starts absent");
+
+        seed_owned(&library);
+
+        let seeded = library.join("herald-ios").join(FILE_NAME);
+        assert!(seeded.is_file(), "the shipped skill is written");
+        let body = std::fs::read_to_string(&seeded).expect("the seeded body");
+        assert!(body.contains("description:"), "the body keeps its frontmatter");
+
+        std::fs::write(&seeded, "---\ndescription: mine\n---\n\nmine\n").expect("the edit");
+        seed_owned(&library);
+
+        let after = std::fs::read_to_string(&seeded).expect("the edited body");
+        assert!(after.contains("mine"), "the operator copy is not overwritten");
+        assert!(!after.contains("attach_file"), "the shipped body did not return");
     }
 }

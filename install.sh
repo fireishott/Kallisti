@@ -189,11 +189,21 @@ fi
 
 CONFIG_DIR="$HOME/.config/kallisti"
 # --- Default skills -------------------------------------------------------
+# The tracked skills live beside this installer in a checkout. A piped install
+# (curl | sh) has no checkout to read, which is fine: the daemon seeds its own
+# embedded copy on first run, so the installer only has to stay quiet instead
+# of aborting the whole script on an unset variable under `set -u`.
+REPO_ROOT="${REPO_ROOT:-${ERIS_SOURCE_DIR:-}}"
+if [ -z "$REPO_ROOT" ] && [ -n "${0:-}" ] && [ -f "$0" ]; then
+    REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+fi
+# --- Default skills -------------------------------------------------------
 # The daemon reads its library from "$CONFIG_DIR/skills" and seeds nothing by
 # itself, so an install that skipped this step would hand a new user an empty
 # library and a capability the app advertises but cannot answer for. Copy the
 # tracked skills in without ever clobbering one the operator has edited.
 seed_default_skills() {
+    [ -n "$REPO_ROOT" ] || return 0
     src="$REPO_ROOT/skills"
     if [ ! -d "$src" ]; then
         return 0
