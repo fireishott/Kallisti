@@ -404,7 +404,7 @@ impl TokenService {
         // here keeps that set to the tokens that are still live. Best effort: a
         // failed sweep must not fail a rotation that already happened.
         if let Err(error) = self.prune_dead_tokens(RETIRED_GRACE) {
-            tracing::warn!(%error, "could not prune retired token verifiers");
+            tracing::warn!(%error, "could not sweep retired rows");
         }
         Ok(MintedPair { access, refresh })
     }
