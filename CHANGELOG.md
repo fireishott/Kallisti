@@ -6,6 +6,15 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The last round before the answer still has tools.** The lookahead used to take
+  the tools away two rounds early, so a turn that read for thirteen rounds could
+  describe the job it never did, which is how "provide me a pdf plan" came back as
+  "no PDF, the budget ran out". The first reserved round is now the last action
+  round and keeps its tools, with an instruction to produce the deliverable; only
+  the final round is tool-free and writes the answer. A provider fault during the
+  answer phase no longer fails a turn that already did work: it falls through to
+  the forced-answer round and the recorded summary. `build 179`.
+
 - **A wrapped turn reports the work instead of handing it back.** The three
   closing instructions a turn gets when its tool budget runs out asked for "the
   exact next step so the work can be picked up from this message", and the
