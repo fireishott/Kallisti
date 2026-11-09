@@ -391,7 +391,7 @@ gateway puts a nested object's opening brace on a frame of its own. A file rides
 names the id, and the prompt carries the filename and, for an image, the vision
 role's description of it.
 
-In private beta: the Kallisti iOS app on the Eris daemon, TestFlight **1.4.16 (153)**.
+In private beta: the Kallisti iOS app on the Eris daemon, TestFlight **1.4.16 (154)**.
 The app and the daemon are separate version lines - the daemon's build number moves
 when the daemon ships, the app's when the app does - so a report of a problem should
 name both, and `GET /v1/version` is where the daemon's answer comes from.
@@ -404,7 +404,7 @@ tabs - with the full-host switch and the backups screen behind their guards. A f
 goes with the message now: the app uploads the bytes, the turn names the id, and the
 picture draws from history because the byte route speaks the same bearer.
 
-In build 153 of that app: the skills browser edits a skill's whole file and deletes
+In build 154 of that app: the skills browser edits a skill's whole file and deletes
 one by swipe, with a confirmation that says the delete cannot be undone; a turn stream
 resumes where it left off instead of hanging on a socket that died; and Settings
 carries the goal round ceiling. All three build for simulator and device and pass the
