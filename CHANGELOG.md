@@ -6,6 +6,30 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A skill can be rewritten and removed.** The library was read-only: the daemon
+  listed a skill and served its body, the dashboard had switches and a directory, and
+  the phone could only browse. So a procedure that had gone wrong could not be fixed,
+  and one that should not exist could not be taken out. `PUT /v1/skills/{key}` now
+  replaces the whole `SKILL.md` through a temporary file in the skill's own directory
+  and a rename, and refuses a key that is not a slug, a blank body, a body over 64 KiB,
+  and a symlinked directory or file, since a rename through a link writes the link's
+  target. `DELETE /v1/skills/{key}` moves the directory into `.archive/` rather than
+  unlinking it, so the removal is undoable, and it drops the ledger row for a learned
+  skill, which is what stops the curator and the learning loop filing it back. Both
+  verbs are `admin`-only on the device API, and `/dashboard/skills` is the same two
+  calls behind the session cookie with an editor, a two-press archive and no
+  JavaScript. `GET /v1/skills` now says whether each skill is the operator's or
+  learned, whether it is active, stale or archived, whether it is pinned, and whether
+  it can be rewritten from here. `build 175`.
+
+- **A question no longer gets a long job's budget.** A turn "carried a goal" unless it
+  was small talk, and a goal turn was raised to sixty rounds, so the operator's
+  `tool_rounds` setting acted as a floor rather than a ceiling: four of nine turns in
+  one evening ended at round 59, 80 to 103 tool calls, fifteen to twenty-five minutes
+  each. The raise now needs the message to name a long job, and it is bounded by a new
+  `tools.goal_rounds_ceiling` setting, editable from the dashboard and the phone.
+  An ordinary question keeps `tool_rounds`. `build 175`.
+
 - **A model id with a slash in it is not a provider name.** CommandCode serves
   `deepseek/deepseek-v4.1-flash`, where the head is the publisher; this daemon also
   has a provider called `deepseek`, pointing at api.deepseek.com. A conversation
