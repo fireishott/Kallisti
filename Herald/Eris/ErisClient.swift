@@ -1327,6 +1327,10 @@ actor ErisClient {
         }
 
         let pulse = StreamPulse(timeout: Self.streamIdleTimeout)
+        // Bind the byte stream immutably before the group: its tasks receive the
+        // stream across an isolation boundary, and a reassignable `var` still
+        // visible to this task is not sendable there.
+        let byteStream = bytes
         return try await withThrowingTaskGroup(of: StreamAttemptOutcome.self) { group in
             // The reader. Owns the decoder; the daemon's frames are newline
             // delimited and its blank line is the terminator, so a frame split
@@ -1349,7 +1353,7 @@ actor ErisClient {
                     return Self.emit(delivered, into: continuation)
                 }
 
-                for try await byte in bytes {
+                for try await byte in byteStream {
                     // A torn-down stream emits nothing further: the consumer
                     // this was feeding is already gone.
                     if Task.isCancelled {
