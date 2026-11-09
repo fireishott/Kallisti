@@ -107,6 +107,22 @@ const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
 /// reported to the operator as a dead turn with half an answer.
 const SEND_ATTEMPTS: usize = 2;
 
+/// How long the one retry of a transient HTTP fault waits before sending again.
+///
+/// Less than a second on purpose: the operator is already watching a silent turn,
+/// and a provider that asks for a longer pause is better reported than quietly
+/// held. The retry survives a blip; it does not wait one out.
+const RETRY_BACKOFF: Duration = Duration::from_millis(750);
+
+/// Whether an HTTP status is a transient fault a fresh request can fix.
+///
+/// Rate limiting and server-side faults are the two a gateway reports and then
+/// recovers from. Everything else (400, 401, 403, 404) repeats byte for byte, and
+/// a retry only doubles the wait before the same failure is shown.
+const fn retryable_status(status: u16) -> bool {
+    status == 429 || status >= 500
+}
+
 /// An OpenAI-compatible chat-completions provider.
 #[derive(Debug)]
 pub struct OpenAiCompatProvider {
@@ -699,8 +715,11 @@ impl OpenAiCompatProvider {
         let url = self.request_url();
         let body = self.build_request_body(request);
 
-        // One retry, and only for the failure that means "the connection went
-        // away before the answer started". See `SEND_ATTEMPTS`.
+        // One retry, for the two failures a fresh request can actually fix: a
+        // connection that died before the answer started, and a transient HTTP
+        // fault (a 429 or a 5xx). Both fail before any answer text exists, so a
+        // second attempt cannot duplicate a word - and a turn that dies on either
+        // loses every tool call it already ran. See `SEND_ATTEMPTS`.
         let mut attempt = 1;
         let response = loop {
             let mut pending = self
@@ -715,8 +734,8 @@ impl OpenAiCompatProvider {
                 pending = pending.header(name, value);
             }
             let sent = pending.json(&body).send().await;
-            match sent {
-                Ok(response) => break response,
+            let response = match sent {
+                Ok(response) => response,
                 Err(error)
                     if worth_another_attempt(
                         attempt,
@@ -726,6 +745,7 @@ impl OpenAiCompatProvider {
                     ) =>
                 {
                     attempt += 1;
+                    continue;
                 }
                 Err(error) => {
                     return Err(classify::classify_request_failure(
@@ -735,16 +755,25 @@ impl OpenAiCompatProvider {
                         &describe_request_error(&url, &error),
                     ));
                 }
-            }
-        };
+            };
 
-        let status = response.status();
-        if !status.is_success() {
+            if response.status().is_success() {
+                break response;
+            }
+            let status = response.status();
             let retry_after_secs = response
                 .headers()
                 .get(reqwest::header::RETRY_AFTER)
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.trim().parse::<u64>().ok());
+            // The same single retry covers a transient status: a 429 or a 5xx
+            // before any byte of a reply is the HTTP face of the dropped socket,
+            // and a turn does not deserve to die because the gateway hiccupped.
+            if attempt < SEND_ATTEMPTS && retryable_status(status.as_u16()) {
+                attempt += 1;
+                tokio::time::sleep(RETRY_BACKOFF).await;
+                continue;
+            }
             // The body is the diagnostic; it is provider text, and no header or
             // key ever reaches it.
             let body = response.text().await.unwrap_or_default();
@@ -753,7 +782,7 @@ impl OpenAiCompatProvider {
                 &body,
                 retry_after_secs,
             ));
-        }
+        };
 
         let mut stream = response.bytes_stream().eventsource();
         let mut parser = ChatStreamParser::for_dialect(self.capabilities, self.profile.dialect);
@@ -1148,6 +1177,19 @@ mod tests {
             !worth_another_attempt(2, false, false, false),
             "the budget is one retry, not a loop"
         );
+    }
+
+    #[test]
+    fn only_transient_statuses_share_the_single_retry() {
+        for status in [429, 500, 502, 503, 504] {
+            assert!(retryable_status(status), "{status} is transient");
+        }
+        for status in [400, 401, 403, 404, 422] {
+            assert!(
+                !retryable_status(status),
+                "{status} repeats byte for byte, so a retry is only a longer wait"
+            );
+        }
     }
 
     #[test]
