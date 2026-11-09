@@ -560,3 +560,164 @@ struct ErisClientTests {
         }
     }
 }
+
+// MARK: - Skills: editing and archiving (moved from ErisDeviceAPITests.swift)
+
+/// Stubs every request in this file's transport suite.
+///
+/// A protocol of its own rather than the one the existing suites use: Swift
+/// Testing runs suites in parallel, and a shared `static var handler` would let
+/// two suites overwrite each other's stub.
+final class ErisDeviceAPIStub: URLProtocol, @unchecked Sendable {
+    /// The answer for one request, plus the body it was asked with.
+    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (Int, Data))?
+    /// Every request the stub saw, in order: method, path and body.
+    nonisolated(unsafe) private static var seen: [(String, String, String)] = []
+    private static let lock = NSLock()
+
+    static func reset() {
+        lock.lock()
+        handler = nil
+        seen.removeAll()
+        lock.unlock()
+    }
+
+    static func snapshot() -> [(String, String, String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return seen
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let request = self.request
+        Self.lock.lock()
+        Self.seen.append((request.httpMethod ?? "", request.url?.path ?? "", Self.body(of: request)))
+        let handler = Self.handler
+        Self.lock.unlock()
+
+        guard let handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        let (status, data) = handler(request)
+        let url = request.url ?? URL(string: "http://stub.invalid/v1/x")!
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    /// The form body, which `URLSession` hands a protocol as a stream.
+    private static func body(of request: URLRequest) -> String {
+        if let data = request.httpBody {
+            return String(decoding: data, as: UTF8.self)
+        }
+        guard let stream = request.httpBodyStream else { return "" }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while stream.hasBytesAvailable {
+            let read = stream.read(&buffer, maxLength: buffer.count)
+            if read <= 0 { break }
+            data.append(contentsOf: buffer[0..<read])
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+/// The daemon addresses a skill by its directory key. The display name comes from
+/// the frontmatter and is often prose, while `valid_key` refuses anything outside
+/// alphanumerics plus dash, underscore and dot. A learned skill filed under
+/// `pre-theater-dinner-planning` but named "Pre-Theater Dinner Planning" is the
+/// case that fails the moment a client puts the name on the wire, so these pin the
+/// key as the only address a write or an archive may carry.
+@MainActor
+@Suite("Eris skill addressing", .serialized)
+struct ErisSkillAddressingTests {
+    private static let base = URL(string: "http://192.168.1.20:7341")!
+
+    private static func stubSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ErisDeviceAPIStub.self]
+        return URLSession(configuration: configuration)
+    }
+
+    private static func client() -> ErisClient {
+        ErisClient(
+            baseURL: base,
+            tokenStore: InMemoryErisTokenStore(
+                stored: ErisStoredTokens(
+                    baseURL: base,
+                    tokens: ErisTokenPair(
+                        accessToken: "access-1",
+                        refreshToken: "refresh-1",
+                        scopes: ["chat", "sessions", "files", "admin"]
+                    )
+                )
+            ),
+            session: stubSession()
+        )
+    }
+
+    @Test("a learned skill whose name is prose is addressed by its key")
+    func proseNameIsAddressedByKey() throws {
+        let json = #"""
+        {"ok":true,"enabled":true,"dir":"/lib","skills":[
+          {"key":"pre-theater-dinner-planning","name":"Pre-Theater Dinner Planning",
+           "description":"plan dinner and parking","path":"/lib/pre-theater-dinner-planning",
+           "enabled":true,"bytes":120,"origin":"learned","state":"active",
+           "pinned":false,"editable":true}
+        ]}
+        """#
+        let wire = try JSONDecoder().decode(ErisControlSkillList.self, from: Data(json.utf8))
+        let rows = ErisControlMapping.skills(wire)
+        #expect(rows.count == 1)
+        #expect(rows[0].key == "pre-theater-dinner-planning")
+        #expect(rows[0].name == "Pre-Theater Dinner Planning")
+        #expect(rows[0].id == "pre-theater-dinner-planning")
+        #expect(rows[0].originLabel == "Learned")
+        #expect(rows[0].editable)
+    }
+
+    @Test("the save and the archive name the key, never the display name")
+    func writeAndArchiveAddressTheKey() async throws {
+        ErisDeviceAPIStub.reset()
+        ErisDeviceAPIStub.handler = { request in
+            let body = request.httpMethod == "PUT"
+                ? #"{"ok":true,"key":"pre-theater-dinner-planning","bytes":9}"#
+                : #"{"ok":true,"key":"pre-theater-dinner-planning","archived":".archive/pre-theater-dinner-planning-20261108-210000"}"#
+            return (200, Data(body.utf8))
+        }
+        defer { ErisDeviceAPIStub.reset() }
+
+        let client = Self.client()
+        _ = try await client.saveControlSkill(key: "pre-theater-dinner-planning", content: "procedure")
+        _ = try await client.deleteControlSkill(key: "pre-theater-dinner-planning")
+
+        let seen = ErisDeviceAPIStub.snapshot()
+        #expect(seen.count == 2)
+        #expect(seen[0].0 == "PUT")
+        #expect(seen[0].1 == "/v1/skills/pre-theater-dinner-planning")
+        #expect(seen[1].0 == "DELETE")
+        #expect(seen[1].1 == "/v1/skills/pre-theater-dinner-planning")
+        for entry in seen {
+            #expect(!entry.1.contains("%20"))
+            #expect(!entry.1.contains(" "))
+        }
+    }
+}
