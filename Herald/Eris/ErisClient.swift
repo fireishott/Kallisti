@@ -1194,25 +1194,131 @@ actor ErisClient {
 
     // MARK: Streaming
 
+    /// The header a resume names its position with.
+    ///
+    /// `crates/eris-host/src/device/handlers.rs` reads exactly this header to
+    /// decide between "watch from here" (no header) and "replay strictly after
+    /// this point" (header), and answers a position older than its retention
+    /// window with `409 buffer_miss`.
+    static let lastEventIDHeader = "Last-Event-ID"
+
+    /// How long the byte stream may stay silent before it is treated as dead.
+    ///
+    /// The daemon sends an SSE keep-alive comment every 15 seconds
+    /// (`KEEP_ALIVE_SECONDS`), so a full minute with no bytes at all is a dead
+    /// socket, not a slow model. Without this the read loop waits forever: iOS
+    /// suspends the process, the socket dies without a FIN, and
+    /// `for try await byte in bytes` neither yields nor throws.
+    ///
+    /// A `var` so a test can shrink it instead of sleeping for a minute.
+    static var streamIdleTimeout: TimeInterval = 60
+
+    /// How many times one turn's stream is re-opened before the error surfaces.
+    static var streamAttemptLimit = 4
+
+    /// One attempt at a turn stream, reported back to the retry loop.
+    private struct StreamAttemptOutcome: Sendable {
+        /// A terminal frame was decoded (or a closed stream had already sent one).
+        let ended: Bool
+        /// The newest `id:` this attempt saw, for the next attempt to name.
+        let cursor: String?
+        /// Whether any frame was decoded, so a re-read can suppress re-delivered text.
+        let sawFrame: Bool
+    }
+
     /// Open the stream, refresh once on a 401, and feed bytes to the decoder.
     ///
-    /// Emits `ErisFrameOutcome`, not `ErisFrame`: the daemon's vocabulary has six
-    /// frames and `ErisFrame` models four, so the stream has to be able to carry
-    /// a reasoning fragment and a finished tool call without either being dropped
-    /// (which is what `default: return nil` used to do) or pretending to be a
-    /// text delta.
+    /// Emits `ErisFrameOutcome`, not `ErisFrame`: the daemon's vocabulary has
+    /// more frames than `ErisFrame` models, so the stream has to be able to
+    /// carry a reasoning fragment and a finished tool call without either being
+    /// dropped (which is what `default: return nil` used to do) or pretending to
+    /// be a text delta.
+    ///
+    /// Re-opens the stream instead of waiting on it. Three things ended a turn
+    /// in this client that nobody could see: no idle guard, no `Last-Event-ID`,
+    /// and no repair on foreground. A turn whose terminal frame went missing
+    /// therefore stayed "Thinking" until the app was killed.
     private func streamEvents(
         turnID: String,
         into continuation: AsyncThrowingStream<ErisFrameOutcome, Error>.Continuation
     ) async throws {
+        var cursor: String?
+        var attempt = 0
+        var sawFrame = false
+
+        while true {
+            do {
+                let outcome = try await streamOnce(
+                    turnID: turnID,
+                    cursor: cursor,
+                    suppressText: sawFrame,
+                    into: continuation
+                )
+                if let seen = outcome.cursor { cursor = seen }
+                sawFrame = sawFrame || outcome.sawFrame
+                if outcome.ended { return }
+
+                // EOF without a terminal frame. Ask again from the top: a
+                // finished job is replayed from its retained window, whose last
+                // frame is the terminal one, and a running job starts at the
+                // current tail. Either way the turn gets an ending instead of a
+                // spinner. The transcript is the backstop if neither happens.
+                attempt += 1
+                cursor = nil
+                if attempt >= Self.streamAttemptLimit {
+                    continuation.finish()
+                    return
+                }
+            } catch let error as ErisError where error.code == "buffer_miss" {
+                // The daemon pruned past the position this client named. It says
+                // so with a 409 rather than a partial stream that looks complete,
+                // and the persisted transcript is the only source left. End
+                // cleanly so the caller's post-stream refresh settles the turn
+                // from the row the daemon already wrote.
+                continuation.finish()
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                attempt += 1
+                if attempt >= Self.streamAttemptLimit { throw error }
+                try await Task.sleep(for: .seconds(min(pow(2, Double(attempt)), 15)))
+                // Keep the cursor: this was a transport failure, not a lost
+                // position, so the next attempt resumes exactly where this one
+                // stopped and the bubble is not refilled from the top.
+            }
+        }
+    }
+
+    /// One HTTP attempt at the turn stream.
+    private func streamOnce(
+        turnID: String,
+        cursor: String?,
+        suppressText: Bool,
+        into continuation: AsyncThrowingStream<ErisFrameOutcome, Error>.Continuation
+    ) async throws -> StreamAttemptOutcome {
         let route = ErisRoute.events(turnID: turnID)
+        var headers: [String: String] = [:]
+        if let cursor, !cursor.isEmpty {
+            headers[Self.lastEventIDHeader] = cursor
+        }
         var (bytes, status) = try await openStream(
-            try await authorizedRequest(route: route, form: nil, accept: "text/event-stream")
+            try await authorizedRequest(
+                route: route,
+                form: nil,
+                accept: "text/event-stream",
+                extraHeaders: headers
+            )
         )
         if status == 401 {
             _ = try await refresh()
             (bytes, status) = try await openStream(
-                try await authorizedRequest(route: route, form: nil, accept: "text/event-stream")
+                try await authorizedRequest(
+                    route: route,
+                    form: nil,
+                    accept: "text/event-stream",
+                    extraHeaders: headers
+                )
             )
         }
         guard (200..<300).contains(status) else {
@@ -1220,34 +1326,83 @@ actor ErisClient {
             throw Self.serverError(status: status, data: body)
         }
 
-        var decoder = ErisSSEDecoder()
-        var pending = Data()
-        for try await byte in bytes {
-            if Task.isCancelled {
-                continuation.finish()
-                return
+        let pulse = StreamPulse(timeout: Self.streamIdleTimeout)
+        return try await withThrowingTaskGroup(of: StreamAttemptOutcome.self) { group in
+            // The reader. Owns the decoder; the daemon's frames are newline
+            // delimited and its blank line is the terminator, so a frame split
+            // across chunks is decoded once.
+            group.addTask {
+                var decoder = ErisSSEDecoder()
+                var pending = Data()
+                var sawFrame = suppressText
+                var cursor: String?
+
+                func take(_ outcomes: [ErisFrameOutcome]) throws -> Bool {
+                    if let id = decoder.lastEventID { cursor = id }
+                    // A re-read replays text the bubble already shows. The
+                    // terminal `done` carries the assembled reply, so the second
+                    // attempt keeps everything except the deltas.
+                    let delivered = suppressText
+                        ? outcomes.filter { !Self.isTextDelta($0) }
+                        : outcomes
+                    if !outcomes.isEmpty { sawFrame = true }
+                    return Self.emit(delivered, into: continuation)
+                }
+
+                for try await byte in bytes {
+                    // A torn-down stream emits nothing further: the consumer
+                    // this was feeding is already gone.
+                    if Task.isCancelled {
+                        return StreamAttemptOutcome(
+                            ended: false,
+                            cursor: cursor,
+                            sawFrame: sawFrame
+                        )
+                    }
+                    pulse.touch()
+                    pending.append(byte)
+                    guard byte == 0x0A else { continue }
+                    let chunk = pending
+                    pending.removeAll(keepingCapacity: true)
+                    if try take(decoder.consume(chunk)) {
+                        return StreamAttemptOutcome(ended: true, cursor: cursor, sawFrame: sawFrame)
+                    }
+                }
+                if !pending.isEmpty, try take(decoder.consume(pending)) {
+                    return StreamAttemptOutcome(ended: true, cursor: cursor, sawFrame: sawFrame)
+                }
+                if try take(decoder.finish()) {
+                    return StreamAttemptOutcome(ended: true, cursor: cursor, sawFrame: sawFrame)
+                }
+                return StreamAttemptOutcome(ended: false, cursor: cursor, sawFrame: sawFrame)
             }
-            pending.append(byte)
-            // Complete the line on the newline, so a frame that straddles two
-            // chunks is decoded once, when its blank-line terminator lands.
-            guard byte == 0x0A else { continue }
-            let chunk = pending
-            pending.removeAll(keepingCapacity: true)
-            if emit(try decoder.consume(chunk), into: continuation) {
-                return
+            // The guard. A stream that stops producing bytes is a stream that
+            // can never end, so the group is torn down and the caller retries.
+            group.addTask {
+                while true {
+                    try await Task.sleep(for: .seconds(5))
+                    if pulse.idleFor >= pulse.timeout {
+                        throw ErisError.transport(
+                            "turn stream idle for \(Int(pulse.idleFor))s"
+                        )
+                    }
+                }
             }
+            let first = try await group.next() ?? StreamAttemptOutcome(
+                ended: false,
+                cursor: nil,
+                sawFrame: suppressText
+            )
+            group.cancelAll()
+            return first
         }
-        if !pending.isEmpty, emit(try decoder.consume(pending), into: continuation) {
-            return
-        }
-        if emit(try decoder.finish(), into: continuation) {
-            return
-        }
-        continuation.finish()
     }
 
     /// Yield outcomes, and report whether a terminal one ended the stream.
-    private func emit(
+    ///
+    /// `nonisolated` because the byte reader runs inside the task group rather
+    /// than on the actor: yielding to a continuation touches no client state.
+    nonisolated static func emit(
         _ outcomes: [ErisFrameOutcome],
         into continuation: AsyncThrowingStream<ErisFrameOutcome, Error>.Continuation
     ) -> Bool {
@@ -1259,6 +1414,41 @@ actor ErisClient {
             }
         }
         return false
+    }
+
+    /// Whether an outcome is one assistant text fragment.
+    ///
+    /// Used to keep a re-read from painting the same paragraphs twice.
+    nonisolated static func isTextDelta(_ outcome: ErisFrameOutcome) -> Bool {
+        if case .existing(.delta) = outcome { return true }
+        return false
+    }
+
+    /// When the stream last produced a byte.
+    ///
+    /// A small locked box rather than an actor: the reader touches it on every
+    /// byte and the guard reads it on a timer, and neither should hop executors
+    /// to answer a question about a timestamp.
+    final class StreamPulse: @unchecked Sendable {
+        let timeout: TimeInterval
+        private let lock = NSLock()
+        private var last = Date.now
+
+        init(timeout: TimeInterval) {
+            self.timeout = timeout
+        }
+
+        func touch() {
+            lock.lock()
+            last = .now
+            lock.unlock()
+        }
+
+        var idleFor: TimeInterval {
+            lock.lock()
+            defer { lock.unlock() }
+            return Date.now.timeIntervalSince(last)
+        }
     }
 
     // MARK: Requests
