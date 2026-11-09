@@ -62,7 +62,10 @@ struct SkillDetailView: View {
         .navigationTitle(skill.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if canEdit && !isEditing {
+            // The body has to be in hand before the editor opens: an editor over a
+            // failed fetch starts blank, and one typed character would replace a
+            // file nobody had read.
+            if canEdit && !isEditing && detail?.content != nil {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Edit") { beginEditing() }
                 }
