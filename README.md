@@ -404,6 +404,12 @@ tabs - with the full-host switch and the backups screen behind their guards. A f
 goes with the message now: the app uploads the bytes, the turn names the id, and the
 picture draws from history because the byte route speaks the same bearer.
 
+On the app branch, ahead of the next TestFlight build: the skills browser edits a
+skill's whole file and deletes one by swipe, with a confirmation that says the delete
+cannot be undone; a turn stream resumes where it left off instead of hanging on a
+socket that died; and Settings carries the goal round ceiling. All three build for
+simulator and device and pass the app's test target.
+
 In development: Voice Mode, Plugin Engine, watchOS.
 
 ## Licence
