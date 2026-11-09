@@ -170,21 +170,25 @@ struct ErisSettingsCatalogueTests {
 
 // MARK: - The goal round ceiling
 //
-// `tools.goal_rounds_ceiling` is the most rounds a goal turn may be raised to,
-// which is a different number from `tool_rounds`: that one is the budget an
-// ordinary turn gets. It is an `int` in the record like any other, and that is the
-// point of this suite. The phone needs no row of its own for it; the two things it
-// has to get right are the range the daemon published and the sentence it says
-// when a typed number falls outside that range. A daemon that predates the key
-// sends no entry, so the screen draws no row rather than a zero.
+// The record key is `goal_rounds_ceiling`, and the `settings` row it reads is
+// `tools.goal_rounds_ceiling`; the device API spells the key flat the way it spells
+// `tool_rounds`, so that is what arrives in `capabilities`. The value is the most
+// rounds a long-job turn may be raised to, which is a different number from
+// `tool_rounds`: that one is the budget an ordinary turn gets. It is an `int` in the
+// record like any other, and that is the point of this suite. The phone needs no row
+// of its own for it and never spells the key itself; the two things it has to get
+// right are the range the daemon published and the sentence it says when a typed
+// number falls outside that range. A daemon that predates the key sends no entry, so
+// the screen draws no row rather than a zero.
 
 private let goalCeilingJSON = #"""
 {
   "ok": true,
+  "goal_rounds_ceiling": 60,
   "capabilities": [
     {"key":"tool_rounds","label":"Tool turns","group":"models","type":"int","writable":true,
      "value":"8","options":null,"min":1,"max":16},
-    {"key":"tools.goal_rounds_ceiling","label":"Goal rounds ceiling","group":"models","type":"int",
+    {"key":"goal_rounds_ceiling","label":"Long job ceiling","group":"models","type":"int",
      "writable":true,"value":"60","options":null,"min":1,"max":120}
   ]
 }
@@ -202,10 +206,13 @@ struct ErisGoalRoundCeilingTests {
     /// this app invented.
     @Test("the ceiling arrives as an int row in the tab the daemon chose")
     func ceilingIsAnIntRow() throws {
+        // The snapshot now carries a top-level copy of the number as well. It is
+        // not what the row reads, and a decoder that predates it must not fault on
+        // the extra field.
         let settings = try ceilingSnapshot()
-        let field = try #require(settings.field("tools.goal_rounds_ceiling"))
+        let field = try #require(settings.field("goal_rounds_ceiling"))
         #expect(field.kind == .int)
-        #expect(field.label == "Goal rounds ceiling")
+        #expect(field.label == "Long job ceiling")
         #expect(field.group == "models")
         #expect(field.writable)
         #expect(field.value == "60")
@@ -215,6 +222,8 @@ struct ErisGoalRoundCeilingTests {
         // It is a row in the Models tab, not a field the phone files elsewhere.
         let models = settings.groups.first(where: { $0.id == "models" })
         #expect(models?.fields.contains(field) == true)
+        // The ordinary budget is still its own row and its own range.
+        #expect(settings.field("tool_rounds")?.max == 16)
     }
 
     /// An older daemon does not know the key, so the record carries no entry and
@@ -224,7 +233,7 @@ struct ErisGoalRoundCeilingTests {
     func olderDaemonHasNoRow() throws {
         let body = #"{"ok":true,"capabilities":[{"key":"tool_rounds","label":"Tool turns","group":"models","type":"int","writable":true,"value":"8","options":null,"min":1,"max":16}]}"#
         let settings = try JSONDecoder().decode(ErisSettingsSnapshot.self, from: Data(body.utf8))
-        #expect(settings.field("tools.goal_rounds_ceiling") == nil)
+        #expect(settings.field("goal_rounds_ceiling") == nil)
     }
 
     /// A number outside the published range is named and not written, which is
@@ -234,7 +243,7 @@ struct ErisGoalRoundCeilingTests {
     @Test("a whole number outside the published range is named, not replaced")
     func outOfRangeIsRefused() throws {
         let settings = try ceilingSnapshot()
-        let field = try #require(settings.field("tools.goal_rounds_ceiling"))
+        let field = try #require(settings.field("goal_rounds_ceiling"))
         #expect(field.numberRefusal(1) == nil)
         #expect(field.numberRefusal(60) == nil)
         #expect(field.numberRefusal(120) == nil)
@@ -254,16 +263,17 @@ struct ErisGoalRoundCeilingTests {
         #expect(field.numberRefusal(1_000_000) == nil)
     }
 
-    /// The write body is the dotted key and a number spelled the way the daemon's
-    /// parser reads it. `.number` bounds the value as the last guard on the way
-    /// out, so even a caller that skipped the refusal cannot send 200.
-    @Test("the write carries the dotted key and a ranged value")
+    /// The write body is the key the record published and a number spelled the way
+    /// the daemon's parser reads it, so a rename on the daemon costs this app
+    /// nothing. `.number` bounds the value as the last guard on the way out, so even
+    /// a caller that skipped the refusal cannot send 200.
+    @Test("the write carries the record's key and a ranged value")
     func writeCarriesTheKeyAndARangedValue() throws {
         let settings = try ceilingSnapshot()
-        let field = try #require(settings.field("tools.goal_rounds_ceiling"))
+        let field = try #require(settings.field("goal_rounds_ceiling"))
         #expect(
             ErisSettingWrite.number(field.key, 45, min: field.min, max: field.max).fields
-                == ["tools.goal_rounds_ceiling": "45"]
+                == ["goal_rounds_ceiling": "45"]
         )
         #expect(ErisSettingWrite.number(field.key, 200, min: field.min, max: field.max).value == "120")
         #expect(ErisSettingWrite.number(field.key, 0, min: field.min, max: field.max).value == "1")
