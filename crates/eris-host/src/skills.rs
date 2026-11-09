@@ -222,8 +222,8 @@ pub fn default_dir() -> Option<PathBuf> {
 /// binary and the tracked file cannot drift, and the seed only ever writes
 /// into the owned directory, never over an operator's own copy.
 const DEFAULT_SKILLS: &[(&str, &str)] = &[(
-    "herald-ios",
-    include_str!("../../../skills/herald-ios/SKILL.md"),
+    "kallisti-ios",
+    include_str!("../../../skills/kallisti-ios/SKILL.md"),
 )];
 
 /// Place the shipped skills into the owned library on first run.
@@ -1349,16 +1349,25 @@ mod tests {
 
         seed_owned(&library);
 
-        let seeded = library.join("herald-ios").join(FILE_NAME);
+        let seeded = library.join("kallisti-ios").join(FILE_NAME);
         assert!(seeded.is_file(), "the shipped skill is written");
         let body = std::fs::read_to_string(&seeded).expect("the seeded body");
-        assert!(body.contains("description:"), "the body keeps its frontmatter");
+        assert!(
+            body.contains("description:"),
+            "the body keeps its frontmatter"
+        );
 
         std::fs::write(&seeded, "---\ndescription: mine\n---\n\nmine\n").expect("the edit");
         seed_owned(&library);
 
         let after = std::fs::read_to_string(&seeded).expect("the edited body");
-        assert!(after.contains("mine"), "the operator copy is not overwritten");
-        assert!(!after.contains("attach_file"), "the shipped body did not return");
+        assert!(
+            after.contains("mine"),
+            "the operator copy is not overwritten"
+        );
+        assert!(
+            !after.contains("attach_file"),
+            "the shipped body did not return"
+        );
     }
 }

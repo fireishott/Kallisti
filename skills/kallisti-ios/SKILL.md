@@ -1,7 +1,7 @@
 ---
-name: herald-ios
+name: kallisti-ios
 description: Work with the Kallisti iOS app - deliver files inline with attach_file, and read iPhone sensor data (location, health, activity) from the daemon sensors.db.
-version: 3.0.0
+version: 3.1.0
 author: Kallisti
 license: MIT
 platforms: [linux, macos]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [apple-notes, apple-reminders]
 ---
 
-# Herald iOS
+# Kallisti iOS
 
 The iOS client is Kallisti-iOS (Swift 6 / SwiftUI, iPhone and iPad). It talks to the
 Eris daemon's device API directly: no relay, no connector. This skill covers the two
@@ -122,8 +122,8 @@ what is not being collected, once, without a lecture.
 ## Pitfalls
 
 - **A URL is not an attachment.** Download or generate, then attach.
-- **Staging root is gone.** `~/.hermes-mobile/attachment_staging/` is a leftover tree. Do
-  not write there for delivery; `attach_file` owns the uploads path.
+- **The old staging root is gone.** `~/.hermes-mobile/attachment_staging/` is a leftover
+  tree. Do not write there for delivery; `attach_file` owns the uploads path.
 - **The sensor tools in version 2.0.0 do not exist.** `get_user_location`,
   `get_location_history`, `get_health_summary`, `get_health_metric`,
   `get_health_metrics_list`, `get_user_activity`, `get_sensor_schema`, `query_sensor_data`
