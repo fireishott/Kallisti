@@ -32,17 +32,17 @@ use crate::admin::{
     ROUTE_CHAT_FILE, ROUTE_CHAT_ID, ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW,
     ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_SORT, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD,
     ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_ENV, ROUTE_ENV_DELETE, ROUTE_JOB_CANCEL,
-    ROUTE_LEARNING, ROUTE_LEARNING_CURATOR,
-    ROUTE_LEARNING_SAVE, ROUTE_LEARNING_SKILL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS,
-    ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL,
-    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
-    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
-    ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT,
-    ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA,
-    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
-    ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
+    ROUTE_LEARNING, ROUTE_LEARNING_CURATOR, ROUTE_LEARNING_SAVE, ROUTE_LEARNING_SKILL, ROUTE_LOGIN,
+    ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION,
+    ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE,
+    ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP,
+    ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD,
+    ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
+    ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
+    ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
+    VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -58,11 +58,11 @@ use crate::web::chat;
 use crate::web::proxy::ClientContext;
 use crate::web::store;
 use crate::web::templates::{
-    ActivityView, EnvRow, EnvView, env_page, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
-    DashboardView, DeviceRow, DevicesView, FormError, IssuedCodeView, LearningView,
-    SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView, activity_page,
-    backups_page, chat_page, dashboard_page, devices_page, error_page, learning_page, login_page,
-    session_page, sessions_page, settings_page, setup_page, type_badge,
+    ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
+    DashboardView, DeviceRow, DevicesView, EnvRow, EnvView, FormError, IssuedCodeView,
+    LearningView, SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView,
+    activity_page, backups_page, chat_page, dashboard_page, devices_page, env_page, error_page,
+    learning_page, login_page, session_page, sessions_page, settings_page, setup_page, type_badge,
 };
 use crate::web::wallpaper;
 
@@ -1537,7 +1537,6 @@ async fn devices(
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Environment
 // ---------------------------------------------------------------------------
@@ -1606,7 +1605,10 @@ async fn save_environment(
     if let Err(error) = crate::providers::write_env_secret(&env_file, &name, &value) {
         return ApiError::internal(
             request_id.0,
-            format!("the variable could not be written to {}: {error}", env_file.display()),
+            format!(
+                "the variable could not be written to {}: {error}",
+                env_file.display()
+            ),
         )
         .into_response();
     }
@@ -1614,11 +1616,9 @@ async fn save_environment(
     // in the run that wrote it. Both hold the same value, so a restart changes
     // nothing an operator can observe.
     crate::oauth::credential::remember_env(&name, &value);
-    if let Err(error) = AuthStore::new(state.engine.db().clone()).audit(
-        "loopback",
-        "environment.set",
-        Some(&name),
-    ) {
+    if let Err(error) =
+        AuthStore::new(state.engine.db().clone()).audit("loopback", "environment.set", Some(&name))
+    {
         return ApiError::internal(
             request_id.0,
             format!("the variable is saved but the audit row was not: {error}"),
@@ -1672,7 +1672,10 @@ async fn delete_environment(
         Err(error) => {
             return ApiError::internal(
                 request_id.0,
-                format!("the variable could not be removed from {}: {error}", env_file.display()),
+                format!(
+                    "the variable could not be removed from {}: {error}",
+                    env_file.display()
+                ),
             )
             .into_response();
         }

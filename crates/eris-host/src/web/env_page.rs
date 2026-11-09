@@ -67,11 +67,7 @@ fn a_saved_value_is_sealed_quoted_and_live_in_this_run() {
 
     let name = "ENVTEST_SAVED_9F3A";
     let value = "a b#c\"d";
-    let body = format!(
-        "env_name={}&env_value={}",
-        encode(name),
-        encode(value)
-    );
+    let body = format!("env_name={}&env_value={}", encode(name), encode(value));
     let reply = block_on(send(
         &app,
         Call::post(ROUTE_ENV, &body).html().cookie(Some(&cookie)),
@@ -117,7 +113,9 @@ fn removing_a_variable_empties_the_file_and_the_overlay() {
     let body = format!("env_name={}", encode(name));
     let reply = block_on(send(
         &app,
-        Call::post(ROUTE_ENV_DELETE, &body).html().cookie(Some(&cookie)),
+        Call::post(ROUTE_ENV_DELETE, &body)
+            .html()
+            .cookie(Some(&cookie)),
     ));
     assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
     assert!(

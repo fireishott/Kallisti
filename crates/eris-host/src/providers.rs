@@ -470,8 +470,7 @@ pub fn env_value_refusal(value: &str) -> Option<EnvRefusal> {
     if value.contains('\0') || value.contains('\n') || value.contains('\r') {
         return Some(EnvRefusal {
             field: "env_value",
-            message: "a value cannot contain a newline or a NUL: one line, one variable"
-                .to_owned(),
+            message: "a value cannot contain a newline or a NUL: one line, one variable".to_owned(),
         });
     }
     None
@@ -503,14 +502,15 @@ pub(crate) fn write_env_secret(
     name: &str,
     value: &str,
 ) -> std::io::Result<()> {
-    upsert_env_line(env_file, name, &format!("{name}={}", quote_env_value(value)))
+    upsert_env_line(
+        env_file,
+        name,
+        &format!("{name}={}", quote_env_value(value)),
+    )
 }
 
 /// Remove one `NAME=...` line. `false` when the name was not in the file.
-pub(crate) fn delete_env_entry(
-    env_file: &std::path::Path,
-    name: &str,
-) -> std::io::Result<bool> {
+pub(crate) fn delete_env_entry(env_file: &std::path::Path, name: &str) -> std::io::Result<bool> {
     let existing = match std::fs::read_to_string(env_file) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -563,11 +563,7 @@ pub fn env_names(env_file: &std::path::Path) -> Vec<String> {
 }
 
 /// Write one rendered `NAME=value` line, replacing any line with that name.
-fn upsert_env_line(
-    env_file: &std::path::Path,
-    name: &str,
-    rendered: &str,
-) -> std::io::Result<()> {
+fn upsert_env_line(env_file: &std::path::Path, name: &str, rendered: &str) -> std::io::Result<()> {
     let existing = match std::fs::read_to_string(env_file) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
