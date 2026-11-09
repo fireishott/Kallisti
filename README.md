@@ -4,9 +4,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/daemon-1.4.15-C8CCD2?style=flat-square&labelColor=0C0C10" alt="daemon 1.4.15"/>
-  <img src="https://img.shields.io/badge/iOS-1.4.15-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 1.4.15"/>
+  <img src="https://img.shields.io/badge/iOS-1.4.16-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 1.4.16"/>
   <img src="https://img.shields.io/badge/Rust-1.99-F74C00?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99"/>
-  <img src="https://img.shields.io/badge/tests-1246-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1246 tests"/>
+  <img src="https://img.shields.io/badge/tests-1312-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1312 tests"/>
   <img src="https://img.shields.io/badge/device_api-no_relay-C8CCD2?style=flat-square&labelColor=0C0C10" alt="no relay"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
@@ -219,7 +219,7 @@ hostname that points at a private address.
 | `ios-host` | on-device surface stub: a UniFFI export with no I/O of its own, so the core never imports a device framework and every permission prompt belongs to the Swift shell. |
 
 ```sh
-cargo test --workspace        # 1246 tests across the unit and integration suites, 0 failures
+cargo test --workspace        # 1312 tests across the unit and integration suites, 0 failures
 cargo clippy --workspace --all-targets
 cargo fmt --check
 ```
