@@ -1210,11 +1210,11 @@ actor ErisClient {
     /// suspends the process, the socket dies without a FIN, and
     /// `for try await byte in bytes` neither yields nor throws.
     ///
-    /// A `var` so a test can shrink it instead of sleeping for a minute.
-    static var streamIdleTimeout: TimeInterval = 60
+    /// A constant: it is the real-world budget, not a test seam.
+    static let streamIdleTimeout: TimeInterval = 60
 
     /// How many times one turn's stream is re-opened before the error surfaces.
-    static var streamAttemptLimit = 4
+    static let streamAttemptLimit = 4
 
     /// One attempt at a turn stream, reported back to the retry loop.
     private struct StreamAttemptOutcome: Sendable {
