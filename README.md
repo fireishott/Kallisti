@@ -112,7 +112,9 @@ is not in your hand.
 - **Skills.** A library of procedures at `~/.config/kallisti/skills`, one directory
   per skill holding a `SKILL.md`. The prompt carries names and descriptions only;
   the model calls `read_skill` to pull one in when the task fits, on the dashboard
-  and the phone. Each skill has its own switch.
+  and the phone. Each skill has its own switch. A skill ships with the daemon
+  (`kallisti-ios`) and is seeded into the library on first run, so a fresh install
+  is not an empty library.
 - **Editing and deleting a skill.** A skill can be rewritten and deleted from the
   daemon, the dashboard and the phone, because a procedure that has gone wrong is
   worse than no procedure. `PUT /v1/skills/{key}` replaces the whole `SKILL.md`

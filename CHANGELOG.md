@@ -6,6 +6,13 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **The iOS skill ships with the daemon.** A fresh install used to start with an
+  empty skill library, so the one procedure this phone needs existed only on the
+  operator's own host. `skills/kallisti-ios/SKILL.md` is compiled into the daemon
+  and written into the owned library on first run, and `install.sh` seeds the same
+  file for a source checkout. The skill is `kallisti-ios` v3.1.0, it carries no
+  `herald` name, and the old `herald-ios` key is gone. `build 181`.
+
 - **A wrapped turn answers in short bullets instead of a wall of prose.** The
   three closing instructions (the wrap-up, the spent notice and the last-resort
   ask) ordered "one plain paragraph of prose, with no headings and no section
