@@ -4340,10 +4340,12 @@ pub fn drive_tool_loop(
     // Whether the tool-free round has already been introduced. Pushed once, so a
     // steer arrives as the operator's own words rather than behind two notices.
     let mut budget_told = false;
-    // Whether the model has been told the budget is nearly gone. Separate from
-    // `budget_told` because it is a different sentence: the wrap-up is the last
-    // chance to write, and the spent notice is the fact that the tools are gone.
-    let mut wrap_told = false;
+    // Whether the model has been told this is its last round with tools, and
+    // whether it has been told the tools are gone and the answer is due. They are
+    // two different sentences because they are two different rounds: the action
+    // round still has tools, the answer round does not.
+    let mut last_action_told = false;
+    let mut answer_told = false;
     // Whether the turn ended because the budget ran out rather than because the
     // model was finished. Reported, not inferred from the text. Every break below
     // assigns it, which is why it has no default: a third way out would have to
@@ -4366,36 +4368,37 @@ pub fn drive_tool_loop(
             TurnSignal::Continue => {}
         }
 
-        // The last attempt is tool-free on purpose. A model that answered every
-        // round with another call used to end the turn with nothing; instead it
-        // now has to say what it found with what it already has, which is a
-        // usable answer rather than a shrug.
+        // The lookahead reserves two rounds at the end of the budget, and they
+        // have different jobs. The first is the last round that may still use a
+        // tool: it exists to produce the deliverable, which is what a turn that
+        // spent every working round inspecting never got to. The second is the
+        // round that has to write the answer, which is why the guarantee of prose
+        // still holds.
         //
-        // It is told that is what is happening. A model that is silently denied
-        // its tools reaches for them anyway, and the markup it writes in that
-        // state is not an answer: it is the tool call it could not make. That is
-        // exactly how a long turn used to end on an empty bubble.
-        // The lookahead. Two rounds before the budget ends, the turn stops
-        // exploring: the tools are taken away and the remaining rounds are spent
-        // getting a written answer out of what has already been found. A turn that
-        // only learns the budget is gone *after* it is gone has nothing left but
-        // the forced answer, which is the "max turns hit, I did not finish"
-        // complaint this is for.
+        // The old shape took the tools away two rounds early, so a turn that read
+        // for thirteen rounds could describe the job in the two rounds that
+        // remained and never do it. One action round is enough to write the file
+        // or run the command the turn was for.
         //
         // Never fires on a budget of one or two rounds. There is no room to look
         // ahead in a turn with one round, and two rounds of wrapped-up prose is not
         // better than one round with the tools the operator gave it. Those budgets
         // behave exactly as they did before.
-        let wrapping = max_rounds > 2 && rounds >= max_rounds.saturating_sub(2);
-        let tools_allowed = rounds < max_rounds && !wrapping;
-        // One coherent sentence, not two. When the wrap-up fires the model is told
-        // to write; when the hard budget is spent and nothing was said yet it is
-        // told the tools are gone. A turn that was already told to wrap up does not
-        // then get the spent notice as well.
-        if wrapping && !wrap_told {
-            wrap_told = true;
+        let last_action = max_rounds > 2 && rounds == max_rounds.saturating_sub(2);
+        let answering = max_rounds > 2 && rounds >= max_rounds.saturating_sub(1);
+        let tools_allowed = rounds < max_rounds && !answering;
+        // One coherent sentence, not two. The action round is told to finish, the
+        // answer round is told to write, and a turn whose tools ran out with no
+        // lookahead at all is told the budget is spent. Pushed once each, so a
+        // steer arrives as the operator's own words rather than behind a pile of
+        // notices.
+        if last_action && !last_action_told {
+            last_action_told = true;
+            messages.push(ChatMessage::text(ChatRole::User, LAST_ACTION));
+        } else if answering && !answer_told {
+            answer_told = true;
             messages.push(ChatMessage::text(ChatRole::User, WRAP_UP));
-        } else if !tools_allowed && !budget_told && !wrap_told {
+        } else if !tools_allowed && !budget_told && !last_action_told && !answer_told {
             budget_told = true;
             messages.push(ChatMessage::text(ChatRole::User, BUDGET_SPENT));
         }
@@ -4425,7 +4428,20 @@ pub fn drive_tool_loop(
             max_rounds,
             tools_allowed,
         });
-        let mut completion = stream(&messages, tools_allowed, &mut *sink)?;
+        let mut completion = match stream(&messages, tools_allowed, &mut *sink) {
+            Ok(completion) => completion,
+            // The answer round exists to write, not to discover. A provider fault
+            // there - a dropped socket, a 5xx, a timeout after a long turn - must
+            // not turn a turn that already did work into a failure with nothing to
+            // read. Fall out of the loop with no text; the forced-answer round and
+            // the recorded summary below are the fallback.
+            Err(_failure) if !tools_allowed => {
+                capped = true;
+                wrapped_up = false;
+                break String::new();
+            }
+            Err(failure) => return Err(failure),
+        };
 
         // A route that fails to lift calls into the structured array passes the
         // model's own markup through as content. Recover it: the calls the model
@@ -4480,7 +4496,7 @@ pub fn drive_tool_loop(
             // left it empty. A turn that was told to wrap up and did write is not
             // capped: the answer is the model's own, arrived at early.
             let said = !completion.text.trim().is_empty();
-            wrapped_up = wrap_told && said;
+            wrapped_up = answer_told && said;
             capped = !tools_allowed && !wrapped_up;
             break completion.text;
         }
@@ -4647,14 +4663,29 @@ pub fn drive_tool_loop(
     })
 }
 
-/// The instruction the lookahead round opens with.
+/// The instruction the last action round opens with.
 ///
-/// Pushed two rounds before the budget ends, and only once. It has to do three
-/// things in one paragraph: say the budget is nearly gone so this reads as the
-/// last chance rather than a hint, say what to do with what has already been
-/// found, and say what not to do, because a model told only "the tools are gone"
-/// writes the call it could not make and calls that an answer. It reports; it
-/// never hands the work back, and it never writes a next step for a later turn.
+/// Pushed one round before the answer round, and only once. It has one job:
+/// convert the last round that still has tools into the round that produces the
+/// deliverable. A turn that spent every working round inspecting used to get its
+/// tools taken away two rounds early, so it could only describe the job it never
+/// did. This tells it that this round is for doing, and that the next one writes
+/// the answer.
+const LAST_ACTION: &str = "Your tool budget for this turn has one round left with tools. \
+     This round is for finishing the job, not for more research: write the files and run the \
+     commands the task needs, and put the deliverable on disk. Do not start new inspection and \
+     do not fix unrelated things. The next round has no tools and you will write the answer \
+     there.";
+
+/// The instruction the answer round opens with.
+///
+/// Pushed for the final round of the budget, once, after the last action round
+/// has had its tools. It has to do three things in one paragraph: say the budget
+/// is gone so this reads as the last chance rather than a hint, say what to do
+/// with what has already been found, and say what not to do, because a model told
+/// only "the tools are gone" writes the call it could not make and calls that an
+/// answer. It reports; it never hands the work back, and it never writes a next
+/// step for a later turn.
 const WRAP_UP: &str = "Your tool budget for this turn is nearly spent and the tools are now \
      withdrawn. Stop exploring and answer now, in one plain paragraph of prose, with no tool \
      calls and no headings and no section list. Say what you did and what it proves. Report only: \
@@ -6662,7 +6693,6 @@ mod tests {
         )
         .expect("a call");
 
-        let mut round = 0usize;
         let mut tools_offered: Vec<bool> = Vec::new();
         let outcome = drive_tool_loop(
             &mut |call: &core_domain::ToolCall,
@@ -6678,39 +6708,39 @@ mod tests {
             &mut |_part| {},
             &mut || TurnSignal::Continue,
             |_messages, tools, _emit| {
-                round += 1;
                 tools_offered.push(tools);
                 Ok(completion_with_calls(vec![call.clone()], ""))
             },
         )
         .expect("a turn");
 
-        // Two fewer tool rounds than the budget, on purpose. The lookahead takes
-        // the tools away two rounds early, so a turn that would have spent every
-        // round reaching for one spends its last two writing. This assertion used
-        // to read `MAX_TOOL_ROUNDS`, which was the cap in tool rounds before the
-        // lookahead existed; the cap is now the budget, and the tool rounds are
-        // the budget minus the wrap-up window.
+        // One fewer tool round than the budget, on purpose. The lookahead keeps
+        // the tools for the last action round and takes them away only for the
+        // answer round, so a turn that would have spent every round reaching for
+        // one spends its final round writing, and the round before it doing.
         assert_eq!(
             outcome.rounds,
-            MAX_TOOL_ROUNDS - 2,
-            "the wrap-up window is two rounds, so two rounds of tools are given up"
+            MAX_TOOL_ROUNDS - 1,
+            "the last action round still has its tools; only the answer round is tool-free"
         );
         assert_eq!(
-            round, MAX_TOOL_ROUNDS,
-            "every round of the budget is still used: the two given up on tools are \
-             spent asking for prose instead"
-        );
-        assert_eq!(
-            &tools_offered[round - 2..],
-            &[false, false],
-            "neither closing attempt may offer tools, so the turn has to answer"
+            tools_offered.len(),
+            MAX_TOOL_ROUNDS + 1,
+            "the budget's rounds plus the forced-answer ask after them"
         );
         assert!(
-            tools_offered[..MAX_TOOL_ROUNDS - 2]
+            tools_offered[..MAX_TOOL_ROUNDS - 1]
                 .iter()
                 .all(|offered| *offered),
-            "every round before the wrap-up offers them"
+            "every round up to and including the last action round offers them"
+        );
+        assert!(
+            !tools_offered[MAX_TOOL_ROUNDS - 1],
+            "the answer round offers no tools, so the turn has to write"
+        );
+        assert!(
+            !tools_offered[MAX_TOOL_ROUNDS],
+            "the forced-answer ask after the budget offers none either"
         );
         assert!(outcome.capped, "the budget ended this turn, not the model");
         assert!(
@@ -6915,11 +6945,11 @@ mod tests {
 
     /// A model that calls a tool every round is what the lookahead exists for.
     ///
-    /// The turn is given four rounds and asked to wrap up two before the end, so
-    /// the tools have to be gone on the third round and the model has to be told
-    /// why once.
+    /// The turn is given four rounds. The third is the last action round and
+    /// still has tools; the fourth is the answer round and has none. The model is
+    /// told each of those two facts once.
     #[test]
-    fn the_wrap_up_fires_two_rounds_before_the_budget_and_once_only() {
+    fn the_last_action_round_keeps_tools_and_the_answer_round_does_not() {
         let root = scratch_workspace("wrapup");
         std::fs::write(root.join("a.txt"), "alpha").expect("file");
         let sandbox = crate::tools::Sandbox::new(
@@ -6959,19 +6989,24 @@ mod tests {
 
         assert_eq!(
             &tools_offered[..4],
-            &[true, true, false, false],
-            "a budget of four wraps at round two, so the last two rounds are tool-free"
+            &[true, true, true, false],
+            "a budget of four keeps tools for the last action round and withdraws them \
+             only for the answer round"
         );
         // The snapshots accumulate, so the last one is the whole history. One
-        // WRAP_UP in it means it was pushed once; a push per round would leave
-        // two, because the wrap-up covers two rounds.
-        let told: usize = seen
-            .last()
-            .expect("the provider was called")
+        // LAST_ACTION and one WRAP_UP in it means each was pushed once; a push
+        // per round would leave more.
+        let history = seen.last().expect("the provider was called");
+        let actions: usize = history
+            .iter()
+            .filter(|message| message.content == LAST_ACTION)
+            .count();
+        let answers: usize = history
             .iter()
             .filter(|message| message.content == WRAP_UP)
             .count();
-        assert_eq!(told, 1, "the model is told once, not every round");
+        assert_eq!(actions, 1, "the action round is named once");
+        assert_eq!(answers, 1, "the answer round is named once");
         assert!(
             outcome.capped,
             "the model never wrote the answer it was asked for"
@@ -7026,7 +7061,10 @@ mod tests {
         )
         .expect("a turn");
 
-        assert_eq!(round, 3, "two rounds of tools, then the wrapped-up answer");
+        assert_eq!(
+            round, 4,
+            "three rounds with tools, then the wrapped-up answer"
+        );
         assert_eq!(outcome.text, "a.txt says alpha");
         assert!(
             outcome.wrapped_up,
@@ -7129,6 +7167,89 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A provider fault in the answer round must not delete the answer.
+    ///
+    /// The tools are already gone and this round exists to write, so a dropped
+    /// socket or a 5xx here used to fail the whole turn: the work had run, the
+    /// records existed, and the operator got an error instead of a report. The
+    /// loop now leaves the answer phase to the forced-answer round and the
+    /// recorded summary.
+    #[test]
+    fn a_provider_fault_in_the_answer_round_still_produces_one() {
+        let root = scratch_workspace("answer-fault");
+        std::fs::write(root.join("a.txt"), "alpha").expect("file");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::ReadOnly,
+        );
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "read_file",
+            serde_json::json!({"path": "a.txt"}),
+        )
+        .expect("a call");
+
+        let outcome = drive_tool_loop(
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
+            },
+            vec![ChatMessage::text(ChatRole::User, "read it and tell me")],
+            &mut |_call| GateDecision::Run,
+            4,
+            None,
+            &mut |_part| {},
+            &mut || TurnSignal::Continue,
+            |_messages, tools, _emit| {
+                if tools {
+                    Ok(completion_with_calls(vec![call.clone()], ""))
+                } else {
+                    Err(("transport".to_owned(), "socket dropped".to_owned()))
+                }
+            },
+        )
+        .expect("a turn with work behind it still has an answer");
+
+        assert!(
+            outcome.text.contains("read_file"),
+            "the summary names the work that ran: {}",
+            outcome.text
+        );
+        assert!(outcome.capped, "the answer was forced by the budget");
+        assert!(!outcome.wrapped_up, "the model did not write it");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A provider fault before the answer phase is still a failed turn.
+    ///
+    /// There is no work to report and no answer to write, so the error is the
+    /// honest outcome; swallowing it would turn "the provider is down" into a
+    /// capped notice about nothing.
+    #[test]
+    fn a_provider_fault_before_any_work_is_still_a_failure() {
+        let outcome = drive_tool_loop(
+            &mut |_call: &core_domain::ToolCall,
+                  _chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
+                crate::tools::ToolResult::ok(serde_json::json!("unused"))
+            },
+            vec![ChatMessage::text(ChatRole::User, "say hi")],
+            &mut |_call| GateDecision::Run,
+            4,
+            None,
+            &mut |_part| {},
+            &mut || TurnSignal::Continue,
+            |_messages, _tools, _emit| Err(("transport".to_owned(), "socket dropped".to_owned())),
+        )
+        .expect_err("nothing had run, so the turn failed");
+        assert_eq!(outcome.0, "transport");
     }
 
     /// A budget of one has no room to look ahead, so it behaves as it always did.
