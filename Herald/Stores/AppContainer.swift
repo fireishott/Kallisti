@@ -553,6 +553,11 @@ final class AppContainer {
             environmentProvider: { settingsStore.settings.environment }
         )
 
+        // Which backend this install is on, asked before anything pairs: a
+        // daemon address that was ever remembered means the relay handshake
+        // must not run, because no daemon serves `/v1/session`.
+        sessionStore.isErisBackend = { ErisDaemonStore.hasRememberedAddress() }
+
         let runtimePairingStore = PairingStore(
             pairingService: pairingService,
             sessionStore: sessionStore,

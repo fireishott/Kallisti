@@ -375,6 +375,18 @@ struct AppRootView: View {
         .padding(.horizontal, Design.Spacing.xl)
     }
 
+    /// A JSON body is not a sentence for a person.
+    ///
+    /// A body starting with `{` means the app reached a listener that does not
+    /// speak its handshake: this build is talking to the daemon the way the old
+    /// relay was talked to. That is a pairing problem, so say so and point at the
+    /// button below instead of printing the daemon's error object.
+    private func readableFailure(_ message: String) -> String {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{") else { return trimmed }
+        return "This build is not paired to your Kallisti daemon. Pair the device again to reconnect."
+    }
+
     private func networkFailureView(message: String) -> some View {
         VStack(spacing: Design.Spacing.lg) {
             Spacer()
@@ -384,7 +396,7 @@ struct AppRootView: View {
             Text("Connection Failed")
                 .font(Design.Typography.sectionTitle)
                 .foregroundStyle(Design.Colors.foreground)
-            Text(message)
+            Text(readableFailure(message))
                 .font(Design.Typography.callout)
                 .foregroundStyle(Design.Colors.secondaryForeground)
                 .multilineTextAlignment(.center)

@@ -896,3 +896,88 @@ struct ErisSkillAddressingTests {
         #expect(SkillsStore.refusal(error).contains("admin scope"))
     }
 }
+
+// MARK: - Launch path
+
+/// The two backends do not share a handshake.
+///
+/// A relay install registers a device and then reads `/v1/session`. A daemon
+/// install pairs over its own listener, and no daemon has ever served
+/// `/v1/session`; asking one produces a 404 body, which is what a launch screen
+/// then printed at the operator. So when the daemon is the backend the relay
+/// handshake must not run at all, and launch must not wait on it.
+@MainActor
+@Suite("Eris launch path", .serialized)
+struct ErisLaunchPathTests {
+    /// Counts what the relay handshake was asked to do, and fails every call:
+    /// on a daemon-backed launch nothing should reach it.
+    private final class RecordingBootstrap: SessionBootstrapServiceProtocol {
+        private(set) var registerCalls = 0
+        private(set) var loadCalls = 0
+
+        func registerDevice(_ request: DeviceRegistrationRequest) async throws -> SessionBootstrapResponse {
+            registerCalls += 1
+            throw URLError(.cannotConnectToHost)
+        }
+
+        func loadSession(accessToken: String?) async throws -> AppSessionState {
+            loadCalls += 1
+            throw URLError(.cannotConnectToHost)
+        }
+
+        func refreshAuth(refreshToken: String) async throws -> AuthTokens {
+            throw URLError(.cannotConnectToHost)
+        }
+
+        func revokeCurrentSession(accessToken: String?) async throws {}
+    }
+
+    private func store(_ bootstrap: RecordingBootstrap) -> AppSessionStore {
+        let suite = "eris-launch-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return AppSessionStore(
+            bootstrapService: bootstrap,
+            syncCoordinator: MockSyncCoordinator(),
+            secureStore: MockSecureStore(),
+            persistence: UserDefaultsAppPersistenceStore(defaults: defaults),
+            notificationService: MockNotificationService(),
+            environmentProvider: { .development }
+        )
+    }
+
+    @Test("a daemon-backed launch never runs the relay handshake")
+    func daemonBackedLaunchSkipsTheRelay() async {
+        let bootstrap = RecordingBootstrap()
+        let session = store(bootstrap)
+        session.isErisBackend = { true }
+
+        await session.bootstrap()
+
+        #expect(bootstrap.registerCalls == 0)
+        #expect(bootstrap.loadCalls == 0)
+        #expect(session.launchState == .ready)
+    }
+
+    @Test("a relay launch still bootstraps, so the switch is not a blanket skip")
+    func relayLaunchStillBootstraps() async {
+        let bootstrap = RecordingBootstrap()
+        let session = store(bootstrap)
+        session.isErisBackend = { false }
+
+        await session.bootstrap()
+
+        #expect(bootstrap.registerCalls >= 1 || bootstrap.loadCalls >= 1)
+    }
+
+    @Test("a remembered daemon address is what selects the daemon backend")
+    func rememberedAddressSelectsTheDaemon() {
+        let suite = "eris-daemon-address-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+
+        #expect(!ErisDaemonStore.hasRememberedAddress(defaults))
+        defaults.set("http://192.168.68.51:7341", forKey: "eris.daemon.baseURL")
+        #expect(ErisDaemonStore.hasRememberedAddress(defaults))
+    }
+}

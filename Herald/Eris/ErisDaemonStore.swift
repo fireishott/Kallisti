@@ -37,6 +37,15 @@ final class ErisDaemonStore {
         static let lastSession = "eris.daemon.lastSessionID"
     }
 
+    /// Whether this install has ever named a daemon.
+    ///
+    /// Read before any pairing completes, so launch can tell a daemon-backed
+    /// install from a relay one without waiting for the keychain to open.
+    static func hasRememberedAddress(_ defaults: UserDefaults = .standard) -> Bool {
+        let raw = defaults.string(forKey: DefaultsKey.baseURL) ?? ""
+        return !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     init(
         tokenStore: (any ErisTokenStoring)? = nil,
         defaults: UserDefaults = .standard,

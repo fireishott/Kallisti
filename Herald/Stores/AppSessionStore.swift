@@ -39,6 +39,15 @@ final class AppSessionStore {
     /// `nil` keeps the legacy call for the cases where no Eris transport can own
     /// it - a mock environment, or a launch before a daemon is paired - and is
     /// safe there because in those cases there is no second lane to collide with.
+    /// True when this install talks to a Kallisti daemon rather than the relay.
+    ///
+    /// The two backends have different handshakes: the relay registers a device
+    /// and reads `/v1/session`, which no daemon has ever served. Running that
+    /// handshake against a daemon produces a 404 body on the launch screen, so
+    /// when the daemon is the backend there is nothing here to bootstrap and the
+    /// Eris client owns the connection state.
+    var isErisBackend: (@MainActor () -> Bool)?
+
     var tokenRefresher: (@MainActor () async throws -> AuthTokens?)?
 
     init(
@@ -60,6 +69,12 @@ final class AppSessionStore {
 
     func bootstrap(forceRegistration: Bool = false) async {
         guard !isBootstrapping else { return }
+
+        // A daemon-backed install has no relay session to register or read.
+        if isErisBackend?() == true {
+            launchState = .ready
+            return
+        }
 
         isBootstrapping = true
         lastErrorMessage = nil
