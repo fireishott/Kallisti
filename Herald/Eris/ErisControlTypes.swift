@@ -113,6 +113,13 @@ struct ErisControlCronJobEnvelope: Decodable, Sendable {
 }
 
 /// One skill in the library.
+///
+/// The last four fields are the editing lane: `origin` says whether an operator
+/// wrote the skill or the learning loop learned it, `state` is the curator's word
+/// for it, `pinned` holds it above the ageing pass, and `editable` is the
+/// daemon's own answer to "may this body be rewritten from here". All four are
+/// optional because a daemon that predates the editing lane sends none of them,
+/// and such a daemon must still list.
 struct ErisControlSkill: Decodable, Sendable, Identifiable {
     let key: String
     let name: String
@@ -120,8 +127,38 @@ struct ErisControlSkill: Decodable, Sendable, Identifiable {
     let path: String?
     let enabled: Bool
     let bytes: Int
+    /// `operator` or `learned`.
+    let origin: String?
+    /// `active`, `stale` or `archived`.
+    let state: String?
+    let pinned: Bool?
+    /// False when the daemon will refuse a body write for this skill.
+    let editable: Bool?
 
     var id: String { key }
+}
+
+/// `PUT /v1/skills/{key}` body: the whole `SKILL.md`, not a patch.
+struct ErisControlSkillContent: Encodable, Sendable {
+    let content: String
+}
+
+/// `PUT /v1/skills/{key}` response.
+struct ErisControlSkillSaved: Decodable, Sendable {
+    let ok: Bool
+    let key: String
+    let bytes: Int
+}
+
+/// `DELETE /v1/skills/{key}` response.
+///
+/// `archived` is the relative path the body moved to, which is what makes the
+/// confirmation wording honest: the skill is moved into the daemon's archive, not
+/// destroyed, and the daemon can restore it.
+struct ErisControlSkillArchived: Decodable, Sendable {
+    let ok: Bool
+    let key: String
+    let archived: String
 }
 
 /// `GET /v1/skills`. A library that cannot be read answers `ok: true` with

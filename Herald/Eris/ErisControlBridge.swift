@@ -98,11 +98,22 @@ enum ErisControlMapping {
         wire.jobs.map(job)
     }
 
+    /// One skill row. The four editing fields are carried only when the daemon
+    /// sent them, so a daemon that predates them draws no origin badge and offers
+    /// no editor rather than claiming every skill is an operator skill.
+    ///
+    /// The key is carried always: it is the daemon's own address for the row, and
+    /// the display name is not, which is why every write and archive names this.
     static func skill(_ wire: ErisControlSkill) -> SkillsStore.HeraldSkill {
         SkillsStore.HeraldSkill(
+            key: wire.key,
             name: wire.name,
             description: wire.description ?? "",
-            path: wire.path ?? ""
+            path: wire.path ?? "",
+            origin: wire.origin,
+            state: wire.state,
+            pinned: wire.pinned ?? false,
+            editable: wire.editable ?? false
         )
     }
 

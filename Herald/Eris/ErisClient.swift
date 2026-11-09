@@ -130,8 +130,13 @@ enum ErisRoute: Equatable, Sendable {
     case cronJob(id: String, verb: String)
     /// `GET /v1/skills` - the skill library.
     case skills
-    /// `GET /v1/skills/{key}` - one skill's body.
-    case skill(key: String)
+    /// `GET`, `PUT` or `DELETE /v1/skills/{key}` - one skill's body, rewritten or
+    /// archived.
+    ///
+    /// The verb rides as data for the same reason `cronJob` carries one: the
+    /// daemon binds three verbs to this one path, and a case per verb would spell
+    /// the path three times.
+    case skill(key: String, verb: String)
     /// `GET /v1/aux` - the auxiliary roles and what each may run on.
     case aux
     /// `POST /v1/aux` - pin one role's model and provider.
@@ -231,7 +236,7 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/cron/\(Self.segment(id))"
         case .skills:
             return "/v1/skills"
-        case .skill(let key):
+        case .skill(let key, _):
             return "/v1/skills/\(Self.segment(key))"
         case .aux, .setAux:
             return "/v1/aux"
@@ -259,8 +264,8 @@ enum ErisRoute: Equatable, Sendable {
              .models, .cron, .skills, .aux, .noteRun, .noteRunEvents, .gwHealth, .gwPreflight,
              .subagents, .subagent, .asked:
             return "GET"
-        case .skill:
-            return "GET"
+        case .skill(_, let verb):
+            return verb
         case .pair, .tokenRefresh, .turns, .attachments, .cancel, .createConversation,
              .clearConversation, .updateSettings,
              .fullAccess, .createBackup, .restoreBackup,
@@ -905,8 +910,32 @@ actor ErisClient {
 
     /// `GET /v1/skills/{key}` - one skill's body.
     func controlSkill(key: String) async throws -> ErisControlSkillEnvelope {
-        let data = try await send(route: .skill(key: key), form: nil)
+        let data = try await send(route: .skill(key: key, verb: "GET"), form: nil)
         return try decode(ErisControlSkillEnvelope.self, from: data)
+    }
+
+    /// `PUT /v1/skills/{key}` - rewrite one skill's `SKILL.md`.
+    ///
+    /// The body is the whole file, so a save is the text the editor holds rather
+    /// than a delta against what the daemon had. A refusal arrives as the
+    /// daemon's own sentence: `400 skill_key_invalid`, `400 skill_content_empty`,
+    /// `404 skill_unknown`, or `403 scope_denied` on a token without `admin`.
+    func saveControlSkill(key: String, content: String) async throws -> ErisControlSkillSaved {
+        try await sendJSON(
+            route: .skill(key: key, verb: "PUT"),
+            body: ErisControlSkillContent(content: content)
+        ) as ErisControlSkillSaved
+    }
+
+    /// `DELETE /v1/skills/{key}` - archive one skill.
+    ///
+    /// The daemon moves the body into its archive and answers with where it went,
+    /// so nothing here is a destructive delete and nothing says it is.
+    func deleteControlSkill(key: String) async throws -> ErisControlSkillArchived {
+        try await sendJSON(
+            route: .skill(key: key, verb: "DELETE"),
+            body: ErisControlEmpty()
+        ) as ErisControlSkillArchived
     }
 
     /// `GET /v1/aux` - the roles, and the ids a picker may choose from.
@@ -1659,7 +1688,10 @@ actor ErisClient {
         var request = URLRequest(url: try Self.url(baseURL: baseURL, route: route))
         request.httpMethod = route.method
         request.timeoutInterval = 30
-        if route.method == "POST" || route.method == "PATCH" {
+        // A body rides on the verbs that carry one. `PUT /v1/skills/{key}` is the
+        // one PUT on this surface: the attachment-style PUT takes raw bytes and
+        // goes through `makeRawRequest` instead.
+        if route.method == "POST" || route.method == "PATCH" || route.method == "PUT" {
             let encoder = JSONEncoder()
             request.httpBody = try encoder.encode(body)
             request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")

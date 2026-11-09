@@ -876,6 +876,15 @@ final class AppContainer {
         container.skillsStore.erisSkillDetailProvider = { key in
             ErisControlMapping.skillDetail(try await erisClient().controlSkill(key: key).skill)
         }
+        // The editing lane. Wiring these two is what makes the Skills browser draw
+        // an editor and a swipe action at all: the relay and DSH paths leave both
+        // nil on purpose, so their screens stay read-only without a flag anywhere.
+        container.skillsStore.erisSkillSave = { key, content in
+            _ = try await erisClient().saveControlSkill(key: key, content: content)
+        }
+        container.skillsStore.erisSkillDelete = { key in
+            _ = try await erisClient().deleteControlSkill(key: key)
+        }
 
         // The aux panel needs the service to exist before it has hooks, and the
         // relay-backed instance further down is only built when a relay base URL
@@ -952,7 +961,7 @@ final class AppContainer {
             }
             container.skillsStore.dshSkillsProvider = {
                 try await dsh.listSkills().map {
-                    SkillsStore.HeraldSkill(name: $0.name, description: $0.description, path: $0.path)
+                    SkillsStore.HeraldSkill(key: $0.name, name: $0.name, description: $0.description, path: $0.path)
                 }
             }
             container.skillsStore.dshSkillDetailProvider = { name in
