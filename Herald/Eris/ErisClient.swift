@@ -412,14 +412,43 @@ actor ErisClient {
     private let baseURL: URL
     /// The session requests go through. Injected so tests never touch a socket.
     private let session: URLSession
+
+    /// How long the frame stream may sit silent before it counts as dead.
+    ///
+    /// The daemon writes an SSE keep-alive every 15 seconds, so a healthy stream
+    /// is never quiet for long. A socket the OS still believes is open but that
+    /// carries nothing - the phone suspended, the radio handed over - raises no
+    /// error and no EOF, and the read loop waits forever. That is the difference
+    /// between a turn that resumes and the "Thinking..." that never stopped.
+    private let streamIdleTimeout: TimeInterval
+
+    /// The session the frame stream runs on, with a silence ceiling.
+    ///
+    /// `timeoutIntervalForRequest` measures time between packets rather than
+    /// total time, so it resets on every keep-alive and only fires on real
+    /// silence. That turns a dead socket into a `URLError.timedOut`, which
+    /// [`Self.isResumableDrop`] treats as a drop worth re-opening with the cursor.
+    private let streamSession: URLSession
     /// Where the bearer and refresh token live.
     private let tokenStore: any ErisTokenStoring
 
     /// Build a client for one listener.
-    init(baseURL: URL, tokenStore: any ErisTokenStoring, session: URLSession = .shared) {
+    init(
+        baseURL: URL,
+        tokenStore: any ErisTokenStoring,
+        session: URLSession = .shared,
+        streamIdleTimeout: TimeInterval = 45
+    ) {
         self.baseURL = baseURL
         self.tokenStore = tokenStore
         self.session = session
+        self.streamIdleTimeout = streamIdleTimeout
+        // Same configuration, so an injected stub session keeps its protocol
+        // classes and tests never take a different path than production.
+        let configuration = session.configuration
+        configuration.timeoutIntervalForRequest = streamIdleTimeout
+        configuration.timeoutIntervalForResource = 60 * 60
+        self.streamSession = URLSession(configuration: configuration)
     }
 
     // MARK: Routes
@@ -1258,7 +1287,7 @@ actor ErisClient {
     ///
     /// A dropped socket is; a malformed frame is the daemon's bug and re-opening
     /// would just re-deliver it. Cancellation is the caller's own stop.
-    private static func isResumableDrop(_ error: Error) -> Bool {
+    static func isResumableDrop(_ error: Error) -> Bool {
         if error is CancellationError { return false }
         if let url = error as? URLError { return url.code != .cancelled }
         if let eris = error as? ErisError { return eris.isTransport }
@@ -1603,7 +1632,7 @@ actor ErisClient {
 
     private func openStream(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, Int) {
         do {
-            let (bytes, response) = try await session.bytes(for: request)
+            let (bytes, response) = try await streamSession.bytes(for: request)
             return (bytes, Self.status(of: response))
         } catch let error as URLError where error.code == .cancelled {
             throw CancellationError()

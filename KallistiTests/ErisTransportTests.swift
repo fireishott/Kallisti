@@ -981,3 +981,36 @@ struct ErisLaunchPathTests {
         #expect(ErisDaemonStore.hasRememberedAddress(defaults))
     }
 }
+
+// MARK: - A silent stream is a drop, not a dead turn
+
+/// The daemon sends a keep-alive every 15 seconds, so a healthy stream is never
+/// quiet. A dead-but-open socket raises no error and no EOF, which is how a turn
+/// sat on "Thinking" for half an hour. The frame stream now runs on a session
+/// with a silence ceiling, and `timeoutIntervalForRequest` measures time between
+/// packets, so it resets on every keep-alive and fires only on real silence.
+///
+/// What this pins is the half that decides the outcome: a timeout has to be
+/// classified as a drop worth re-opening with the cursor. If it were not, the
+/// new ceiling would end turns instead of resuming them.
+@Suite("Eris stream silence")
+struct ErisStreamSilenceTests {
+    @Test("a timeout is a resumable drop, so the cursor re-opens the stream")
+    func timeoutResumes() {
+        #expect(ErisClient.isResumableDrop(URLError(.timedOut)))
+        #expect(ErisClient.isResumableDrop(URLError(.networkConnectionLost)))
+        #expect(ErisClient.isResumableDrop(URLError(.notConnectedToInternet)))
+    }
+
+    @Test("a deliberate stop is not a drop")
+    func cancellationDoesNotResume() {
+        #expect(!ErisClient.isResumableDrop(CancellationError()))
+        #expect(!ErisClient.isResumableDrop(URLError(.cancelled)))
+    }
+
+    @Test("a malformed frame is the daemon's bug, not a drop")
+    func otherErrorsDoNotResume() {
+        struct MalformedFrame: Error {}
+        #expect(!ErisClient.isResumableDrop(MalformedFrame()))
+    }
+}
