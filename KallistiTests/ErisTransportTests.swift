@@ -646,6 +646,11 @@ final class ErisDeviceAPIStub: URLProtocol, @unchecked Sendable {
 /// `pre-theater-dinner-planning` but named "Pre-Theater Dinner Planning" is the
 /// case that fails the moment a client puts the name on the wire, so these pin the
 /// key as the only address a write or an archive may carry.
+///
+/// The same suite holds the rest of the editing contract, because both halves are
+/// the same wire: the four fields decode as absent on an older daemon rather than
+/// failing the list, a save is a PUT of the whole body, and a refusal arrives as
+/// the sentence the daemon wrote.
 @MainActor
 @Suite("Eris skill addressing", .serialized)
 struct ErisSkillAddressingTests {
@@ -719,5 +724,103 @@ struct ErisSkillAddressingTests {
             #expect(!entry.1.contains("%20"))
             #expect(!entry.1.contains(" "))
         }
+    }
+
+    /// A daemon that predates the editing lane sends none of the four fields. It
+    /// must still list, and it must not imply an editor: `editable` reads false
+    /// because nothing said otherwise, which is what keeps the Save off a screen
+    /// whose daemon has no `PUT` to answer it.
+    @Test("a daemon without the editing fields still lists and offers no editor")
+    func anOlderDaemonStillLists() throws {
+        let json = #"""
+        {"ok":true,"enabled":true,"skills":[
+          {"key":"release-checklist","name":"release-checklist",
+           "description":"Ship a build without missing a step.",
+           "path":"release-checklist/SKILL.md","enabled":true,"bytes":812}
+        ]}
+        """#
+        let wire = try JSONDecoder().decode(ErisControlSkillList.self, from: Data(json.utf8))
+        let rows = ErisControlMapping.skills(wire)
+        #expect(rows.count == 1)
+        #expect(rows[0].key == "release-checklist")
+        #expect(rows[0].origin == nil)
+        #expect(rows[0].originLabel == nil)
+        #expect(rows[0].state == nil)
+        #expect(rows[0].stateLabel == nil)
+        #expect(!rows[0].pinned)
+        #expect(!rows[0].editable)
+    }
+
+    /// The save is the whole `SKILL.md` as a JSON body, not a patch and not a form.
+    @Test("the save puts the whole body on the wire as JSON")
+    func saveCarriesTheBodyAsJSON() async throws {
+        ErisDeviceAPIStub.reset()
+        ErisDeviceAPIStub.handler = { _ in
+            (200, Data(#"{"ok":true,"key":"release-checklist","bytes":21}"#.utf8))
+        }
+        defer { ErisDeviceAPIStub.reset() }
+
+        let saved = try await Self.client()
+            .saveControlSkill(key: "release-checklist", content: "# Release\n\nShip it.\n")
+        #expect(saved.bytes == 21)
+
+        let seen = ErisDeviceAPIStub.snapshot()
+        #expect(seen.count == 1)
+        #expect(seen[0].0 == "PUT")
+        #expect(seen[0].1 == "/v1/skills/release-checklist")
+        let body = try JSONDecoder().decode([String: String].self, from: Data(seen[0].2.utf8))
+        #expect(body == ["content": "# Release\n\nShip it.\n"])
+    }
+
+    /// A token without `admin` is refused by the daemon, and the sentence a person
+    /// reads is the daemon's rather than a generic failure.
+    @Test("a token without admin is told which scope it is missing")
+    func forbiddenSurfacesTheDaemonSentence() async throws {
+        ErisDeviceAPIStub.reset()
+        let sentence = "this device is paired without the admin scope"
+        ErisDeviceAPIStub.handler = { _ in
+            (403, Data(#"{"ok":false,"code":"scope_denied","message":"\#(sentence)"}"#.utf8))
+        }
+        defer { ErisDeviceAPIStub.reset() }
+
+        do {
+            _ = try await Self.client().saveControlSkill(key: "release-checklist", content: "x")
+            Issue.record("a 403 save must throw")
+        } catch {
+            let eris = try #require(error as? ErisError)
+            #expect(eris.status == 403)
+            #expect(eris.code == "scope_denied")
+            #expect(eris.isAdminScopeDenied)
+            #expect(SkillsStore.refusal(error) == sentence)
+        }
+    }
+
+    /// A skill that is no longer on the daemon refuses with its own sentence too,
+    /// so the row stays put and the screen can say why.
+    @Test("an unknown skill surfaces the daemon's sentence on an archive")
+    func unknownSkillSurfacesTheDaemonSentence() async throws {
+        ErisDeviceAPIStub.reset()
+        ErisDeviceAPIStub.handler = { _ in
+            (404, Data(#"{"ok":false,"code":"skill_unknown","message":"no skill named ghost"}"#.utf8))
+        }
+        defer { ErisDeviceAPIStub.reset() }
+
+        do {
+            _ = try await Self.client().deleteControlSkill(key: "ghost")
+            Issue.record("a 404 archive must throw")
+        } catch {
+            let eris = try #require(error as? ErisError)
+            #expect(eris.status == 404)
+            #expect(eris.code == "skill_unknown")
+            #expect(SkillsStore.refusal(error) == "no skill named ghost")
+        }
+    }
+
+    /// A 403 the daemon sent no sentence for still reads as something a person can
+    /// act on, instead of a bare status line.
+    @Test("a bare 403 with no message still names the missing scope")
+    func bareForbiddenStaysReadable() {
+        let error = ErisError.server(status: 403, code: "scope_denied", message: nil)
+        #expect(SkillsStore.refusal(error).contains("admin scope"))
     }
 }
