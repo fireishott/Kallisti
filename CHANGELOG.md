@@ -6,6 +6,22 @@ observe; commit history carries the detail.
 
 ## 1.4.15
 
+- **A wrapped turn reports the work instead of handing it back.** The three
+  closing instructions a turn gets when its tool budget runs out asked for "the
+  exact next step so the work can be picked up from this message", and the
+  fallback notice told the operator to say "Continue". That is the defect in
+  miniature: the turn ends with a plan for the next one, so the job is never
+  finished in the turn that had the budget. All three notices now ask for one
+  paragraph of what was done and what it proves, and the transcript, not the
+  notice, is what a later turn resumes from. `build 178`.
+
+- **One retry now also covers a 429 or a 5xx.** The single retry covered only a
+  connection the peer dropped before the answer started. A rate limit or a
+  gateway fault failed the whole turn even though nothing of the answer had been
+  sent, discarding every tool call the turn had already run. The same one retry
+  now also re-sends once after a 429 or a 5xx, 750ms later, and a retry that
+  fails is still reported with the provider's `Retry-After`. `build 178`.
+
 - **A skill can be rewritten and deleted.** The library was read-only: the daemon
   listed a skill and served its body, the dashboard had switches and a directory, and
   the phone could only browse. So a procedure that had gone wrong could not be fixed,
