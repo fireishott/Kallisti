@@ -4907,13 +4907,14 @@ impl SkillsView {
     }
 }
 
-/// The skills page: every file in the library, one editor, one archive button.
+/// The skills page: every file in the library, one editor, one delete button.
 ///
 /// The page is the library's own surface and it says what the daemon actually
-/// does: a save replaces the whole file, and a delete moves the directory into
-/// `.archive/` under the library rather than unlinking it. The second press is a
-/// real state of the page rather than a script, so the confirmation works with
-/// JavaScript off, which is the rule every page here keeps.
+/// does: a save replaces the whole file, and a delete removes that one skill's
+/// directory from the library for good, leaving every other skill alone. The
+/// second press is a real state of the page rather than a script, so the
+/// confirmation works with JavaScript off, which is the rule every page here
+/// keeps.
 pub fn skills_page(view: &SkillsView) -> Markup {
     let error = view.error.as_ref();
     let body = html! {
@@ -4921,9 +4922,9 @@ pub fn skills_page(view: &SkillsView) -> Markup {
         p .lede {
             "Every procedure in this library, with the file behind it. A skill is a directory "
             "holding a " code { "SKILL.md" } ", and the editor below replaces that whole file. "
-            "Delete moves the directory into " code { ".archive/" } " instead of destroying it: "
-            "an archived skill is still on this disk, and the Learning page restores a learned "
-            "one from there."
+            "Delete removes that one skill: its own directory, with its file, and nothing else. "
+            "The library and every other skill stay. It cannot be undone, and a learned skill "
+            "loses its ledger row with it, so the loop cannot write it back."
         }
         (alert_region(error, view.notice.as_deref()))
         @if let Some(key) = &view.confirming {
@@ -10557,7 +10558,7 @@ mod tests {
     }
 
     #[test]
-    fn the_skills_page_offers_the_file_and_calls_the_delete_an_archive() {
+    fn the_skills_page_offers_the_file_and_calls_the_delete_a_delete() {
         let mut view = SkillsView::new(SetupState::Ready);
         view.library = "/home/operator/.config/kallisti/skills".to_owned();
         view.skills = vec![crate::skills::Skill {
@@ -10596,8 +10597,16 @@ mod tests {
             page.contains(r#"action="/dashboard/skills/delete""#),
             "{page}"
         );
-        // The page says what a delete is here: a move into `.archive/`.
-        assert!(page.contains(".archive/"), "{page}");
+        // The page says what a delete is here: that skill's directory, gone, and
+        // nothing else in the library.
+        assert!(
+            page.contains("Delete removes that one skill"),
+            "the page says the delete is scoped to the skill: {page}"
+        );
+        assert!(
+            !page.contains("instead of destroying it"),
+            "the page no longer claims a delete is an archive move: {page}"
+        );
         // The nav entry, beside Learning.
         assert!(page.contains(r#"href="/dashboard/skills""#), "{page}");
     }
