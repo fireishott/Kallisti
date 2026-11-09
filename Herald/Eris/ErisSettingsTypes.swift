@@ -441,6 +441,27 @@ struct ErisSettingField: Identifiable, Equatable, Sendable {
     /// The stored value as a number, falling back to the low end of the range.
     var intValue: Int { Int(value) ?? min ?? 0 }
 
+    /// Why a whole number is not one this field accepts, or `nil` when it is.
+    ///
+    /// The range rides with the field: the record publishes `min` and `max` for an
+    /// `int`, which is what lets the phone say the same sentence the web form's
+    /// input and the route's own refusal say instead of keeping a second ceiling
+    /// that goes stale. A field with no published bound takes any whole number
+    /// this app can spell, so the check is only ever as strict as the daemon said.
+    func numberRefusal(_ value: Int) -> String? {
+        if let low = self.min, let high = self.max {
+            guard value < low || value > high else { return nil }
+            return "needs a whole number from \(low) to \(high)."
+        }
+        if let low = self.min, value < low {
+            return "needs a whole number of at least \(low)."
+        }
+        if let high = self.max, value > high {
+            return "needs a whole number of at most \(high)."
+        }
+        return nil
+    }
+
     /// The label for one of this field's options, when it is an enum.
     func label(for option: String) -> String {
         // The enum values are the daemon's spellings (`workspace-write`,

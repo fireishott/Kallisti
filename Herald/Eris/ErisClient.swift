@@ -131,7 +131,7 @@ enum ErisRoute: Equatable, Sendable {
     /// `GET /v1/skills` - the skill library.
     case skills
     /// `GET /v1/skills/{key}` - one skill's body.
-    case skill(key: String)
+    case skill(key: String, verb: String)
     /// `GET /v1/aux` - the auxiliary roles and what each may run on.
     case aux
     /// `POST /v1/aux` - pin one role's model and provider.
@@ -231,7 +231,7 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/cron/\(Self.segment(id))"
         case .skills:
             return "/v1/skills"
-        case .skill(let key):
+        case .skill(let key, _):
             return "/v1/skills/\(Self.segment(key))"
         case .aux, .setAux:
             return "/v1/aux"
@@ -259,8 +259,8 @@ enum ErisRoute: Equatable, Sendable {
              .models, .cron, .skills, .aux, .noteRun, .noteRunEvents, .gwHealth, .gwPreflight,
              .subagents, .subagent, .asked:
             return "GET"
-        case .skill:
-            return "GET"
+        case .skill(_, let verb):
+            return verb
         case .pair, .tokenRefresh, .turns, .attachments, .cancel, .createConversation,
              .clearConversation, .updateSettings,
              .fullAccess, .createBackup, .restoreBackup,
@@ -905,8 +905,32 @@ actor ErisClient {
 
     /// `GET /v1/skills/{key}` - one skill's body.
     func controlSkill(key: String) async throws -> ErisControlSkillEnvelope {
-        let data = try await send(route: .skill(key: key), form: nil)
+        let data = try await send(route: .skill(key: key, verb: "GET"), form: nil)
         return try decode(ErisControlSkillEnvelope.self, from: data)
+    }
+
+    /// `PUT /v1/skills/{key}` - create or replace one skill's body.
+    ///
+    /// The daemon answers with its own refusal when the body is not usable:
+    /// `400 skill_key_invalid`, `400 skill_content_empty`, `404 skill_unknown`,
+    /// or `403 scope_denied` on a token without `admin`.
+    func saveControlSkill(key: String, content: String) async throws -> ErisControlSkillSaved {
+        try await sendJSON(
+            route: .skill(key: key, verb: "PUT"),
+            body: ErisControlSkillContent(content: content)
+        ) as ErisControlSkillSaved
+    }
+
+    /// `DELETE /v1/skills/{key}` - delete one skill permanently.
+    ///
+    /// The daemon removes the skill directory and drops the learning ledger row,
+    /// then answers with the path it destroyed. This is irreversible, so every
+    /// caller has to confirm before it is sent.
+    func deleteControlSkill(key: String) async throws -> ErisControlSkillRemoved {
+        try await sendJSON(
+            route: .skill(key: key, verb: "DELETE"),
+            body: ErisControlEmpty()
+        ) as ErisControlSkillRemoved
     }
 
     /// `GET /v1/aux` - the roles, and the ids a picker may choose from.

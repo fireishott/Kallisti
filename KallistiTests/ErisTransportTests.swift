@@ -609,3 +609,290 @@ struct ErisClientTests {
         #expect(rotations.next() == 2, "one rotation for two concurrent refreshes")
     }
 }
+
+// MARK: - Skills: editing and deleting (moved from ErisDeviceAPITests.swift)
+
+/// Stubs every request in this file's transport suite.
+///
+/// A protocol of its own rather than the one the existing suites use: Swift
+/// Testing runs suites in parallel, and a shared `static var handler` would let
+/// two suites overwrite each other's stub.
+final class ErisDeviceAPIStub: URLProtocol, @unchecked Sendable {
+    /// The answer for one request, plus the body it was asked with.
+    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (Int, Data))?
+    /// Every request the stub saw, in order: method, path and body.
+    nonisolated(unsafe) private static var seen: [(String, String, String)] = []
+    private static let lock = NSLock()
+
+    static func reset() {
+        lock.lock()
+        handler = nil
+        seen.removeAll()
+        lock.unlock()
+    }
+
+    static func snapshot() -> [(String, String, String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return seen
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let request = self.request
+        Self.lock.lock()
+        Self.seen.append((request.httpMethod ?? "", request.url?.path ?? "", Self.body(of: request)))
+        let handler = Self.handler
+        Self.lock.unlock()
+
+        guard let handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        let (status, data) = handler(request)
+        let url = request.url ?? URL(string: "http://stub.invalid/v1/x")!
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    /// The form body, which `URLSession` hands a protocol as a stream.
+    private static func body(of request: URLRequest) -> String {
+        if let data = request.httpBody {
+            return String(decoding: data, as: UTF8.self)
+        }
+        guard let stream = request.httpBodyStream else { return "" }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while stream.hasBytesAvailable {
+            let read = stream.read(&buffer, maxLength: buffer.count)
+            if read <= 0 { break }
+            data.append(contentsOf: buffer[0..<read])
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+/// The daemon addresses a skill by its directory key. The display name comes from
+/// the frontmatter and is often prose, while `valid_key` refuses anything outside
+/// alphanumerics plus dash, underscore and dot. A learned skill filed under
+/// `pre-theater-dinner-planning` but named "Pre-Theater Dinner Planning" is the
+/// case that fails the moment a client puts the name on the wire, so these pin the
+/// key as the only address a write or a delete may carry.
+///
+/// The same suite holds the rest of the editing contract, because both halves are
+/// the same wire: the four fields decode as absent on an older daemon rather than
+/// failing the list, a save is a PUT of the whole body, and a refusal arrives as
+/// the sentence the daemon wrote.
+@MainActor
+@Suite("Eris skill addressing", .serialized)
+struct ErisSkillAddressingTests {
+    private static let base = URL(string: "http://192.168.1.20:7341")!
+
+    private static func stubSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ErisDeviceAPIStub.self]
+        return URLSession(configuration: configuration)
+    }
+
+    private static func client() -> ErisClient {
+        ErisClient(
+            baseURL: base,
+            tokenStore: InMemoryErisTokenStore(
+                stored: ErisStoredTokens(
+                    baseURL: base,
+                    tokens: ErisTokenPair(
+                        accessToken: "access-1",
+                        refreshToken: "refresh-1",
+                        scopes: ["chat", "sessions", "files", "admin"]
+                    )
+                )
+            ),
+            session: stubSession()
+        )
+    }
+
+    @Test("a learned skill whose name is prose is addressed by its key")
+    func proseNameIsAddressedByKey() throws {
+        let json = #"""
+        {"ok":true,"enabled":true,"dir":"/lib","skills":[
+          {"key":"pre-theater-dinner-planning","name":"Pre-Theater Dinner Planning",
+           "description":"plan dinner and parking","path":"/lib/pre-theater-dinner-planning",
+           "enabled":true,"bytes":120,"origin":"learned","state":"active",
+           "pinned":false,"editable":true}
+        ]}
+        """#
+        let wire = try JSONDecoder().decode(ErisControlSkillList.self, from: Data(json.utf8))
+        let rows = ErisControlMapping.skills(wire)
+        #expect(rows.count == 1)
+        #expect(rows[0].key == "pre-theater-dinner-planning")
+        #expect(rows[0].name == "Pre-Theater Dinner Planning")
+        #expect(rows[0].id == "pre-theater-dinner-planning")
+        #expect(rows[0].originLabel == "Learned")
+        #expect(rows[0].editable)
+    }
+
+    @Test("the save and the delete name the key, never the display name")
+    func writeAndDeleteAddressTheKey() async throws {
+        ErisDeviceAPIStub.reset()
+        ErisDeviceAPIStub.handler = { request in
+            let body = request.httpMethod == "PUT"
+                ? #"{"ok":true,"key":"pre-theater-dinner-planning","bytes":9}"#
+                : #"{"ok":true,"key":"pre-theater-dinner-planning","removed":".skills/pre-theater-dinner-planning"}"#
+            return (200, Data(body.utf8))
+        }
+        defer { ErisDeviceAPIStub.reset() }
+
+        let client = Self.client()
+        _ = try await client.saveControlSkill(key: "pre-theater-dinner-planning", content: "procedure")
+        _ = try await client.deleteControlSkill(key: "pre-theater-dinner-planning")
+
+        let seen = ErisDeviceAPIStub.snapshot()
+        #expect(seen.count == 2)
+        #expect(seen[0].0 == "PUT")
+        #expect(seen[0].1 == "/v1/skills/pre-theater-dinner-planning")
+        #expect(seen[1].0 == "DELETE")
+        #expect(seen[1].1 == "/v1/skills/pre-theater-dinner-planning")
+        for entry in seen {
+            #expect(!entry.1.contains("%20"))
+            #expect(!entry.1.contains(" "))
+        }
+    }
+
+    /// The delete is a `DELETE` on the key, and its answer is the path the daemon
+    /// removed. The body carries `removed` and nothing else, because the skill
+    /// directory is gone: there is no path left behind to restore from.
+    @Test("the delete removes the skill and reports the path it removed")
+    func deleteReportsTheRemovedPath() async throws {
+        ErisDeviceAPIStub.reset()
+        ErisDeviceAPIStub.handler = { _ in
+            (200, Data(#"{"ok":true,"key":"pre-theater-dinner-planning","removed":".skills/pre-theater-dinner-planning"}"#.utf8))
+        }
+        defer { ErisDeviceAPIStub.reset() }
+
+        let removed = try await Self.client()
+            .deleteControlSkill(key: "pre-theater-dinner-planning")
+        #expect(removed.ok)
+        #expect(removed.key == "pre-theater-dinner-planning")
+        #expect(removed.removed == ".skills/pre-theater-dinner-planning")
+
+        let seen = ErisDeviceAPIStub.snapshot()
+        #expect(seen.count == 1)
+        #expect(seen[0].0 == "DELETE")
+        #expect(seen[0].1 == "/v1/skills/pre-theater-dinner-planning")
+    }
+
+    /// A daemon that predates the editing lane sends none of the four fields. It
+    /// must still list, and it must not imply an editor: `editable` reads false
+    /// because nothing said otherwise, which is what keeps the Save off a screen
+    /// whose daemon has no `PUT` to answer it.
+    @Test("a daemon without the editing fields still lists and offers no editor")
+    func anOlderDaemonStillLists() throws {
+        let json = #"""
+        {"ok":true,"enabled":true,"skills":[
+          {"key":"release-checklist","name":"release-checklist",
+           "description":"Ship a build without missing a step.",
+           "path":"release-checklist/SKILL.md","enabled":true,"bytes":812}
+        ]}
+        """#
+        let wire = try JSONDecoder().decode(ErisControlSkillList.self, from: Data(json.utf8))
+        let rows = ErisControlMapping.skills(wire)
+        #expect(rows.count == 1)
+        #expect(rows[0].key == "release-checklist")
+        #expect(rows[0].origin == nil)
+        #expect(rows[0].originLabel == nil)
+        #expect(rows[0].state == nil)
+        #expect(rows[0].stateLabel == nil)
+        #expect(!rows[0].pinned)
+        #expect(!rows[0].editable)
+    }
+
+    /// The save is the whole `SKILL.md` as a JSON body, not a patch and not a form.
+    @Test("the save puts the whole body on the wire as JSON")
+    func saveCarriesTheBodyAsJSON() async throws {
+        ErisDeviceAPIStub.reset()
+        ErisDeviceAPIStub.handler = { _ in
+            (200, Data(#"{"ok":true,"key":"release-checklist","bytes":21}"#.utf8))
+        }
+        defer { ErisDeviceAPIStub.reset() }
+
+        let saved = try await Self.client()
+            .saveControlSkill(key: "release-checklist", content: "# Release\n\nShip it.\n")
+        #expect(saved.bytes == 21)
+
+        let seen = ErisDeviceAPIStub.snapshot()
+        #expect(seen.count == 1)
+        #expect(seen[0].0 == "PUT")
+        #expect(seen[0].1 == "/v1/skills/release-checklist")
+        let body = try JSONDecoder().decode([String: String].self, from: Data(seen[0].2.utf8))
+        #expect(body == ["content": "# Release\n\nShip it.\n"])
+    }
+
+    /// A token without `admin` is refused by the daemon, and the sentence a person
+    /// reads is the daemon's rather than a generic failure.
+    @Test("a token without admin is told which scope it is missing")
+    func forbiddenSurfacesTheDaemonSentence() async throws {
+        ErisDeviceAPIStub.reset()
+        let sentence = "this device is paired without the admin scope"
+        ErisDeviceAPIStub.handler = { _ in
+            (403, Data(#"{"ok":false,"code":"scope_denied","message":"\#(sentence)"}"#.utf8))
+        }
+        defer { ErisDeviceAPIStub.reset() }
+
+        do {
+            _ = try await Self.client().saveControlSkill(key: "release-checklist", content: "x")
+            Issue.record("a 403 save must throw")
+        } catch {
+            let eris = try #require(error as? ErisError)
+            #expect(eris.status == 403)
+            #expect(eris.code == "scope_denied")
+            #expect(eris.isAdminScopeDenied)
+            #expect(SkillsStore.refusal(error) == sentence)
+        }
+    }
+
+    /// A skill that is no longer on the daemon refuses with its own sentence too,
+    /// so the row stays put and the screen can say why.
+    @Test("an unknown skill surfaces the daemon's sentence on a delete")
+    func unknownSkillSurfacesTheDaemonSentence() async throws {
+        ErisDeviceAPIStub.reset()
+        ErisDeviceAPIStub.handler = { _ in
+            (404, Data(#"{"ok":false,"code":"skill_unknown","message":"no skill named ghost"}"#.utf8))
+        }
+        defer { ErisDeviceAPIStub.reset() }
+
+        do {
+            _ = try await Self.client().deleteControlSkill(key: "ghost")
+            Issue.record("a 404 delete must throw")
+        } catch {
+            let eris = try #require(error as? ErisError)
+            #expect(eris.status == 404)
+            #expect(eris.code == "skill_unknown")
+            #expect(SkillsStore.refusal(error) == "no skill named ghost")
+        }
+    }
+
+    /// A 403 the daemon sent no sentence for still reads as something a person can
+    /// act on, instead of a bare status line.
+    @Test("a bare 403 with no message still names the missing scope")
+    func bareForbiddenStaysReadable() {
+        let error = ErisError.server(status: 403, code: "scope_denied", message: nil)
+        #expect(SkillsStore.refusal(error).contains("admin scope"))
+    }
+}

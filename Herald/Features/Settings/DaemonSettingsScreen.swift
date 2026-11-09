@@ -216,6 +216,12 @@ struct DaemonSettingsScreen: View {
     }
 
     /// Store what was typed, or say why it was not.
+    ///
+    /// The range is the daemon's, published beside the field. The web form refuses
+    /// an out-of-range number in the browser before the route reads it, and the
+    /// route refuses one that gets past the browser, so this names the range and
+    /// writes nothing. Substituting the nearest legal value would write a number
+    /// nobody typed and hide the refusal the other two surfaces have already shown.
     private func commitNumber(_ field: ErisSettingField) {
         guard let typed = drafts[field.key] else { return }
         drafts[field.key] = nil
@@ -224,16 +230,17 @@ struct DaemonSettingsScreen: View {
             notice = "\(field.label) needs a whole number."
             return
         }
-        // The daemon clamps too; saying so here means a typed 0 does not silently
-        // become 1 with the field snapping back and no explanation.
-        let low = field.min ?? Int.min
-        let high = field.max ?? Int.max
-        let applied = Swift.min(Swift.max(value, low), high)
+        if let refusal = field.numberRefusal(value) {
+            notice = "\(field.label) \(refusal)"
+            return
+        }
         Task {
+            // `.number` still bounds the value, so a number that somehow reaches
+            // this line outside the published range cannot go out looking valid.
             await write(
-                .number(field.key, applied, min: field.min, max: field.max),
+                .number(field.key, value, min: field.min, max: field.max),
                 label: field.label,
-                on: applied == value ? "\(applied)" : "\(applied) (clamped from \(value))"
+                on: "\(value)"
             )
         }
     }

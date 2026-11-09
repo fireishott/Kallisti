@@ -550,6 +550,15 @@ struct ErisSSEDecoder {
     private var event: String?
     private var dataLines: [String] = []
 
+    /// The last `id:` this stream named, or nil before the first one.
+    ///
+    /// The daemon's `id:` is the frame's sequence number, and it is the only
+    /// position a reconnect can name. Dropping it (the previous behaviour, see
+    /// `consume(line:)` below) left this client unable to ask for anything but
+    /// "whatever comes next", so a terminal frame lost to a lagged broadcast
+    /// subscriber could never be re-read.
+    private(set) var lastEventID: String?
+
     init() {}
 
     /// Feed one chunk of bytes and take whatever outcomes are now complete.
@@ -602,12 +611,14 @@ struct ErisSSEDecoder {
         switch field {
         case "event":
             event = value
+        case "id":
+            // The resume position, not display data: it never reaches a frame.
+            lastEventID = value
         case "data":
             dataLines.append(value)
         default:
-            // `id:` (sequence), `retry:` and anything new are not needed. The
-            // frame kinds are carried in `event:`, not here, and all six of
-            // them are now rendered.
+            // `retry:` and anything new are not needed. The frame kinds are
+            // carried in `event:`, not here, and all of them are now rendered.
             break
         }
         return nil
