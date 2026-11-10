@@ -7321,14 +7321,23 @@ async fn the_update_check_answers_both_methods_and_carries_the_release() {
             "a served-from-cache answer does not claim a fresh check"
         );
         assert_eq!(body["source"], "cache");
-        // `can_install` is false under `cargo test` on any host: the harness is not
-        // a systemd user unit, so the privileged swap has no manager to ask.
-        assert_eq!(body["can_install"], false);
+        // Whether this host can install depends on it - the helper unit being
+        // present, the daemon having been started by systemd - so the claim pinned
+        // here is the contract between the two fields, not a particular value: an
+        // install that cannot run always carries a sentence saying why.
+        let can_install = body["can_install"]
+            .as_bool()
+            .expect("can_install is a boolean");
+        let blocker = body["blocker"].as_str();
+        assert_eq!(
+            can_install,
+            blocker.is_none(),
+            "can_install and blocker must agree: {}",
+            response.body
+        );
         assert!(
-            body["blocker"]
-                .as_str()
-                .is_some_and(|text| !text.is_empty()),
-            "a disabled install always states why: {}",
+            blocker.is_none_or(|text| !text.is_empty()),
+            "a blocker is never an empty string: {}",
             response.body
         );
     }

@@ -2274,20 +2274,45 @@ fn the_goal_command_sets_reports_and_clears() {
 
 /// Seed the release cache so a card renders without a network read.
 fn seed_update_release(engine: &crate::onboarding::SetupEngine, version: &str, build: u32) {
+    seed_update_release_with(engine, version, build, true);
+}
+
+/// The asset list a release JSON carries, for the host's own architecture.
+fn assets(version: &str, build: u32, tag: &str, checksum: bool) -> Vec<serde_json::Value> {
     let arch = crate::release::host_arch();
-    let tag = format!("v{version}-build.{build}");
     let asset = format!("eris-v{version}-build.{build}-linux-{arch}.tar.gz");
+    let base = crate::release::DOWNLOAD_PREFIX;
+    let mut out = vec![serde_json::json!({
+        "name": asset,
+        "browser_download_url": format!("{base}{tag}/{asset}"),
+    })];
+    if checksum {
+        out.push(serde_json::json!({
+            "name": format!("{asset}.sha256"),
+            "browser_download_url": format!("{base}{tag}/{asset}.sha256"),
+        }));
+    }
+    out
+}
+
+/// Seed a release with or without its checksum asset.
+///
+/// A release that publishes no `.sha256` is the one mechanical blocker that does
+/// not depend on the host, so the page-level "disabled with a reason" proof uses
+/// it rather than guessing whether this machine has the helper unit installed.
+fn seed_update_release_with(
+    engine: &crate::onboarding::SetupEngine,
+    version: &str,
+    build: u32,
+    checksum: bool,
+) {
+    let tag = format!("v{version}-build.{build}");
     let body = serde_json::json!({
         "tag_name": tag,
         "name": format!("Kallisti {version} build {build}"),
         "body": "one entry per observable behaviour",
         "published_at": "2026-11-10T15:00:00Z",
-        "assets": [
-            {"name": asset,
-             "browser_download_url": format!("{}{tag}/{asset}", crate::release::DOWNLOAD_PREFIX)},
-            {"name": format!("{asset}.sha256"),
-             "browser_download_url": format!("{}{tag}/{asset}.sha256", crate::release::DOWNLOAD_PREFIX)},
-        ],
+        "assets": assets(version, build, &tag, checksum),
     })
     .to_string();
     engine
@@ -2342,25 +2367,57 @@ fn the_system_tab_states_the_installed_and_newest_versions() {
         "the release notes are shown"
     );
 
-    // The button exists and is disabled, and the reason is on the page beside it:
-    // a disabled button with no reason is the defect this card exists to avoid.
+    // The button exists and names the version it would install. Whether it is
+    // enabled depends on the host, so the disabled half is proven separately, by
+    // a release that publishes no checksum.
     assert!(
         body.contains("Install 99.0.0"),
         "the button names the version"
-    );
-    assert!(
-        body.contains("disabled"),
-        "an install this host cannot perform is disabled"
-    );
-    assert!(
-        body.contains("is not a systemd user unit") || body.contains("not installed"),
-        "the blocker is stated in the card: {}",
-        body
     );
 
     // The two forms post to the two routes the daemon serves.
     assert!(body.contains(crate::admin::ROUTE_SETTINGS_UPDATE_CHECK));
     assert!(body.contains(crate::admin::ROUTE_SETTINGS_UPDATE_APPLY));
+
+    // The card sits directly above the Daemon card: the two answer the same
+    // question, and the update is the answer that keeps the settings.
+    let update_at = body.find("id=\"update-heading\"").expect("the Update card");
+    let daemon_at = body.find("id=\"daemon-heading\"").expect("the Daemon card");
+    assert!(
+        update_at < daemon_at,
+        "the Update card renders above the Daemon card"
+    );
+}
+
+/// A release with no checksum asset is not installable, and the card says so with
+/// the button disabled. That is the "a disabled button with no reason is the
+/// defect" proof, and it is host-independent by construction: no checksum is a
+/// refusal wherever the daemon runs.
+#[test]
+fn the_install_button_is_disabled_with_the_reason_a_release_cannot_be_installed() {
+    let (_dir, engine, app, cookie) = ready_app();
+    seed_update_release_with(&engine, "99.0.0", 999, false);
+
+    let page = block_on(send(
+        &app,
+        Call::get("/dashboard/settings?tab=system")
+            .html()
+            .cookie(Some(cookie.as_str())),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+    assert!(
+        body.contains("v99.0.0-build.999"),
+        "the release is still named"
+    );
+    assert!(
+        body.contains("disabled"),
+        "an install that cannot run is disabled: {body}"
+    );
+    assert!(
+        body.contains("no checksum"),
+        "the reason is on the page beside the button: {body}"
+    );
 }
 
 /// With nothing cached, the card says so instead of inventing a release.
@@ -2445,7 +2502,9 @@ fn the_update_progress_route_answers_idle_json() {
 #[test]
 fn the_update_apply_route_refuses_and_audits_nothing_when_it_cannot_install() {
     let (_dir, engine, app, cookie) = ready_app();
-    seed_update_release(&engine, "99.0.0", 999);
+    // The release this process is already running: never newer than itself, so the
+    // refusal happens before any mechanical check and no test can reach systemd.
+    seed_update_release(&engine, crate::admin::VERSION, crate::admin::BUILD);
 
     let reply = block_on(send(
         &app,
@@ -2457,12 +2516,16 @@ fn the_update_apply_route_refuses_and_audits_nothing_when_it_cannot_install() {
     // exactly as the restart card does for `not_ready`; the device route is the
     // surface that speaks 409.
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
-    let code = if reply.body.contains("update_running") {
-        "update_running"
-    } else {
-        "update_unavailable"
-    };
-    assert!(reply.body.contains(code), "{}", reply.body);
+    assert!(
+        reply.body.contains("update_unavailable"),
+        "the refusal names the code the card renders: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains("no newer release"),
+        "and says why in the daemon's own words: {}",
+        reply.body
+    );
     // The refusal renders the tab that holds the card, not the default tab. A
     // reason on a page the operator is not looking at is not a reason.
     assert!(
