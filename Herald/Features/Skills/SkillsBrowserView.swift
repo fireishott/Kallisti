@@ -38,7 +38,20 @@ struct SkillsBrowserView: View {
             } else {
                 List {
                     ForEach(skillsStore.filteredSkills) { skill in
-                        NavigationLink(value: skill) {
+                        // Destination-based, not `NavigationLink(value:)`.
+                        //
+                        // The value form pushed the detail and then had it popped
+                        // straight back on the FIRST tap: the row highlighted, the
+                        // detail slid in with "Loading skill...", and ~0.4s later
+                        // the stack reverted to the list. A second tap then worked.
+                        // The value form defers resolution to the enclosing
+                        // `.navigationDestination(for:)`, and that lookup lost the
+                        // race with the first push here, so the stack dropped the
+                        // value it could not resolve. A destination link carries its
+                        // destination itself, so there is nothing left to lose.
+                        NavigationLink {
+                            SkillDetailView(skill: skill)
+                        } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(skill.name)
                                     .font(.headline)
@@ -74,9 +87,10 @@ struct SkillsBrowserView: View {
             }
         }
         .navigationTitle("Skills")
-        .navigationDestination(for: SkillsStore.HeraldSkill.self) { skill in
-            SkillDetailView(skill: skill)
-        }
+        // No `.navigationDestination(for: HeraldSkill.self)` here on purpose.
+        // Each row now carries its own destination, and leaving a value
+        // destination registered next to it only reinstates the lookup that
+        // was dropping the first push.
         .refreshable { await skillsStore.loadSkills(force: true) }
         .task { await skillsStore.loadSkills() }
         // The wording is the contract: the daemon destroys the skill directory
