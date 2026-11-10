@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.14-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/version-1.4.16-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/backend-Eris-C8CCD2?style=flat-square&labelColor=0C0C10" alt="Eris"/>
@@ -58,8 +58,8 @@ started instead of asking the daemon twice.
 
 ## Status
 
-Private beta. TestFlight **1.4.14 (109)** is the current app build, on daemon
-**1.4.11 build 123**.
+Private beta. TestFlight **1.4.16 (156)** is the current app build, on daemon
+**1.4.15**.
 
 The app and the daemon are separate version lines: the daemon's build number moves
 when the daemon ships and the app's when the app does, so a problem report should name

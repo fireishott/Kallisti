@@ -11,6 +11,16 @@ One refresher, so a paired device cannot strand itself.
 
 ### Fixed
 
+- **A skill opens on the first tap.** Tapping a row in Settings → Skills pushed the
+  detail and then had it popped straight back, roughly four tenths of a second later,
+  leaving the list on screen with the row still highlighted and nothing loaded. Only
+  a second tap opened the skill. The row was a `NavigationLink(value:)`, which stores
+  just a value and defers resolving it to the enclosing `.navigationDestination(for:)`;
+  on the first push that lookup lost the race, the stack could not resolve the value
+  it had been handed, and it reverted. Rows are now destination-based links that carry
+  their own destination, so there is no lookup left to lose, and the value destination
+  is gone from the view. `build 156`.
+
 - **Chat prose renders the markdown it is given.** Headings, bullet and numbered
   lists, quotes and rules were going through the inline-only attributed-string pass,
   which leaves `## `, `- ` and `1.` on screen as literal syntax; table cells never
