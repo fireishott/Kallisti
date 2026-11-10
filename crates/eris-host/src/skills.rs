@@ -221,10 +221,16 @@ pub fn default_dir() -> Option<PathBuf> {
 /// body is therefore `include_str!` at the same path the repo tracks, so the
 /// binary and the tracked file cannot drift, and the seed only ever writes
 /// into the owned directory, never over an operator's own copy.
-const DEFAULT_SKILLS: &[(&str, &str)] = &[(
-    "kallisti-ios",
-    include_str!("../../../skills/kallisti-ios/SKILL.md"),
-)];
+const DEFAULT_SKILLS: &[(&str, &str)] = &[
+    (
+        "kallisti-ios",
+        include_str!("../../../skills/kallisti-ios/SKILL.md"),
+    ),
+    (
+        "craft-anything",
+        include_str!("../../../skills/craft-anything/SKILL.md"),
+    ),
+];
 
 /// Place the shipped skills into the owned library on first run.
 ///
