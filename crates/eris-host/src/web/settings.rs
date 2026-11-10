@@ -2412,11 +2412,21 @@ fn the_install_button_is_disabled_with_the_reason_a_release_cannot_be_installed(
     );
     assert!(
         body.contains("disabled"),
-        "an install that cannot run is disabled: {body}"
+        "an install that cannot run is disabled"
     );
+
+    // The sentence beside the button is the daemon's own, whatever it is. Which
+    // blocker wins depends on the host - a missing helper unit is fixed first, so
+    // it outranks the release having no checksum - and a test that hard-coded one
+    // of them would be green here and red on a runner that has never installed the
+    // unit. Comparing against the same function the handler calls pins the real
+    // invariant instead: the page says exactly what the daemon refuses with.
+    let release = crate::release::cached_release(engine.db()).expect("the seeded manifest");
+    let expected = crate::device::gateway::host_blocker(&engine, Some(&release))
+        .expect("this release is refused on any host");
     assert!(
-        body.contains("no checksum"),
-        "the reason is on the page beside the button: {body}"
+        body.contains(&expected),
+        "the card states the daemon's own reason, expected `{expected}`"
     );
 }
 
