@@ -891,6 +891,97 @@ final class NativeKallistiClient: HeraldClientProtocol {
         var commits: [UpdateCommit]?
         var lastCheckedAt: String?
         var error: String?
+        /// Eris-only. Whether this host could actually install the release it is
+        /// reporting: the daemon refuses when the helper unit is missing, when it
+        /// was not started by systemd, when an install is already running, or when
+        /// the release published no checksum.
+        var canInstall: Bool? = nil
+        /// Eris-only. The daemon's own sentence for a refusal. Shown in place of
+        /// the button, because a disabled button with no reason is the defect this
+        /// row exists to avoid.
+        var blocker: String? = nil
+        /// Eris-only. The build half of the installed identity, when it is known.
+        var currentBuild: Int? = nil
+        /// Eris-only. The build half of the newest release.
+        var latestBuild: Int? = nil
+    }
+
+    /// The shape an Eris daemon answers on `GET /v1/gw/update/check`.
+    ///
+    /// Flat, snake_case, and nothing like the legacy relay envelope. Two backends
+    /// exist and both must keep working, so this is tried first and the envelope
+    /// second: a phone pointed at Eris must never log `decode failed` for a
+    /// request that answered correctly.
+    struct ErisUpdateInfo: Decodable {
+        var current: String?
+        var version: String?
+        var build: Int?
+        var updateAvailable: Bool?
+        var latest: ErisLatest?
+        var canInstall: Bool?
+        var blocker: String?
+        var checked: Bool?
+        var source: String?
+        var checkedAt: String?
+        var note: String?
+
+        enum CodingKeys: String, CodingKey {
+            case current, version, build, latest, blocker, checked, source, note
+            case updateAvailable = "update_available"
+            case canInstall = "can_install"
+            case checkedAt = "checked_at"
+        }
+
+        struct ErisLatest: Decodable {
+            var tag: String?
+            var version: String?
+            var build: Int?
+            var publishedAt: String?
+            var notes: String?
+            var downloadURL: String?
+            var hasChecksum: Bool?
+
+            enum CodingKeys: String, CodingKey {
+                case tag, version, build, notes
+                case publishedAt = "published_at"
+                case downloadURL = "download_url"
+                case hasChecksum = "has_checksum"
+            }
+        }
+
+        /// Whether this payload is the Eris shape at all. Every Eris answer carries
+        /// `current`; an envelope decoded loosely would not.
+        var isEris: Bool { current != nil || updateAvailable != nil || latest != nil }
+
+        /// The newest release named the way the row names it: the tag when the
+        /// daemon sent one, else the version and build.
+        var latestLabel: String? {
+            if let tag = latest?.tag, !tag.isEmpty { return tag }
+            if let version = latest?.version {
+                if let build = latest?.build { return "\(version) build \(build)" }
+                return version
+            }
+            return nil
+        }
+
+        /// The same information in the struct the section already renders.
+        var asHermesUpdateInfo: HermesUpdateInfo {
+            HermesUpdateInfo(
+                currentVersion: current,
+                latestVersion: latestLabel,
+                updateAvailable: updateAvailable,
+                behindCount: updateAvailable == true ? 1 : 0,
+                releaseURL: latest?.downloadURL,
+                changelog: latest?.notes,
+                commits: nil,
+                lastCheckedAt: checkedAt,
+                error: nil,
+                canInstall: canInstall,
+                blocker: blocker,
+                currentBuild: build,
+                latestBuild: latest?.build
+            )
+        }
     }
 
     /// One commit the install is behind origin/main by.
@@ -903,7 +994,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     /// Live state of an in-flight Hermes update (Build 128.49).
     struct UpdateProgress: Decodable {
-        var state: String?        // idle | running | done | failed
+        var state: String?        // idle | queued | downloading | verifying | installing | restarting | done | failed
         var exitCode: Int?
         var pid: Int?
         var startedAt: String?
@@ -911,12 +1002,53 @@ final class NativeKallistiClient: HeraldClientProtocol {
         var output: [String]?
         var error: String?
 
-        var isRunning: Bool { state == "running" }
+        enum CodingKeys: String, CodingKey {
+            case state, pid, output, error
+            case exitCode = "exit_code"
+            case startedAt = "started_at"
+            case finishedAt = "finished_at"
+        }
+
+        /// Whether the helper is somewhere in the middle of an install.
+        ///
+        /// Eris names the steps; the legacy relay had one `running`. A poll loop
+        /// that only knew `running` would stop on the first `downloading` and report
+        /// an update that had barely started.
+        var isRunning: Bool {
+            switch state {
+            case "running", "queued", "downloading", "verifying", "installing", "restarting":
+                return true
+            default:
+                return false
+            }
+        }
         var isDone: Bool { state == "done" }
         var isFailed: Bool { state == "failed" }
     }
 
+    /// Ask the host what it is and what is newest.
+    ///
+    /// Eris answers a flat object on `GET /v1/gw/update/check`; the legacy relay
+    /// answered an envelope on `POST`. Both decoders live here, new first, so a
+    /// phone pointed at either backend reads one shape or the other and never logs
+    /// `decode failed` for a request that answered correctly.
     func updateCheck() async -> HermesUpdateInfo? {
+        if let payload = await getFacadeJSON(
+            path: "/v1/gw/update/check",
+            logTag: "updateCheck"
+        ), let eris = try? JSONDecoder().decode(ErisUpdateInfo.self, from: payload),
+           eris.isEris {
+            Self.logger.info(
+                "updateCheck: eris current=\(eris.current ?? "unknown") latest=\(eris.latestLabel ?? "none") canInstall=\(eris.canInstall.map(String.init) ?? "unknown")"
+            )
+            return eris.asHermesUpdateInfo
+        }
+        return await legacyUpdateCheck()
+    }
+
+    /// The legacy relay's envelope. Only reached when the Eris read produced
+    /// nothing decodable, which is what a pre-Eris host looks like.
+    private func legacyUpdateCheck() async -> HermesUpdateInfo? {
         struct Envelope: Decodable {
             struct DataBox: Decodable {
                 struct ComponentsBox: Decodable {
@@ -946,6 +1078,34 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// update and can stream progress via updateProgress(). Returns the
     /// initial progress snapshot, or nil on auth/network failure.
     func startUpdate() async -> UpdateProgress? {
+        guard let payload = await postFacadeJSONData(
+            path: "/v1/gw/update/apply",
+            body: ["target": "eris"],
+            logTag: "updateApply"
+        ) else { return nil }
+
+        // Eris answers `{ok, state, target}` and has already started the host-side
+        // helper, so the state is `queued` rather than `running`. The legacy relay
+        // answered `{data: {state, alreadyRunning, pid, output}}`.
+        struct ErisAnswer: Decodable {
+            let ok: Bool?
+            let state: String?
+            let target: String?
+        }
+        if let eris = try? JSONDecoder().decode(ErisAnswer.self, from: payload),
+           eris.ok == true, let state = eris.state {
+            Self.logger.info("startUpdate: eris queued (state=\(state))")
+            return UpdateProgress(
+                state: state,
+                exitCode: nil,
+                pid: nil,
+                startedAt: nil,
+                finishedAt: nil,
+                output: [],
+                error: nil
+            )
+        }
+
         struct Envelope: Decodable {
             struct DataBox: Decodable {
                 let state: String?
@@ -955,11 +1115,6 @@ final class NativeKallistiClient: HeraldClientProtocol {
             }
             let data: DataBox?
         }
-        guard let payload = await postFacadeJSONData(
-            path: "/v1/gw/update/apply",
-            body: ["target": "hermes-agent"],
-            logTag: "updateApply"
-        ) else { return nil }
         do {
             let envelope = try JSONDecoder().decode(Envelope.self, from: payload)
             guard let data = envelope.data else { return nil }
@@ -981,6 +1136,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// Build 128.49: poll the in-flight Hermes update for live output lines
     /// and terminal state (done/failed + exit code).
     func updateProgress() async -> UpdateProgress? {
+        // The daemon writes this document, and it spells the timestamps and the
+        // exit code in snake_case. Single-word keys decode without help, which is
+        // why this looked correct: `state`, `output` and `error` arrived and the
+        // three keys with an underscore silently stayed nil.
         struct Envelope: Decodable {
             struct DataBox: Decodable {
                 let state: String?
@@ -990,6 +1149,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 let finishedAt: String?
                 let output: [String]?
                 let error: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case state, pid, output, error
+                    case exitCode = "exit_code"
+                    case startedAt = "started_at"
+                    case finishedAt = "finished_at"
+                }
             }
             let data: DataBox?
         }

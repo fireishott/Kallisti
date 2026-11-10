@@ -5,6 +5,35 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-11-10
+
+### Changed
+
+- **The update row now reports the daemon's real identity.** It reads the Eris
+  shape first (`current`, `version`, `build`, `update_available`, `latest`,
+  `can_install`, `blocker`) and falls back to the legacy relay envelope only when
+  that produces nothing, so a phone pointed at Eris no longer logs "decode failed"
+  for a request the host answered correctly. The row shows both halves of the
+  move, `1.5.0 build 182 → v1.5.0-build.182`, instead of the newest label alone.
+- **The check is a GET on Eris.** `GET /v1/gw/update/check` is the daemon's route;
+  the POST is kept only as the legacy fallback. This is the single change that
+  made the row work: the daemon used to answer 405 to the method this app sent.
+- **Update Now starts the host-side helper.** It posts `{"target":"eris"}` and
+  reads the flat `{ok, state, target}` answer, so the press returns `queued`
+  immediately instead of waiting for an install that happens outside the daemon's
+  sandbox.
+- **The poll loop understands the daemon's eight states and its restart window.**
+  It waits through `queued`, `downloading`, `verifying`, `installing` and
+  `restarting`, tolerates the refused socket while the daemon replaces itself, is
+  bounded to 180 seconds instead of 600, and re-reads the version the daemon is now
+  reporting rather than leaving the pre-update row on screen.
+- **A host that cannot install says why.** When `can_install` is false the sheet
+  shows the daemon's own sentence in place of the Update Now button, and the same
+  sentence sits under the row. A disabled button with no reason is the defect this
+  release removes.
+- **1.5.0 build 157.** `project.yml` is the single source for the version now; it
+  said `0.4.0` / `135.76` while `Info.plist` said `1.4.15` / `146`. Both move to
+  `1.5.0` / `157` and `xcodegen` regenerates the project from one of them.
 ## [1.4.16] - 2026-11-08
 
 One refresher, so a paired device cannot strand itself.

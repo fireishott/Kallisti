@@ -718,7 +718,11 @@ struct SettingsScreen: View {
                             Text("New version available")
                                 .font(Design.Typography.callout)
                                 .foregroundStyle(Design.Colors.foreground)
-                            Text("Agent \(latest)")
+                            // Both identities, not just the newest one. "Agent
+                            // v1.5.0-build.182" on its own does not tell an operator
+                            // what they are running, which is the first thing anyone
+                            // asks before pressing Update.
+                            Text(versionPair(info))
                                 .font(Design.Typography.caption)
                                 .foregroundStyle(Design.Colors.secondaryForeground)
                         }
@@ -735,6 +739,23 @@ struct SettingsScreen: View {
                     .frame(minHeight: Design.Size.minTapTarget)
                 }
                 .buttonStyle(.plain)
+
+                // The daemon's own refusal, in its own words, beside the row that
+                // offers the update. A row that says "Update available" and then
+                // does nothing when tapped is the defect this line exists to stop.
+                if info.canInstall == false, let blocker = info.blocker, !blocker.isEmpty {
+                    HStack(alignment: .top, spacing: Design.Spacing.sm) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .frame(width: 20, alignment: .center)
+                        Text(blocker)
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                    }
+                }
             }
 
             if let info = updateInfo, info.updateAvailable == false,
@@ -758,6 +779,7 @@ struct SettingsScreen: View {
             if let info = updateInfo {
                 UpdateChangelogSheet(
                     info: info,
+                    blocker: info.canInstall == false ? info.blocker : nil,
                     isUpdating: $isUpdatingAgent,
                     progressLines: updateProgressLines,
                     progressState: updateProgressState,
@@ -815,6 +837,43 @@ struct SettingsScreen: View {
             .frame(minHeight: Design.Size.minTapTarget)
         }
         .buttonStyle(.plain)
+    }
+
+    /// "1.5.0 build 182 → v1.5.0-build.182", or whatever halves are known.
+    ///
+    /// The daemon reports the installed identity and the newest release separately,
+    /// so the row names both: the version alone leaves the build question open,
+    /// and the build is what actually moved in every ship this product has had.
+    private func versionPair(_ info: NativeKallistiClient.HermesUpdateInfo) -> String {
+        let current: String? = {
+            if let version = info.currentVersion, let build = info.currentBuild {
+                return "\(version) build \(build)"
+            }
+            return info.currentVersion
+        }()
+        switch (current, info.latestVersion) {
+        case let (current?, latest?):
+            return "\(current) → \(latest)"
+        case let (nil, latest?):
+            return "Newest: \(latest)"
+        case let (current?, nil):
+            return current
+        default:
+            return "Update available"
+        }
+    }
+
+    /// Whether a helper state is still in flight.
+    ///
+    /// One place, because the section, the sheet and the poll loop all have to
+    /// agree about which of the daemon's eight states mean "keep waiting".
+    private static func updateStateIsRunning(_ state: String) -> Bool {
+        switch state {
+        case "running", "queued", "downloading", "verifying", "installing", "restarting":
+            return true
+        default:
+            return false
+        }
     }
 
     private func checkForUpdates() async {
@@ -913,26 +972,31 @@ struct SettingsScreen: View {
             if let initial = await nativeClient.startUpdate() {
                 updateProgressLines = initial.output ?? []
                 updateProgressState = initial.state
-                // Poll until terminal. The connector keeps the process state
-                // for the whole update even if the gateway restarts under it.
+                // Poll until the helper reaches a terminal state.
+                //
+                // Two things this loop has to get right, and did not before. Eris
+                // names the steps - queued, downloading, verifying, installing,
+                // restarting - so waiting on the literal string "running" would
+                // stop on the first `queued`. And the daemon replaces itself at the
+                // end of the swap, so for a few seconds the poll gets a refused
+                // socket or a 404 by design; that is the update working, not
+                // failing. The old 600-second bound also outlived anyone's patience
+                // and reported "still running" for updates that had finished.
                 var lastState = initial.state
-                var pollCount = 0
-                while lastState == "running" && pollCount < 600 {
+                let deadline = Date().addingTimeInterval(180)
+                while Date() < deadline {
+                    if let state = lastState, !Self.updateStateIsRunning(state) { break }
                     try? await Task.sleep(for: .seconds(1))
-                    pollCount += 1
                     guard let progress = await nativeClient.updateProgress() else {
-                        // Transient poll failure - keep waiting unless the
-                        // socket is clearly dead.
+                        // A dropped poll during the restart is expected. Ask again.
                         continue
                     }
-                    if let lines = progress.output {
+                    if let lines = progress.output, !lines.isEmpty {
                         updateProgressLines = lines
                     }
                     lastState = progress.state
                     updateProgressState = progress.state
-                    if progress.isDone || progress.isFailed {
-                        break
-                    }
+                    if progress.isDone || progress.isFailed { break }
                 }
                 if lastState == "done" {
                     updateAgentResult = "Update complete"
@@ -942,9 +1006,24 @@ struct SettingsScreen: View {
                     updateAgentResult = "Update still running"
                 }
                 isUpdatingAgent = false
-                // Auto-refresh the section so it reflects the new version
-                // instead of showing a stale "Update available" row.
-                await checkForUpdates()
+                // Re-read the identity the daemon is now reporting, tolerating the
+                // restart window: the process that answers is the one that was just
+                // installed, and the row must show it rather than the version that
+                // was there before the button was pressed.
+                var refreshed: NativeKallistiClient.HermesUpdateInfo?
+                for _ in 0..<10 {
+                    if let info = await nativeClient.updateCheck() {
+                        refreshed = info
+                        break
+                    }
+                    try? await Task.sleep(for: .seconds(1))
+                }
+                if let refreshed {
+                    updateInfo = refreshed
+                    updateCheckResult = refreshed.updateAvailable == true
+                        ? "Update available"
+                        : "Up to date"
+                }
                 updateAgentResult = nil
                 updateProgressLines = []
                 updateProgressState = nil
@@ -3313,6 +3392,10 @@ struct SettingsScreen: View {
 /// changed in the pending Hermes Agent update and offers Update Now / Skip.
 private struct UpdateChangelogSheet: View {
     let info: NativeKallistiClient.HermesUpdateInfo
+    /// Why this host cannot install the release it is showing, in the daemon's own
+    /// words. Non-nil means the Update Now button is not offered at all: a disabled
+    /// button with no reason is worse than a sentence explaining the situation.
+    let blocker: String?
     @Binding var isUpdating: Bool
     // Build 128.49: live update output streamed from the connector.
     let progressLines: [String]
@@ -3444,26 +3527,44 @@ private struct UpdateChangelogSheet: View {
 
                         // Actions
                         VStack(spacing: Design.Spacing.sm) {
-                            Button {
-                                onUpdateNow()
-                            } label: {
-                                HStack {
-                                    Spacer()
-                                    if isUpdating {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                            .tint(.white)
-                                    } else {
-                                        Text(updateButtonTitle)
-                                            .font(Design.Typography.callout.weight(.semibold))
-                                    }
-                                    Spacer()
+                            if let blocker, !blocker.isEmpty {
+                                VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                                    Text("This install cannot update itself")
+                                        .font(Design.Typography.callout.weight(.semibold))
+                                        .foregroundStyle(Design.Colors.foreground)
+                                    Text(blocker)
+                                        .font(Design.Typography.caption)
+                                        .foregroundStyle(Design.Colors.secondaryForeground)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
-                                .padding(.vertical, Design.Spacing.sm)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(Design.Spacing.sm)
+                                .background(
+                                    RoundedRectangle(cornerRadius: Design.CornerRadius.md)
+                                        .stroke(Design.Colors.border, lineWidth: 1)
+                                )
+                            } else {
+                                Button {
+                                    onUpdateNow()
+                                } label: {
+                                    HStack {
+                                        Spacer()
+                                        if isUpdating {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                                .tint(.white)
+                                        } else {
+                                            Text(updateButtonTitle)
+                                                .font(Design.Typography.callout.weight(.semibold))
+                                        }
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, Design.Spacing.sm)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(progressState == "failed" ? Design.Colors.danger : Design.Brand.accent)
+                                .disabled(isUpdating)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(progressState == "failed" ? Design.Colors.danger : Design.Brand.accent)
-                            .disabled(isUpdating)
 
                             Button {
                                 onSkip()
