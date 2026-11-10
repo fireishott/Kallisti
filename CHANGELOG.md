@@ -4,6 +4,52 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.5.0
+
+- **The update button does something.** `GET /v1/gw/update/check` now asks the
+  release server what is newest, caches the answer for six hours, and reports the
+  version, build, publish date, notes, download URL and checksum for the asset
+  this host can actually install. Before this the check could only list binaries
+  staged beside the running one, so on a clean host "update available" was
+  unreachable by construction. A host with no route out answers from the cache and
+  says so instead of showing a failure. `build 182`.
+
+- **An install is requested, supervised and reported, never performed by the
+  daemon.** `POST /v1/gw/update/apply` writes a request and starts a separate
+  helper unit; `GET /v1/gw/update/progress` reports the helper's state and its last
+  200 lines and never answers 404, because a client polls it in a loop and a 404
+  reads as a dead socket. The daemon runs with its home directory read-only and
+  could not replace the binary it started from even if it tried, which is the
+  correct trust boundary and is not widened here. `build 182`.
+
+- **A release swap that fails puts the old binary back.** The helper verifies the
+  published checksum before it touches anything, refuses a release with no
+  checksum at all, backs up the running binary, and restores it if the new one does
+  not answer `/healthz` within thirty seconds. A failed update that leaves the
+  daemon down would be worse than no update button. `build 182`.
+
+- **The System tab has an Update card.** It states what is installed, what is
+  newest, the release notes, a Check now button and an Install button that is
+  disabled with the reason when this host cannot perform the install - a missing
+  helper unit, a daemon started outside systemd, an install already running, or a
+  release with no checksum. It sits directly above the Daemon card because the two
+  answer the same question. `build 182`.
+
+- **A pasted API key finishes onboarding step 2.** The step accepted `env:NAME` and
+  nothing else, refusing a key value by name, so an operator holding a fresh vendor
+  key could not get past it: the file a value would be sealed into, `eris.env`, was
+  only writable from the provider registry form. A pasted key is now sealed into
+  `eris.env` at mode 0600, put into the environment overlay so the probe that
+  follows resolves it immediately, and the settings row keeps
+  `env:KALLISTI_PRIMARY_API_KEY` and never the value. A malformed `env:` or
+  `token:` reference is still refused as a reference. `build 182`.
+
+- **`install.sh` writes the update helper and its unit.** The daemon cannot write
+  `~/.local/opt`, so the swap belongs to a second unit with no sandbox of its own.
+  Without it the Update card is honest but useless, so the installer writes the
+  helper from the release archive or the checkout and the unit that runs it, and a
+  re-run upgrades both. `build 182`.
+
 ## 1.4.15
 
 - **The iOS skill ships with the daemon.** A fresh install used to start with an
