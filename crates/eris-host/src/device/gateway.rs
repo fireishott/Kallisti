@@ -456,13 +456,13 @@ pub async fn gw_update_check(State(service): State<DeviceService>, headers: Head
         }
     };
     let answer = crate::release::check(engine.db(), &client).await;
-    let latest = answer
-        .release
-        .as_ref()
-        .filter(|release| is_newer_than_self(release));
+    // The newest release is reported whether or not it is newer than this build:
+    // a host that is already current should say "this is what you run" and when it
+    // was published, not render an empty card. `update_available` is what answers
+    // the other question.
     check_body(
         engine,
-        latest,
+        answer.release.as_ref(),
         answer.checked,
         answer.source,
         answer.checked_at,
@@ -479,8 +479,8 @@ fn check_body(
     checked_at: Option<String>,
     note: Option<String>,
 ) -> Response {
+    let update_available = latest.is_some_and(is_newer_than_self);
     let blocker = install_blocker(mechanics(engine), latest);
-    let update_available = latest.is_some();
     axum::Json(serde_json::json!({
         "ok": true,
         "target": "eris",

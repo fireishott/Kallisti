@@ -5921,7 +5921,11 @@ fn build_update_card(state: &AppState) -> UpdateCard {
     let engine = &state.engine;
     let cached = crate::release::cached_release(engine.db());
     let checked_at = crate::release::cached_checked_at(engine.db());
-    let latest = cached.as_ref().filter(|release| {
+    // The newest published release, whether or not it is newer than this build:
+    // the card says "this is what you run" when the two are the same, which reads
+    // better than an empty row on a host that is already current.
+    let latest = cached.as_ref();
+    let update_available = latest.is_some_and(|release| {
         crate::release::is_newer(
             &release.version,
             release.build,
@@ -5945,7 +5949,7 @@ fn build_update_card(state: &AppState) -> UpdateCard {
         latest_notes: latest
             .map(|release| release.notes.clone())
             .unwrap_or_default(),
-        update_available: latest.is_some(),
+        update_available,
         // A card rendered from the stored manifest is a cache read, never a live
         // confirmation, so `checked` is false until the button says otherwise.
         checked: false,
@@ -5955,7 +5959,7 @@ fn build_update_card(state: &AppState) -> UpdateCard {
             "none".to_owned()
         },
         checked_at,
-        can_install: latest.is_some() && blocker.is_none(),
+        can_install: update_available && blocker.is_none(),
         blocker,
         note: None,
         progress_state,
