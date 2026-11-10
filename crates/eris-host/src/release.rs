@@ -862,6 +862,58 @@ mod tests {
         );
     }
 
+    /// The one test that speaks to GitHub, skipped unless asked for.
+    ///
+    /// `#[ignore]` because CI has no guarantee of a route out and a red suite must
+    /// never depend on a third party. Run it deliberately on a host that has one:
+    ///
+    /// ```sh
+    /// cargo test -p eris-host --lib release::tests::live_release_check -- --ignored
+    /// ```
+    ///
+    /// It proves the part the fixture tests cannot: the real endpoint, the real
+    /// headers, the real asset names, and that the cache row a live check writes is
+    /// the one a later read serves.
+    #[tokio::test]
+    #[ignore = "reaches api.github.com"]
+    async fn live_release_check_answers_from_github() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = Db::open(dir.path().join("live.db")).expect("db opens");
+        let client = client().expect("an http client");
+
+        let answer = check(&db, &client).await;
+        let release = answer.release.expect("github answers a release");
+        assert_eq!(answer.source, Source::Github, "the read was live");
+        assert!(answer.checked, "and it counts as a confirmation");
+        assert!(
+            release.asset_url.starts_with(DOWNLOAD_PREFIX),
+            "the asset is on the one host the helper accepts: {}",
+            release.asset_url
+        );
+        assert!(
+            release
+                .asset_url
+                .ends_with(&format!("linux-{}.tar.gz", host_arch())),
+            "the asset is for this architecture: {}",
+            release.asset_url
+        );
+        assert!(
+            release.has_checksum,
+            "a shippable release publishes a checksum"
+        );
+        assert!(
+            answer.checked_at.is_some(),
+            "a live confirmation records when it happened"
+        );
+
+        // The cache the live read wrote is what a second read inside the window
+        // serves, without a second request.
+        let again = check(&db, &client).await;
+        assert_eq!(again.source, Source::Cache);
+        assert!(!again.checked, "a cache hit is not a confirmation");
+        assert_eq!(again.release, Some(release));
+    }
+
     #[test]
     fn every_release_asset_url_is_under_the_one_host_the_helper_accepts() {
         let release = release("1.5.0", 182);
