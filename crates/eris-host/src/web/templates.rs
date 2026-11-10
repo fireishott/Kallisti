@@ -1303,9 +1303,9 @@ fn step_body(view: &SetupView) -> Markup {
                     ))
                     (text_field(
                         "api_key_ref",
-                        "Key reference",
+                        "API key",
                         &view.provider_key_ref,
-                        Some("env:NAME, resolved from the daemon's environment. A key value is refused here."),
+                        Some("Paste the provider's key, or write env:NAME to read one the daemon already has. A pasted key is sealed into eris.env at mode 0600 and is never stored in the database."),
                         error,
                         false,
                         false,
@@ -1983,6 +1983,59 @@ pub struct AccountView {
     pub listener_error: Option<String>,
 }
 
+/// What the System tab's Update card shows.
+///
+/// Flat and defaulted on purpose: the card is a rendering of one release and one
+/// helper state, and every field here is either a stored value or `None`. The
+/// daemon composes it in `build_update_card`, so the template does no reasoning
+/// beyond `@if`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdateCard {
+    /// What this process is, from the same identity line the footer uses.
+    pub current: String,
+    /// The newest tag GitHub publishes for this host, when one is known.
+    pub latest_tag: Option<String>,
+    /// That release's application version.
+    pub latest_version: String,
+    /// That release's build number.
+    pub latest_build: u32,
+    /// When it was published, RFC 3339 as the API reported it.
+    pub latest_published: String,
+    /// The release body, already truncated by the manifest reader.
+    pub latest_notes: String,
+    /// Whether that release is newer than this process.
+    pub update_available: bool,
+    /// Whether the manifest was confirmed against GitHub on the last check.
+    pub checked: bool,
+    /// `github`, `cache` or `none`.
+    pub source: String,
+    /// When it was last confirmed, RFC 3339.
+    pub checked_at: Option<String>,
+    /// Whether pressing Install would do something.
+    pub can_install: bool,
+    /// The reason it would not, in the daemon's own words.
+    pub blocker: Option<String>,
+    /// A sentence about a manifest that could not be read or has no asset.
+    pub note: Option<String>,
+    /// The helper's state: idle, queued, downloading, ..., done, failed.
+    pub progress_state: String,
+    /// The helper's last lines, already bounded.
+    pub progress_output: Vec<String>,
+    /// The helper's failure sentence, when it failed.
+    pub progress_error: Option<String>,
+}
+
+impl UpdateCard {
+    /// Whether the helper is somewhere in the middle of an install.
+    #[must_use]
+    pub fn running(&self) -> bool {
+        matches!(
+            self.progress_state.as_str(),
+            "queued" | "downloading" | "verifying" | "installing" | "restarting"
+        )
+    }
+}
+
 /// Everything the settings page needs.
 #[derive(Debug, Clone)]
 pub struct SettingsView {
@@ -2057,6 +2110,9 @@ pub struct SettingsView {
     pub push_devices: Vec<(String, String)>,
     /// The file the persona lives in, stated on the page.
     pub persona_path: String,
+    /// The System tab's Update card: what is installed, what is newest, and how
+    /// the last install went.
+    pub update: UpdateCard,
     /// The stored wallpaper id: a preset name, `custom`, or `none`.
     pub wallpaper: String,
     /// Whether an uploaded image is on disk and usable.
@@ -2187,6 +2243,7 @@ impl SettingsView {
             notify_devices: String::new(),
             push_devices: Vec::new(),
             persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
+            update: UpdateCard::default(),
             wallpaper: wallpaper::DEFAULT_WALLPAPER.to_owned(),
             wallpaper_custom: false,
             providers_json: "[]".to_owned(),
@@ -2518,9 +2575,9 @@ fn provider_group(view: &SettingsView) -> Markup {
             ))
             (text_field(
                 "api_key_ref",
-                "Key reference",
+                "API key",
                 &view.provider_key_ref,
-                Some("env:NAME, with the variable name in capitals. The daemon reads the variable; this page never stores or shows a key value."),
+                Some("Paste the provider's key, or write env:NAME to read one the daemon already has. A pasted key is sealed into eris.env at mode 0600 and is never stored in the database."),
                 error,
                 first == Some("api_key_ref"),
                 false,
@@ -4276,6 +4333,116 @@ fn tab_automation(view: &SettingsView) -> Markup {
     }
 }
 
+/// The System tab's Update card.
+///
+/// It sits directly above the Daemon card because the two answer the same
+/// question - how does this process become a different process - and the update is
+/// the answer that keeps the settings. Plain English, one paragraph, no jargon:
+/// what is installed, what is newest, and what pressing the button will do.
+fn update_card(view: &SettingsView) -> Markup {
+    let card = &view.update;
+    html! {
+        section .card.service aria-labelledby="update-heading" {
+            h2 id="update-heading" { "Update" }
+            p .small {
+                "This installs a published release over the running binary and restarts the "
+                "daemon. The download, the checksum, the backup and the swap are done by a small "
+                "helper unit, because the daemon runs with its home directory read-only and "
+                "cannot replace the binary it started from. If anything goes wrong the previous "
+                "binary is put back and the daemon comes up on it."
+            }
+            dl .kv {
+                dt { "Installed" }
+                dd { code { (card.current) } }
+                @if let Some(tag) = card.latest_tag.as_ref() {
+                    dt { "Newest release" }
+                    dd {
+                        code { (tag) }
+                        @if card.update_available {
+                            " " span .tag { "available" }
+                        } @else {
+                            " " span .tag { "this is what you run" }
+                        }
+                    }
+                    @if !card.latest_published.is_empty() {
+                        dt { "Published" }
+                        dd { (card.latest_published) }
+                    }
+                }
+                dt { "Last checked" }
+                dd {
+                    @match (card.checked, card.checked_at.as_ref()) {
+                        (true, Some(at)) => { "confirmed with the release server at " code { (at) } }
+                        (false, Some(at)) => {
+                            "not confirmed this time; the cached answer is from " code { (at) }
+                        }
+                        (true, None) => { "confirmed with the release server" }
+                        (false, None) => { "never: no release manifest is cached on this host" }
+                    }
+                    @if card.source == "cache" && !card.checked {
+                        " " span .hint { "The release server was unreachable, so nothing above is fresh." }
+                    }
+                }
+            }
+            @if let Some(note) = card.note.as_ref() {
+                p .small .hint { (note) }
+            }
+            @if !card.latest_notes.is_empty() {
+                details {
+                    summary { "Release notes" }
+                    pre .notes { (card.latest_notes) }
+                }
+            }
+            div .update-actions {
+                form method="post" action=(crate::admin::ROUTE_SETTINGS_UPDATE_CHECK) novalidate {
+                    button type="submit" class="secondary" { "Check now" }
+                }
+                @if card.update_available {
+                    form method="post" action=(crate::admin::ROUTE_SETTINGS_UPDATE_APPLY) novalidate {
+                        @if card.can_install {
+                            button type="submit" class="danger" { "Install " (card.latest_version) }
+                        } @else {
+                            button type="submit" class="danger" disabled { "Install " (card.latest_version) }
+                        }
+                    }
+                }
+            }
+            @if let Some(blocker) = card.blocker.as_ref() {
+                p .small .hint { (blocker) }
+            }
+            @if card.running() {
+                p .small {
+                    "An install is in progress. Reload this page for the next line: the daemon "
+                    "restarts at the end of it and answers again in a few seconds."
+                }
+            }
+            @if card.progress_state != "idle" {
+                div .update-progress {
+                    h3 { "Install progress" }
+                    p .small {
+                        "State: " code { (card.progress_state) }
+                    }
+                    @if let Some(error) = card.progress_error.as_ref() {
+                        p .error { (error) }
+                    }
+                    @if !card.progress_output.is_empty() {
+                        pre .output {
+                            @for line in &card.progress_output {
+                                (line) "\n"
+                            }
+                        }
+                    }
+                }
+            }
+            p .small {
+                "While the daemon is being replaced it is down for a few seconds. A phone that "
+                "was polling it sees connection errors during that window, which is the update "
+                "working, not failing."
+            }
+        }
+    }
+}
+
 /// The System tab: what a turn may touch, when it is, and how the page looks.
 fn tab_system(view: &SettingsView) -> Markup {
     html! {
@@ -4412,6 +4579,8 @@ fn tab_system(view: &SettingsView) -> Markup {
                 }
             }
         }
+
+        (update_card(view))
 
         section .card.service aria-labelledby="daemon-heading" {
             h2 id="daemon-heading" { "Daemon" }

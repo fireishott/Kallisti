@@ -67,6 +67,11 @@ jobs:
           install -m 755 target/release/eris dist/pkg/eris
           # The licence travels with the binary because MIT requires it to.
           install -m 644 LICENSE dist/pkg/LICENSE
+          # The update helper travels with the binary: install.sh installs it as
+          # $PREFIX/bin/eris-update and writes the unit that runs it. A release
+          # without it still installs, and its update button reports
+          # "the update unit is not installed" rather than a mystery.
+          install -m 755 scripts/update-apply.sh dist/pkg/update-apply.sh
           tar czf "dist/eris-${tag}-linux-${{ matrix.arch }}.tar.gz" -C dist/pkg .
           ( cd dist && sha256sum "eris-${tag}-linux-${{ matrix.arch }}.tar.gz" \
               > "eris-${tag}-linux-${{ matrix.arch }}.tar.gz.sha256" )

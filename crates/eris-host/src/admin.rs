@@ -235,6 +235,24 @@ pub const ROUTE_SETTINGS_RESTART: &str = "/dashboard/settings/restart";
 /// `POST /dashboard/settings/aux` - the auxiliary model roles.
 pub const ROUTE_SETTINGS_AUX: &str = "/dashboard/settings/aux";
 
+/// `POST /dashboard/settings/update/check` - ask GitHub what is newest now.
+///
+/// A `POST` because it writes: the manifest and its ETag are cached in the
+/// `settings` table, and the page load after it reads that cache rather than
+/// making every render of the System tab a GitHub API client.
+pub const ROUTE_SETTINGS_UPDATE_CHECK: &str = "/dashboard/settings/update/check";
+
+/// `POST /dashboard/settings/update/apply` - start the host-side install.
+pub const ROUTE_SETTINGS_UPDATE_APPLY: &str = "/dashboard/settings/update/apply";
+
+/// `GET /dashboard/settings/update/progress` - the helper's live state as JSON.
+///
+/// The same document the phone polls, so a browser, a script and the app all read
+/// one source. The card itself reads the state file on page load, because a page
+/// that polls its own restarting daemon renders a connection error when the
+/// daemon does exactly what it was told.
+pub const ROUTE_SETTINGS_UPDATE_PROGRESS: &str = "/dashboard/settings/update/progress";
+
 /// `POST /dashboard/settings/mcp` - the configured MCP server list.
 pub const ROUTE_SETTINGS_MCP: &str = "/dashboard/settings/mcp";
 
@@ -376,6 +394,7 @@ pub const ALL_GET_ROUTES: &[&str] = &[
     ROUTE_SESSIONS,
     ROUTE_DEVICES,
     ROUTE_SETTINGS,
+    ROUTE_SETTINGS_UPDATE_PROGRESS,
     ROUTE_ACTIVITY,
     ROUTE_BACKUPS,
     ROUTE_ENV,
@@ -423,6 +442,8 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_PROVIDERS_EDIT,
     ROUTE_SETTINGS_PROVIDERS_DELETE,
     ROUTE_SETTINGS_RESTART,
+    ROUTE_SETTINGS_UPDATE_CHECK,
+    ROUTE_SETTINGS_UPDATE_APPLY,
     ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_MCP,
     ROUTE_SETTINGS_GREETING,

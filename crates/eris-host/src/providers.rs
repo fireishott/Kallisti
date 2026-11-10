@@ -685,6 +685,96 @@ pub fn adopt_submitted_key(
     Ok(Some(name))
 }
 
+/// The environment variable a key pasted at onboarding step 2 is sealed under.
+///
+/// Onboarding configures exactly one primary provider, so the name is fixed:
+/// pasting again replaces that line instead of growing the file, and the settings
+/// row holds `env:KALLISTI_PRIMARY_API_KEY` rather than a value. A second provider
+/// is added from the registry form, which derives its own name from its id.
+pub const ONBOARDING_KEY_ENV: &str = "KALLISTI_PRIMARY_API_KEY";
+
+/// Adopt the key field the onboarding wizard posted.
+///
+/// Step 2 accepted `env:NAME` and nothing else, so an operator holding a fresh
+/// vendor key could not finish the step at all: the file a value would be sealed
+/// into, `eris.env`, was only writable from the provider registry form. This is
+/// the adoption [`adopt_submitted_key`] performs for the registry, applied to the
+/// primary provider:
+///
+/// - a real reference (`env:NAME` or `token:NAME`) is returned unchanged;
+/// - anything else that is not empty is a pasted key: it is written to `eris.env`
+///   at mode 0600 as [`ONBOARDING_KEY_ENV`], put into the late-environment overlay
+///   so the probe that follows resolves it without a restart, and returned as that
+///   `env:` reference.
+///
+/// The value is never logged and never reaches the settings table, so no page that
+/// reads the row can echo it back.
+///
+/// # Errors
+///
+/// [`FieldProblem`] naming `api_key_ref` when the field is empty, when a malformed
+/// `env:`/`token:` reference was posted, or when the value cannot be written
+/// unquoted.
+pub fn adopt_onboarding_key(
+    submitted: &str,
+    env_file: &std::path::Path,
+) -> Result<core_domain::SecretRef, FieldProblem> {
+    let trimmed = submitted.trim();
+    if is_key_reference(trimmed) {
+        return core_domain::SecretRef::try_from(trimmed).map_err(|source| FieldProblem {
+            field: "api_key_ref",
+            message: format!("`{trimmed}` is not a reference this build can resolve: {source}"),
+        });
+    }
+    if trimmed.is_empty() {
+        return Err(FieldProblem {
+            field: "api_key_ref",
+            message: "a key is required: paste the provider's API key, or write `env:NAME` for a \
+                      variable this daemon already has"
+                .to_owned(),
+        });
+    }
+    // A malformed reference is a malformed reference, not a key that happens to
+    // begin with the word "env". Sealing it would put `env:lower_case` in the
+    // environment file as if the operator had pasted a secret.
+    let spelled = trimmed.to_ascii_lowercase();
+    if spelled.starts_with("env:") || spelled.starts_with("token:") {
+        return Err(FieldProblem {
+            field: "api_key_ref",
+            message: format!(
+                "`{trimmed}` is not a reference this build can resolve: `env:` names an \
+                 upper-case variable such as `env:NINEROUTER_API_KEY`, and `token:` names an \
+                 account connected from the providers page"
+            ),
+        });
+    }
+    if !pasted_key_is_writable(trimmed) {
+        return Err(FieldProblem {
+            field: "api_key_ref",
+            message:
+                "that is neither a reference nor a key this daemon can store: a pasted key is \
+                      written to eris.env unquoted, so it may only contain letters, digits and \
+                      - _ . : / + = ~ @. For a value with other characters, put it in eris.env \
+                      yourself and write `env:NAME`."
+                    .to_owned(),
+        });
+    }
+    write_env_entry(env_file, ONBOARDING_KEY_ENV, trimmed).map_err(|error| FieldProblem {
+        field: "api_key_ref",
+        message: format!(
+            "the key could not be written to {}: {error}",
+            env_file.display()
+        ),
+    })?;
+    crate::oauth::credential::remember_env(ONBOARDING_KEY_ENV, trimmed);
+    core_domain::SecretRef::try_from(format!("env:{ONBOARDING_KEY_ENV}").as_str()).map_err(
+        |source| FieldProblem {
+            field: "api_key_ref",
+            message: format!("the sealed reference could not be formed: {source}"),
+        },
+    )
+}
+
 /// Whether one registry entry asks for the vendor's own headers.
 ///
 /// An absent value is `false`, which is what every entry written before the

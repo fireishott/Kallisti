@@ -41,8 +41,9 @@ use crate::admin::{
     ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
     ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
-    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
-    ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE, VERSION, session_path,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE_APPLY,
+    ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS, ROUTE_SETTINGS_WORKSPACE,
+    ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -61,9 +62,9 @@ use crate::web::templates::{
     ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
     DashboardView, DeviceRow, DevicesView, EnvRow, EnvView, FormError, IssuedCodeView,
     LearningView, SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView,
-    SkillEditor, SkillsView, activity_page, backups_page, chat_page, dashboard_page, devices_page,
-    env_page, error_page, learning_page, login_page, session_page, sessions_page, settings_page,
-    setup_page, skills_page, type_badge,
+    SkillEditor, SkillsView, UpdateCard, activity_page, backups_page, chat_page, dashboard_page,
+    devices_page, env_page, error_page, learning_page, login_page, session_page, sessions_page,
+    settings_page, setup_page, skills_page, type_badge,
 };
 use crate::web::wallpaper;
 
@@ -139,6 +140,9 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_PROVIDERS_EDIT, post(edit_provider))
         .route(ROUTE_SETTINGS_PROVIDERS_DELETE, post(delete_provider))
         .route(ROUTE_SETTINGS_RESTART, post(restart_daemon))
+        .route(ROUTE_SETTINGS_UPDATE_CHECK, post(update_check))
+        .route(ROUTE_SETTINGS_UPDATE_APPLY, post(update_apply))
+        .route(ROUTE_SETTINGS_UPDATE_PROGRESS, get(update_progress))
         .route(ROUTE_SETTINGS_AUX, post(save_aux))
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
         .route(ROUTE_SETTINGS_GREETING, post(save_greeting))
@@ -671,6 +675,9 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     let mut view = SettingsView::new(engine.state().map_err(|error| form_error(&error))?, VERSION);
     view.chrome = state.chrome();
     view.allow_full = state.allow_full();
+    // The Update card: what is installed, what the cached manifest says is newest,
+    // and how the last install went. Reads two files and no network.
+    view.update = build_update_card(state);
     view.assistant_name = engine
         .setting(crate::persona::SETTING_ASSISTANT_NAME)
         .ok()
@@ -3254,18 +3261,22 @@ async fn provider(
         );
     }
 
-    // Validate the reference before resolving it, so a pasted key value is
-    // refused by name instead of becoming an environment lookup.
-    let reference = match core_domain::SecretRef::try_from(key_ref.as_str()) {
+    // A pasted key is what an operator with a fresh vendor account actually has,
+    // and step 2 used to refuse one by name, which left the step unfinishable.
+    // Adopt it the way the provider registry form does: sealed into `eris.env` at
+    // mode 0600, held in the late-environment overlay so the probe below resolves
+    // it at once, and only `env:KALLISTI_PRIMARY_API_KEY` kept in the settings row.
+    let env_file = state.engine.paths().env_file.clone();
+    let reference = match crate::providers::adopt_onboarding_key(&key_ref, &env_file) {
         Ok(reference) => reference,
-        Err(source) => {
+        Err(problem) => {
             return fail(
                 &state,
                 as_html,
                 FormError::new(
-                    Some("api_key_ref"),
+                    Some(problem.field),
                     "provider_key_ref_invalid",
-                    format!("the key reference must be env:NAME: {source}"),
+                    problem.message,
                 ),
             );
         }
@@ -4349,6 +4360,28 @@ fn fail_settings(state: &AppState, as_html: bool, error: FormError) -> Response 
         }
     } else {
         refusal(error)
+    }
+}
+
+/// One update failure, rendered on the tab that holds the Update card.
+///
+/// `fail_settings` derives the tab from the refused field, and an update refusal
+/// has no field: left to that default the operator would be sent to Models and
+/// shown a page with no reason on it. The card lives on System, so a refusal from
+/// it lands there. The status is the same `failure_status` every other form uses,
+/// which is what keeps `not_ready` behaving exactly as it does on the restart card.
+fn fail_update(state: &AppState, as_html: bool, error: FormError) -> Response {
+    let status = failure_status(&error.code);
+    if !as_html {
+        return refusal(error);
+    }
+    match build_settings_view(state) {
+        Ok(mut view) => {
+            view.tab = crate::web::templates::SettingsTab::System;
+            view.error = Some(error);
+            page_with_status(settings_page(&view), status)
+        }
+        Err(build_error) => refusal(build_error),
     }
 }
 
@@ -5870,6 +5903,326 @@ async fn restart_daemon(
     } else {
         ok_json(serde_json::json!({ "ok": true, "restarting": true }))
     }
+}
+
+/// Where "Check now" returns to. The tab is named because the notice lands on the
+/// System card and the operator should not have to find it.
+const SAVED_UPDATE_CHECKED: &str = "/dashboard/settings?saved=update_checked";
+/// Where "Install" returns to.
+const SAVED_UPDATE_QUEUED: &str = "/dashboard/settings?saved=update_queued";
+
+/// The System tab's Update card, composed from what is stored on disk.
+///
+/// No network here on purpose. The page reads the cached manifest and the helper's
+/// state file; a fresh read of the release server is the "Check now" button's job,
+/// and a settings page that phoned GitHub on every render would be a settings page
+/// that stalls on a host with no route out.
+fn build_update_card(state: &AppState) -> UpdateCard {
+    let engine = &state.engine;
+    let cached = crate::release::cached_release(engine.db());
+    let checked_at = crate::release::cached_checked_at(engine.db());
+    let latest = cached.as_ref().filter(|release| {
+        crate::release::is_newer(
+            &release.version,
+            release.build,
+            VERSION,
+            crate::admin::BUILD,
+        )
+    });
+    let (progress_state, progress_output, progress_error) =
+        crate::device::gateway::progress_snapshot(engine);
+    let blocker = crate::device::gateway::host_blocker(engine, latest);
+    UpdateCard {
+        current: crate::admin::version_line(),
+        latest_tag: latest.map(|release| release.tag.clone()),
+        latest_version: latest
+            .map(|release| release.version.clone())
+            .unwrap_or_default(),
+        latest_build: latest.map_or(0, |release| release.build),
+        latest_published: latest
+            .map(|release| release.published_at.clone())
+            .unwrap_or_default(),
+        latest_notes: latest
+            .map(|release| release.notes.clone())
+            .unwrap_or_default(),
+        update_available: latest.is_some(),
+        // A card rendered from the stored manifest is a cache read, never a live
+        // confirmation, so `checked` is false until the button says otherwise.
+        checked: false,
+        source: if cached.is_some() {
+            "cache".to_owned()
+        } else {
+            "none".to_owned()
+        },
+        checked_at,
+        can_install: latest.is_some() && blocker.is_none(),
+        blocker,
+        note: None,
+        progress_state,
+        progress_output,
+        progress_error,
+    }
+}
+
+/// `POST /dashboard/settings/update/check` - ask the release server now.
+///
+/// One network read, cached for six hours, and a redirect back to the card that
+/// shows the answer. A browser that posts this twice in a minute makes one request
+/// to GitHub, not two.
+async fn update_check(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let Ok(client) = crate::release::client() else {
+        return fail_update(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "update_unavailable",
+                "this build has no HTTP client, so the release server cannot be read",
+            ),
+        );
+    };
+    let answer = crate::release::check(state.engine.db(), &client).await;
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.update_check",
+        Some(&format!(
+            "source={} checked={} latest={}",
+            answer.source.as_str(),
+            answer.checked,
+            answer
+                .release
+                .as_ref()
+                .map_or("none", |release| release.tag.as_str())
+        )),
+    ) {
+        return audit_failure(&request_id.0, "settings.update_check", error);
+    }
+    if as_html {
+        see_other(SAVED_UPDATE_CHECKED)
+    } else {
+        ok_json(serde_json::json!({
+            "ok": true,
+            "checked": answer.checked,
+            "source": answer.source.as_str(),
+            "checked_at": answer.checked_at,
+            "update_available": answer.release.as_ref().is_some_and(|release| {
+                crate::release::is_newer(&release.version, release.build, VERSION, crate::admin::BUILD)
+            }),
+            "latest": answer.release.map(|release| serde_json::json!({
+                "tag": release.tag,
+                "version": release.version,
+                "build": release.build,
+                "published_at": release.published_at,
+                "download_url": release.asset_url,
+                "has_checksum": release.has_checksum,
+            })),
+            "note": answer.note,
+        }))
+    }
+}
+
+/// `POST /dashboard/settings/update/apply` - start the install.
+///
+/// The same refusal matrix as the device route, in the daemon's own words, with the
+/// stable codes the card renders: `not_ready`, `update_unavailable`,
+/// `update_running`. The request is a file plus a unit start, never a shell line.
+async fn update_apply(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let _ = read_fields(&headers, body).await;
+
+    if !state.engine.is_ready().unwrap_or(false) {
+        return fail_update(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "not_ready",
+                "the daemon is not ready: finish setup before asking for an update",
+            ),
+        );
+    }
+
+    let Ok(client) = crate::release::client() else {
+        return fail_update(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "update_unavailable",
+                "this build has no HTTP client, so the release server cannot be read",
+            ),
+        );
+    };
+    let answer = crate::release::check(state.engine.db(), &client).await;
+    let newest_known = answer
+        .release
+        .as_ref()
+        .map_or_else(|| "unknown".to_owned(), |release| release.tag.clone());
+    let Some(latest) = answer.release.filter(|release| {
+        crate::release::is_newer(
+            &release.version,
+            release.build,
+            VERSION,
+            crate::admin::BUILD,
+        )
+    }) else {
+        return fail_update(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "update_unavailable",
+                format!(
+                    "there is no newer release: this daemon is {}, and the newest known is {newest_known}",
+                    crate::admin::version_line()
+                ),
+            ),
+        );
+    };
+    if let Some(blocker) = crate::device::gateway::host_blocker(&state.engine, Some(&latest)) {
+        let code = if blocker.contains("already running") {
+            "update_running"
+        } else {
+            "update_unavailable"
+        };
+        return fail_update(&state, as_html, FormError::new(None, code, &blocker));
+    }
+
+    let directory = state.engine.paths().state_dir.join("update");
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        return fail_update(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "update_unavailable",
+                format!("the update directory could not be created: {error}"),
+            ),
+        );
+    }
+    let request = serde_json::json!({
+        "tag": latest.tag,
+        "version": latest.version,
+        "build": latest.build,
+        "asset_url": latest.asset_url,
+        "checksum_url": latest.checksum_url,
+        "requested_at": crate::auth::format_timestamp(crate::auth::now()),
+        "requested_by": "loopback",
+    });
+    let path = directory.join("request.json");
+    let temporary = directory.join("request.json.tmp");
+    let written = std::fs::write(&temporary, serde_json::to_vec(&request).unwrap_or_default())
+        .and_then(|()| std::fs::rename(&temporary, &path));
+    if let Err(error) = written {
+        return fail_update(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "update_unavailable",
+                format!("the update request could not be written: {error}"),
+            ),
+        );
+    }
+
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.update_apply",
+        Some(&format!("{} requested from settings", latest.tag)),
+    ) {
+        return audit_failure(&request_id.0, "settings.update_apply", error);
+    }
+
+    match std::process::Command::new("systemctl")
+        .args([
+            "--user",
+            "start",
+            "--no-block",
+            &format!("{}.service", crate::device::gateway::UPDATE_UNIT),
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let _ = std::fs::remove_file(&path);
+            return fail_update(
+                &state,
+                as_html,
+                FormError::new(
+                    None,
+                    "update_unavailable",
+                    format!(
+                        "the update unit could not be started: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ),
+                ),
+            );
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&path);
+            return fail_update(
+                &state,
+                as_html,
+                FormError::new(
+                    None,
+                    "update_unavailable",
+                    format!("systemctl could not be run: {error}"),
+                ),
+            );
+        }
+    }
+
+    if as_html {
+        see_other(SAVED_UPDATE_QUEUED)
+    } else {
+        ok_json(serde_json::json!({
+            "ok": true,
+            "state": "queued",
+            "target": "eris",
+            "to": latest.tag,
+        }))
+    }
+}
+
+/// `GET /dashboard/settings/update/progress` - the helper's state as JSON.
+///
+/// The same document the phone polls, so one reader serves both surfaces. A browser
+/// that lands here gets the JSON rather than a page: it is the endpoint a script
+/// calls, and the card reads the file directly on load.
+async fn update_progress(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let (progress_state, progress_output, progress_error) =
+        crate::device::gateway::progress_snapshot(&state.engine);
+    ok_json(serde_json::json!({
+        "ok": true,
+        "data": {
+            "state": progress_state,
+            "output": progress_output,
+            "error": progress_error,
+        },
+    }))
 }
 
 /// `POST /dashboard/settings/aux` - one model per auxiliary role.

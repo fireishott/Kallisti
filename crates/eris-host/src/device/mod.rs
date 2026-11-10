@@ -433,8 +433,18 @@ pub const ROUTE_GW_PREFLIGHT: &str = "/v1/gw/restart/preflight";
 /// `POST /v1/gw/restart` - schedule a self-restart.
 pub const ROUTE_GW_RESTART: &str = "/v1/gw/restart";
 
-/// `GET /v1/gw/update/check` - what this daemon is, and what is staged next.
+/// `GET /v1/gw/update/check` - what this daemon is, and what is newest.
+///
+/// Registered for `GET` and `POST`: the shipped client posts it, and a route that
+/// answers `405` to the method a released phone actually sends is a decode failure
+/// the operator sees as "check failed". The body is ignored either way.
 pub const ROUTE_GW_UPDATE_CHECK: &str = "/v1/gw/update/check";
+
+/// `POST /v1/gw/update/apply` - request an install from the host-side helper.
+pub const ROUTE_GW_UPDATE_APPLY: &str = "/v1/gw/update/apply";
+
+/// `GET /v1/gw/update/progress` - the helper's live state, and never a `404`.
+pub const ROUTE_GW_UPDATE_PROGRESS: &str = "/v1/gw/update/progress";
 
 /// The legacy-parity route paths, in one block.
 ///
@@ -1182,7 +1192,12 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_GW_HEALTH, get(gateway::gw_health))
         .route(ROUTE_GW_PREFLIGHT, get(gateway::gw_restart_preflight))
         .route(ROUTE_GW_RESTART, post(gateway::gw_restart))
-        .route(ROUTE_GW_UPDATE_CHECK, get(gateway::gw_update_check))
+        .route(
+            ROUTE_GW_UPDATE_CHECK,
+            get(gateway::gw_update_check).post(gateway::gw_update_check),
+        )
+        .route(ROUTE_GW_UPDATE_APPLY, post(gateway::gw_update_apply))
+        .route(ROUTE_GW_UPDATE_PROGRESS, get(gateway::gw_update_progress))
         .route(legacy_routes::HEALTH, get(legacy::health))
         .route(
             legacy_routes::CONFIG,
@@ -1352,6 +1367,8 @@ mod tests {
             ROUTE_GW_PREFLIGHT,
             ROUTE_GW_RESTART,
             ROUTE_GW_UPDATE_CHECK,
+            ROUTE_GW_UPDATE_APPLY,
+            ROUTE_GW_UPDATE_PROGRESS,
         ]
         .into_iter()
         .chain(LEGACY_ROUTES)

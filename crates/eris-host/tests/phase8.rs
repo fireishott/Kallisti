@@ -7205,3 +7205,353 @@ async fn the_skill_writes_refuse_a_token_without_the_admin_scope() {
 
     harness.stop();
 }
+
+// ---------------------------------------------------------------------------
+// The update control plane
+// ---------------------------------------------------------------------------
+
+/// Seed the release cache so a check answers without touching the network.
+///
+/// The manifest read is cache-first with a six-hour window, so a freshly stamped
+/// row means [`eris_host::release::check`] never builds a request. That is the
+/// only way a test may exercise this route: no test in this workspace is allowed
+/// to reach github.com.
+fn seed_release(harness: &Harness, tag: &str, version: &str, build: u32, checksum: bool) {
+    let arch = eris_host::release::host_arch();
+    let asset = format!("eris-v{version}-build.{build}-linux-{arch}.tar.gz");
+    let url = format!("{} {tag}", eris_host::release::DOWNLOAD_PREFIX);
+    let url = url.trim().replace(' ', "/eris-").to_owned();
+    let mut assets = vec![serde_json::json!({
+        "name": asset,
+        "browser_download_url": format!("{url}{asset}"),
+    })];
+    if checksum {
+        assets.push(serde_json::json!({
+            "name": format!("{asset}.sha256"),
+            "browser_download_url": format!("{url}{asset}.sha256"),
+        }));
+    }
+    let body = serde_json::json!({
+        "tag_name": tag,
+        "name": format!("Kallisti {version} build {build}"),
+        "body": "seeded for the device update contract",
+        "published_at": "2026-11-10T15:00:00Z",
+        "assets": assets,
+    })
+    .to_string();
+    harness
+        .engine
+        .set_setting(eris_host::release::SETTING_MANIFEST, &body)
+        .expect("seeded manifest");
+    harness
+        .engine
+        .set_setting(
+            eris_host::release::SETTING_CHECKED_AT,
+            &eris_host::auth::format_timestamp(eris_host::auth::now()),
+        )
+        .expect("seeded stamp");
+}
+
+/// The keys the client decodes. Named once so the route test and the contract
+/// cannot drift apart.
+const UPDATE_CHECK_KEYS: [&str; 16] = [
+    "ok",
+    "target",
+    "current",
+    "version",
+    "build",
+    "staged",
+    "checked",
+    "source",
+    "checked_at",
+    "update_available",
+    "latest",
+    "can_install",
+    "blocker",
+    "note",
+    // The legacy keys the shipped client already reads. They stay.
+    "current",
+    "target",
+];
+
+/// The check answers on `GET` and on `POST`, carries every legacy key plus the
+/// release fields, and reports the newest release it knows about.
+#[tokio::test]
+async fn the_update_check_answers_both_methods_and_carries_the_release() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    seed_release(&harness, "v99.0.0-build.999", "99.0.0", 999, true);
+
+    for method in ["GET", "POST"] {
+        let response = harness
+            .request(
+                method,
+                "/v1/gw/update/check",
+                &auth,
+                if method == "POST" {
+                    Some(r#"{"target":"eris"}"#)
+                } else {
+                    None
+                },
+            )
+            .await;
+        assert_eq!(
+            response.status, 200,
+            "{method} must answer, not 405: {}",
+            response.body
+        );
+        let body = response.json();
+        for key in UPDATE_CHECK_KEYS {
+            assert!(
+                body.get(key).is_some(),
+                "{method} is missing `{key}`: {}",
+                response.body
+            );
+        }
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["target"], "eris");
+        assert_eq!(body["update_available"], true, "{}", response.body);
+        assert_eq!(body["latest"]["tag"], "v99.0.0-build.999");
+        assert_eq!(body["latest"]["has_checksum"], true);
+        assert_eq!(
+            body["checked"], false,
+            "a served-from-cache answer does not claim a fresh check"
+        );
+        assert_eq!(body["source"], "cache");
+        // `can_install` is false under `cargo test` on any host: the harness is not
+        // a systemd user unit, so the privileged swap has no manager to ask.
+        assert_eq!(body["can_install"], false);
+        assert!(
+            body["blocker"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty()),
+            "a disabled install always states why: {}",
+            response.body
+        );
+    }
+
+    harness.stop();
+}
+
+/// An unknown target is refused before anything is written or started.
+#[tokio::test]
+async fn update_apply_refuses_an_unknown_target_and_touches_nothing() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    seed_release(&harness, "v99.0.0-build.999", "99.0.0", 999, true);
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/gw/update/apply",
+            &auth,
+            Some(r#"{"target":"someone-elses-daemon"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 400, "{}", response.body);
+    assert_eq!(response.json()["code"], "target_unknown");
+
+    let request = harness.engine.paths().state_dir.join("update/request.json");
+    assert!(
+        !request.exists(),
+        "a refused target writes no request: {}",
+        request.display()
+    );
+
+    harness.stop();
+}
+
+/// Onboarding unfinished is the same `409 not_ready` the restart route answers.
+#[tokio::test]
+async fn update_apply_is_not_ready_before_onboarding_finishes() {
+    let harness = Harness::start_not_ready().await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/gw/update/apply",
+            &auth,
+            Some(r#"{"target":"eris"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 409, "{}", response.body);
+    assert_eq!(response.json()["code"], "not_ready");
+
+    harness.stop();
+}
+
+/// Nothing newer is a refusal that names both versions, not a silent success.
+#[tokio::test]
+async fn update_apply_refuses_when_there_is_no_newer_release() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    // The release this process is already running: never newer than itself.
+    seed_release(
+        &harness,
+        &format!(
+            "v{}-build.{}",
+            eris_host::admin::VERSION,
+            eris_host::admin::BUILD
+        ),
+        eris_host::admin::VERSION,
+        eris_host::admin::BUILD,
+        true,
+    );
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/gw/update/apply",
+            &auth,
+            Some(r#"{"target":"eris"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 409, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["code"], "update_unavailable");
+    let message = body["message"].as_str().unwrap_or_default().to_owned();
+    assert!(
+        message.contains(eris_host::admin::VERSION),
+        "the refusal names what is running: {message}"
+    );
+
+    harness.stop();
+}
+
+/// Progress is `200 idle` with no state file. A `404` here reads to a polling
+/// client as a dead socket, which is the failure this route exists to avoid.
+#[tokio::test]
+async fn update_progress_is_idle_and_200_when_nothing_is_running() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("GET", "/v1/gw/update/progress", &auth, None)
+        .await;
+    assert_eq!(
+        response.status, 200,
+        "progress is never a 404: {}",
+        response.body
+    );
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["data"]["state"], "idle");
+    assert_eq!(body["data"]["output"], serde_json::json!([]));
+    assert_eq!(body["data"]["error"], serde_json::Value::Null);
+
+    harness.stop();
+}
+
+/// A helper-written state document is passed through, bounded, and keeps its
+/// field names.
+#[tokio::test]
+async fn update_progress_reports_the_helpers_state_with_bounded_output() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let directory = harness.engine.paths().state_dir.join("update");
+    std::fs::create_dir_all(&directory).expect("update dir");
+    let output: Vec<String> = (0..400).map(|index| format!("line {index}")).collect();
+    let state = serde_json::json!({
+        "state": "installing",
+        "exit_code": serde_json::Value::Null,
+        "started_at": "2026-11-10T15:00:00Z",
+        "finished_at": serde_json::Value::Null,
+        "from_version": "1.4.15 build 181",
+        "to_version": "1.5.0 build 182",
+        "output": output,
+        "error": serde_json::Value::Null,
+    });
+    std::fs::write(
+        directory.join("state.json"),
+        serde_json::to_vec(&state).expect("json"),
+    )
+    .expect("state file");
+
+    let response = harness
+        .request("GET", "/v1/gw/update/progress", &auth, None)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    let data = &body["data"];
+    assert_eq!(data["state"], "installing");
+    assert_eq!(data["from_version"], "1.4.15 build 181");
+    assert_eq!(data["to_version"], "1.5.0 build 182");
+    let lines = data["output"].as_array().expect("an array of lines");
+    assert_eq!(
+        lines.len(),
+        200,
+        "the output is bounded to the last 200 lines"
+    );
+    assert_eq!(
+        lines.last().and_then(|line| line.as_str()),
+        Some("line 399"),
+        "the newest line is last"
+    );
+
+    harness.stop();
+}
+
+/// A state document too large to trust is refused rather than parsed into the
+/// phone.
+#[tokio::test]
+async fn update_progress_ignores_an_oversized_state_file() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let directory = harness.engine.paths().state_dir.join("update");
+    std::fs::create_dir_all(&directory).expect("update dir");
+    std::fs::write(directory.join("state.json"), vec![b'x'; 70 * 1024]).expect("big file");
+
+    let response = harness
+        .request("GET", "/v1/gw/update/progress", &auth, None)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(response.json()["data"]["state"], "idle");
+
+    harness.stop();
+}
+
+/// Both new routes are bearer-and-admin gated like the rest of the control plane.
+#[tokio::test]
+async fn the_update_routes_require_an_admin_bearer() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, plain) = harness.device_with_token("iPhone");
+    let plain = [("authorization", format!("Bearer {plain}"))];
+
+    let anonymous = harness
+        .request("GET", "/v1/gw/update/progress", &[], None)
+        .await;
+    assert_eq!(anonymous.status, 401, "{}", anonymous.body);
+    assert_eq!(anonymous.json()["code"], "token_invalid");
+
+    let not_admin = harness
+        .request(
+            "POST",
+            "/v1/gw/update/apply",
+            &plain,
+            Some(r#"{"target":"eris"}"#),
+        )
+        .await;
+    assert_eq!(not_admin.status, 403, "{}", not_admin.body);
+    assert_eq!(not_admin.json()["code"], "scope_denied");
+
+    harness.stop();
+}

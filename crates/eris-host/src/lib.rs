@@ -63,6 +63,7 @@ pub mod probe;
 pub mod projects;
 pub mod providers;
 pub mod push;
+pub mod release;
 pub mod scheduler;
 pub mod sensors;
 pub mod skills;

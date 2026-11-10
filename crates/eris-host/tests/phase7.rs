@@ -525,23 +525,40 @@ async fn the_wizard_refuses_steps_out_of_order_and_the_unsafe_choices() {
     assert_eq!(out_of_order.status, StatusCode::CONFLICT);
     assert_eq!(out_of_order.json()["code"], "step_out_of_order");
 
-    // A pasted key value is refused where a reference belongs.
-    let pasted = send(
+    // A malformed reference is still refused where a reference belongs. `env:`
+    // names an upper-case variable, so a lower-case one is a mistake, not a key.
+    let malformed = send(
         &app,
         Call::post(
             "/setup/provider",
             &format!(
                 "base_url={}&api_key_ref={}",
                 encode(&format!("http://{models_addr}/v1")),
-                encode("sk-live-pasted-value")
+                encode("env:lower_case")
             ),
         )
         .cookie(cookie),
     )
     .await;
-    assert_eq!(pasted.status, StatusCode::BAD_REQUEST);
-    assert_eq!(pasted.json()["code"], "provider_key_ref_invalid");
-    assert_eq!(pasted.json()["field"], "api_key_ref");
+    assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
+    assert_eq!(malformed.json()["code"], "provider_key_ref_invalid");
+    assert_eq!(malformed.json()["field"], "api_key_ref");
+
+    // An empty key is refused by name rather than resolved as a blank lookup.
+    let empty = send(
+        &app,
+        Call::post(
+            "/setup/provider",
+            &format!(
+                "base_url={}&api_key_ref=",
+                encode(&format!("http://{models_addr}/v1"))
+            ),
+        )
+        .cookie(cookie),
+    )
+    .await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST);
+    assert_eq!(empty.json()["code"], "provider_key_ref_invalid");
 
     // A JSON body is accepted on the same route.
     let provider = send(
@@ -790,4 +807,96 @@ fn the_documented_address_and_version_are_unchanged() {
     );
     assert!(ALL_GET_ROUTES.contains(&ROUTE_SETUP_STATE));
     assert!(POST_ROUTES.contains(&"/setup/finish"));
+}
+
+/// A key pasted at step 2 finishes the step and is sealed, exactly the way the
+/// provider registry form seals one.
+///
+/// Before this, step 2 accepted `env:NAME` and nothing else, so an operator
+/// holding a fresh vendor key could not get past it at all: the only file a value
+/// could be sealed into, `eris.env`, was writable from the registry form and never
+/// from the wizard. The claims here are the ones that make pasting safe to offer:
+/// the step completes, the settings row keeps only `env:KALLISTI_PRIMARY_API_KEY`,
+/// the value lands in `eris.env` at 0600, and nothing rendered echoes it back.
+#[tokio::test]
+async fn a_pasted_key_finishes_the_provider_step_and_is_sealed() {
+    let (_dir, engine) = scratch();
+    let passphrase = first_run_passphrase(&engine);
+    let app = router_with(AppState::new(engine.clone(), false));
+    let (models_addr, _server) = spawn_models_server().await;
+
+    let claim = send(
+        &app,
+        Call::post(
+            "/setup/claim",
+            &format!("passphrase={}", encode(&passphrase)),
+        ),
+    )
+    .await;
+    let cookie = claim.cookie().expect("claim sets the session cookie");
+    let cookie = Some(cookie.as_str());
+
+    let secret = "sk-live-1234567890abcdef";
+    let provider = send(
+        &app,
+        Call::post(
+            "/setup/provider",
+            &format!(
+                "base_url={}&api_key_ref={}",
+                encode(&format!("http://{models_addr}/v1")),
+                encode(secret)
+            ),
+        )
+        .cookie(cookie),
+    )
+    .await;
+    assert_eq!(
+        provider.status,
+        StatusCode::OK,
+        "a pasted key finishes step 2 rather than refusing it: {}",
+        provider.body
+    );
+    assert_eq!(provider.json()["model_count"], 3);
+
+    // The row holds a reference and nothing else.
+    assert_eq!(
+        engine.provider_key_ref().expect("read").as_deref(),
+        Some("env:KALLISTI_PRIMARY_API_KEY"),
+        "the settings row keeps the sealed name, never the value"
+    );
+
+    // The value is in the environment file, at operator-only permissions.
+    let env_file = engine.paths().env_file.clone();
+    let written = std::fs::read_to_string(&env_file).expect("eris.env was written");
+    assert!(
+        written.contains(&format!("KALLISTI_PRIMARY_API_KEY={secret}")),
+        "the env file carries the pasted key: {written}"
+    );
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = std::fs::metadata(&env_file)
+        .expect("meta")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "eris.env stays 0600");
+
+    // And no rendered wizard page echoes the value back.
+    let page = send(&app, Call::get("/setup").cookie(cookie)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(
+        !page.body.contains(secret),
+        "no rendered page echoes a sealed key"
+    );
+    assert!(
+        !page.body.contains("KALLISTI_PRIMARY_API_KEY"),
+        "the wizard does not render the sealed name back either"
+    );
+
+    // The step really advanced: the model list the probe returned is now the
+    // step the wizard is asking for.
+    assert!(
+        page.body.contains("model/one"),
+        "the wizard moved on to the model step: {}",
+        &page.body[..page.body.len().min(400)]
+    );
 }

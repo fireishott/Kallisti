@@ -2267,3 +2267,222 @@ fn the_goal_command_sets_reports_and_clears() {
     assert!(body.contains("Goal cleared"), "{body}");
     assert_eq!(crate::goal::stored(engine.db()), None);
 }
+
+// ---------------------------------------------------------------------------
+// The System tab's Update card
+// ---------------------------------------------------------------------------
+
+/// Seed the release cache so a card renders without a network read.
+fn seed_update_release(engine: &crate::onboarding::SetupEngine, version: &str, build: u32) {
+    let arch = crate::release::host_arch();
+    let tag = format!("v{version}-build.{build}");
+    let asset = format!("eris-v{version}-build.{build}-linux-{arch}.tar.gz");
+    let body = serde_json::json!({
+        "tag_name": tag,
+        "name": format!("Kallisti {version} build {build}"),
+        "body": "one entry per observable behaviour",
+        "published_at": "2026-11-10T15:00:00Z",
+        "assets": [
+            {"name": asset,
+             "browser_download_url": format!("{}{tag}/{asset}", crate::release::DOWNLOAD_PREFIX)},
+            {"name": format!("{asset}.sha256"),
+             "browser_download_url": format!("{}{tag}/{asset}.sha256", crate::release::DOWNLOAD_PREFIX)},
+        ],
+    })
+    .to_string();
+    engine
+        .set_setting(crate::release::SETTING_MANIFEST, &body)
+        .expect("seeded manifest");
+    engine
+        .set_setting(
+            crate::release::SETTING_CHECKED_AT,
+            &crate::auth::format_timestamp(crate::auth::now()),
+        )
+        .expect("seeded stamp");
+}
+
+/// The card states what is installed, what is newest, and why the button is off.
+#[test]
+fn the_system_tab_states_the_installed_and_newest_versions() {
+    let (_dir, engine, app, cookie) = ready_app();
+    seed_update_release(&engine, "99.0.0", 999);
+
+    let page = block_on(send(
+        &app,
+        Call::get("/dashboard/settings?tab=system")
+            .html()
+            .cookie(Some(cookie.as_str())),
+    ));
+    assert_eq!(page.status, StatusCode::OK);
+    let body = &page.body;
+
+    // The card is on this tab and is not a placeholder.
+    assert!(
+        body.contains("id=\"update-heading\""),
+        "the Update card renders"
+    );
+    assert!(
+        body.contains("Installed"),
+        "the card names what is installed"
+    );
+    assert!(
+        body.contains(&crate::admin::version_line()),
+        "the running identity line is on the page"
+    );
+    assert!(
+        body.contains("v99.0.0-build.999"),
+        "the newest release is named"
+    );
+    assert!(
+        body.contains("2026-11-10T15:00:00Z"),
+        "the publish date is shown"
+    );
+    assert!(
+        body.contains("one entry per observable behaviour"),
+        "the release notes are shown"
+    );
+
+    // The button exists and is disabled, and the reason is on the page beside it:
+    // a disabled button with no reason is the defect this card exists to avoid.
+    assert!(
+        body.contains("Install 99.0.0"),
+        "the button names the version"
+    );
+    assert!(
+        body.contains("disabled"),
+        "an install this host cannot perform is disabled"
+    );
+    assert!(
+        body.contains("is not a systemd user unit") || body.contains("not installed"),
+        "the blocker is stated in the card: {}",
+        body
+    );
+
+    // The two forms post to the two routes the daemon serves.
+    assert!(body.contains(crate::admin::ROUTE_SETTINGS_UPDATE_CHECK));
+    assert!(body.contains(crate::admin::ROUTE_SETTINGS_UPDATE_APPLY));
+}
+
+/// With nothing cached, the card says so instead of inventing a release.
+#[test]
+fn the_update_card_is_calm_when_nothing_is_cached() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let page = block_on(send(
+        &app,
+        Call::get("/dashboard/settings?tab=system")
+            .html()
+            .cookie(Some(cookie.as_str())),
+    ));
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("id=\"update-heading\""));
+    assert!(
+        page.body.contains("never"),
+        "an unchecked host says so rather than showing a fake version"
+    );
+    assert!(
+        !page.body.contains("Install "),
+        "no release means no install button at all"
+    );
+    // No red banner and no error page: an offline daemon is not a failure.
+    assert_eq!(page.status, StatusCode::OK);
+}
+
+/// The check route needs a session and records what it did.
+#[test]
+fn the_update_check_route_refuses_a_bad_session_and_audits_a_good_one() {
+    let (_dir, engine, app, cookie) = ready_app();
+
+    let anonymous = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_UPDATE_CHECK, ""),
+    ));
+    assert!(
+        anonymous.status == StatusCode::FORBIDDEN || anonymous.status == StatusCode::UNAUTHORIZED,
+        "a post with no session is refused: {}",
+        anonymous.status
+    );
+
+    // Seed first so the good post is a cache read and no test reaches the network.
+    seed_update_release(&engine, "99.0.0", 999);
+    let checked = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_UPDATE_CHECK, "")
+            .html()
+            .cookie(Some(cookie.as_str())),
+    ));
+    assert_eq!(checked.status, StatusCode::SEE_OTHER, "{}", checked.body);
+    assert_eq!(
+        checked.location().as_deref(),
+        Some("/dashboard/settings?saved=update_checked")
+    );
+
+    let rows = super::harness::audit_rows(engine.db());
+    let row = rows
+        .iter()
+        .find(|row| row.action == "settings.update_check")
+        .expect("the check is recorded");
+    assert_eq!(row.actor, "loopback");
+}
+
+/// The progress route is JSON, requires a session, and is never a 404.
+#[test]
+fn the_update_progress_route_answers_idle_json() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let reply = block_on(send(
+        &app,
+        Call::get(crate::admin::ROUTE_SETTINGS_UPDATE_PROGRESS)
+            .header("accept", "application/json")
+            .cookie(Some(cookie.as_str())),
+    ));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let body = reply.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["data"]["state"], "idle");
+    assert_eq!(body["data"]["output"], serde_json::json!([]));
+}
+
+/// The apply route refuses to start an install it cannot perform.
+#[test]
+fn the_update_apply_route_refuses_and_audits_nothing_when_it_cannot_install() {
+    let (_dir, engine, app, cookie) = ready_app();
+    seed_update_release(&engine, "99.0.0", 999);
+
+    let reply = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_UPDATE_APPLY, "")
+            .html()
+            .cookie(Some(cookie.as_str())),
+    ));
+    // The dashboard answers a refused form with 400 and the daemon's own words,
+    // exactly as the restart card does for `not_ready`; the device route is the
+    // surface that speaks 409.
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    let code = if reply.body.contains("update_running") {
+        "update_running"
+    } else {
+        "update_unavailable"
+    };
+    assert!(reply.body.contains(code), "{}", reply.body);
+    // The refusal renders the tab that holds the card, not the default tab. A
+    // reason on a page the operator is not looking at is not a reason.
+    assert!(
+        reply
+            .body
+            .contains("href=\"/dashboard/settings?tab=system\" aria-current=\"page\""),
+        "the refusal re-renders the System tab"
+    );
+    // Nothing was queued: a refusal writes no request file.
+    assert!(
+        !engine
+            .paths()
+            .state_dir
+            .join("update/request.json")
+            .exists(),
+        "a refused install writes no request"
+    );
+    let rows = super::harness::audit_rows(engine.db());
+    assert!(
+        !rows.iter().any(|row| row.action == "settings.update_apply"),
+        "a refused install is not audited as one that ran"
+    );
+}

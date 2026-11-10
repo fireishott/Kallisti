@@ -16,6 +16,10 @@
 #   5. Creates the config, state and workspace directories, plus a commented
 #      eris.env and a keys.env the daemon needs in order to boot.
 #   6. Writes and starts a systemd *user* unit, unless --no-service.
+#   7. Installs the update helper and its own unit. The daemon cannot write its
+#      own binary (ProtectHome=read-only), so the update button needs a second,
+#      narrowly scoped unit to do the swap. Without it the button still says why
+#      it cannot install, which is honest but useless, so it is written here.
 #
 # Nothing here needs root. Nothing here touches a file outside $HOME.
 #
@@ -63,7 +67,7 @@ while [ $# -gt 0 ]; do
         --prefix) shift; [ $# -gt 0 ] || die "--prefix needs a path"; PREFIX="$1" ;;
         --bin-dir) shift; [ $# -gt 0 ] || die "--bin-dir needs a path"; BIN_DIR="$1" ;;
         --repo) shift; [ $# -gt 0 ] || die "--repo needs owner/name"; REPO="$1" ;;
-        -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
     shift
@@ -300,6 +304,82 @@ MemoryMax=4G
 WantedBy=default.target
 UNITEOF
 }
+
+# --- 4b. the update helper ---------------------------------------------------
+#
+# The daemon runs with ProtectHome=read-only and may write only its state, its
+# workspace and its config, so it cannot replace the binary in $PREFIX/bin. That
+# is the trust boundary, not an oversight: the process being replaced does not get
+# write access to the thing replacing it. The swap therefore belongs to a second
+# unit with no sandbox of its own, and these two files are that unit.
+#
+# Written unconditionally, like the daemon's own unit: a re-run upgrades them, and
+# keeping them in sync with the installed binary is the point.
+
+write_update_helper() {
+    source_file="$1"
+    [ -n "$source_file" ] && [ -f "$source_file" ] || return 1
+    run mkdir -p "$PREFIX/bin"
+    run install -m 755 "$source_file" "$PREFIX/bin/eris-update"
+}
+
+# Where the helper can come from, most specific first: the checkout this installer
+# is running from, then the release tarball that was just unpacked. A piped
+# install with no checkout and an older release has neither, and then the check
+# route reports the blocker in plain English rather than pretending.
+HELPER_SOURCE=""
+if [ -n "${REPO_ROOT:-}" ] && [ -f "$REPO_ROOT/scripts/update-apply.sh" ]; then
+    HELPER_SOURCE="$REPO_ROOT/scripts/update-apply.sh"
+elif [ -d "${TMP:-}" ]; then
+    HELPER_SOURCE=$(find "$TMP" -type f -name update-apply.sh 2>/dev/null | head -1)
+fi
+
+write_update_unit() {
+    mkdir -p "$UNIT_DIR"
+    cat > "$UPDATE_UNIT_FILE" <<UPDATEEOF
+[Unit]
+Description=Kallisti Eris update helper (installs a release outside the daemon sandbox)
+# The request file is the trigger and the record: the daemon writes it, this unit
+# consumes it. Without one there is nothing to do, so starting the unit by hand is
+# a no-op rather than an install of whatever happens to be newest.
+ConditionPathExists=$UPDATE_DIR/request.json
+
+[Service]
+Type=oneshot
+ExecStart=$PREFIX/bin/eris-update
+NoNewPrivileges=yes
+PrivateTmp=yes
+# Deliberately no ProtectHome and no ProtectSystem: writing $PREFIX/bin is the
+# entire reason this unit exists. Every other hardening option the daemon carries
+# is kept.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target
+UPDATEEOF
+}
+
+UPDATE_UNIT_FILE="$UNIT_DIR/kallisti-eris-update.service"
+UPDATE_DIR="$STATE_DIR/update"
+
+if [ "$NO_SERVICE" = 1 ]; then
+    say "Skipping the update helper, because no service was requested."
+elif [ "$DRY_RUN" = 1 ]; then
+    if [ -n "$HELPER_SOURCE" ]; then
+        printf '  would install: %s -> %s\n' "$HELPER_SOURCE" "$PREFIX/bin/eris-update"
+    else
+        printf '  would skip the update helper: no update-apply.sh to install\n'
+    fi
+    printf '  would write: %s\n' "$UPDATE_UNIT_FILE"
+else
+    if write_update_helper "$HELPER_SOURCE"; then
+        write_update_unit
+        say "Wrote the update helper and $UPDATE_UNIT_FILE."
+    else
+        warn "no update-apply.sh to install, so the update button will refuse with"
+        warn "  \"the update unit is not installed (run install.sh)\""
+    fi
+fi
 
 if [ "$NO_SERVICE" = 1 ]; then
     say ""
