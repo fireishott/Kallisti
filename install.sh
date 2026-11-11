@@ -272,9 +272,36 @@ fi
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT="$UNIT_DIR/kallisti-eris.service"
 
+# Anything the operator added to the unit by hand survives an upgrade.
+#
+# This installer rewrote this unit from the template on 2026-11-10 and dropped
+# `EnvironmentFile=%h/.dsh/dsh.env`, which was the only source of the provider key
+# the daemon's settings row names. Every turn then failed with "api key reference
+# `env:CMC_API_KEY` is not set in the process environment" until the line was put
+# back by hand. A template is the default for a unit, not the whole of it: the
+# EnvironmentFile lines a previous unit carried are carried forward.
+existing_environment_files() {
+    [ -f "$UNIT" ] || return 0
+    grep -E '^EnvironmentFile=' "$UNIT" 2>/dev/null \
+        | grep -vF -e "$ENV_FILE" -e "$KEYS_FILE" -e '%h/.config/kallisti/eris.env' \
+                  -e '%h/.config/kallisti/keys.env' \
+        || true
+}
+
 write_unit() {
     mkdir -p "$UNIT_DIR"
-    cat > "$UNIT" <<UNITEOF
+    # Keep the outgoing unit beside the new one. A broken unit is a broken daemon
+    # and the previous file is the only copy of what worked.
+    if [ -f "$UNIT" ]; then
+        cp -p "$UNIT" "$UNIT.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+    fi
+    carried=$(existing_environment_files)
+    # Written to a temporary path and then placed, so the carried lines can go
+    # into [Service] rather than after [Install]. An EnvironmentFile= that lands
+    # below [Install] is an unknown key for that section: systemd reports it and
+    # ignores it, which is exactly how the previous attempt looked correct in the
+    # file and did nothing in the daemon.
+    cat > "$UNIT.tmp" <<UNITEOF
 [Unit]
 Description=Kallisti Eris daemon (web UI on 127.0.0.1:7340, device API on :7341)
 After=network-online.target
@@ -303,6 +330,18 @@ MemoryMax=4G
 [Install]
 WantedBy=default.target
 UNITEOF
+    if [ -n "${carried:-}" ]; then
+        # Insert into [Service], immediately before [Install] begins.
+        awk -v add="$carried" '
+            /^\[Install\]/ && !done { print add; done = 1 }
+            { print }
+        ' "$UNIT.tmp" > "$UNIT"
+        rm -f "$UNIT.tmp"
+        say "Kept these environment files from the previous unit:"
+        printf '%s\n' "$carried" | sed 's/^/  /'
+    else
+        mv "$UNIT.tmp" "$UNIT"
+    fi
 }
 
 # --- 4b. the update helper ---------------------------------------------------
