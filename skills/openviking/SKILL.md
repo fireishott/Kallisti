@@ -2,7 +2,7 @@
 name: openviking
 description: Use when storing or retrieving long-lived context (knowledge, memory, skills) in the local OpenViking server, or when the operator asks about viking:// URIs, ov CLI commands, or the OpenViking MCP bridge.
 version: 1.1.0
-author: Ignyte
+author: Kallisti
 license: AGPL-3.0
 platforms: [linux]
 ---
@@ -16,7 +16,7 @@ platforms: [linux]
 ## What Is Running Here
 - Package: `openviking` 0.5.4.1, installed as a uv tool: `~/.local/bin/openviking-server`, `~/.local/bin/ov`.
 - Server: `openviking.service` (systemd --user, **enabled**), `http://127.0.0.1:1933`, `auth` mode `dev`, loopback only. MCP server reports itself as `openviking 1.28.1` on protocol `2024-11-05`.
-- Workspace: `/home/fihadmin/.openviking/data`. Config: `~/.openviking/ov.conf` (mode 600). CLI config: `~/.openviking/ovcli.conf` (profile `local`), language in `~/.openviking/ovcli.settings.conf`.
+- Workspace: ``~/.openviking/data`. Config: `~/.openviking/ov.conf` (mode 600). CLI config: `~/.openviking/ovcli.conf` (profile `local`), language in `~/.openviking/ovcli.settings.conf`.
 - Models: VLM `ds/deepseek-v4-flash-vision-exp` via 9router `127.0.0.1:20128/v1`; embeddings `nomic-embed-text` on Ollama `127.0.0.1:11434/v1`, 768 dims. Never point embeddings at a model with a different dimension than the stored vectors.
 - Data on disk: ~117 MB under `~/.openviking`, of which the vector store is a few MB and grows as imports finish.
 
@@ -34,7 +34,7 @@ platforms: [linux]
 
 ## MCP Bridge
 - The daemon registers `openviking` as a stdio MCP server in the `mcp.servers` settings row of `~/.local/share/kallisti/eris.db`:
-  `{"name": "openviking", "command": "/usr/bin/python3", "args": ["/home/fihadmin/.config/kallisti/mcp/openviking-bridge.py"]}`.
+  `{"name": "openviking", "command": "/usr/bin/python3", "args": ["~/.config/kallisti/mcp/openviking-bridge.py"]}`.
   It sits alongside `echo` and `craft-anything`; the stored list is now three servers.
 - Tools appear to a turn as `openviking__ov_find`, `openviking__ov_read`, `openviking__ov_ls`, `openviking__ov_tree`, `openviking__ov_grep`, `openviking__ov_add_resource`, `openviking__ov_remember`, `openviking__ov_status`, `openviking__ov_tasks`.
 - The bridge is a thin wrapper over the CLI, so its output matches what `ov` prints. Every non-zero exit becomes `{"ok": false, "error": "..."}`; treat that as a CLI failure, never as an empty corpus.
@@ -49,7 +49,7 @@ platforms: [linux]
 - `doctor` reporting `Ollama: PASS not configured` is normal: Ollama is reached through the OpenAI-compatible embedder, not the built-in Ollama provider.
 - `openviking-server --bot` needs a separate VikingBot process. Do not add that flag to fix a missing feature.
 - Root API keys cannot cancel tasks (`ROOT may not cancel tasks`); use a user key for task control.
-- Do not delete or rebuild `/home/fihadmin/.openviking/data` to fix retrieval: that discards every vector and memory. `ov reindex <uri> --mode vectors_only` instead.
+- Do not delete or rebuild `~/.openviking/data` to fix retrieval: that discards every vector and memory. `ov reindex <uri> --mode vectors_only` instead.
 - Web Studio is served by the same server at `http://127.0.0.1:1933/studio`; no extra port.
 - A `systemd-run --user --wait` wrapper is the way to prove the bridge survives the daemon's sandbox: pass `--property=ProtectHome=read-only --property=ProtectSystem=strict` and it still answers, because the work happens over HTTP.
 

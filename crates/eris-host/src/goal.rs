@@ -178,8 +178,7 @@ const SMALL_TALK: &[&str] = &[
     "lol",
     "haha",
     "ha",
-    // Names a greeting is likely to carry, so "morning ignyte" still counts.
-    "ignyte",
+    // Names a greeting is likely to carry, so "morning kallisti" still counts.
     "eris",
     "kallisti",
     "buddy",
@@ -341,9 +340,9 @@ mod tests {
     /// A turn that already has a system prompt keeps it, ahead of the objective.
     #[test]
     fn the_block_is_appended_to_what_is_already_there() {
-        let system = with_objective(Some("You are Ignyte.".to_owned()), Some("inspect"));
+        let system = with_objective(Some("You are Kallisti.".to_owned()), Some("inspect"));
         let system = system.expect("a prompt");
-        assert!(system.starts_with("You are Ignyte."));
+        assert!(system.starts_with("You are Kallisti."));
         assert!(system.contains("## Objective"));
     }
 
@@ -351,8 +350,8 @@ mod tests {
     #[test]
     fn no_goal_changes_nothing() {
         assert_eq!(
-            with_objective(Some("You are Ignyte.".to_owned()), None).as_deref(),
-            Some("You are Ignyte.")
+            with_objective(Some("You are Kallisti.".to_owned()), None).as_deref(),
+            Some("You are Kallisti.")
         );
         assert_eq!(with_objective(None, None), None);
     }

@@ -623,7 +623,7 @@ mod tests {
     const FIRECRAWL_SEARCH: &str = r##"{
         "success": true,
         "data": [
-            {"url": "https://github.com/fireishott/Kallisti", "title": "Kallisti", "description": "A self-hosted iPhone client for a personal AI agent."},
+            {"url": "https://example.test/kallisti", "title": "Kallisti", "description": "A self-hosted iPhone client for a personal AI agent."},
             {"url": "https://example.test/second", "title": "Second", "description": "Another hit."}
         ]
     }"##;
@@ -698,7 +698,7 @@ mod tests {
     fn browse_refuses_a_target_it_may_not_reach() {
         for url in [
             "http://127.0.0.1:9377/health",
-            "http://192.168.68.51/",
+            "http://192.168.1.10/",
             "file:///etc/passwd",
         ] {
             let result = browse(&serde_json::json!({"url": url}));

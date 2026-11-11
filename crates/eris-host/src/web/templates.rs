@@ -10304,7 +10304,7 @@ mod tests {
         use super::ChatLine;
         let line = |rounds: Option<u64>, capped: bool| ChatLine {
             user: false,
-            who: "Ignyte".to_owned(),
+            who: "Kallisti".to_owned(),
             body: "done".to_owned(),
             stamp: "20:04".to_owned(),
             failed: false,
@@ -10431,7 +10431,7 @@ mod tests {
     fn a_line(user: bool) -> ChatLine {
         ChatLine {
             user,
-            who: if user { "You" } else { "Ignyte" }.to_owned(),
+            who: if user { "You" } else { "Kallisti" }.to_owned(),
             body: String::new(),
             stamp: "20:04".to_owned(),
             failed: false,
@@ -10478,7 +10478,7 @@ mod tests {
             greeting: "Good evening".to_owned(),
             hint: String::new(),
             line: None,
-            assistant_name: "Ignyte".to_owned(),
+            assistant_name: "Kallisti".to_owned(),
             sandbox_mode: "full".to_owned(),
             allow_full: true,
             context_window: None,

@@ -59,10 +59,10 @@ Then one line of prose about what it contains. Not a second copy of the contents
 The phone uploads samples to the daemon; the daemon stores them. There are **no agent
 tools** for reading them. Read the database directly, read-only.
 
-Database: `/home/fihadmin/.local/share/kallisti/sensors.db` (WAL).
+Database: `~/.local/share/kallisti/sensors.db` (WAL).
 
 ```
-sqlite3 'file:/home/fihadmin/.local/share/kallisti/sensors.db?mode=ro'
+sqlite3 'file:$HOME/.local/share/kallisti/sensors.db?mode=ro'
 ```
 
 ### Tables

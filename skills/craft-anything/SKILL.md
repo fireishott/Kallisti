@@ -15,9 +15,9 @@ source, read the source instead.
 
 ## Where it lives on this host
 
-- CLI: `/home/fihadmin/.local/bin/craft-anything-cli` (v0.6.0, from the official GitHub release
+- CLI: `~/.local/bin/craft-anything-cli` (v0.6.0, from the official GitHub release
   tarball, SHA256 verified against the release `SHA256SUMS.txt`).
-- Source clone for docs and tool lists: `/home/fihadmin/research/storytold/craft-anything`
+- Source clone for docs and tool lists: `~/research/storytold/craft-anything`
   (`docs/tools.md`, `docs/tool-ids.md`, `docs/STATUS.md`, `docs/ROADMAP.md`).
 - Upstream: https://github.com/storytold/craft-anything
 - No desktop GUI is installed. The CLI and the MCP server are the working surfaces.
