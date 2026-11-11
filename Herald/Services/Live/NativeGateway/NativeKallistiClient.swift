@@ -1032,23 +1032,73 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// answered an envelope on `POST`. Both decoders live here, new first, so a
     /// phone pointed at either backend reads one shape or the other and never logs
     /// `decode failed` for a request that answered correctly.
+    /// Ask the host what it is and what is newest.
+    ///
+    /// The daemon answers ONE document carrying TWO shapes: the legacy relay
+    /// envelope under `data.components["hermes-agent"]`, which the shipped client
+    /// reads, and a flat set of keys beside it, which this build reads. The
+    /// envelope is tried first because it is the older contract and the one the
+    /// widest range of hosts can produce; a daemon too old to write it still lands
+    /// in the flat branch, which is a degraded answer rather than "Check failed".
+    ///
+    /// One GET, one decode of the whole payload, then a decision. Two separate
+    /// requests would be two chances to disagree with each other.
     func updateCheck() async -> HermesUpdateInfo? {
-        if let payload = await getFacadeJSON(
+        guard let payload = await getFacadeJSON(
             path: "/v1/gw/update/check",
             logTag: "updateCheck"
-        ), let eris = try? JSONDecoder().decode(ErisUpdateInfo.self, from: payload),
-           eris.isEris {
-            Self.logger.info(
-                "updateCheck: eris current=\(eris.current ?? "unknown") latest=\(eris.latestLabel ?? "none") canInstall=\(eris.canInstall.map(String.init) ?? "unknown")"
-            )
+        ) else {
+            // No body at all: a legacy relay that only answers a POST. This is the
+            // only path that reaches the POST, and it is the last resort.
+            return await legacyRelayUpdateCheck()
+        }
+
+        // The envelope, from the top of the same document.
+        struct EnvelopeRoot: Decodable {
+            struct DataBox: Decodable {
+                struct Components: Decodable {
+                    let agent: HermesUpdateInfo?
+                    enum CodingKeys: String, CodingKey { case agent = "hermes-agent" }
+                }
+                let components: Components?
+            }
+            let data: DataBox?
+        }
+
+        // Two decodes of ONE body, each tolerant. They cannot disagree about the
+        // bytes because they are the same bytes; they only differ in which shape
+        // they can read. A single struct with both shapes nested would not decode:
+        // `ErisUpdateInfo` reads the top level, not a key below it.
+        let envelope = try? JSONDecoder().decode(EnvelopeRoot.self, from: payload)
+        let eris = try? JSONDecoder().decode(ErisUpdateInfo.self, from: payload)
+
+        // Envelope first: the nine keys the shipped client reads.
+        if let agent = envelope?.data?.components?.agent {
+            var info = agent
+            // The flat keys carry the Eris extras the envelope does not have, and
+            // `blocker` is the one the settings row renders in place of a button.
+            if let eris {
+                info.canInstall = info.canInstall ?? eris.canInstall
+                info.blocker = info.blocker ?? eris.blocker
+                info.currentBuild = info.currentBuild ?? eris.build
+                info.latestBuild = info.latestBuild ?? eris.latest?.build
+            }
+            return info
+        }
+
+        // No envelope: an older daemon answered the flat keys only. Degrade to
+        // those rather than returning nil, so the row shows its version instead of
+        // "Check failed" against a host that answered correctly.
+        if let eris, eris.isEris {
             return eris.asHermesUpdateInfo
         }
-        return await legacyUpdateCheck()
+
+        Self.logger.warning("updateCheck: the payload carried no update information")
+        return nil
     }
 
-    /// The legacy relay's envelope. Only reached when the Eris read produced
-    /// nothing decodable, which is what a pre-Eris host looks like.
-    private func legacyUpdateCheck() async -> HermesUpdateInfo? {
+    /// The pre-Eris relay, which only answers `POST` with the envelope.
+    private func legacyRelayUpdateCheck() async -> HermesUpdateInfo? {
         struct Envelope: Decodable {
             struct DataBox: Decodable {
                 struct ComponentsBox: Decodable {
@@ -1068,7 +1118,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             let envelope = try JSONDecoder().decode(Envelope.self, from: payload)
             return envelope.data?.components?.hermesAgent
         } catch {
-            Self.logger.warning("updateCheck: decode failed: \(error.localizedDescription)")
+            Self.logger.warning("updateCheck: legacy relay decode failed: \(error.localizedDescription)")
             return nil
         }
     }
