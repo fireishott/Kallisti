@@ -689,6 +689,8 @@ fn production_runner(request: &WorkRequest) -> Result<WorkOutput, (String, Strin
         // No transcript access: a review runs with no tools, and the digest it
         // was handed is the only history it is meant to see.
         None,
+        // No queue: a review has no turn worker to drain one.
+        None,
         chat::TurnSettings {
             tools: false,
             max_rounds: 1,

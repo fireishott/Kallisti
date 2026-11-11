@@ -631,6 +631,7 @@ fn production_runner(
         None, // no reply row to attach a file to
         None, // no skill library
         None, // no transcript: a note enrichment reads the note it was given
+        None, // no queue: a note worker has no conversation to queue into
         crate::web::chat::TurnSettings {
             tools: allow_read,
             max_rounds: if allow_read { 6 } else { 1 },

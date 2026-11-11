@@ -86,6 +86,12 @@ is not in your hand.
   answers: the last round is offered no tools and asked for prose, and if it still says
   nothing the turn reports the rounds it spent, every tool that ran with its count and
   the last result, so the next message continues the job instead of restarting it.
+- **Handing the remainder forward.** Every turn is told its round budget before the
+  first round. A job bigger than that budget is planned as slices: the model calls
+  `queue_task` and the worker that just finished drains it after its own row is
+  settled. A turn that ends at the cap having queued nothing gets one automatic
+  continuation quoting where it stopped. Bounded at six turns per chain, two of
+  them automatic.
 - **Questions, not guesses.** A turn that needs a decision, or a fact no tool can
   supply, asks for it and ends - one question, naming the options it would accept. The
   reply lands in the same transcript, so the next turn continues from the answer rather
@@ -267,7 +273,10 @@ scripts/deploy.sh --force         # restart now, turn or no turn
 ```
 
 It refuses and exits `3` when a turn is still running after the wait, and it backs
-up the binary it replaces.
+up the binary it replaces. The gate reads the turn's lease, which the worker renews
+every twenty seconds while it streams - a lease stamped once at the claim looked
+idle after the first minute of a long turn, and the deploy killed the turn it was
+told nobody was running.
 
 Then two edits and you are in:
 

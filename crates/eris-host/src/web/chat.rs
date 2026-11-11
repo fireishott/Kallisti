@@ -3543,6 +3543,7 @@ pub fn run_turn(
     attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
     search: Option<&crate::search::Access>,
+    queue: Option<&crate::queue::Sink>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
@@ -3564,6 +3565,7 @@ pub fn run_turn(
         attach,
         skills,
         search,
+        queue,
         settings,
         ask,
         poll,
@@ -3610,6 +3612,7 @@ pub fn run_turn_resilient(
     attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
     search: Option<&crate::search::Access>,
+    queue: Option<&crate::queue::Sink>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
@@ -3645,6 +3648,7 @@ pub fn run_turn_resilient(
         attach,
         skills,
         search,
+        queue,
         settings,
         ask,
         poll,
@@ -3671,6 +3675,7 @@ pub fn run_turn_resilient_with_keys(
     attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
     search: Option<&crate::search::Access>,
+    queue: Option<&crate::queue::Sink>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
@@ -3694,6 +3699,7 @@ pub fn run_turn_resilient_with_keys(
         attach,
         skills,
         search,
+        queue,
         settings,
         ask,
         poll,
@@ -3735,6 +3741,7 @@ pub fn run_turn_resilient_with_keys(
                 attach,
                 skills,
                 search,
+                queue,
                 settings,
                 ask,
                 poll,
@@ -3778,6 +3785,7 @@ pub fn run_turn_with_key(
     attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
     search: Option<&crate::search::Access>,
+    queue: Option<&crate::queue::Sink>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
@@ -3875,6 +3883,15 @@ pub fn run_turn_with_key(
         // A file the model made, put on its own reply. Without this it can only
         // name a path in prose, and "attached" is a claim the daemon cannot make
         // true.
+        if call.name == crate::queue::TOOL {
+            let Some(queue) = queue.as_ref() else {
+                return crate::tools::ToolResult::refused(
+                    "this surface cannot queue a task: it has no turn worker to drain one, so \
+                     nothing was queued. Finish or report what is left in this turn.",
+                );
+            };
+            return crate::queue::execute(queue, &call.arguments);
+        }
         if call.name == crate::web::attach::TOOL {
             let Some(target) = attach else {
                 return crate::tools::ToolResult::refused(
@@ -4065,6 +4082,12 @@ pub fn run_turn_with_key(
                     if skills.is_some() {
                         offered.push(crate::skills::spec());
                     }
+                    // Offered only when a task written now will actually run:
+                    // the browser has no drain, so listing it there would cost a
+                    // round trip to learn the queue does not exist.
+                    if queue.is_some() {
+                        offered.push(crate::queue::spec());
+                    }
                     // Offered only when a surface can answer it: a turn with no
                     // registry has no way to hear back, and the tool refuses
                     // itself anyway, so listing it would cost a round trip to
@@ -4238,6 +4261,23 @@ pub fn has_messages(transcript: &[Message]) -> bool {
 /// for as long as the operator leaves the tab open. At the cap the turn stops and
 /// says so; it does not silently return nothing.
 pub const MAX_TOOL_ROUNDS: usize = 12;
+/// What a turn is told about its own tool budget.
+///
+/// The loop's lookahead only speaks at the last two rounds, which is the wrong
+/// moment to learn that a job needs four turns. Stating the number up front is
+/// what lets a model spend it on the work instead of on exploration, and what
+/// makes `queue_task` an option while there is still time to use it. The line is
+/// short on purpose: it is a fact about this turn, not a lecture.
+#[must_use]
+pub fn budget_notice(max_rounds: usize) -> String {
+    format!(
+        "Tool budget for this turn: {max_rounds} rounds. The last round has no tools and is \
+         where you answer. Plan the work to fit: do the highest-value part first, verify it, \
+         and if the job is bigger than the budget, hand the remainder to the next turn with \
+         queue_task before you answer. Never end a turn on a question that a tool could \
+         answer."
+    )
+}
 
 /// What a turn produced once the tool loop settled.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4824,6 +4864,20 @@ mod tests {
 
     fn db() -> Db {
         Db::open_in_memory().expect("in-memory database")
+    }
+
+    #[test]
+    fn the_budget_notice_names_the_rounds_and_the_queue() {
+        let notice = budget_notice(60);
+        assert!(
+            notice.contains("60 rounds"),
+            "the number is the point: {notice}"
+        );
+        assert!(
+            notice.contains("queue_task"),
+            "the handoff is named: {notice}"
+        );
+        assert!(notice.contains("last round has no tools"));
     }
 
     #[test]

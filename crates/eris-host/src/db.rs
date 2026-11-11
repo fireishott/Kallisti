@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 27;
+pub const SCHEMA_VERSION: i64 = 28;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -210,6 +210,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 27,
         name: "0027_cost_index",
         sql: MIGRATION_0027,
+    },
+    Migration {
+        version: 28,
+        name: "0028_turn_chain",
+        sql: MIGRATION_0028,
     },
 ];
 
@@ -941,6 +946,18 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_created_model
     ON chat_messages (created_at, model);
 ";
 
+/// Migration 0028: the turn that continues another one.
+///
+/// A job already names the device that asked for it; it did not name the
+/// conversation it writes into, which is what a queue entry needs in order to be
+/// drained onto the right transcript. `chain_depth` is how many turns this one is
+/// downstream of, so a continuation that keeps capping can stop on a number
+/// rather than on an operator noticing.
+const MIGRATION_0028: &str = r"
+ALTER TABLE jobs ADD COLUMN conversation_id TEXT REFERENCES chat_conversations (id) ON DELETE SET NULL;
+ALTER TABLE jobs ADD COLUMN chain_depth INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 
@@ -1348,7 +1365,7 @@ mod tests {
     #[test]
     fn migration_0023_adds_wrapped_up_and_re_running_it_changes_nothing() {
         let db = Db::open_in_memory().expect("a database");
-        assert_eq!(db.schema_version().expect("version"), 27);
+        assert_eq!(db.schema_version().expect("version"), SCHEMA_VERSION);
         assert!(
             db.column_names("chat_messages")
                 .expect("columns")
@@ -1365,7 +1382,7 @@ mod tests {
         );
         assert_eq!(
             db.applied_migration_count().expect("count"),
-            27,
+            28,
             "one row per migration, and the new one is the last"
         );
 
@@ -1378,8 +1395,8 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, 27, "one row per migration, on a fresh file");
-        assert_eq!(first.schema_version().expect("version"), 27);
+        assert_eq!(applied, 28, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 28);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");
         assert_eq!(

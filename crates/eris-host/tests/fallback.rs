@@ -128,6 +128,8 @@ async fn run(
             // No transcript either, for the same reason: this suite measures the
             // retry, not recall.
             None,
+            // No queue: this suite has no turn worker to drain one.
+            None,
             TurnSettings {
                 tools: false,
                 max_rounds: 1,

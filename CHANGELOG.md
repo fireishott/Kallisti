@@ -4,6 +4,37 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.6.0
+
+- **A turn can hand its remainder to the next turn.** `queue_task` writes a
+  durable `jobs` row of kind `task` with the prompt, the conversation and how deep
+  the chain already is; the worker that just finished drains it as its own turn in
+  the same conversation, after its own transcript row is settled. The prompt now
+  states the tool budget before round one, so a job that needs two turns is planned
+  as two instead of discovered at the wall. `build 185`.
+
+- **A capped turn continues itself, once.** When a turn ends because the tool
+  budget ran out and it queued nothing, the daemon starts one continuation with a
+  prompt that quotes the last answer and forbids redoing finished work. Bounded at
+  two automatic continuations and six queued turns per chain, so a job that keeps
+  capping stops on a number instead of on an operator noticing. `build 185`.
+
+- **The turn lease is renewed while the turn works.** `deploy.sh` reads
+  `lease_expires_at` to decide whether a restart would kill someone's turn; the
+  claim stamped sixty seconds and nothing moved it, so a ten-minute turn looked
+  idle and a deploy killed it ("the daemon stopped before this turn finished").
+  The worker now renews every twenty seconds on the frames it is already
+  streaming. `build 185`.
+
+- **Phone turns record what the budget did.** The terminal frame carries the cap
+  and the round count, and the settled row stores both, so a capped turn is
+  visible in the transcript instead of arriving with the flag unset. `build 185`.
+
+- **`/v1/metrics` answers for one conversation.** `GET /v1/metrics?conversation=`
+  narrows the same rows, and `window=all` reads a chat over its whole life instead
+  of the last day. The phone's chat footer asks for the chat in front of the
+  operator; the daemon-wide panel keeps its window. `build 185`.
+
 ## 1.5.0
 
 - **The update check answers the legacy envelope again, beside the flat keys.**

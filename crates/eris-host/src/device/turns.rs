@@ -315,6 +315,10 @@ enum Signal {
         text: String,
         /// The usage the provider reported, as JSON.
         usage: serde_json::Value,
+        /// Whether the tool budget, not the model, ended the turn.
+        capped: bool,
+        /// How many tool rounds ran.
+        rounds: u64,
     },
     /// The provider failed.
     Failed {
@@ -338,6 +342,13 @@ pub struct JobRow {
     pub status: String,
     /// The prompt this job was created for.
     pub request_text: Option<String>,
+    /// The conversation this turn writes into, when it named one.
+    ///
+    /// A queued task needs it to land on the right transcript, and a drain needs
+    /// it to know which transcript is busy.
+    pub conversation_id: Option<String>,
+    /// How many turns downstream of the operator this one is.
+    pub chain_depth: i64,
 }
 
 /// One session row.
@@ -569,16 +580,61 @@ impl TurnStore {
         idempotency_key: Option<&str>,
         request_text: &str,
     ) -> Result<String, DbError> {
+        self.create_job_in(
+            device_id,
+            session_id,
+            idempotency_key,
+            request_text,
+            None,
+            0,
+        )
+    }
+
+    /// Create one queued job that records what it belongs to.
+    ///
+    /// `conversation` and `depth` are what a queued task needs: the transcript it
+    /// must land on, and how far down a continuation chain it is. An operator's own
+    /// turn passes `None` and zero, which is the row this table always held.
+    pub fn create_job_in(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        idempotency_key: Option<&str>,
+        request_text: &str,
+        conversation: Option<&str>,
+        depth: i64,
+    ) -> Result<String, DbError> {
         let id = Uuid::now_v7().to_string();
         self.db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO jobs (id, kind, status, device_id, session_id, idempotency_key, request_text) \
-                 VALUES (?1, 'chat', 'queued', ?2, ?3, ?4, ?5)",
-                params![id, device_id, session_id, idempotency_key, request_text],
+                "INSERT INTO jobs
+                     (id, kind, status, device_id, session_id, idempotency_key, request_text, \
+                      conversation_id, chain_depth)
+                 VALUES (?1, 'chat', 'queued', ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    device_id,
+                    session_id,
+                    idempotency_key,
+                    request_text,
+                    conversation,
+                    depth
+                ],
             )?;
             Ok(())
         })?;
         Ok(id)
+    }
+
+    /// Move this job's lease forward.
+    ///
+    /// The claim stamps a sixty-second lease, and nothing used to renew it: a turn
+    /// that ran eleven minutes looked dead to every reader of the row from its
+    /// second minute on. `deploy.sh` is one of those readers, so a deploy killed
+    /// the turn it was told nobody was running. Renewing while the turn works is
+    /// what makes the lease mean "a worker is here" instead of "a worker started".
+    pub fn renew(&self, job_id: &str) -> Result<(), DbError> {
+        renew_lease(&self.db, job_id)
     }
 
     /// The job a client already created for this `(device, key)` pair.
@@ -620,7 +676,8 @@ impl TurnStore {
     pub fn job(&self, job_id: &str) -> Result<Option<JobRow>, DbError> {
         self.db.with_conn(|conn| {
             conn.query_row(
-                "SELECT id, device_id, session_id, status, request_text FROM jobs WHERE id = ?1",
+                "SELECT id, device_id, session_id, status, request_text, conversation_id, chain_depth \
+                   FROM jobs WHERE id = ?1",
                 params![job_id],
                 |row| {
                     Ok(JobRow {
@@ -629,6 +686,8 @@ impl TurnStore {
                         session_id: row.get(2)?,
                         status: row.get(3)?,
                         request_text: row.get(4)?,
+                        conversation_id: row.get(5)?,
+                        chain_depth: row.get(6)?,
                     })
                 },
             )
@@ -1215,6 +1274,24 @@ pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
     Ok(settled)
 }
 
+/// Move one job's lease forward, from a turn that is still working.
+///
+/// The worker cannot reach the hub from inside its blocking task, so this is a
+/// free function over the database it already holds. `TurnStore::renew` delegates
+/// here, which keeps one statement for both callers.
+pub fn renew_lease(db: &Db, job_id: &str) -> Result<(), DbError> {
+    let lease = format!("+{LEASE_SECONDS} seconds");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE jobs SET lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?2), \
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              WHERE id = ?1 AND status = 'running'",
+            params![job_id, lease],
+        )?;
+        Ok(())
+    })
+}
+
 /// Where a turn's answer is also written, when the client named a conversation.
 ///
 /// A device turn is a row in `jobs` and a series of `job_events`; a conversation
@@ -1288,6 +1365,12 @@ pub struct TurnHub {
     /// The push store, when it opened. Used to find the registrations of the
     /// device that asked for the turn that just finished.
     push: Mutex<Option<crate::push::PushStore>>,
+    /// The daemon's MCP pool, when one was handed over.
+    ///
+    /// A device turn offers the same MCP tools the browser does, under the same
+    /// approval gate. `None` means this hub was built without a pool, and a turn
+    /// here is told so rather than being offered a tool nothing can run.
+    mcp: Mutex<Option<Arc<crate::mcp::Pool>>>,
     /// Which key each job's question is parked under.
     ///
     /// A device turn asks under the conversation it is writing into, because that
@@ -1321,6 +1404,7 @@ impl TurnHub {
             clarify: Mutex::new(None),
             apns: Mutex::new(None),
             push: Mutex::new(None),
+            mcp: Mutex::new(None),
             ask_keys: Mutex::new(HashMap::new()),
         }
     }
@@ -1387,6 +1471,20 @@ impl TurnHub {
     #[must_use]
     pub fn clarify(&self) -> Option<Arc<crate::web::clarify::Registry>> {
         self.clarify.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Attach the daemon's MCP pool, so a turn here is offered the same tools the
+    /// browser is offered instead of a tool list with the servers missing.
+    pub fn set_mcp(&self, pool: Arc<crate::mcp::Pool>) {
+        if let Ok(mut slot) = self.mcp.lock() {
+            *slot = Some(pool);
+        }
+    }
+
+    /// The MCP pool this hub was handed, if any.
+    #[must_use]
+    pub fn mcp(&self) -> Option<Arc<crate::mcp::Pool>> {
+        self.mcp.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// The key a job's question is parked under, if it is waiting on one.
@@ -1484,6 +1582,56 @@ impl TurnHub {
         tokio::spawn(async move {
             hub.run(job_id, sender, policy, conversation).await;
         });
+    }
+
+    /// Start the next queued task in a conversation as its own turn.
+    ///
+    /// The rows are written here rather than by the model, so a queued task is an
+    /// ordinary turn: a question row, an answer row, the job id stamped on both,
+    /// and the same policy the turn that queued it ran under. The job already
+    /// exists (it is the row the queue was read from), so `run` claims it exactly
+    /// as it claims a turn the phone just asked for.
+    async fn start_queued(
+        self: &Arc<Self>,
+        policy: &TurnPolicy,
+        conversation: &str,
+        queued: crate::queue::Queued,
+    ) {
+        let db = self.store.db();
+        let prepared = (|| -> Result<ConversationTurn, DbError> {
+            crate::web::chat::append(
+                db,
+                conversation,
+                crate::web::chat::Role::User,
+                &queued.prompt,
+                crate::web::chat::State::Complete,
+            )?;
+            let question_id = crate::web::chat::question_id(db, conversation)?.unwrap_or_default();
+            let model = crate::web::chat::conversation_model(db, conversation)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let answer_id = crate::web::chat::append_answer(db, conversation, &model, None)?;
+            let _ = crate::web::chat::touch_conversation(db, conversation);
+            Ok(ConversationTurn {
+                conversation: conversation.to_owned(),
+                question_id,
+                answer_id,
+                question: queued.prompt.clone(),
+                title: None,
+                files: Vec::new(),
+                vision: None,
+            })
+        })();
+        match prepared {
+            Ok(turn) => {
+                let sender = self.begin(&queued.id);
+                self.spawn(queued.id, sender, policy.clone(), Some(turn));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not start the queued task");
+            }
+        }
     }
 
     /// The worker body. Split out so the spawned future stays small.
@@ -1731,10 +1879,15 @@ impl TurnHub {
         let desk_db = store.db().clone();
         // The writer: one blocking task owns every row this job writes.
         let (tx, mut rx) = mpsc::unbounded_channel::<Signal>();
+        // What the writer learned about the end of the turn, read once it has
+        // settled: whether the budget ended it, and the text it produced. The
+        // drain needs both, and neither is in the job row yet when the turn ends.
+        let last_turn: Arc<Mutex<Option<(bool, String)>>> = Arc::new(Mutex::new(None));
         let writer = {
             let store = store.clone();
             let sender = sender.clone();
             let writer_job = job_id.clone();
+            let last_turn = Arc::clone(&last_turn);
             // The worker owns one copy of the conversation target; `run` keeps the
             // other, so a turn that never reached the provider can still be closed
             // in the transcript once the worker is done.
@@ -1884,7 +2037,15 @@ impl TurnHub {
                                 publish(&sender, seq, FrameKind::Attachment, data);
                             }
                         }
-                        Signal::Done { text, usage } => {
+                        Signal::Done {
+                            text,
+                            usage,
+                            capped,
+                            rounds,
+                        } => {
+                            if let Ok(mut last) = last_turn.lock() {
+                                *last = Some((capped, text.clone()));
+                            }
                             let data = serde_json::json!({ "text": &text, "usage": &usage });
                             match store.finish(&writer_job, FrameKind::Done, &data) {
                                 // The transcript row is written only by the worker
@@ -1903,7 +2064,7 @@ impl TurnHub {
                                             Some(&reasoning),
                                             &tools,
                                             Some(&usage),
-                                            accounting_from(&usage),
+                                            accounting_from(&usage, capped, rounds),
                                         );
                                         // Then, and only then, the name. A title
                                         // is a nicety and never sits between the
@@ -2033,6 +2194,19 @@ impl TurnHub {
         // The writer task still owns the settle; this only keeps the row current.
         let progress_conversation = conversation.clone();
         let progress_db = store.db().clone();
+        // Work the model may hand to the next turn. The sink is built here rather
+        // than inside the blocking task, so it holds the same database clone the
+        // progress writer uses and no second handle to the store.
+        let queue_sink = conversation.as_ref().map(|write| crate::queue::Sink {
+            db: progress_db.clone(),
+            conversation: write.conversation.clone(),
+            device_id: job.device_id.clone().unwrap_or_default(),
+            depth: job.chain_depth,
+        });
+        // The policy to run a queued task under: the same sandbox, gate, tools and
+        // display switches this turn was given.
+        let policy_for_drain = policy.clone();
+        let renew_job = job_id.clone();
         // Which key this turn's question is parked under, decided before the turn
         // starts so the answer route can find it by job id. A turn that writes into
         // a conversation asks under that conversation, which is the key the
@@ -2121,6 +2295,11 @@ impl TurnHub {
         // objective: "Sup" became a warehouse sweep, twice, and the gate is the fix.
         let goal = crate::goal::for_turn(store.db(), &prompt);
 
+        // The pool this turn offers, read once before the worker thread is
+        // spawned: the hub owns it behind a lock, and a turn must not take that
+        // lock on every round.
+        let mcp = self.mcp();
+
         let turn_task = tokio::task::spawn_blocking(move || {
             let TurnPolicy {
                 sandbox,
@@ -2146,7 +2325,11 @@ impl TurnHub {
             // allowed here.
             let unconfined = sandbox.mode() == crate::onboarding::permissions::SandboxMode::Full;
             let mut gate = |call: &core_domain::ToolCall| -> crate::web::chat::GateDecision {
-                let gated = call.name == "write_file";
+                // A write, or any call into an MCP server: both are code the
+                // operator installed acting on their behalf, so both wait under
+                // `ask`, exactly as they do in the browser.
+                let gated = call.name == "write_file"
+                    || crate::mcp::protocol::split_qualified(&call.name).is_some();
                 if !gated
                     || unconfined
                     || approval_policy == crate::onboarding::permissions::ApprovalPolicy::Never
@@ -2154,9 +2337,9 @@ impl TurnHub {
                     return crate::web::chat::GateDecision::Run;
                 }
                 crate::web::chat::GateDecision::Refuse {
-                    reason: "a device turn cannot park a write for approval: the queue is \
+                    reason: "a device turn cannot park a call for approval: the queue is \
                              readable and answerable over /v1, but a running turn does not \
-                             wait for a decision, so nothing was written"
+                             wait for a decision, so nothing was run"
                         .to_owned(),
                 }
             };
@@ -2168,6 +2351,17 @@ impl TurnHub {
             // and asks for nothing, so it is handed neither.
             let raise = goal.is_some() && crate::goal::wants_long_job(&prompt);
             let max_rounds = crate::goal::rounds(max_rounds, raise, goal_rounds_ceiling);
+            // The budget is stated before the first round. The loop's own notices
+            // arrive at the last two, which is too late to plan a job that needs
+            // two turns: the model used to learn the size of the budget by hitting
+            // it.
+            let system = match system {
+                Some(system) => Some(format!(
+                    "{system}\n\n{}",
+                    crate::web::chat::budget_notice(max_rounds)
+                )),
+                None => Some(crate::web::chat::budget_notice(max_rounds)),
+            };
             let system = crate::goal::with_objective(system, goal.as_deref());
             let settings = crate::web::chat::TurnSettings {
                 tools,
@@ -2205,120 +2399,131 @@ impl TurnHub {
                         crate::web::chat::progress(&progress_db, answer, streamed, records, rounds);
                 }
             };
-            let mut sink = |part: crate::web::chat::StreamPart<'_>| match part {
-                crate::web::chat::StreamPart::Text(fragment) => {
-                    if !fragment.is_empty() {
-                        streamed.push_str(fragment);
-                        let _ = tx.send(Signal::Delta(fragment.to_owned()));
-                        flush(false, &streamed, &records, rounds);
-                    }
+            // The lease is what `deploy.sh` reads to decide whether a turn is
+            // running. Renewed here rather than only at the claim, so a ten-minute
+            // turn is not fifteen rows of "idle" to a deploy that then kills it.
+            let mut renewed_at = std::time::Instant::now();
+            const RENEW_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
+            let mut sink = |part: crate::web::chat::StreamPart<'_>| {
+                if renewed_at.elapsed() >= RENEW_EVERY {
+                    renewed_at = std::time::Instant::now();
+                    let _ = renew_lease(&progress_db, &renew_job);
                 }
-                crate::web::chat::StreamPart::Reasoning(fragment) => {
-                    // The same switch the browser honours: off means the reasoning
-                    // never leaves the daemon.
-                    if show_reasoning && !fragment.is_empty() {
-                        let _ = tx.send(Signal::Reasoning(fragment.to_owned()));
+                match part {
+                    crate::web::chat::StreamPart::Text(fragment) => {
+                        if !fragment.is_empty() {
+                            streamed.push_str(fragment);
+                            let _ = tx.send(Signal::Delta(fragment.to_owned()));
+                            flush(false, &streamed, &records, rounds);
+                        }
                     }
-                }
-                crate::web::chat::StreamPart::Round {
-                    round,
-                    max_rounds,
-                    tools_allowed,
-                } => {
-                    // The count the row stores is rounds completed.
-                    rounds = round.saturating_sub(1);
-                    flush(false, &streamed, &records, rounds);
-                    // And the round is announced: it is the only signal that
-                    // separates "the model is thinking" from "a command is
-                    // running", which used to look identical on the phone.
-                    let _ = tx.send(Signal::Round {
+                    crate::web::chat::StreamPart::Reasoning(fragment) => {
+                        // The same switch the browser honours: off means the reasoning
+                        // never leaves the daemon.
+                        if show_reasoning && !fragment.is_empty() {
+                            let _ = tx.send(Signal::Reasoning(fragment.to_owned()));
+                        }
+                    }
+                    crate::web::chat::StreamPart::Round {
                         round,
                         max_rounds,
                         tools_allowed,
-                    });
-                }
-                crate::web::chat::StreamPart::Tool {
-                    name,
-                    arguments,
-                    output,
-                    is_error,
-                    asked,
-                } => {
-                    records.push(crate::web::chat::ToolRecord {
-                        name: name.to_owned(),
-                        arguments: arguments.to_owned(),
-                        output: output.to_owned(),
-                        is_error,
-                        asked: asked.cloned(),
-                    });
-                    flush(true, &streamed, &records, rounds);
-                    // A settled question is written again under the same kind, now
-                    // carrying the decision, so a client reading the job log gets
-                    // the question and the answer from the last `asked` frame
-                    // rather than from a second kind it would have to know about.
-                    if let Some(settled) = asked
-                        && let Some(answer) = settled.answer.clone()
-                    {
-                        let _ = tx.send(Signal::Answered {
-                            request: settled.request.clone(),
-                            answer,
+                    } => {
+                        // The count the row stores is rounds completed.
+                        rounds = round.saturating_sub(1);
+                        flush(false, &streamed, &records, rounds);
+                        // And the round is announced: it is the only signal that
+                        // separates "the model is thinking" from "a command is
+                        // running", which used to look identical on the phone.
+                        let _ = tx.send(Signal::Round {
+                            round,
+                            max_rounds,
+                            tools_allowed,
                         });
                     }
-                    // Behind its own switch, as in the browser: a run log that is
-                    // off does not ship command output anyway.
-                    if show_tool_log {
-                        let _ = tx.send(Signal::Tool {
+                    crate::web::chat::StreamPart::Tool {
+                        name,
+                        arguments,
+                        output,
+                        is_error,
+                        asked,
+                    } => {
+                        records.push(crate::web::chat::ToolRecord {
                             name: name.to_owned(),
                             arguments: arguments.to_owned(),
                             output: output.to_owned(),
                             is_error,
+                            asked: asked.cloned(),
+                        });
+                        flush(true, &streamed, &records, rounds);
+                        // A settled question is written again under the same kind, now
+                        // carrying the decision, so a client reading the job log gets
+                        // the question and the answer from the last `asked` frame
+                        // rather than from a second kind it would have to know about.
+                        if let Some(settled) = asked
+                            && let Some(answer) = settled.answer.clone()
+                        {
+                            let _ = tx.send(Signal::Answered {
+                                request: settled.request.clone(),
+                                answer,
+                            });
+                        }
+                        // Behind its own switch, as in the browser: a run log that is
+                        // off does not ship command output anyway.
+                        if show_tool_log {
+                            let _ = tx.send(Signal::Tool {
+                                name: name.to_owned(),
+                                arguments: arguments.to_owned(),
+                                output: output.to_owned(),
+                                is_error,
+                            });
+                        }
+                    }
+                    // A call that has started but not finished. Announced, because a
+                    // two-minute command is otherwise a silence that reads exactly
+                    // like a turn that died.
+                    crate::web::chat::StreamPart::Attached {
+                        id,
+                        name,
+                        size,
+                        media_type,
+                    } => {
+                        let _ = tx.send(Signal::Attached {
+                            id: id.to_owned(),
+                            name: name.to_owned(),
+                            size,
+                            media_type: media_type.to_owned(),
                         });
                     }
-                }
-                // A call that has started but not finished. Announced, because a
-                // two-minute command is otherwise a silence that reads exactly
-                // like a turn that died.
-                crate::web::chat::StreamPart::Attached {
-                    id,
-                    name,
-                    size,
-                    media_type,
-                } => {
-                    let _ = tx.send(Signal::Attached {
-                        id: id.to_owned(),
-                        name: name.to_owned(),
-                        size,
-                        media_type: media_type.to_owned(),
-                    });
-                }
-                crate::web::chat::StreamPart::ToolStart { name, arguments } => {
-                    let _ = tx.send(Signal::ToolStart {
-                        name: name.to_owned(),
-                        arguments: arguments.to_owned(),
-                    });
-                }
-                // The question, out before the turn blocks on it, exactly as the
-                // browser sends it. The frame is also written to the job log, so a
-                // client that reconnects reads it back rather than missing the one
-                // moment the turn was waiting on a person.
-                crate::web::chat::StreamPart::Asked { request } => {
-                    let _ = tx.send(Signal::Asked {
-                        request: request.clone(),
-                    });
-                }
-                // A result cut to fit the window. The phone reads its job status
-                // and renders no run log, so there is nowhere to annotate; the arm
-                // is here so the surface states where it goes rather than being
-                // silently wrong about a frame it never expected.
-                crate::web::chat::StreamPart::Elided { .. } => {}
-                // The chunks that build that output, as they arrive. The
-                // finished call still carries the whole of it, so a reader that
-                // reconnects reads one frame instead of a hundred.
-                crate::web::chat::StreamPart::ToolOutput { name, chunk } => {
-                    let _ = tx.send(Signal::ToolOutput {
-                        name: name.to_owned(),
-                        chunk: chunk.to_owned(),
-                    });
+                    crate::web::chat::StreamPart::ToolStart { name, arguments } => {
+                        let _ = tx.send(Signal::ToolStart {
+                            name: name.to_owned(),
+                            arguments: arguments.to_owned(),
+                        });
+                    }
+                    // The question, out before the turn blocks on it, exactly as the
+                    // browser sends it. The frame is also written to the job log, so a
+                    // client that reconnects reads it back rather than missing the one
+                    // moment the turn was waiting on a person.
+                    crate::web::chat::StreamPart::Asked { request } => {
+                        let _ = tx.send(Signal::Asked {
+                            request: request.clone(),
+                        });
+                    }
+                    // A result cut to fit the window. The phone reads its job status
+                    // and renders no run log, so there is nowhere to annotate; the arm
+                    // is here so the surface states where it goes rather than being
+                    // silently wrong about a frame it never expected.
+                    crate::web::chat::StreamPart::Elided { .. } => {}
+                    // The chunks that build that output, as they arrive. The
+                    // finished call still carries the whole of it, so a reader that
+                    // reconnects reads one frame instead of a hundred.
+                    crate::web::chat::StreamPart::ToolOutput { name, chunk } => {
+                        let _ = tx.send(Signal::ToolOutput {
+                            name: name.to_owned(),
+                            chunk: chunk.to_owned(),
+                        });
+                    }
                 }
             };
             // The picture reaches a model that can see it here, on this
@@ -2366,7 +2571,7 @@ impl TurnHub {
                 messages,
                 &sandbox,
                 &mut gate,
-                None, // MCP servers
+                mcp.as_deref(),
                 None, // the web-extract role
                 None, // the image role
                 // The dispatch desk, when this turn may hand work off. Built from
@@ -2381,6 +2586,7 @@ impl TurnHub {
                 // is built from the same database clone the dispatch desk uses, so
                 // a device turn and a web turn answer from one transcript.
                 Some(&search),
+                queue_sink.as_ref(),
                 settings,
                 // A phone can ask now. The question parks this turn's thread, goes
                 // out as an `asked` frame on the job stream and is written to the
@@ -2403,6 +2609,8 @@ impl TurnHub {
                     let _ = tx.send(Signal::Done {
                         text: outcome.text,
                         usage,
+                        capped: outcome.capped,
+                        rounds: outcome.rounds as u64,
                     });
                 }
                 Err((code, message)) => {
@@ -2413,6 +2621,51 @@ impl TurnHub {
 
         let _ = turn_task.await;
         let _ = writer.await;
+
+        // Work this turn handed forward runs now, strictly after its own row is
+        // settled: a queued task and the turn that queued it must never write one
+        // conversation at the same time. Only a turn that finished drains. A turn
+        // the operator stopped, or one that failed, leaves the queue where it is
+        // for the next message to pick up.
+        if let Some(write) = &conversation
+            && matches!(
+                store.status(&job_id).ok().flatten().as_deref(),
+                Some("succeeded")
+            )
+        {
+            let depth = job.chain_depth;
+            let mut queued = crate::queue::next(store.db(), &write.conversation)
+                .ok()
+                .flatten();
+            let finished = last_turn.lock().ok().and_then(|last| last.clone());
+            // A capped turn that queued nothing gets one continuation of its own,
+            // because the reason it stopped was the budget rather than the work.
+            // Bounded by `MAX_AUTO`: the daemon does not decide to keep going a
+            // third time on its own.
+            if queued.is_none()
+                && let Some((true, text)) = finished
+                && depth < crate::queue::MAX_AUTO
+            {
+                let prompt = crate::queue::continuation_prompt(&text);
+                if crate::queue::enqueue(
+                    store.db(),
+                    &write.conversation,
+                    job.device_id.as_deref().unwrap_or_default(),
+                    &prompt,
+                    depth + 1,
+                )
+                .is_ok()
+                {
+                    queued = crate::queue::next(store.db(), &write.conversation)
+                        .ok()
+                        .flatten();
+                }
+            }
+            if let Some(queued) = queued {
+                self.start_queued(&policy_for_drain, &write.conversation, queued)
+                    .await;
+            }
+        }
         // A turn that ended without settling its transcript row leaves the
         // conversation holding a question whose answer never arrives. The job's own
         // status says what happened, so the row is closed from it rather than left
@@ -2588,23 +2841,25 @@ impl TurnHub {
 /// settles with the text it has and reports no numbers, which is what the browser
 /// keeps when a provider omits them. Durations are left unset because this worker
 /// times nothing: a number invented here would look measured.
-fn accounting_from(usage: &serde_json::Value) -> crate::web::chat::Accounting {
+fn accounting_from(
+    usage: &serde_json::Value,
+    capped: bool,
+    rounds: u64,
+) -> crate::web::chat::Accounting {
     serde_json::from_value::<core_domain::Usage>(usage.clone())
         .map(|usage| crate::web::chat::Accounting {
             prompt_tokens: usage.input_tokens(),
             completion_tokens: usage.output_tokens(),
             cached_tokens: usage.cache_read_tokens(),
             duration_ms: None,
-            rounds: None,
+            rounds: Some(rounds),
             // The terminal frame carries the turn's summed usage, not a single
             // round, so the live context size is not something this worker knows.
             context_tokens: None,
-            // Not measured here: this helper reads usage, and the frame that
-            // carries it says nothing about the budget. `None` keeps the row
-            // honest instead of stamping "not capped" on a turn nobody checked.
-            capped: None,
-            // Same reason, and the same shape: the frame says nothing about
-            // whether the engine wrapped this turn up early.
+            // The terminal frame now carries these two, so the row records what
+            // the loop decided instead of leaving "not measured" on every phone
+            // turn. That gap is why the cap was invisible in the transcript.
+            capped: Some(capped),
             wrapped_up: None,
         })
         .unwrap_or_default()
@@ -2644,6 +2899,20 @@ mod tests {
     }
 
     #[test]
+    fn a_capped_turn_records_what_the_budget_did() {
+        let usage = serde_json::to_value(core_domain::Usage::unavailable(
+            core_domain::UnavailableReason::FieldsAbsent,
+        ))
+        .expect("usage is serialisable");
+        let accounting = accounting_from(&usage, true, 60);
+        assert_eq!(accounting.capped, Some(true));
+        assert_eq!(accounting.rounds, Some(60));
+        let clean = accounting_from(&usage, false, 3);
+        assert_eq!(clean.capped, Some(false));
+        assert_eq!(clean.rounds, Some(3));
+    }
+
+    #[test]
     fn the_claim_is_atomic_and_stamps_a_lease() {
         let (store, device) = store(DEFAULT_SSE_BUFFER);
         let (job, _) = queued(&store, &device);
@@ -2673,6 +2942,43 @@ mod tests {
             window.whole_seconds() >= LEASE_SECONDS - 1
                 && window.whole_seconds() <= LEASE_SECONDS + 1,
             "the lease is {LEASE_SECONDS}s, got {window:?}"
+        );
+    }
+
+    #[test]
+    fn a_working_turn_keeps_its_lease_alive() {
+        let (store, device) = store(DEFAULT_SSE_BUFFER);
+        let (job, _) = queued(&store, &device);
+        assert!(store.claim(&job).expect("claimed"));
+        // The claim stamps sixty seconds. A turn that runs longer used to leave
+        // that stamp where it was, so every reader of the row saw a dead worker
+        // while the worker was still streaming.
+        store
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE jobs SET lease_expires_at = \
+                     strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-120 seconds') WHERE id = ?1",
+                    params![job],
+                )?;
+                Ok(())
+            })
+            .expect("backdate the lease");
+        store.renew(&job).expect("renew");
+        let expires: String = store
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT lease_expires_at FROM jobs WHERE id = ?1",
+                    params![job],
+                    |row| row.get(0),
+                )
+            })
+            .expect("lease column");
+        let expires = parse_timestamp(&expires).expect("lease parses");
+        assert!(
+            expires > time::OffsetDateTime::now_utc(),
+            "a renewed lease belongs to the future"
         );
     }
 

@@ -66,6 +66,7 @@ pub mod process;
 pub mod projects;
 pub mod providers;
 pub mod push;
+pub mod queue;
 pub mod reach;
 pub mod release;
 pub mod scheduler;

@@ -790,11 +790,15 @@ impl DeviceService {
         }
     }
 
-    /// Attach the daemon's MCP pool, so `/v1/mcp` can report observed health
-    /// instead of "unknown" for everything. Called once by [`crate::admin`] while
-    /// it builds its state; nothing else needs it.
+    /// Attach the daemon's MCP pool.
+    ///
+    /// Two readers: `/v1/mcp` reports observed health from it, and a turn here is
+    /// offered its tools, so a phone is not a second-class surface with the
+    /// servers silently missing. Called once by [`crate::admin`] while it builds
+    /// its state.
     #[must_use]
     pub fn with_mcp(mut self, pool: Arc<crate::mcp::Pool>) -> Self {
+        self.hub.set_mcp(Arc::clone(&pool));
         self.mcp = Some(pool);
         self
     }

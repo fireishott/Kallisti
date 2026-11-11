@@ -24,6 +24,12 @@ pub enum Window {
     Day,
     /// The last seven days.
     Week,
+    /// Everything that is still in the transcript.
+    ///
+    /// A conversation's own numbers are not a window: a chat that started last
+    /// month is still the chat the operator is reading, and cutting it to 24h
+    /// would report the tail of it as if it were the whole thing.
+    All,
 }
 
 impl Window {
@@ -33,6 +39,8 @@ impl Window {
         match self {
             Self::Day => 24,
             Self::Week => 24 * 7,
+            // Long enough to reach before any row this daemon can hold.
+            Self::All => 24 * 365 * 100,
         }
     }
 
@@ -42,6 +50,7 @@ impl Window {
         match self {
             Self::Day => "24 hours",
             Self::Week => "7 days",
+            Self::All => "all time",
         }
     }
 
@@ -51,6 +60,7 @@ impl Window {
         match value.trim().to_ascii_lowercase().as_str() {
             "24h" | "day" | "1d" => Some(Self::Day),
             "7d" | "week" => Some(Self::Week),
+            "all" | "all-time" | "total" => Some(Self::All),
             _ => None,
         }
     }
@@ -139,6 +149,16 @@ impl Summary {
 ///
 /// A database failure.
 pub fn summary(db: &Db, window: Window) -> Result<Summary, DbError> {
+    summary_in(db, window, None)
+}
+
+/// The same numbers, for one conversation or for all of them.
+///
+/// A conversation filter is not a different calculation: it is the same rows,
+/// narrowed. The phone's chat footer asks for one chat, and it must get the same
+/// percentile the settings panel would have shown, or the two surfaces disagree
+/// about a number that is supposed to be a measurement.
+pub fn summary_in(db: &Db, window: Window, conversation: Option<&str>) -> Result<Summary, DbError> {
     const SQL: &str = "
         SELECT COALESCE(model, 'unknown') AS model,
                duration_ms,
@@ -149,11 +169,12 @@ pub fn summary(db: &Db, window: Window) -> Result<Summary, DbError> {
           FROM chat_messages
          WHERE role = 'assistant'
            AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)
+           AND (?2 IS NULL OR conversation_id = ?2)
          ORDER BY created_at DESC";
     let cutoff = format!("-{} hours", window.hours());
     let rows: Vec<(String, Option<i64>, i64, i64, i64, i64)> = db.with_conn(|conn| {
         let mut statement = conn.prepare(SQL)?;
-        let mapped = statement.query_map(rusqlite::params![cutoff], |row| {
+        let mapped = statement.query_map(rusqlite::params![cutoff, conversation], |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -240,15 +261,29 @@ mod tests {
         cached: i64,
         failed: bool,
     ) {
+        answer_in(db, "c", id, model, duration, prompt, cached, failed);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn answer_in(
+        db: &Db,
+        conversation: &str,
+        id: &str,
+        model: &str,
+        duration: Option<i64>,
+        prompt: i64,
+        cached: i64,
+        failed: bool,
+    ) {
         db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO chat_conversations (id, title) VALUES ('c', 't') ON CONFLICT(id) DO NOTHING",
-                [],
+                "INSERT INTO chat_conversations (id, title) VALUES (?1, 't') ON CONFLICT(id) DO NOTHING",
+                [conversation],
             )?;
             conn.execute(
                 "INSERT INTO chat_messages (id, conversation_id, role, body, model, duration_ms,
                                             prompt_tokens, completion_tokens, cached_tokens, state, error_code)
-                 VALUES (?1, 'c', 'assistant', 'x', ?2, ?3, ?4, 5, ?5, ?6, ?7)",
+                 VALUES (?1, ?8, 'assistant', 'x', ?2, ?3, ?4, 5, ?5, ?6, ?7)",
                 rusqlite::params![
                     id,
                     model,
@@ -256,11 +291,34 @@ mod tests {
                     prompt,
                     cached,
                     if failed { "failed" } else { "complete" },
-                    if failed { Some("provider") } else { None }
+                    if failed { Some("provider") } else { None },
+                    conversation
                 ],
             )
         })
         .expect("seed");
+    }
+
+    #[test]
+    fn a_conversation_sees_only_its_own_numbers() {
+        let db = db();
+        answer_in(&db, "c1", "a1", "model-a", Some(100), 100, 50, false);
+        answer_in(&db, "c1", "a2", "model-a", Some(300), 100, 50, false);
+        answer_in(&db, "c2", "b1", "model-b", Some(900), 1000, 0, false);
+
+        let one = summary_in(&db, Window::All, Some("c1")).expect("c1");
+        assert_eq!(one.calls, 2, "one conversation is its own two answers");
+        assert_eq!(one.rows.len(), 1);
+        assert_eq!(one.rows[0].model, "model-a");
+        assert_eq!(one.rows[0].p95_ms, Some(300));
+        assert_eq!(one.prompt_tokens, 200);
+
+        let every = summary_in(&db, Window::All, None).expect("all");
+        assert_eq!(every.calls, 3, "no filter is every conversation");
+
+        let missing = summary_in(&db, Window::All, Some("nope")).expect("missing");
+        assert_eq!(missing.calls, 0, "an unknown chat is empty, not an error");
+        assert_eq!(Window::parse("all"), Some(Window::All));
     }
 
     #[test]

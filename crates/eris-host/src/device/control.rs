@@ -775,11 +775,14 @@ pub async fn memory_files(State(service): State<DeviceService>, headers: HeaderM
     .into_response()
 }
 
-/// `GET /v1/metrics?window=24h|7d` - cost and latency for one window.
+/// `GET /v1/metrics?window=24h|7d|all&conversation=<id>` - cost and latency.
 ///
-/// The phone's Settings line needs three numbers: the model in use, the cache hit
-/// rate and the p95 latency. It reads them here rather than deriving them, because
-/// a client that computes a percentile computes a different one than the page.
+/// The phone's chat footer needs three numbers for the chat it is showing: the
+/// model in use, the cache hit rate and the p95 latency. It reads them here rather
+/// than deriving them, because a client that computes a percentile computes a
+/// different one than the page. `conversation` narrows the same rows; with no
+/// window named, a conversation is read over its whole life rather than the last
+/// day, because a chat is not a day.
 pub async fn metrics(
     State(service): State<DeviceService>,
     Query(params): Query<std::collections::HashMap<String, String>>,
@@ -791,11 +794,22 @@ pub async fn metrics(
         return error.into_response();
     }
     let engine = service.engine();
+    let conversation = params
+        .get("conversation")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty());
     let window = params
         .get("window")
         .and_then(|value| crate::metrics::Window::parse(value))
-        .unwrap_or(crate::metrics::Window::Day);
-    let summary = match crate::metrics::summary(engine.db(), window) {
+        .unwrap_or(if conversation.is_some() {
+            // One chat's numbers are its own, not the last twenty-four hours of
+            // it: the footer is answering "what has this chat cost me", and a
+            // window would quietly answer a different question.
+            crate::metrics::Window::All
+        } else {
+            crate::metrics::Window::Day
+        });
+    let summary = match crate::metrics::summary_in(engine.db(), window, conversation) {
         Ok(summary) => summary,
         Err(error) => {
             return DeviceError::db_unavailable(format!("cannot read the transcript: {error}"))
@@ -822,6 +836,7 @@ pub async fn metrics(
     axum::Json(serde_json::json!({
         "ok": true,
         "window": window.label(),
+        "conversation": conversation,
         "calls": summary.calls,
         "failed": summary.failed,
         "prompt_tokens": summary.prompt_tokens,

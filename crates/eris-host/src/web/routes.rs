@@ -10131,6 +10131,13 @@ fn spawn_turn(
             (None, Some(summary)) => Some(crate::web::context::carry(&summary)),
             (system, None) => system,
         };
+        // The same budget line the phone turn gets, in the same words: the loop's
+        // own notices only arrive at the end of the budget, and a turn that knows
+        // its size can plan inside it.
+        let system = match system {
+            Some(system) => Some(format!("{system}\n\n{}", chat::budget_notice(tool_rounds))),
+            None => Some(chat::budget_notice(tool_rounds)),
+        };
 
         // What the assistant remembers about itself and the operator, rendered
         // once for this turn and never re-rendered: a block that changes mid-turn
@@ -10377,6 +10384,9 @@ fn spawn_turn(
             Some(&attach),
             skills.as_ref(),
             Some(&search),
+            // The browser has no drain: a queued task written here would never
+            // run, so the tool is not offered and the queue is absent.
+            None,
             chat::TurnSettings {
                 tools: tools_enabled,
                 max_rounds: tool_rounds,
