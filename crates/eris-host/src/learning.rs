@@ -52,6 +52,15 @@ pub const SETTING_MIN_CHARS: &str = "learning.review.min_chars";
 /// The review budget: how many runs may be queued in one rolling hour.
 pub const SETTING_MAX_PER_HOUR: &str = "learning.review.max_per_hour";
 
+/// Whether a reply that breaks the review's own rules is repaired and re-asked
+/// once before the run is failed.
+///
+/// On by default. The loop used to discard a quarter of its work to a validator
+/// that rejected the agent's own output with no retry and no repair, which is
+/// waste rather than strictness. Off restores the old behaviour for an operator
+/// who would rather see every refusal than a corrected one.
+pub const SETTING_REVIEW_REPAIR: &str = "learning.review.repair";
+
 /// The age at which a learned skill becomes stale, in days.
 pub const SETTING_STALE_DAYS: &str = "learning.curator.stale_days";
 
@@ -74,8 +83,14 @@ pub const DEFAULT_STALE_DAYS: i64 = 30;
 /// library needs: a month unused is a warning, a quarter is an archive.
 pub const DEFAULT_ARCHIVE_DAYS: i64 = 90;
 
-/// The default interval between maintenance passes: one week.
-pub const DEFAULT_INTERVAL_HOURS: i64 = 24 * 7;
+/// The default interval between maintenance passes: one day.
+///
+/// It was a week, and the consequence was a library that aged in steps: a skill
+/// unused for a month stayed in the catalog for another week before anything
+/// noticed. A daily pass costs one directory walk against a ledger that is already
+/// in memory on every turn, and the catalog it curates is paid for on every model
+/// call, so the pass is cheaper than the staleness it prevents.
+pub const DEFAULT_INTERVAL_HOURS: i64 = 24;
 
 /// The default answer length below which a turn is not worth a review. A
 /// "thanks, that worked" answer teaches nothing and a review of it is a billed
@@ -156,6 +171,12 @@ pub fn enabled(db: &Db) -> bool {
 #[must_use]
 pub fn review_enabled(db: &Db) -> bool {
     flag(db, SETTING_REVIEW_ENABLED, true)
+}
+
+/// Whether a refused reply gets one repair and one re-ask before it is failed.
+#[must_use]
+pub fn review_repair(db: &Db) -> bool {
+    flag(db, SETTING_REVIEW_REPAIR, true)
 }
 
 /// Whether the maintenance pass may run.
@@ -759,13 +780,120 @@ pub fn valid_review_key(key: &str) -> bool {
 }
 
 /// Whether a description obeys the authoring rule: one line, at most
-/// [`MAX_DESCRIPTION_CHARS`] characters, ending in a period.
+/// [`MAX_DESCRIPTION_CHARS`] characters, one sentence, ending in a period.
 #[must_use]
 pub fn valid_description(description: &str) -> bool {
     let count = description.trim().chars().count();
     (3..=MAX_DESCRIPTION_CHARS).contains(&count)
         && description.trim().ends_with('.')
         && !description.contains(['\n', '\r'])
+        && !sentence_break(description)
+}
+
+/// Whether the text holds a second sentence.
+///
+/// The rule the error message has always stated is "one sentence", and until now
+/// nothing enforced it: a 50-character description holding two sentences passed
+/// as long as it ended in a period. A break is a period, space, and then either a
+/// capital or a code span, which is what "Do this. Then do that." looks like and
+/// what "e.g. this" does not. Abbreviations stay legal so the check costs a re-ask
+/// only when the reply really did write two sentences.
+fn sentence_break(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+    while index + 2 < chars.len() {
+        if chars[index] == '.' && chars[index + 1] == ' ' {
+            let next = chars[index + 2];
+            if next.is_ascii_uppercase() || next == '`' {
+                return true;
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
+/// Whether a refused review is worth repairing before it is retried.
+///
+/// A description one word over the line, a name with a newline in it, and an
+/// append that came back too short are the model's near-misses rather than a
+/// refusal of the work. Correcting them is cheaper than discarding the lesson.
+#[must_use]
+pub fn is_repairable(error: &ReviewError) -> bool {
+    matches!(
+        error,
+        ReviewError::BadDescription | ReviewError::BadName | ReviewError::BadAppend
+    )
+}
+
+/// Repair a review whose only problem is arithmetic, and return the JSON a second
+/// parse can read.
+///
+/// Deterministic or nothing. A description that is merely too long is clipped at a
+/// word boundary and given the period it should have had; a name carrying a
+/// newline has the newline collapsed. Everything else - two sentences, a blank
+/// name, a key that is not a slug - is left to the re-ask, because guessing which
+/// sentence the model meant is how a loop writes a rule nobody asked for.
+#[must_use]
+pub fn repair_review(raw: &str, error: &ReviewError) -> Option<String> {
+    let json = extract_json(raw)?;
+    let mut value: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let object = value.as_object_mut()?;
+    match error {
+        ReviewError::BadDescription => {
+            let original = object.get("description")?.as_str()?;
+            let fitted = fit_description(original)?;
+            if !valid_description(&fitted) {
+                return None;
+            }
+            object.insert("description".to_owned(), serde_json::Value::String(fitted));
+        }
+        ReviewError::BadName => {
+            let original = object.get("name")?.as_str()?;
+            let flat = original
+                .split(['\n', '\r'])
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if flat.is_empty() || flat.chars().count() > MAX_NAME_CHARS {
+                return None;
+            }
+            object.insert("name".to_owned(), serde_json::Value::String(flat));
+        }
+        _ => return None,
+    }
+    serde_json::to_string(&value).ok()
+}
+
+/// Fit a description into one sentence of [`MAX_DESCRIPTION_CHARS`], ending in a
+/// period, cutting at a word boundary so the result still reads as English.
+fn fit_description(description: &str) -> Option<String> {
+    let flat = description
+        .split(['\n', '\r'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let flat = flat.trim().trim_end_matches('.').trim();
+    if flat.chars().count() < 3 {
+        return None;
+    }
+    // The period is part of the budget, so the body gets one fewer character.
+    let budget = MAX_DESCRIPTION_CHARS - 1;
+    if flat.chars().count() <= budget {
+        return Some(format!("{flat}."));
+    }
+    let cut: String = flat.chars().take(budget).collect();
+    let trimmed = match cut.rfind(' ') {
+        Some(index) if index > budget / 2 => &cut[..index],
+        _ => cut.as_str(),
+    };
+    let trimmed = trimmed.trim_end_matches(|ch: char| !ch.is_alphanumeric());
+    if trimmed.chars().count() < 3 {
+        return None;
+    }
+    Some(format!("{trimmed}."))
 }
 
 /// A cheap credential scan. It is not a secret detector; it is a guard against a
@@ -1839,5 +1967,108 @@ mod tests {
         assert!(!Switches::read(&db).enabled);
         assert!(!Switches::read(&db).curator);
         assert!(Switches::read(&db).review);
+    }
+
+    /// The failure that killed a quarter of this loop's runs: a description one
+    /// word over a sixty-character line, thrown away with no repair.
+    #[test]
+    fn an_over_length_description_is_clipped_at_a_word_boundary_and_accepted() {
+        let long =
+            "Run the guard script first then deploy then check the host then snapshot the diff";
+        assert!(
+            long.chars().count() > MAX_DESCRIPTION_CHARS,
+            "the fixture must actually be over the line: {} chars",
+            long.chars().count()
+        );
+        assert!(!valid_description(long), "the raw text is over the line");
+
+        let fitted = fit_description(long).expect("it can be clipped");
+        assert!(fitted.chars().count() <= MAX_DESCRIPTION_CHARS, "{fitted}");
+        assert!(fitted.ends_with('.'), "{fitted}");
+        assert!(
+            valid_description(&fitted),
+            "the clip must pass the rule: {fitted}"
+        );
+        // The cut is at a word boundary, so nothing is truncated mid-word.
+        let body = fitted.trim_end_matches('.');
+        assert!(long.starts_with(body), "the clip is a prefix: {fitted}");
+        assert!(
+            body.chars().last().is_some_and(char::is_alphanumeric),
+            "a clip never ends on punctuation: {fitted}"
+        );
+    }
+
+    #[test]
+    fn a_two_sentence_description_is_refused_and_never_guessed_at() {
+        let two = "Run the guard first. Then deploy the build.";
+        assert!(
+            sentence_break(two),
+            "a capital after a full stop is a break"
+        );
+        assert!(
+            !valid_description(two),
+            "two sentences are not one sentence"
+        );
+        // Clipping cannot fix this one: which sentence the model meant is exactly
+        // the guess the re-ask exists to avoid.
+        let raw = format!(
+            r#"{{"action":"create","key":"guard","name":"Guard","description":"{two}","body":"{}"}}"#,
+            "x".repeat(40)
+        );
+        assert!(repair_review(&raw, &ReviewError::BadDescription).is_none());
+    }
+
+    #[test]
+    fn repair_clips_the_description_field_and_the_result_parses() {
+        let long =
+            "Run the guard script first then deploy then check the host then snapshot the diff";
+        let raw = format!(
+            r#"{{"action":"create","key":"guard","name":"Guard","description":"{long}","body":"{}"}}"#,
+            "Run the guard, then deploy.".repeat(3)
+        );
+        let error = parse_review(&raw).expect_err("the raw reply is refused");
+        assert!(matches!(error, ReviewError::BadDescription));
+        let fixed = repair_review(&raw, &error).expect("a deterministic repair exists");
+        let review = parse_review(&fixed).expect("the repaired reply parses");
+        assert!(review.description.chars().count() <= MAX_DESCRIPTION_CHARS);
+        assert_eq!(review.key, "guard");
+    }
+
+    #[test]
+    fn repair_flattens_a_name_carrying_a_newline_and_leaves_a_blank_one_alone() {
+        let raw = r#"{"action":"create","key":"guard","name":"Guard\nscript","description":"Ship it behind the guard.","body":"Run the guard first, then deploy the build safely."}"#;
+        let fixed = repair_review(raw, &ReviewError::BadName).expect("flattened");
+        let review = parse_review(&fixed).expect("parses");
+        assert_eq!(review.name, "Guard script");
+
+        let blank = r#"{"action":"create","key":"guard","name":"  ","description":"Ship it behind the guard.","body":"Run the guard first, then deploy the build safely."}"#;
+        assert!(repair_review(blank, &ReviewError::BadName).is_none());
+    }
+
+    #[test]
+    fn only_arithmetic_refusals_are_repairable() {
+        for error in [
+            ReviewError::BadDescription,
+            ReviewError::BadName,
+            ReviewError::BadAppend,
+        ] {
+            assert!(is_repairable(&error), "{error} is arithmetic");
+        }
+        for error in [
+            ReviewError::NoJson,
+            ReviewError::BadKey("Nope".to_owned()),
+            ReviewError::UnknownAction("delete".to_owned()),
+            ReviewError::BadBody { min: 10 },
+        ] {
+            assert!(!is_repairable(&error), "{error} is not arithmetic");
+        }
+    }
+
+    #[test]
+    fn the_repair_switch_defaults_on_and_can_be_turned_off() {
+        let db = db();
+        assert!(review_repair(&db), "repair is on by default");
+        crate::web::store::settings_put(&db, SETTING_REVIEW_REPAIR, "false").expect("off");
+        assert!(!review_repair(&db));
     }
 }

@@ -325,9 +325,74 @@ impl LearningWorker {
             Ok(output) => output,
             Err((code, message)) => return self.fail(db, claimed, &code, &message),
         };
+        // A review that breaks the loop's own rules used to be thrown away: the
+        // run failed, the lesson was lost, and nothing tried to correct a reply
+        // that was one word over a character limit. Repair first, re-ask once, and
+        // only then call it a failure.
+        let mut repair_note: Option<String> = None;
         let review: Review = match learning::parse_review(&output.text) {
             Ok(review) => review,
-            Err(error) => return self.fail(db, claimed, "invalid_review", &error.to_string()),
+            Err(error) => {
+                if !learning::review_repair(db) || !learning::is_repairable(&error) {
+                    return self.fail(db, claimed, "invalid_review", &error.to_string());
+                }
+                // Arithmetic is not disagreement: clip the description, flatten the
+                // name, and carry on without spending a provider call on it.
+                let repaired = learning::repair_review(&output.text, &error)
+                    .and_then(|fixed| learning::parse_review(&fixed).ok());
+                match repaired {
+                    Some(review) => {
+                        repair_note = Some(format!("repaired the reply: {error}"));
+                        review
+                    }
+                    None => {
+                        // One re-ask, with the validator's own sentence in front of
+                        // the model so it corrects against the rule instead of
+                        // guessing what was wrong. Never a third attempt.
+                        let retry = WorkRequest {
+                            config: request.config.clone(),
+                            system: request.system.clone(),
+                            prompt: format!(
+                                "{}\n\nYour previous reply was refused: {error}\n\
+                                 Reply again with one JSON object that obeys that rule.",
+                                request.prompt
+                            ),
+                            workspace: request.workspace.clone(),
+                        };
+                        let second = match (self.runner)(&retry) {
+                            Ok(output) => output,
+                            Err((code, message)) => {
+                                return self.fail(db, claimed, &code, &message);
+                            }
+                        };
+                        // The second provider call is a second attempt, and the row
+                        // says so: a run that needed correcting is visible on the
+                        // page rather than looking like a first-try success.
+                        db.with_conn(|conn| {
+                            conn.execute(
+                                "UPDATE learning_runs SET attempts = attempts + 1 WHERE id = ?1",
+                                params![claimed.id],
+                            )?;
+                            Ok(())
+                        })
+                        .map_err(LearningError::Db)?;
+                        match learning::parse_review(&second.text) {
+                            Ok(review) => {
+                                repair_note = Some(format!("re-asked after: {error}"));
+                                review
+                            }
+                            Err(again) => {
+                                return self.fail(
+                                    db,
+                                    claimed,
+                                    "invalid_review",
+                                    &format!("first reply: {error}; second reply: {again}"),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         };
         let applied = match learning::apply(db, shelf, &review, Some(&claimed.id)) {
             Ok(applied) => applied,
@@ -341,13 +406,17 @@ impl LearningWorker {
         } else {
             "done"
         };
+        let note = match &repair_note {
+            Some(repair) => format!("{} ({repair})", applied.note),
+            None => applied.note.clone(),
+        };
         self.settle(
             db,
             claimed,
             status,
             Some(applied.action),
             applied.key.as_deref(),
-            Some(&applied.note),
+            Some(&note),
             Some(&config.model),
         )
     }
@@ -506,6 +575,33 @@ pub fn run_curator(db: &Db, shelf: &Shelf) -> Result<CuratorOutcome, LearningErr
         let age = now - anchor;
         outcome.checked += 1;
         let on_disk = shelf.dir.join(&row.key).is_dir();
+        // A skill nothing has ever read failed the only test that matters, and it
+        // has been failing it for a whole stale window. Ageing it to `stale` first
+        // would leave it in the catalog for another quarter, and the catalog is
+        // paid for on every model call, so this one is archived in a single step.
+        // Nothing is deleted: [`learning::archive`] moves the directory into
+        // `.archive/` and the ledger keeps the row, which is what makes a restore
+        // possible.
+        if row.use_count == 0 && age >= stale && row.state != State::Archived {
+            if on_disk {
+                match learning::archive(shelf, &row.key) {
+                    Ok(path) => {
+                        tracing::info!(
+                            skill = %row.key,
+                            path = %path.display(),
+                            "learning: archived a skill nothing ever read"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, skill = %row.key, "learning: archive failed; the skill is left in place");
+                        continue;
+                    }
+                }
+            }
+            learning::mark_archived(db, &row.key)?;
+            outcome.archived += 1;
+            continue;
+        }
         if age >= archive {
             if row.state != State::Archived {
                 if on_disk {
@@ -820,6 +916,141 @@ mod tests {
         assert_eq!(code, "invalid_review");
     }
 
+    /// A refusal gets exactly one corrected ask, not a loop.
+    ///
+    /// The first reply carries two sentences where the rule asks for one. That is
+    /// not arithmetic, so it cannot be clipped, and the worker has to ask again
+    /// with the validator's own sentence in front of the model. Two provider calls
+    /// total, one `attempts` row, and a lesson that survives instead of dying on
+    /// the floor.
+    #[test]
+    fn a_two_sentence_description_is_re_asked_once_and_then_accepted() {
+        let (_dir, engine) = engine();
+        let db = engine.db();
+        answer(db);
+        crate::web::store::settings_put(db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
+            .unwrap();
+        let body = "1. Run scripts/kallisti-guard.sh snapshot.\\n2. Run it check.\\n3. Deploy.";
+        let first = format!(
+            r#"{{"action":"create","key":"guard-first","name":"Guard first","description":"Run the guard first. Then deploy the build.","body":"{body}"}}"#
+        );
+        let second = format!(
+            r#"{{"action":"create","key":"guard-first","name":"Guard first","description":"Run the guard before every deploy.","body":"{body}"}}"#
+        );
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let runner: Arc<Runner> = Arc::new(move |_request: &WorkRequest| {
+            let index = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(WorkOutput {
+                text: if index == 0 {
+                    first.clone()
+                } else {
+                    second.clone()
+                },
+            })
+        });
+        let worker = LearningWorker::new(engine.clone(), Some(shelf(_dir.path())), runner);
+        assert!(worker.run_once().unwrap());
+
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one refusal plus one corrected ask, and no third"
+        );
+        let (status, action, attempts, summary): (String, String, i64, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status, COALESCE(action, ''), attempts, COALESCE(summary, '') \
+                       FROM learning_runs",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+            })
+            .unwrap();
+        assert_eq!(status, "done", "the lesson survived the correction");
+        assert_eq!(action, "create");
+        assert_eq!(attempts, 2, "the claim plus the corrective attempt");
+        assert!(
+            summary.contains("re-asked after"),
+            "the run says it needed correcting: {summary}"
+        );
+    }
+
+    /// The arithmetic case spends no provider call at all.
+    #[test]
+    fn an_over_length_description_is_repaired_without_a_second_call() {
+        let (_dir, engine) = engine();
+        let db = engine.db();
+        answer(db);
+        crate::web::store::settings_put(db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
+            .unwrap();
+        let body = "1. Run scripts/kallisti-guard.sh snapshot.\\n2. Run it check.\\n3. Deploy.";
+        let long = format!(
+            r#"{{"action":"create","key":"guard-first","name":"Guard first","description":"Run the guard script first then deploy then check the host then snapshot the diff","body":"{body}"}}"#
+        );
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let reply = long.clone();
+        let runner: Arc<Runner> = Arc::new(move |_request: &WorkRequest| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(WorkOutput {
+                text: reply.clone(),
+            })
+        });
+        let worker = LearningWorker::new(engine.clone(), Some(shelf(_dir.path())), runner);
+        assert!(worker.run_once().unwrap());
+
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "clipping a description needs no model call"
+        );
+        let (status, attempts): (String, i64) = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT status, attempts FROM learning_runs", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+            })
+            .unwrap();
+        assert_eq!(status, "done");
+        assert_eq!(attempts, 1, "the claim, with no corrective attempt on top");
+    }
+
+    /// Turning the switch off restores the old behaviour: refuse, do not repair.
+    #[test]
+    fn the_repair_switch_off_fails_the_run_without_a_second_call() {
+        let (_dir, engine) = engine();
+        let db = engine.db();
+        answer(db);
+        crate::web::store::settings_put(db, learning::SETTING_WATERMARK, "2000-01-01T00:00:00Z")
+            .unwrap();
+        crate::web::store::settings_put(db, learning::SETTING_REVIEW_REPAIR, "false").unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let reply = r#"{"action":"create","key":"guard-first","name":"Guard first","description":"Run the guard first. Then deploy.","body":"x"}"#.to_owned();
+        let runner: Arc<Runner> = Arc::new(move |_request: &WorkRequest| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(WorkOutput {
+                text: reply.clone(),
+            })
+        });
+        let worker = LearningWorker::new(engine.clone(), Some(shelf(_dir.path())), runner);
+        assert!(worker.run_once().unwrap());
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let (status, code): (String, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status, COALESCE(error_code, '') FROM learning_runs",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+            })
+            .unwrap();
+        assert_eq!(status, "failed");
+        assert_eq!(code, "invalid_review");
+    }
+
     #[test]
     fn a_none_review_settles_skipped_and_writes_no_skill() {
         let (_dir, engine) = engine();
@@ -860,12 +1091,18 @@ mod tests {
         assert_eq!(queued, 0);
     }
 
+    /// A skill nothing ever read goes in one step, not in two.
+    ///
+    /// It failed the only test that matters, and it has been failing it for a
+    /// whole stale window. Ageing it to `stale` first would leave it in the
+    /// catalog for another quarter, and the catalog is paid for on every model
+    /// call. Nothing is deleted: the directory moves into `.archive/` and the
+    /// ledger keeps the row.
     #[test]
-    fn the_curator_ages_an_old_learned_skill_stale_then_archived() {
+    fn the_curator_archives_a_skill_nothing_ever_read_in_one_step() {
         let (_dir, engine) = engine();
         let db = engine.db();
         let shelf = shelf(_dir.path());
-        // A learned skill created 40 days ago and never used.
         std::fs::create_dir_all(shelf.dir.join("old-one")).unwrap();
         std::fs::write(
             shelf.dir.join("old-one").join("SKILL.md"),
@@ -884,18 +1121,56 @@ mod tests {
             )
         })
         .unwrap();
+
+        let outcome = run_curator(db, &shelf).unwrap();
+        assert_eq!(outcome.archived, 1, "archived without a stale step");
+        assert_eq!(outcome.marked_stale, 0);
+        assert_eq!(
+            learning::usage(db, "old-one").unwrap().unwrap().state,
+            State::Archived
+        );
+        assert!(!shelf.dir.join("old-one").exists(), "the directory moved");
+        assert!(shelf.dir.join(learning::ARCHIVE_DIR).exists());
+    }
+
+    /// A skill that was read but has gone quiet still ages in two steps.
+    #[test]
+    fn the_curator_ages_a_used_skill_stale_then_archived() {
+        let (_dir, engine) = engine();
+        let db = engine.db();
+        let shelf = shelf(_dir.path());
+        std::fs::create_dir_all(shelf.dir.join("used-one")).unwrap();
+        std::fs::write(
+            shelf.dir.join("used-one").join("SKILL.md"),
+            "---\nname: Used One\ndescription: Used.\n---\n\n## Procedure\n\nused\n",
+        )
+        .unwrap();
+        learning::record_created(db, "used-one", Some("Used."), None).unwrap();
+        // It was read once, so it is not the never-used case.
+        learning::note_use(db, "used-one").unwrap();
+        let old = (OffsetDateTime::now_utc() - time::Duration::days(40))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap()
+            .replace("+00:00", "Z");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE skill_usage SET created_at = ?2, last_activity_at = ?2 WHERE key = ?1",
+                params!["used-one", old],
+            )
+        })
+        .unwrap();
+
         let outcome = run_curator(db, &shelf).unwrap();
         assert_eq!(outcome.marked_stale, 1);
         assert_eq!(
-            learning::usage(db, "old-one").unwrap().unwrap().state,
+            learning::usage(db, "used-one").unwrap().unwrap().state,
             State::Stale
         );
         assert!(
-            shelf.dir.join("old-one").exists(),
+            shelf.dir.join("used-one").exists(),
             "stale keeps the directory"
         );
 
-        // Another 60 days and the same pass archives it.
         let older = (OffsetDateTime::now_utc() - time::Duration::days(100))
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap()
@@ -903,18 +1178,17 @@ mod tests {
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE skill_usage SET last_activity_at = ?2 WHERE key = ?1",
-                params!["old-one", older],
+                params!["used-one", older],
             )
         })
         .unwrap();
         let outcome = run_curator(db, &shelf).unwrap();
         assert_eq!(outcome.archived, 1);
         assert_eq!(
-            learning::usage(db, "old-one").unwrap().unwrap().state,
+            learning::usage(db, "used-one").unwrap().unwrap().state,
             State::Archived
         );
-        assert!(!shelf.dir.join("old-one").exists());
-        assert!(shelf.dir.join(learning::ARCHIVE_DIR).exists());
+        assert!(!shelf.dir.join("used-one").exists());
     }
 
     #[test]

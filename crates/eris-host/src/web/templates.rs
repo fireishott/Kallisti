@@ -5318,7 +5318,10 @@ pub fn skills_page(view: &SkillsView) -> Markup {
                                     (skill.state.as_str())
                                     @if skill.pinned { " " span .tag { "pinned" } }
                                 }
-                                td .mono .small { (skill.bytes) " bytes" }
+                                td .mono .small {
+                                    (skill.bytes) " bytes · " (skill.use_count) " read"
+                                    @if skill.use_count != 1 { "s" }
+                                }
                                 td {
                                     a .button.secondary
                                         href=(format!("{}?edit={}", crate::admin::ROUTE_SKILLS, skill.key)) {
@@ -10895,6 +10898,8 @@ mod tests {
             state: crate::learning::State::Active,
             pinned: false,
             editable: true,
+            use_count: 3,
+            last_used: Some("2026-11-01T00:00:00.000Z".to_owned()),
         }];
         view.editing = Some(SkillEditor {
             key: "deploy".to_owned(),

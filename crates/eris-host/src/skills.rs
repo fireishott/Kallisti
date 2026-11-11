@@ -55,15 +55,23 @@ pub const MAX_SKILL_BYTES: u64 = 64 * 1024;
 /// How much of a skill a turn receives in one call.
 pub const MAX_READ_BYTES: usize = 24 * 1024;
 
-/// How many skills the catalog may name in one prompt.
+/// The ceiling on the library itself, as a guard against a directory somebody
+/// pointed at `/` by accident.
 ///
-/// A name and a clipped description is about 120 bytes, so the whole of a real
-/// library costs a few kilobytes of prompt. The ceiling is here to bound a
-/// directory somebody pointed at `/` by accident, not to ration a working
-/// library: a hundred-odd skills all listed is the intended case, and a catalog
-/// that silently dropped the last fifteen would be a skill the model can never
-/// find.
+/// This is no longer the size of the prompt block. It bounds how much of a
+/// pathological library `list` will describe, which is a different concern from
+/// how much of a healthy one a turn should carry.
 pub const MAX_CATALOG: usize = 400;
+
+/// How many skills one prompt block names.
+///
+/// On this host 126 skills were installed, 102 of them never read once, and every
+/// one of them was paid for on every model call. Forty ordered by what is actually
+/// used keeps the block to the part of the library that earns its tokens, and the
+/// block states the remainder so a turn can ask for the library instead of
+/// assuming a skill is absent. Roughly 120 bytes a line puts the block near five
+/// kilobytes, which is a fraction of what the catalog used to cost.
+pub const MAX_CATALOG_PROMPT: usize = 40;
 
 /// The longest description the catalog keeps for one skill, in characters.
 pub const MAX_DESCRIPTION_CHARS: usize = 200;
@@ -167,6 +175,13 @@ pub struct Skill {
     /// file this daemon can replace, so the answer is yes for every row; the
     /// field is published anyway, so a client never has to infer it from a state.
     pub editable: bool,
+    /// How many times a turn has read it, from the ledger.
+    ///
+    /// The catalog orders by this, so it has to be on the skill rather than
+    /// looked up again at render time. A skill the ledger has never seen is zero.
+    pub use_count: i64,
+    /// When a turn last read it, from the ledger, ISO 8601 UTC.
+    pub last_used: Option<String>,
 }
 
 /// Whether the feature is on at all.
@@ -385,6 +400,8 @@ fn describe(dir: &Path, key: &str, enabled: bool) -> Option<Skill> {
         state: crate::learning::State::Active,
         pinned: false,
         editable: true,
+        use_count: 0,
+        last_used: None,
     })
 }
 
@@ -442,6 +459,8 @@ pub fn list(db: &Db, stored_dir: Option<&str>) -> Result<(Vec<Skill>, PathBuf), 
             skill.origin = row.created_by;
             skill.state = row.state;
             skill.pinned = row.pinned;
+            skill.use_count = row.use_count;
+            skill.last_used = row.last_used_at.clone();
         }
     }
     out.sort_by(|a, b| a.key.cmp(&b.key));
@@ -449,18 +468,48 @@ pub fn list(db: &Db, stored_dir: Option<&str>) -> Result<(Vec<Skill>, PathBuf), 
 }
 
 /// The catalog a turn carries, or `None` when there is nothing to say.
+///
+/// This block is inserted into the system prompt on every single model call, so
+/// its size is a standing cost and its ordering is a decision. Two rules follow
+/// from that:
+///
+/// - an archived skill is not listed. It is out of the library by definition, and
+///   listing it would be paying tokens to advertise something the operator cannot
+///   use;
+/// - what does get listed is the part of the library a turn is most likely to
+///   need: pinned first, then most-read, then most-recently-read. Before this,
+///   the list was the first forty skills alphabetically, which on this host meant
+///   paying for 100 entries nothing had ever opened.
+///
+/// [`MAX_CATALOG_PROMPT`] bounds the block; [`MAX_CATALOG`] stays the ceiling on
+/// the library itself. When more is installed than is listed, the block says how
+/// many are missing, so a turn knows to widen its search by asking for the
+/// library rather than concluding a skill does not exist.
 #[must_use]
 pub fn catalog(skills: &[Skill]) -> Option<String> {
-    let live: Vec<&Skill> = skills.iter().filter(|skill| skill.enabled).collect();
+    let mut live: Vec<&Skill> = skills
+        .iter()
+        .filter(|skill| skill.enabled && !matches!(skill.state, crate::learning::State::Archived))
+        .collect();
     if live.is_empty() {
         return None;
     }
+    live.sort_by(|a, b| {
+        b.pinned
+            .cmp(&a.pinned)
+            .then_with(|| b.use_count.cmp(&a.use_count))
+            // A read timestamp is ISO 8601 UTC, so lexicographic order is
+            // chronological and `Some` sorts above `None`.
+            .then_with(|| b.last_used.cmp(&a.last_used))
+            .then_with(|| a.key.cmp(&b.key))
+    });
+    let listed = live.len().min(MAX_CATALOG_PROMPT);
     let mut text = String::from(
         "Procedures this operator has written, available on demand. This is names and \
          descriptions only: call `read_skill` with a key before following one, and do not follow a \
          skill whose description does not fit the task in front of you.",
     );
-    for skill in live.iter().take(MAX_CATALOG) {
+    for skill in live.iter().take(listed) {
         text.push_str("\n\n- `");
         text.push_str(&skill.key);
         text.push('`');
@@ -474,10 +523,10 @@ pub fn catalog(skills: &[Skill]) -> Option<String> {
             text.push_str(description);
         }
     }
-    if live.len() > MAX_CATALOG {
+    if live.len() > listed {
         text.push_str(&format!(
             "\n\n{} more skill(s) are in the library but not listed here.",
-            live.len() - MAX_CATALOG
+            live.len() - listed
         ));
     }
     Some(text)
@@ -936,11 +985,15 @@ mod tests {
         assert!(catalog.contains("read_skill"), "{catalog}");
     }
 
-    /// The real library is larger than the old ceiling of 80, so every skill in
-    /// it must be nameable: a catalog that drops the tail hides those skills from
-    /// the model entirely, since the catalog is the only place a key is learned.
+    /// The prompt block is bounded, and it says so out loud.
+    ///
+    /// This test used to assert the opposite: that a 120-skill library was named
+    /// in full. On this host that meant paying for 100 entries nothing had ever
+    /// opened, on every model call. The block now names the forty a turn is most
+    /// likely to need and states the remainder, which is what keeps "absent" and
+    /// "not listed" distinguishable to the model.
     #[test]
-    fn a_library_larger_than_eighty_skills_still_names_them_all() {
+    fn a_library_past_the_prompt_ceiling_names_the_used_names_and_counts_the_rest() {
         let (_dir, library) = scratch();
         for index in 0..120 {
             write_skill(
@@ -954,13 +1007,42 @@ mod tests {
         let (skills, _) = list(&db, Some(&library.display().to_string())).expect("the library");
         assert_eq!(skills.len(), 120);
         let catalog = catalog(&skills).expect("a catalog");
-        for index in 0..120 {
-            assert!(
-                catalog.contains(&format!("`skill-{index:03}`")),
-                "skill-{index:03} is missing from the catalog"
-            );
-        }
-        assert!(!catalog.contains("more skill"), "{catalog}");
+        let named = catalog.matches("- `skill-").count();
+        assert_eq!(named, MAX_CATALOG_PROMPT, "{catalog}");
+        assert!(
+            catalog.contains(&format!("{} more skill(s)", 120 - MAX_CATALOG_PROMPT)),
+            "the block states what it left out: {catalog}"
+        );
+    }
+
+    #[test]
+    fn an_archived_skill_is_not_in_the_catalog_and_use_orders_the_rest() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "never-used", "description: one", "steps");
+        write_skill(&library, "well-used", "description: two", "steps");
+        write_skill(&library, "put-away", "description: three", "steps");
+        let db = db();
+        crate::learning::record_created(&db, "put-away", Some("three"), None).expect("ledger");
+        crate::learning::set_state(&db, "put-away", crate::learning::State::Archived)
+            .expect("archived");
+        crate::learning::record_created(&db, "well-used", Some("two"), None).expect("ledger");
+        crate::learning::note_use(&db, "well-used").expect("a read");
+        crate::learning::note_use(&db, "well-used").expect("another read");
+
+        let (skills, _) = list(&db, Some(&library.display().to_string())).expect("the library");
+        let catalog = catalog(&skills).expect("a catalog");
+        assert!(
+            !catalog.contains("put-away"),
+            "an archived skill is out of the library: {catalog}"
+        );
+        let used = catalog.find("well-used").expect("the read skill is listed");
+        let unused = catalog
+            .find("never-used")
+            .expect("the unread skill is listed");
+        assert!(
+            used < unused,
+            "what a turn has actually read comes first: {catalog}"
+        );
     }
 
     #[test]

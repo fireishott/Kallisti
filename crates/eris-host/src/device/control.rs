@@ -639,6 +639,10 @@ pub async fn skills_list(State(service): State<DeviceService>, headers: HeaderMa
                         "state": skill.state.as_str(),
                         "pinned": skill.pinned,
                         "editable": skill.editable,
+                        // What the ledger actually records, so a client can tell
+                        // the library apart from the part of it a prompt carries.
+                        "use_count": skill.use_count,
+                        "last_used": skill.last_used,
                     })
                 })
                 .collect();
