@@ -31,20 +31,20 @@ use crate::admin::{
     ROUTE_BACKUPS_RESTORE, ROUTE_CHAT, ROUTE_CHAT_ANSWER, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE,
     ROUTE_CHAT_FILE, ROUTE_CHAT_ID, ROUTE_CHAT_LIVE, ROUTE_CHAT_MODE, ROUTE_CHAT_NEW,
     ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_SORT, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD,
-    ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_ENV, ROUTE_ENV_DELETE, ROUTE_JOB_CANCEL,
-    ROUTE_LEARNING, ROUTE_LEARNING_CURATOR, ROUTE_LEARNING_SAVE, ROUTE_LEARNING_SKILL, ROUTE_LOGIN,
-    ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SEARCH, ROUTE_SECURITY,
-    ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE,
-    ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP,
-    ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
-    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD,
-    ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
-    ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
-    ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
-    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
-    ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE,
-    VERSION, session_path,
+    ROUTE_DASHBOARD_PROCESS_KILL, ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_ENV, ROUTE_ENV_DELETE,
+    ROUTE_JOB_CANCEL, ROUTE_LEARNING, ROUTE_LEARNING_CURATOR, ROUTE_LEARNING_SAVE,
+    ROUTE_LEARNING_SKILL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN,
+    ROUTE_SEARCH, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
+    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL,
+    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
+    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
+    ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT,
+    ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA,
+    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
+    ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
+    ROUTE_SETTINGS_UPDATE, ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK,
+    ROUTE_SETTINGS_UPDATE_PROGRESS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS,
+    ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -162,6 +162,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_LEARNING_SKILL, post(learning_skill))
         .route(ROUTE_LEARNING_CURATOR, post(run_learning_curator))
         .route(ROUTE_SEARCH, get(search))
+        .route(ROUTE_DASHBOARD_PROCESS_KILL, post(kill_background_process))
         .route(ROUTE_SKILLS, get(skills_page_handler))
         // The editor carries a whole file, which is far larger than the 16 KiB
         // the other forms allow, so this one route states its own ceiling.
@@ -596,6 +597,17 @@ fn build_dashboard_view(state: &AppState) -> Result<DashboardView, FormError> {
         .paired_device_count()
         .map_err(|error| form_error(&error))?;
     view.jobs = store::jobs_by_status(db).map_err(|error| db_error(&error))?;
+    // Background work, from the one table the `process` tool and the device route
+    // also read, so this card cannot disagree with them.
+    let workspace = engine
+        .workspace_path()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let snapshot = crate::process::Desk::new(db.clone(), &workspace).snapshot();
+    view.processes = snapshot["processes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    view.processes_running = snapshot["running"].as_u64().unwrap_or(0) as usize;
     // Facts this page was missing while the rest of the list grew: what is
     // waiting on the operator, what is broken, and when the last answer landed.
     view.approvals_waiting = crate::approvals::pending(db)
@@ -1361,6 +1373,28 @@ async fn search(
         }
     }
     page(search_page(&view))
+}
+
+/// `POST /dashboard/processes/{id}/kill` - stop one background process.
+///
+/// The page's hand on the same handle table the `process` tool and the device
+/// route use. Stop means SIGTERM and then SIGKILL, exactly as the tool does, so
+/// the two surfaces cannot stop work differently.
+async fn kill_background_process(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let engine = &state.engine;
+    let workspace = engine
+        .workspace_path()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let _ = crate::process::Desk::new(engine.db().clone(), &workspace).kill_by_id(&id);
+    axum::response::Redirect::to(crate::admin::ROUTE_DASHBOARD).into_response()
 }
 
 /// `POST /dashboard/learning/save` - the master switch, review and curator.
@@ -9669,7 +9703,10 @@ fn spawn_turn(
             .permissions()
             .map(|permissions| permissions.sandbox_mode)
             .unwrap_or(crate::onboarding::permissions::SandboxMode::ReadOnly);
-        crate::tools::Sandbox::new(workspace, mode)
+        // Background work is recorded against the daemon's own database and logs
+        // under the workspace, so the desk needs both.
+        let desk = std::sync::Arc::new(crate::process::Desk::new(db.clone(), &workspace));
+        crate::tools::Sandbox::new(workspace, mode).with_processes(desk)
     };
     let mcp = state.mcp.clone();
     let approval_policy = state

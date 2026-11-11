@@ -123,6 +123,12 @@ pub const ROUTE_REFRESH: &str = "/v1/token/refresh";
 /// `POST /v1/turns` - queue one turn.
 pub const ROUTE_TURNS: &str = "/v1/turns";
 
+/// `GET /v1/processes` - background work this daemon is running.
+pub const ROUTE_PROCESSES: &str = "/v1/processes";
+
+/// `POST /v1/processes/{id}/kill` - stop one, politely and then not.
+pub const ROUTE_PROCESS_KILL: &str = "/v1/processes/{id}/kill";
+
 /// `GET /v1/turns/{id}/events` - the SSE stream for one job.
 pub const ROUTE_EVENTS: &str = "/v1/turns/{id}/events";
 
@@ -1093,6 +1099,8 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_PAIR, post(handlers::pair))
         .route(ROUTE_REFRESH, post(handlers::refresh))
         .route(ROUTE_TURNS, post(handlers::create_turn))
+        .route(ROUTE_PROCESSES, get(control::processes))
+        .route(ROUTE_PROCESS_KILL, post(control::kill_process))
         .route(ROUTE_EVENTS, get(handlers::events))
         .route(ROUTE_CANCEL, post(handlers::cancel))
         .route(ROUTE_ASKED, get(handlers::asked))

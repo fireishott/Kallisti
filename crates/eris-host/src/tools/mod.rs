@@ -221,17 +221,65 @@ pub fn goal_rounds_ceiling(stored: Option<&str>) -> usize {
 }
 
 /// Where a turn may work, and how much it may do there.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The desk is deliberately outside the identity of a sandbox: two sandboxes over
+/// the same workspace in the same mode are the same boundary whether or not one of
+/// them can start background work. So `Debug`, `PartialEq` and `Eq` are written by
+/// hand over the two fields that describe the boundary.
+#[derive(Clone)]
 pub struct Sandbox {
     workspace: PathBuf,
     mode: SandboxMode,
+    /// The background desks this turn may use, when the caller wired one up.
+    ///
+    /// Absent in a test and in a turn with no database, which is why every use
+    /// site answers a refusal instead of assuming it is there.
+    processes: Option<std::sync::Arc<crate::process::Desk>>,
 }
+
+impl std::fmt::Debug for Sandbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sandbox")
+            .field("workspace", &self.workspace)
+            .field("mode", &self.mode)
+            .field("processes", &self.processes.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for Sandbox {
+    fn eq(&self, other: &Self) -> bool {
+        self.workspace == other.workspace && self.mode == other.mode
+    }
+}
+
+impl Eq for Sandbox {}
 
 impl Sandbox {
     /// Build a sandbox over a workspace.
     #[must_use]
     pub fn new(workspace: PathBuf, mode: SandboxMode) -> Self {
-        Self { workspace, mode }
+        Self {
+            workspace,
+            mode,
+            processes: None,
+        }
+    }
+
+    /// Give this sandbox a background desk.
+    ///
+    /// Separate from [`Sandbox::new`] because a desk needs a database, and the
+    /// sandbox is constructed in places that have not got one.
+    #[must_use]
+    pub fn with_processes(mut self, desk: std::sync::Arc<crate::process::Desk>) -> Self {
+        self.processes = Some(desk);
+        self
+    }
+
+    /// The background desk, when this turn was given one.
+    #[must_use]
+    pub fn processes(&self) -> Option<&std::sync::Arc<crate::process::Desk>> {
+        self.processes.as_ref()
     }
 
     /// The directory every path resolves against.
@@ -441,7 +489,10 @@ pub fn specs_offering(mode: SandboxMode, agents: bool) -> Vec<ToolSpec> {
         offered.push(ToolSpec {
             name: "run_command".to_owned(),
             description: "Run a shell command on this host and return its output. \
-                          Runs in the workspace with the daemon's own privileges."
+                          Runs in the workspace with the daemon's own privileges. \
+                          A foreground command is capped at 30s and 64KB; for \
+                          anything longer set background and use the `process` \
+                          tool. Nothing is backgrounded automatically."
                 .to_owned(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -449,11 +500,21 @@ pub fn specs_offering(mode: SandboxMode, agents: bool) -> Vec<ToolSpec> {
                     "command": {
                         "type": "string",
                         "description": "The command line, run with sh -c."
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "Start it with no cap and return a process id immediately. \
+                                        Use this for builds, test suites and refreshes; then poll \
+                                        it with the `process` tool."
                     }
                 },
                 "required": ["command"]
             }),
         });
+        // The handle that makes the background flag useful. Offered beside
+        // run_command because it answers the same capability, and only where a
+        // command may be started at all.
+        offered.push(crate::process::spec());
         // Dispatching is a Full-mode capability for the same reason command
         // execution is: it spends the host's resources on the model's say-so. Off
         // by setting, and off outside Full always, because a confined turn that
@@ -489,6 +550,15 @@ pub fn execute_streaming(
         "write_file" => write_file(arguments, sandbox),
         "run_command" => run_command(arguments, sandbox, sink),
         "fetch_url" => fetch_url(arguments, sandbox),
+        // The handle for work that outlives the foreground cap. It lives on the
+        // sandbox because it needs a database, and a turn without one refuses
+        // rather than pretending the tool is absent.
+        "process" => match sandbox.processes() {
+            Some(desk) => desk.call(arguments),
+            None => ToolResult::refused(
+                "the process desk is not available to this turn, so nothing was checked",
+            ),
+        },
         // Named rather than unknown: this layer cannot dispatch, because a
         // dispatch needs a database and a parent turn. The turn that offered the
         // spec intercepts the call before it reaches here, so this is the answer a
@@ -824,6 +894,27 @@ fn run_command(
         return ToolResult::error("a command cannot be empty");
     }
 
+    // Background work is opt-in, and only when the turn was given a desk. The
+    // trailing-`&` auto-detection another agent ships is a footgun: a command that
+    // merely mentions an ampersand would vanish into the background, and a command
+    // that hangs would silently become unkillable history. The flag is explicit and
+    // the description says so.
+    if arguments
+        .get("background")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        let Some(desk) = sandbox.processes() else {
+            return ToolResult::error(
+                "background work needs the daemon's process desk, and this turn has none",
+            );
+        };
+        return match desk.start(command, sandbox.workspace()) {
+            Ok(body) => ToolResult::ok(body),
+            Err(error) => ToolResult::error(error),
+        };
+    }
+
     // `timeout` rather than a Rust timer: the child is killed by the kernel and
     // exit 124 says so, which is a failure the model can see instead of a hang
     // that looks like the daemon dying.
@@ -876,13 +967,31 @@ fn run_command(
     // knows. `stderr` is empty rather than absent, so a shape with two streams
     // still has two, and `streams` states plainly that the two were interleaved
     // to keep the order a terminal would have shown.
-    let body = serde_json::json!({
-        "command": command,
-        "exit_code": exit_code,
-        "streams": "merged",
-        "stdout": text,
-        "stderr": "",
-    });
+    let body = {
+        let mut body = serde_json::json!({
+            "command": command,
+            "exit_code": exit_code,
+            "streams": "merged",
+            "stdout": text,
+            "stderr": "",
+        });
+        // A signalled death and a cap that fired are both failure facts the model
+        // cannot act on until they are named. 122 calls on this host read
+        // `timed out` and were re-run unchanged, because nothing said why.
+        if exit_code == Some(124) {
+            body["signal_note"] = serde_json::Value::String(format!(
+                "exit 124: the {}s foreground cap ended it. This is the work the cap exists \
+                 to refuse: run it again with `background: true` and poll it with the \
+                 `process` tool instead of shortening it.",
+                COMMAND_TIMEOUT_SECS
+            ));
+        } else if let Ok(status) = &status
+            && let Some(note) = crate::process::explain(*status)
+        {
+            body["signal_note"] = serde_json::Value::String(note);
+        }
+        body
+    };
 
     match status {
         // A command that could not be reaped is a failure with evidence

@@ -485,8 +485,11 @@ impl TurnPolicy {
             .map(|permissions| permissions.approval_policy)
             .unwrap_or(crate::onboarding::permissions::ApprovalPolicy::Ask);
         let setting = |key: &str| engine.setting(key).ok().flatten();
+        // A phone can start background work too, and it lands in the same jobs
+        // table and the same log directory as the browser's.
+        let desk = std::sync::Arc::new(crate::process::Desk::new(engine.db().clone(), &workspace));
         Self {
-            sandbox: crate::tools::Sandbox::new(workspace, mode),
+            sandbox: crate::tools::Sandbox::new(workspace, mode).with_processes(desk),
             approval_policy,
             tools: crate::tools::enabled(setting(crate::tools::SETTING_TOOLS_ENABLED).as_deref()),
             max_rounds: crate::tools::max_rounds(

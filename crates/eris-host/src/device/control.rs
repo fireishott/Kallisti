@@ -748,6 +748,59 @@ pub async fn search_transcript(
     }
 }
 
+/// `GET /v1/processes` - background work this daemon is running.
+///
+/// Background work used to be invisible off the host: a `nohup` shell a turn left
+/// behind was in no table and on no screen. This route reads the same handle table
+/// the `process` tool reads, so the phone and the model see one list.
+pub async fn processes(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let engine = service.engine();
+    let workspace = engine
+        .workspace_path()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let desk = crate::process::Desk::new(engine.db().clone(), &workspace);
+    let snapshot = desk.snapshot();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "processes": snapshot["processes"],
+        "running": snapshot["running"],
+        "total": snapshot["total"],
+    }))
+    .into_response()
+}
+
+/// `POST /v1/processes/{id}/kill` - stop one, politely and then not.
+pub async fn kill_process(
+    State(service): State<DeviceService>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let engine = service.engine();
+    let workspace = engine
+        .workspace_path()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let desk = crate::process::Desk::new(engine.db().clone(), &workspace);
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "process": desk.kill_by_id(&id),
+    }))
+    .into_response()
+}
+
 /// `GET /v1/skills/{key}` - one skill's body.
 ///
 /// A switched-off skill is absent here for the same reason it is absent from the

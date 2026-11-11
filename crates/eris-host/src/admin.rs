@@ -388,6 +388,13 @@ pub fn job_cancel_path(id: &str) -> String {
     format!("/dashboard/jobs/{id}/cancel")
 }
 
+/// `POST /dashboard/processes/{id}/kill` - stop one background process.
+///
+/// The dashboard's own hand on the same handle table the `process` tool reads, so
+/// work a turn started in the background can be stopped from the page that lists
+/// it instead of by finding the pid on the host.
+pub const ROUTE_DASHBOARD_PROCESS_KILL: &str = "/dashboard/processes/{id}/kill";
+
 /// `GET /login` and `POST /login` - the way a browser gets a session once the
 /// wizard is closed. Sits behind the ready gate with the dashboard, because
 /// before `ready` the wizard is the surface that owns the credential.

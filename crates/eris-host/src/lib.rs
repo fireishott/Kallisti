@@ -60,6 +60,7 @@ pub mod oauth;
 pub mod onboarding;
 pub mod persona;
 pub mod probe;
+pub mod process;
 pub mod projects;
 pub mod providers;
 pub mod push;

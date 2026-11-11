@@ -233,6 +233,13 @@ pub struct DashboardView {
     pub error: Option<FormError>,
     /// A success line to show.
     pub notice: Option<String>,
+    /// Background work this daemon is running, newest first.
+    ///
+    /// Kept as the tool's own JSON so the page, the route and the model cannot
+    /// disagree about a handle's fields.
+    pub processes: Vec<serde_json::Value>,
+    /// How many of those are still running.
+    pub processes_running: usize,
 }
 
 impl DashboardView {
@@ -243,6 +250,8 @@ impl DashboardView {
             chrome: Chrome::default(),
             state,
             version: version.into(),
+            processes: Vec::new(),
+            processes_running: 0,
             db_ok: true,
             sessions_live: 0,
             device_sessions: 0,
@@ -1592,6 +1601,62 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
             p .small {
                 "Sessions lists every device sign-in with the jobs it started. Devices lists "
                 "every device, revokes one, and mints the pairing code that adds the next."
+            }
+        }
+
+        section .card aria-labelledby="processes-heading" {
+            h2 id="processes-heading" { "Background work" }
+            @if view.processes.is_empty() {
+                p .small {
+                    "Nothing is running in the background. A command a turn starts with "
+                    code { "background: true" } " appears here with its output until it ends, "
+                    "and keeps running when the turn that started it has finished."
+                }
+            } @else {
+                p .small {
+                    (view.processes.len()) " process"
+                    @if view.processes.len() != 1 { "es" }
+                    ", " (view.processes_running) " running. Output lands under the "
+                    "workspace's " code { ".processes" } " directory."
+                }
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Process" }
+                            th scope="col" { "Command" }
+                            th scope="col" { "Status" }
+                            th scope="col" { "Started" }
+                            th scope="col" { "Action" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.processes {
+                            @let id = row["process_id"].as_str().unwrap_or("-");
+                            @let status = row["status"].as_str().unwrap_or("-");
+                            tr {
+                                td .mono .small { (id) }
+                                td .mono .small { (row["command"].as_str().unwrap_or("-")) }
+                                td {
+                                    (status)
+                                    @if let Some(note) = row["signal_note"].as_str() {
+                                        p .small { (note) }
+                                    }
+                                }
+                                td .mono .small { (row["started_at"].as_str().unwrap_or("-")) }
+                                td {
+                                    @if status == "running" {
+                                        form method="post"
+                                            action=(format!("{}/{}", crate::admin::ROUTE_DASHBOARD_PROCESS_KILL, id)) {
+                                            button type="submit" class="danger" { "Stop" }
+                                        }
+                                    } @else {
+                                        span .small { "finished" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
