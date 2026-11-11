@@ -29,7 +29,7 @@
 //! and what it would have accepted.
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
@@ -657,6 +657,89 @@ pub async fn skills_list(State(service): State<DeviceService>, headers: HeaderMa
             "library_error": error.to_string(),
             "skills": [],
         }))
+        .into_response(),
+    }
+}
+
+/// What a search asked for.
+#[derive(Debug, serde::Deserialize)]
+pub struct SearchQuery {
+    /// The words to look for.
+    #[serde(default)]
+    q: String,
+    /// How many conversations, clamped by the route.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// `GET /v1/search?q=&limit=` - the transcript, searched.
+///
+/// The phone had no way to ask what it had already talked about; the only search
+/// it could reach covered skills, notes, models and logs. This route reads the
+/// same FTS5 index the turn's `search_sessions` tool reads, so what the operator
+/// types on the phone and what the assistant recalls are one transcript.
+///
+/// The body is one row per conversation rather than one per message, because that
+/// is the question a person types: "where did we talk about this". A search that
+/// matched eight messages in one conversation is one line in the list, with a
+/// count, and the conversation is opened at its best-scoring message.
+///
+/// An empty `q` is a `200` with no hits, not a `400`: a search field arrives
+/// empty on every screen that draws it, and telling the client that an empty box
+/// is a bad request would make a normal first paint look like a failure.
+pub async fn search_transcript(
+    State(service): State<DeviceService>,
+    Query(params): Query<SearchQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let text = params.q.trim();
+    if text.is_empty() {
+        return axum::Json(serde_json::json!({
+            "ok": true,
+            "query": "",
+            "returned": 0,
+            "hits": [],
+        }))
+        .into_response();
+    }
+    let limit = params
+        .limit
+        .unwrap_or(crate::search::DEFAULT_LIMIT)
+        .clamp(1, crate::search::MAX_LIMIT);
+    match crate::search::discover(service.engine().db(), text, limit) {
+        Ok(hits) => {
+            let rows: Vec<serde_json::Value> = hits
+                .iter()
+                .map(|hit| {
+                    serde_json::json!({
+                        "conversation": hit.conversation_id,
+                        "title": hit.title,
+                        "snippet": hit.snippet,
+                        "created_at": hit.created_at,
+                        "matches": hit.matches,
+                    })
+                })
+                .collect();
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "query": text,
+                "returned": rows.len(),
+                "hits": rows,
+            }))
+            .into_response()
+        }
+        Err(error) => DeviceError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "search_failed",
+            format!("the transcript could not be searched: {error}"),
+        )
         .into_response(),
     }
 }

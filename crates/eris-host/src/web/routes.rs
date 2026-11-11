@@ -33,8 +33,8 @@ use crate::admin::{
     ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_CHAT_SORT, ROUTE_CHAT_WORKSPACE, ROUTE_DASHBOARD,
     ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_ENV, ROUTE_ENV_DELETE, ROUTE_JOB_CANCEL,
     ROUTE_LEARNING, ROUTE_LEARNING_CURATOR, ROUTE_LEARNING_SAVE, ROUTE_LEARNING_SKILL, ROUTE_LOGIN,
-    ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SECURITY, ROUTE_SESSION,
-    ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE,
+    ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN, ROUTE_SEARCH, ROUTE_SECURITY,
+    ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE,
     ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP,
     ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD,
@@ -62,10 +62,10 @@ use crate::web::store;
 use crate::web::templates::{
     ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
     DashboardView, DeviceRow, DevicesView, EnvRow, EnvView, FormError, IssuedCodeView,
-    LearningView, SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView,
-    SkillEditor, SkillsView, UpdateCard, activity_page, backups_page, chat_page, dashboard_page,
-    devices_page, env_page, error_page, learning_page, login_page, session_page, sessions_page,
-    settings_page, setup_page, skills_page, type_badge,
+    LearningView, SearchHitRow, SearchView, SessionDetailView, SessionsView, SettingsGroup,
+    SettingsView, SetupView, SkillEditor, SkillsView, UpdateCard, activity_page, backups_page,
+    chat_page, dashboard_page, devices_page, env_page, error_page, learning_page, login_page,
+    search_page, session_page, sessions_page, settings_page, setup_page, skills_page, type_badge,
 };
 use crate::web::wallpaper;
 
@@ -161,6 +161,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_LEARNING_SAVE, post(save_learning))
         .route(ROUTE_LEARNING_SKILL, post(learning_skill))
         .route(ROUTE_LEARNING_CURATOR, post(run_learning_curator))
+        .route(ROUTE_SEARCH, get(search))
         .route(ROUTE_SKILLS, get(skills_page_handler))
         // The editor carries a whole file, which is far larger than the 16 KiB
         // the other forms allow, so this one route states its own ceiling.
@@ -1302,6 +1303,64 @@ async fn learning(
         Ok(view) => page(learning_page(&view)),
         Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
     }
+}
+
+/// `GET /dashboard/search` - the transcript, searched from the page.
+///
+/// The search is the same function the turn's `search_sessions` tool calls, so a
+/// page and an assistant answer from one index and one expression builder. A
+/// failed read is a `500` rather than a page with an empty list: "nothing matched"
+/// and "the search did not run" are different facts, and a list that renders the
+/// second as the first is a lie the operator cannot see through.
+async fn search(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let text = query
+        .get("q")
+        .map(String::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let engine = &state.engine;
+    let setup = match engine.state() {
+        Ok(state) => state,
+        Err(error) => {
+            return ApiError::internal(request_id.0, form_error(&error).message).into_response();
+        }
+    };
+    let mut view = SearchView::new(setup);
+    view.chrome = state.chrome();
+    view.query = text.clone();
+    if !text.is_empty() {
+        match crate::search::discover(engine.db(), &text, crate::search::DEFAULT_LIMIT) {
+            Ok(hits) => {
+                view.hits = hits
+                    .into_iter()
+                    .map(|hit| SearchHitRow {
+                        conversation: hit.conversation_id,
+                        title: hit.title,
+                        snippet: hit.snippet,
+                        created_at: hit.created_at,
+                        matches: hit.matches,
+                    })
+                    .collect();
+            }
+            Err(error) => {
+                return ApiError::internal(
+                    request_id.0,
+                    format!("the transcript could not be searched: {error}"),
+                )
+                .into_response();
+            }
+        }
+    }
+    page(search_page(&view))
 }
 
 /// `POST /dashboard/learning/save` - the master switch, review and curator.
@@ -10230,6 +10289,11 @@ fn spawn_turn(
             answer: answer_id.clone(),
         };
         let started = std::time::Instant::now();
+        // The transcript is answered inside the turn, so the route hands it the
+        // database it already holds. Unlike the skill catalog there is no setting
+        // to consult: the index either exists, because the migration ran, or the
+        // search reports why it could not read.
+        let search = crate::search::Access::new(db.clone());
         let (outcome, note) = chat::run_turn_resilient(
             &config,
             fallback.as_ref(),
@@ -10243,6 +10307,7 @@ fn spawn_turn(
             desk.as_ref(),
             Some(&attach),
             skills.as_ref(),
+            Some(&search),
             chat::TurnSettings {
                 tools: tools_enabled,
                 max_rounds: tool_rounds,

@@ -55,6 +55,10 @@ mod env_page;
 #[cfg(test)]
 mod learning_page;
 
+/// The search page: the field, the results, and the link out.
+#[cfg(test)]
+mod search_page;
+
 /// The skills page: the library, its editor, and the archive button.
 #[cfg(test)]
 mod skills_page;

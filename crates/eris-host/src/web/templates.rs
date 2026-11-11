@@ -556,6 +556,18 @@ pub fn shell(
                                on the settings page, which meant changing how the
                                rail reads required leaving the rail. It is a small
                                disclosure beside the word it applies to. */
+                            /* The transcript is searchable from the rail as well
+                               as from its own page. A person looking at a list of
+                               conversations is the person most likely to want to
+                               find one, and sending them to another page first
+                               would be a step for nothing. */
+                            form .rail-search method="get" action=(crate::admin::ROUTE_SEARCH) role="search" {
+                                label for="rail-search-q" .sr-only {
+                                    "Search every conversation"
+                                }
+                                input type="search" id="rail-search-q" name="q"
+                                    placeholder="Search every chat" autocomplete="off";
+                            }
                             div .rail-list-head {
                                 span .rail-list-label { "Conversations" }
                                 (rail_sort_control(chrome))
@@ -875,6 +887,8 @@ pub enum Nav {
     Dashboard,
     /// Every device session, and the jobs each one started.
     Sessions,
+    /// Search across every past conversation.
+    Search,
     /// Every device, and the form that mints a pairing code.
     Devices,
     /// The settings surface, the only page that writes behaviour.
@@ -894,10 +908,11 @@ pub enum Nav {
 impl Nav {
     /// Every entry, in display order. Every one of them is a page: the nav has
     /// no placeholder in it.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Chat,
         Self::Dashboard,
         Self::Sessions,
+        Self::Search,
         Self::Devices,
         Self::Settings,
         Self::Learning,
@@ -914,6 +929,7 @@ impl Nav {
             Self::Chat => crate::admin::ROUTE_CHAT,
             Self::Dashboard => crate::admin::ROUTE_DASHBOARD,
             Self::Sessions => crate::admin::ROUTE_SESSIONS,
+            Self::Search => crate::admin::ROUTE_SEARCH,
             Self::Devices => crate::admin::ROUTE_DEVICES,
             Self::Settings => crate::admin::ROUTE_SETTINGS,
             Self::Learning => crate::admin::ROUTE_LEARNING,
@@ -931,6 +947,7 @@ impl Nav {
             Self::Chat => "Chat",
             Self::Dashboard => "Dashboard",
             Self::Sessions => "Sessions",
+            Self::Search => "Search",
             Self::Devices => "Devices",
             Self::Settings => "Settings",
             Self::Learning => "Learning",
@@ -5050,6 +5067,107 @@ pub fn learning_page(view: &LearningView) -> Markup {
         body,
         &view.chrome,
     )
+}
+
+/// One conversation that matched, as the search page lists it.
+#[derive(Debug, Clone)]
+pub struct SearchHitRow {
+    /// The conversation id the link opens.
+    pub conversation: String,
+    /// Its title.
+    pub title: String,
+    /// The excerpt, with the matched words in brackets.
+    pub snippet: String,
+    /// When the best-scoring message was written.
+    pub created_at: String,
+    /// How many messages in it matched.
+    pub matches: i64,
+}
+
+/// Everything the search page needs.
+#[derive(Debug, Clone)]
+pub struct SearchView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// What was typed, echoed back into the field.
+    pub query: String,
+    /// One row per matching conversation, best first.
+    pub hits: Vec<SearchHitRow>,
+    /// A success line, when a form just saved.
+    pub notice: Option<String>,
+}
+
+impl SearchView {
+    /// An empty view, for the first paint.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            query: String::new(),
+            hits: Vec::new(),
+            notice: None,
+        }
+    }
+}
+
+/// The search page: one field, and the conversations that matched.
+///
+/// The page states where the answer comes from, because "search" in most
+/// products means a model guessed. Here it is `SQLite FTS5` over the transcript
+/// itself: no provider call, no tokens, milliseconds. A hit opens the
+/// conversation it belongs to at the browser's chat surface.
+pub fn search_page(view: &SearchView) -> Markup {
+    let query = view.query.trim();
+    let body = html! {
+        h1 { "Search" }
+        p .lede {
+            "Every message in every past conversation, indexed. The answer comes from "
+            code { "SQLite FTS5" } " over the transcript itself, so a search costs no model "
+            "call and no tokens. Every word is tried first, then any of them, so a half-remembered "
+            "phrase still finds the conversation. A hit opens it at the chat surface."
+        }
+        form .search-form method="get" action=(crate::admin::ROUTE_SEARCH) role="search" {
+            label for="search-q" .sr-only { "Search the transcript" }
+            input type="search" id="search-q" name="q" value=(view.query)
+                placeholder="What did we work out about ..."
+                autocomplete="off" autofocus;
+            button type="submit" { "Search" }
+        }
+        (alert_region(None, view.notice.as_deref()))
+        @if query.is_empty() {
+            p .small {
+                "Type a word or two. Common words of three letters or fewer are ignored unless "
+                "they are all you typed."
+            }
+        } @else if view.hits.is_empty() {
+            p .small { "Nothing matched " code { (query) } "." }
+        } @else {
+            p .small {
+                (view.hits.len()) " conversation"
+                @if view.hits.len() != 1 { "s" }
+                " matched."
+            }
+            @for hit in &view.hits {
+                article .card .search-hit {
+                    h2 {
+                        a href=(format!("{}?conversation={}", crate::admin::ROUTE_CHAT, hit.conversation)) {
+                            (hit.title)
+                        }
+                    }
+                    p .snippet { (hit.snippet) }
+                    p .small .mono {
+                        (hit.created_at) " · "
+                        (hit.matches) " message"
+                        @if hit.matches != 1 { "s" }
+                    }
+                }
+            }
+        }
+    };
+    shell("Search", view.state, Some(Nav::Search), body, &view.chrome)
 }
 
 /// One skill's file, as the editor renders it.

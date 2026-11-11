@@ -417,6 +417,12 @@ pub const ROUTE_CRON_ITEM: &str = "/v1/cron/{id}";
 /// `GET /v1/skills` - the skill library as the model catalog sees it.
 pub const ROUTE_SKILLS: &str = "/v1/skills";
 
+/// `GET /v1/search?q=&limit=` - the transcript, searched.
+///
+/// The same FTS5 index the turn's `search_sessions` tool reads, so a search typed
+/// on the phone and a search the assistant runs answer from one transcript.
+pub const ROUTE_SEARCH: &str = "/v1/search";
+
 /// `GET`, `PUT` and `DELETE /v1/skills/{key}` - one skill's body, its
 /// replacement, and the archive move that stands in for a delete.
 pub const ROUTE_SKILL_ITEM: &str = "/v1/skills/{key}";
@@ -1182,6 +1188,7 @@ pub fn router(service: DeviceService) -> Router {
             patch(control::patch_cron).delete(control::delete_cron),
         )
         .route(ROUTE_SKILLS, get(control::skills_list))
+        .route(ROUTE_SEARCH, get(control::search_transcript))
         .route(
             ROUTE_SKILL_ITEM,
             get(control::skill_detail)

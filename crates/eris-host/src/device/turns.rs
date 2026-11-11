@@ -2339,6 +2339,7 @@ impl TurnHub {
                 )
                 .with_key(key.clone())
             });
+            let search = crate::search::Access::new(desk_db.clone());
             let outcome = crate::web::chat::run_turn_with_key(
                 &turn_config,
                 &key,
@@ -2357,6 +2358,10 @@ impl TurnHub {
                 // The same catalog the browser carries: names and descriptions
                 // are in the prompt above, and a body is read on demand.
                 skills.as_ref(),
+                // The phone searches the same index the browser does. The access
+                // is built from the same database clone the dispatch desk uses, so
+                // a device turn and a web turn answer from one transcript.
+                Some(&search),
                 settings,
                 // A phone can ask now. The question parks this turn's thread, goes
                 // out as an `asked` frame on the job stream and is written to the

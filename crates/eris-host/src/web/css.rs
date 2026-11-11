@@ -864,6 +864,32 @@ p { margin: 0 0 14px; }
 }
 .card.tight { padding: 16px 18px; }
 
+/* Transcript search. A plain search box and a list: no suggestions and no
+   dropdown, because the answer arrives as a page and a second surface would be
+   one more thing to keep correct. The excerpt keeps the bracketed match the
+   index produced, so the reason a row matched is visible rather than implied. */
+.search-form {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 20px;
+}
+.search-form input[type="search"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.search-hit h2 { margin: 0 0 6px; font-size: 1rem; }
+.search-hit .snippet { margin: 0 0 8px; line-height: 1.5; }
+.search-hit .small { margin: 0; }
+
+/* The rail's search field, above the conversation list. Sized to sit inside the
+   rail's own padding rather than the page's, so it reads as part of the list. */
+.rail-search { margin: 0 0 10px; }
+.rail-search input[type="search"] {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 0.875rem;
+}
+
 /* A service card: the two settings that change the process itself rather than
    the answer it gives. The accent is the only warning colour on the page, so the
    restart reads as the heavier of the two actions without a modal in front of

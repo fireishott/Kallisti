@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 25;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -195,6 +195,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 24,
         name: "0024_learning_loop",
         sql: MIGRATION_0024,
+    },
+    Migration {
+        version: 25,
+        name: "0025_transcript_search",
+        sql: MIGRATION_0025,
     },
 ];
 
@@ -859,6 +864,46 @@ CREATE TABLE IF NOT EXISTS curator_runs (
 );
 ";
 
+/// Migration 0025: the transcript becomes searchable.
+///
+/// External-content FTS5 over `chat_messages.body`, so the index stores terms
+/// and not a second copy of the transcript. The table is a plain rowid table, so
+/// `content_rowid = 'rowid'` addresses the row the message already had.
+///
+/// The triggers are the point. A backfill alone would go stale on the next turn,
+/// and there is more than one write path into this table, so the index is kept
+/// correct by the table rather than by every caller remembering it. That is also
+/// why the three triggers are written out in full: an update has to remove the
+/// old terms before adding the new ones, or the old words stay findable forever.
+///
+/// `rebuild` backfills the rows that already exist in the same transaction that
+/// creates the index, so there is no window where a search returns nothing.
+const MIGRATION_0025: &str = r"
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(
+    body,
+    content='chat_messages',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+INSERT INTO chat_messages_fts(chat_messages_fts) VALUES('rebuild');
+
+CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ai AFTER INSERT ON chat_messages BEGIN
+  INSERT INTO chat_messages_fts(rowid, body) VALUES (new.rowid, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ad AFTER DELETE ON chat_messages BEGIN
+  INSERT INTO chat_messages_fts(chat_messages_fts, rowid, body)
+  VALUES ('delete', old.rowid, old.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE ON chat_messages BEGIN
+  INSERT INTO chat_messages_fts(chat_messages_fts, rowid, body)
+  VALUES ('delete', old.rowid, old.body);
+  INSERT INTO chat_messages_fts(rowid, body) VALUES (new.rowid, new.body);
+END;
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 
@@ -1266,7 +1311,7 @@ mod tests {
     #[test]
     fn migration_0023_adds_wrapped_up_and_re_running_it_changes_nothing() {
         let db = Db::open_in_memory().expect("a database");
-        assert_eq!(db.schema_version().expect("version"), 24);
+        assert_eq!(db.schema_version().expect("version"), 25);
         assert!(
             db.column_names("chat_messages")
                 .expect("columns")
@@ -1283,7 +1328,7 @@ mod tests {
         );
         assert_eq!(
             db.applied_migration_count().expect("count"),
-            24,
+            25,
             "one row per migration, and the new one is the last"
         );
 
@@ -1296,8 +1341,8 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, 24, "one row per migration, on a fresh file");
-        assert_eq!(first.schema_version().expect("version"), 24);
+        assert_eq!(applied, 25, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 25);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");
         assert_eq!(

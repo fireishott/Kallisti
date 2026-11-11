@@ -274,7 +274,13 @@ impl ToolResult {
         }
     }
 
-    fn error(message: impl Into<String>) -> Self {
+    /// A result that reports a failure.
+    ///
+    /// Public because the layers above the sandbox answer some calls themselves
+    /// — the transcript search and the skill library among them — and a refusal
+    /// or an error raised there has to reach the run log in the same shape this
+    /// module uses, or the turn reports a failure that looks like a success.
+    pub fn error(message: impl Into<String>) -> Self {
         Self {
             content: serde_json::json!({ "error": message.into() }).to_string(),
             is_error: true,
@@ -422,6 +428,12 @@ pub fn specs_offering(mode: SandboxMode, agents: bool) -> Vec<ToolSpec> {
         },
     ];
 
+    // Reading the transcript is a read, so it is offered in every mode. It is
+    // also the one tool that makes the whole history cheap to consult, which is
+    // why it sits here rather than behind the `Full` switch that guards the tools
+    // which spend the host's resources.
+    offered.push(crate::search::spec());
+
     // Command execution is offered only where the sandbox will honour it. A tool
     // the daemon refuses must never reach the model's list, or every turn spends
     // a round trip discovering a refusal the prompt could have prevented.
@@ -482,6 +494,13 @@ pub fn execute_streaming(
         // spec intercepts the call before it reaches here, so this is the answer a
         // direct caller gets, and it says why instead of pretending the tool does
         // not exist.
+        // Named rather than unknown, for the same reason `dispatch_agent` is: the
+        // search needs the database, which this layer does not hold. The turn that
+        // offered the spec answers the call before it reaches here.
+        "search_sessions" => ToolResult::refused(
+            "the transcript search needs the turn that offered it, so this call did \
+             nothing; it runs inside a conversation turn and not in the sandbox layer",
+        ),
         "dispatch_agent" => ToolResult::refused(
             "dispatching needs the turn that offered it, so this call did nothing; \
              it runs inside a conversation turn and not in the sandbox layer",

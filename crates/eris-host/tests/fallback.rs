@@ -125,6 +125,9 @@ async fn run(
             // No skill library in this suite: the fallback path is what is under
             // test, and a catalog would only add prompt text to compare.
             None,
+            // No transcript either, for the same reason: this suite measures the
+            // retry, not recall.
+            None,
             TurnSettings {
                 tools: false,
                 max_rounds: 1,

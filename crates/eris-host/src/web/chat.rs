@@ -3542,6 +3542,7 @@ pub fn run_turn(
     agents: Option<&crate::subagents::Desk>,
     attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
+    search: Option<&crate::search::Access>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
@@ -3562,6 +3563,7 @@ pub fn run_turn(
         agents,
         attach,
         skills,
+        search,
         settings,
         ask,
         poll,
@@ -3607,6 +3609,7 @@ pub fn run_turn_resilient(
     agents: Option<&crate::subagents::Desk>,
     attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
+    search: Option<&crate::search::Access>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
@@ -3641,6 +3644,7 @@ pub fn run_turn_resilient(
         agents,
         attach,
         skills,
+        search,
         settings,
         ask,
         poll,
@@ -3666,6 +3670,7 @@ pub fn run_turn_resilient_with_keys(
     agents: Option<&crate::subagents::Desk>,
     attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
+    search: Option<&crate::search::Access>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
@@ -3688,6 +3693,7 @@ pub fn run_turn_resilient_with_keys(
         agents,
         attach,
         skills,
+        search,
         settings,
         ask,
         poll,
@@ -3728,6 +3734,7 @@ pub fn run_turn_resilient_with_keys(
                 agents,
                 attach,
                 skills,
+                search,
                 settings,
                 ask,
                 poll,
@@ -3770,6 +3777,7 @@ pub fn run_turn_with_key(
     agents: Option<&crate::subagents::Desk>,
     attach: Option<&crate::web::attach::Target>,
     skills: Option<&crate::skills::Access>,
+    search: Option<&crate::search::Access>,
     settings: TurnSettings,
     ask: Option<&crate::web::clarify::Ask>,
     poll: &mut TurnPoll<'_>,
@@ -3984,6 +3992,19 @@ pub fn run_turn_with_key(
             let Some(access) = skills else {
                 return crate::tools::ToolResult::refused(
                     "the skill library is not available to this turn, so nothing was read",
+                );
+            };
+            return access.call(&call.arguments);
+        }
+
+        // The transcript is the daemon's own history, and it is answered here for
+        // the same reason the skill library is: the database is what the sandbox
+        // does not hold. A turn that was not given an access is refused rather
+        // than told the tool does not exist, so the reason reaches the run log.
+        if call.name == crate::search::TOOL {
+            let Some(access) = search else {
+                return crate::tools::ToolResult::refused(
+                    "the transcript is not available to this turn, so nothing was searched",
                 );
             };
             return access.call(&call.arguments);

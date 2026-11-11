@@ -698,6 +698,9 @@ fn run_child_turn(request: &RunRequest) -> Result<RunOutput, (String, String)> {
         // dispatch, and a child that could read a procedure would be a second
         // place the operator's library is interpreted.
         None,
+        // Nor the transcript: the history belongs to the turn that dispatched, and
+        // a child searching it would be reading a scope it was never given.
+        None,
         child_settings(),
         // A child cannot ask: there is no surface holding its question, so
         // offering the tool would park a turn nobody is watching.
@@ -1047,16 +1050,16 @@ mod tests {
     #[test]
     fn migration_fourteen_creates_the_subagent_row() {
         let db = db();
-        // The pin follows the newest migration, which is 0024. This test owns the
+        // The pin follows the newest migration, which is 0025. This test owns the
         // "the binary and the file agree on the version" claim for the whole
         // database, so it is the one place that number is written down twice.
         assert_eq!(
             crate::db::SCHEMA_VERSION,
-            24,
+            25,
             "the binary declares the version it migrated to"
         );
-        assert_eq!(db.schema_version().expect("version"), 24);
-        assert_eq!(db.applied_migration_count().expect("count"), 24);
+        assert_eq!(db.schema_version().expect("version"), 25);
+        assert_eq!(db.applied_migration_count().expect("count"), 25);
         assert!(
             crate::db::TABLES.contains(&"subagents"),
             "the table is in the documented list"

@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 183;
+pub const BUILD: u32 = 184;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -313,6 +313,14 @@ pub const ROUTE_LEARNING_SKILL: &str = "/dashboard/learning/skill";
 
 /// `POST /dashboard/learning/curator` - run one maintenance pass now.
 pub const ROUTE_LEARNING_CURATOR: &str = "/dashboard/learning/curator";
+
+/// `GET /dashboard/search` - every past conversation, searched.
+///
+/// The transcript has always been in the database and has never been reachable
+/// except by opening one conversation. This page is the index over it: the same
+/// FTS5 table the turn's `search_sessions` tool reads, answered without a model
+/// call.
+pub const ROUTE_SEARCH: &str = "/dashboard/search";
 
 /// `GET /dashboard/skills` - the whole library: every skill, its file, an editor
 /// and the archive button. The page the library never had, next to Learning in
