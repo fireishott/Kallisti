@@ -204,26 +204,18 @@ pub fn setting_key(key: &str) -> String {
 
 /// The default library, when the operator has not named one.
 ///
-/// `~/.config/kallisti/skills` is where this daemon's own library lives. When
-/// that directory does not exist, `~/.hermes/skills` is one an earlier install
-/// already has, but it is only inherited if it is safe to read: it can contain a
-/// skill whose own files mention the old daemon, and a skill the operator did not
-/// write for this daemon is not something the settings page should print into its
-/// own shell. A directory that exists but carries no `SKILL.md` files is still
-/// the operator's own and wins, which is why the inherit only happens when the
-/// owned path is absent rather than merely empty.
+/// `~/.config/kallisti/skills` is where this daemon's own library lives, and it is
+/// the only answer: the directory is seeded from the shipped skills when it is
+/// absent, then returned whether or not it turned out to be writable. There is no
+/// second candidate. A library the operator did not write for this daemon is not
+/// something the settings page should print into its own shell, and a directory
+/// that exists but carries no `SKILL.md` files is still the operator's own and
+/// wins.
 #[must_use]
 pub fn default_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let owned = home.join(".config/kallisti/skills");
     seed_owned(&owned);
-    if owned.is_dir() {
-        return Some(owned);
-    }
-    let inherited = home.join(".hermes/skills");
-    if inherited.is_dir() && safe_to_inherit(&inherited) {
-        return Some(inherited);
-    }
     Some(owned)
 }
 
@@ -263,38 +255,6 @@ fn seed_owned(dir: &Path) {
             let _ = std::fs::write(&path, body);
         }
     }
-}
-
-/// Whether a legacy library is clean enough to inherit automatically.
-///
-/// The only thing checked is the operator's own text, not third-party content:
-/// a directory whose own skill files mention the old name, or carry an em dash
-/// the shell test forbids, is skipped so the settings page does not leak either
-/// into a page whose style rules say neither may appear. A library that is only
-/// third-party skills with no legacy name is inherited as-is.
-fn safe_to_inherit(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    let mut checked = 0usize;
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let path = entry.path().join(FILE_NAME);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        checked += 1;
-        let lowered = text.to_ascii_lowercase();
-        if lowered.contains("herald") || text.contains('\u{2014}') {
-            return false;
-        }
-    }
-    checked > 0
 }
 
 /// The library actually in use: the stored directory, else the default.

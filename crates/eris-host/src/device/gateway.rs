@@ -12,8 +12,9 @@
 //! - `GET /v1/gw/health` - whether the daemon is ready, what it is, how long it
 //!   has been up, and how much work is in flight. This is the read the legacy
 //!   client polls to confirm a restart finished, so it keeps the legacy field
-//!   names (`hermesReady`, `connectorVersion`, ...) rather than inventing new
-//!   ones: the client already knows how to read them.
+//!   names (the `Ready` and `Connected` keys, `connectorVersion`, ...) rather
+//!   than inventing new ones: the client already knows how to read them. The two
+//!   that came from the previous product are composed in [`super::wire`].
 //! - `GET /v1/gw/restart/preflight` - a snapshot a client shows before asking to
 //!   restart: the unit, the active work a restart would interrupt, and whether
 //!   a restart is allowed right now.
@@ -23,7 +24,7 @@
 //!   is already on the wire when the process goes away. There is deliberately
 //!   no operation tracking: a restarted process cannot remember the operation
 //!   that killed it, and the client's existing fallback is to poll `/v1/gw/health`
-//!   until `hermesReady` is true again. That is the honest model.
+//!   until [`wire::KEY_READY`] is true again. That is the honest model.
 //! - `GET /v1/gw/update/check` - what this daemon is, and whether a staged
 //!   `eris.new-*` binary sits next to it. Read-only: installing the staged
 //!   binary is a host-side step, because the systemd sandbox makes the install
@@ -43,6 +44,7 @@ use crate::db::Db;
 use crate::device::{DeviceError, DeviceService};
 
 use super::handlers::{authenticate, read_fields, require_admin};
+use super::wire;
 
 /// The systemd user unit that runs this daemon.
 ///
@@ -201,7 +203,8 @@ pub fn update_offered(staged: &[String], latest: Option<&crate::release::Release
     newest_staged(staged).is_some() || latest.is_some_and(is_newer_than_self)
 }
 
-/// The legacy `data.components["hermes-agent"]` object, in the phone's words.
+/// The legacy `data.components[<key>]` object, in the phone's words, where the
+/// key is [`wire::COMPONENT`].
 ///
 /// Nine keys, fixed: the shipped client reads them by name and a missing one
 /// renders as an empty row. `commits` is always `[]` - this daemon has no commit
@@ -246,7 +249,7 @@ fn legacy_component(
     })
 }
 
-/// The `data` envelope: one component, `hermes-agent`.
+/// The `data` envelope: one component, [`wire::COMPONENT`].
 #[must_use]
 fn legacy_envelope(
     latest: Option<&crate::release::Release>,
@@ -256,7 +259,7 @@ fn legacy_envelope(
 ) -> serde_json::Value {
     let mut components = serde_json::Map::new();
     components.insert(
-        COMPONENT.to_owned(),
+        wire::COMPONENT.to_owned(),
         legacy_component(latest, staged, last_checked_at, error),
     );
     serde_json::json!({ "components": serde_json::Value::Object(components) })
@@ -264,8 +267,8 @@ fn legacy_envelope(
 
 /// `GET /v1/gw/health` - the daemon's own state, in the legacy client's words.
 ///
-/// `hermesReady` is the field the legacy client polls after a restart, and it
-/// maps to "onboarding finished": a daemon that is not ready is not serving
+/// [`wire::KEY_READY`] is the field the legacy client polls after a restart, and
+/// it maps to "onboarding finished": a daemon that is not ready is not serving
 /// turns, which is the same thing "the gateway is up" meant when the gateway
 /// was a separate process.
 pub async fn gw_health(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
@@ -286,8 +289,8 @@ pub async fn gw_health(State(service): State<DeviceService>, headers: HeaderMap)
     axum::Json(serde_json::json!({
         "relayConnected": true,
         "connectorConnected": true,
-        "hermesConnected": true,
-        "hermesReady": ready,
+        wire::KEY_CONNECTED: true,
+        wire::KEY_READY: ready,
         "dashboardAvailable": true,
         "modelCatalogAvailable": models_known,
         "sessionRoundtripOk": engine.is_ready().is_ok(),
@@ -453,8 +456,11 @@ const OUTPUT_LINES: usize = 200;
 const OUTPUT_LINE_BYTES: usize = 500;
 
 /// The component name the legacy envelope reports. The phone shipped with this
-/// name and reads it as "the daemon I am paired to".
-const COMPONENT: &str = "hermes-agent";
+/// name and reads it as "the daemon I am paired to", so the bytes are frozen;
+/// they live in [`super::wire`] because they are a wire contract rather than an
+/// identifier in this program. Re-exported here because this module is what
+/// builds the envelope.
+pub use super::wire::COMPONENT;
 
 /// The directory this daemon and the helper share, inside `ReadWritePaths`.
 fn update_dir(engine: &crate::onboarding::SetupEngine) -> std::path::PathBuf {
@@ -653,9 +659,9 @@ fn check_body(
     let last_checked_at = crate::auth::format_timestamp(crate::auth::now());
 
     // THE ENVELOPE IS FIRST IN THE ANSWER AND SECOND IN THE DECODE ORDER. The
-    // shipped phone reads `data.components["hermes-agent"]`; the flat keys stay
-    // because the dashboard, the web card and the newer client read those. One
-    // document, both readers, no second round trip.
+    // shipped phone reads `data.components` with the legacy component key; the
+    // flat keys stay because the dashboard, the web card and the newer client
+    // read those. One document, both readers, no second round trip.
     let envelope = legacy_envelope(latest, &staged, &last_checked_at, None);
 
     axum::Json(serde_json::json!({
@@ -731,9 +737,11 @@ pub async fn gw_update_apply(
     let fields = read_fields(&headers, body).await;
     if let Ok(fields) = fields {
         // `target` is accepted and ignored the same way `/gw/restart` accepts it:
-        // the only thing this daemon can update is itself.
+        // the only thing this daemon can update is itself. The legacy component
+        // name is accepted unchanged, because a phone that sends it means this
+        // daemon and nothing else.
         let target = fields.get("target").map(String::as_str).unwrap_or("eris");
-        if !matches!(target, "eris" | "hermes-agent") {
+        if !matches!(target, "eris" | wire::COMPONENT) {
             return DeviceError::new(
                 StatusCode::BAD_REQUEST,
                 "target_unknown",

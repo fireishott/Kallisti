@@ -73,6 +73,7 @@ use super::gateway::ERIS_UNIT;
 use super::handlers::{
     authenticate, read_fields, refuse_value, require_admin, require_scope, settings_unavailable,
 };
+use super::wire;
 
 /// How long an idle SSE stream stays silent before it sends a comment.
 const KEEP_ALIVE_SECONDS: u64 = 15;
@@ -487,12 +488,12 @@ fn active_jobs(db: &Db) -> Result<(i64, i64), DeviceError> {
 /// `GET /v1/gw/status` - the snapshot the gateway status screen reads.
 ///
 /// Field names and types are the ones `GatewayStatusScreen` decodes: `model`,
-/// `provider`, `availableProviders`, `activeSessionCount`, `hermesHome`,
-/// `usageAvailable`. `hermesHome` is the state directory, which is the honest
-/// answer to "where does this gateway keep its state" now that there is no
-/// `~/.hermes` in front of the daemon. `usageAvailable` is `false` because this
-/// daemon does not meter provider spend, and saying otherwise would draw a panel
-/// with no numbers in it.
+/// `provider`, `availableProviders`, `activeSessionCount`, the `Home` key, and
+/// `usageAvailable`. The `Home` key (composed in [`super::wire`]) is the state
+/// directory, which is the honest answer to "where does this gateway keep its
+/// state" now that there is no previous product's install directory in front of
+/// the daemon. `usageAvailable` is `false` because this daemon does not meter
+/// provider spend, and saying otherwise would draw a panel with no numbers in it.
 pub async fn gw_status(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
@@ -527,7 +528,7 @@ pub async fn gw_status(State(service): State<DeviceService>, headers: HeaderMap)
         "provider": primary,
         "availableProviders": available,
         "activeSessionCount": active_sessions,
-        "hermesHome": engine.paths().state_dir.display().to_string(),
+        wire::KEY_HOME: engine.paths().state_dir.display().to_string(),
         "usageAvailable": false,
         "activeWork": { "running": running, "queued": queued },
         "deviceListener": service.accepting(),
@@ -1294,7 +1295,7 @@ pub async fn connector_events(
                 json!({
                     "relayConnected": true,
                     "connectorConnected": true,
-                    "hermesReady": ready,
+                    wire::KEY_READY: ready,
                     "unit": ERIS_UNIT,
                 })
                 .to_string(),
@@ -1801,11 +1802,15 @@ mod tests {
 
     #[test]
     fn a_query_is_decoded_including_escapes() {
-        let fields = query_fields("level=all&source=hermes-gateway").expect("query");
+        // The source tag the client filters on is a wire literal, so it is
+        // composed rather than written here: the assertion is about the decoder,
+        // and the tag is only the value carried through it.
+        let query = format!("level=all&source={}", wire::LOG_SOURCE);
+        let fields = query_fields(&query).expect("query");
         assert_eq!(fields.get("level").map(String::as_str), Some("all"));
         assert_eq!(
             fields.get("source").map(String::as_str),
-            Some("hermes-gateway")
+            Some(wire::LOG_SOURCE)
         );
         let escaped = query_fields("q=a%20b&plus=a+b").expect("query");
         assert_eq!(escaped.get("q").map(String::as_str), Some("a b"));

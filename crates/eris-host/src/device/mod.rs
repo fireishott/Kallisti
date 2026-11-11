@@ -49,6 +49,7 @@ pub mod handlers;
 pub mod legacy;
 pub mod notify;
 pub mod turns;
+pub mod wire;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

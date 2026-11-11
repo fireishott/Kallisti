@@ -26,6 +26,13 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # The retired product-name tokens are out of the tree, and this gate keeps
+      # them out. The wire literals a deployed phone decodes are composed from
+      # fragments in `device/wire.rs`; a plain-text occurrence anywhere else means
+      # either a contract was re-spelled or the name crept back in.
+      - name: no retired namespace tokens
+        run: bash scripts/check-namespace.sh
+
       - name: test
         run: cargo test --workspace
 

@@ -6,7 +6,7 @@ author: Kallisti
 license: MIT
 platforms: [linux, macos]
 metadata:
-  hermes:
+  kallisti:
     tags: [ios, mobile, attachments, location, health, sensors, context]
     related_skills: [apple-notes, apple-reminders]
 ---
@@ -122,7 +122,8 @@ what is not being collected, once, without a lecture.
 ## Pitfalls
 
 - **A URL is not an attachment.** Download or generate, then attach.
-- **The old staging root is gone.** `~/.hermes-mobile/attachment_staging/` is a leftover
+- **The old staging root is gone.** The previous install's staging root under the home
+  directory (`attachment_staging/` inside its own hidden state folder) is a leftover
   tree. Do not write there for delivery; `attach_file` owns the uploads path.
 - **The sensor tools in version 2.0.0 do not exist.** `get_user_location`,
   `get_location_history`, `get_health_summary`, `get_health_metric`,

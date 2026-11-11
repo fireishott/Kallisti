@@ -117,7 +117,7 @@ project folder holds `craft.json`, `capture/`, `app/`, `checks/`, `investigation
 ## Coding agents and AI backends
 
 Building needs a coding agent signed in on this computer; `craft-anything-cli doctor` says what is
-missing. Detected here: Claude Code, Gemini CLI, Hermes, DeepSeek Harness, a DeepSeek API key in
+missing. Detected here: Claude Code, Gemini CLI, DeepSeek Harness, a DeepSeek API key in
 the environment, and a local Ollama server on 127.0.0.1:11434 with no models pulled. No backend is
 configured yet. Add one with `craft-anything-cli ai detect` then
 `craft-anything-cli ai add --kind agent_cli --model claude-code "Claude Code"`, and choose the

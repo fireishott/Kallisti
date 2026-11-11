@@ -40,10 +40,11 @@ observe; commit history carries the detail.
 ## 1.5.0
 
 - **The update check answers the legacy envelope again, beside the flat keys.**
-  The phone this build ships with reads `data.components["hermes-agent"]` with its
-  nine keys; the dashboard, the card and the newer client read the flat set. One
-  document now carries both, so neither client has to be re-shipped for the
-  other's sake and a caller that only knows one shape still gets an answer.
+  The phone this build ships with reads `data.components[...]` with the legacy
+  component key and its nine keys; the dashboard, the card and the newer client
+  read the flat set. One document now carries both, so neither client has to be
+  re-shipped for the other's sake and a caller that only knows one shape still
+  gets an answer.
   `updateAvailable` is true when a build is staged **or** a newer release is
   published, and a staged filename that does not parse is not an offer. `build 183`.
 

@@ -7318,9 +7318,9 @@ async fn the_update_check_answers_both_methods_and_carries_the_release() {
         assert_eq!(body["latest"]["has_checksum"], true);
 
         // The legacy envelope, in the SAME document. The shipped phone decodes
-        // `data.components["hermes-agent"]`; the flat keys above are what this
-        // build and the dashboard read. One answer, both readers.
-        let component = &body["data"]["components"]["hermes-agent"];
+        // `data.components` with the legacy component key; the flat keys above
+        // are what this build and the dashboard read. One answer, both readers.
+        let component = &body["data"]["components"][eris_host::device::wire::COMPONENT];
         for key in [
             "currentVersion",
             "latestVersion",
@@ -7373,6 +7373,129 @@ async fn the_update_check_answers_both_methods_and_carries_the_release() {
             response.body
         );
     }
+
+    harness.stop();
+}
+
+/// Decode one line of the fixture: lower-case hex, two characters per byte.
+///
+/// Spelled out here rather than pulled from a crate: the fixture is five short
+/// lines, and a decoder this small keeps the expected bytes in one place with no
+/// dependency added to the test build for it.
+fn decode_hex(line: &str) -> Vec<u8> {
+    assert!(
+        line.len().is_multiple_of(2),
+        "`{line}` has an odd number of hex digits"
+    );
+    line.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).expect("hex is ascii");
+            u8::from_str_radix(text, 16)
+                .unwrap_or_else(|error| panic!("`{text}` is not hex: {error}"))
+        })
+        .collect()
+}
+
+/// Read `contract/fixtures/legacy-wire-keys.hex` as the exact bytes the shipped
+/// phone decodes.
+///
+/// The fixture is hex so the expected byte strings are asserted without any
+/// source line spelling them: one key per line, lower-case, decoded here.
+fn legacy_wire_keys() -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../contract/fixtures/legacy-wire-keys.hex");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} is unreadable: {error}", path.display()));
+    let keys: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let bytes = decode_hex(line);
+            String::from_utf8(bytes)
+                .unwrap_or_else(|error| panic!("`{line}` is not utf-8: {error}"))
+        })
+        .collect();
+    assert_eq!(
+        keys.len(),
+        5,
+        "the fixture carries the five frozen keys, got {keys:?}"
+    );
+    keys
+}
+
+/// The wire keys are frozen bytes a deployed client reads, so they are asserted
+/// against a hex fixture rather than against a literal in this file. If a
+/// constant in `device::wire` is edited, this fails before a phone does.
+#[tokio::test]
+async fn the_wire_keys_are_the_exact_bytes_the_shipped_client_decodes() {
+    let keys = legacy_wire_keys();
+    let [component, ready, connected, home, log_source] = keys.as_slice() else {
+        unreachable!("the length is asserted in the helper");
+    };
+    assert_eq!(eris_host::device::wire::COMPONENT, component);
+    assert_eq!(eris_host::device::wire::KEY_READY, ready);
+    assert_eq!(eris_host::device::wire::KEY_CONNECTED, connected);
+    assert_eq!(eris_host::device::wire::KEY_HOME, home);
+    assert_eq!(eris_host::device::wire::LOG_SOURCE, log_source);
+}
+
+/// The health body and the update envelope carry exactly the frozen key sets:
+/// the component key under `data.components`, and the two booleans on the health
+/// document. Asserted against the same hex fixture, so the contract is the bytes
+/// and not a spelling.
+#[tokio::test]
+async fn the_health_body_and_envelope_carry_the_frozen_component_keys() {
+    let keys = legacy_wire_keys();
+    let component_key = &keys[0];
+    let ready_key = &keys[1];
+    let connected_key = &keys[2];
+
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    // The health document: the two booleans are present under the exact bytes.
+    let received = harness.request("GET", "/v1/gw/health", &auth, None).await;
+    assert_eq!(received.status, 200, "{}", received.body);
+    let health = received.json();
+    let health_keys: Vec<&String> = health
+        .as_object()
+        .expect("the health body is an object")
+        .keys()
+        .collect();
+    assert!(
+        health_keys.contains(&ready_key),
+        "the health body is missing the Ready key: {}",
+        received.body
+    );
+    assert!(
+        health_keys.contains(&connected_key),
+        "the health body is missing the Connected key: {}",
+        received.body
+    );
+    assert_eq!(health[ready_key.as_str()], true);
+    assert_eq!(health[connected_key.as_str()], true);
+
+    // The envelope: exactly one component, under the exact component bytes.
+    seed_release(&harness, "v99.0.0-build.999", "99.0.0", 999, true);
+    let check = harness
+        .request("GET", "/v1/gw/update/check", &auth, None)
+        .await;
+    assert_eq!(check.status, 200, "{}", check.body);
+    let body = check.json();
+    let components = body["data"]["components"]
+        .as_object()
+        .expect("data.components is an object");
+    let component_keys: Vec<&String> = components.keys().collect();
+    assert_eq!(
+        component_keys,
+        vec![component_key],
+        "the envelope carries exactly the frozen component key: {}",
+        check.body
+    );
 
     harness.stop();
 }
