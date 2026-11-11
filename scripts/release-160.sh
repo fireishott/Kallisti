@@ -59,16 +59,26 @@ for p in Kallisti_App_Store_v2 Kallisti_Intents_App_Store_v2 \
 done
 say "preflight ok"
 
-DD="$OUT/dd"
-say "=== build (unsigned: xcodebuild cannot sign over ssh) ==="
+ARCHIVE="$OUT/Kallisti-$EXPECTED_BUILD.xcarchive"
+say "=== archive (signed by Xcode, in this same unlocked session) ==="
+rm -rf "$ARCHIVE"
 xcodebuild -project Herald.xcodeproj -scheme Kallisti -configuration Release \
-  -destination "generic/platform=iOS" -derivedDataPath "$DD" \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+  -destination generic/platform=iOS -archivePath "$ARCHIVE" \
+  DEVELOPMENT_TEAM=58U7UPFS53 CODE_SIGN_STYLE=Automatic archive
 
-SRC="$DD/Build/Products/Release-iphoneos/Kallisti.app"
-[ -d "$SRC" ] || SRC="$DD/Build/Products/Debug-iphoneos/Kallisti.app"
-[ -d "$SRC" ] || { say "ABORT: no built Kallisti.app under $DD"; exit 3; }
-say "built $SRC"
+SRC="$ARCHIVE/Products/Applications/Kallisti.app"
+[ -d "$SRC" ] || { say "ABORT: no archived Kallisti.app under $ARCHIVE"; exit 3; }
+say "archived $SRC"
+
+# Paste this before the archive when it has to run from ssh: unlock both keychains
+# and set the partition list in the SAME session, then exec this script. The
+# partition list is what stops the codesign prompt; a lock in one session and a
+# build in the next is the errSecInternalComponent trap.
+#   source ~/.hermes/.env
+#   security unlock-keychain -p "$MBP_KEYCHAIN_PW" ~/Library/Keychains/login.keychain-db
+#   security unlock-keychain -p kallisti2026 ~/Library/Keychains/kallisti_signing.keychain-db
+#   security set-key-partition-list -S apple-tool:,apple: -s -k kallisti2026 \
+#     ~/Library/Keychains/kallisti_signing.keychain-db
 
 PAYLOAD="$OUT/payload"
 IPA="$OUT/Kallisti-${EXPECTED_VERSION}-${EXPECTED_BUILD}.ipa"
@@ -82,7 +92,7 @@ APP="$PAYLOAD/Payload/Kallisti.app"
 # way to ship an IPA whose appex signature no longer matches.
 sign_bundle() {
   local target="$1" profile="$2" label="$3"
-  local prov="$PROFILES/$profile.mobileprovision"
+  local prov="$PROFILES/$profile"
   [ -d "$target" ] || { say "ABORT: $label bundle missing at $target"; exit 4; }
   cp "$prov" "$target/embedded.mobileprovision"
   security cms -D -i "$prov" -o "/tmp/kallisti-profile-$label.plist"
@@ -93,10 +103,10 @@ sign_bundle() {
 }
 
 say "=== sign ==="
-sign_bundle "$APP/PlugIns/KallistiIntents.appex" "Kallisti_Intents_App_Store_v2" "intents"
-sign_bundle "$APP/PlugIns/KallistiNotificationService.appex" "Kallisti_NotificationService_App_Store_v2" "notificationservice"
-sign_bundle "$APP/PlugIns/KallistiWidgets.appex" "Kallisti_Widgets_App_Store_v2" "widgets"
-sign_bundle "$APP" "Kallisti_App_Store_v2" "app"
+sign_bundle "$APP/PlugIns/KallistiIntents.appex" "Kallisti_Intents_App_Store_v2.mobileprovision" "intents"
+sign_bundle "$APP/PlugIns/KallistiNotificationService.appex" "Kallisti_NotificationService_App_Store_v2.mobileprovision" "notificationservice"
+sign_bundle "$APP/PlugIns/KallistiWidgets.appex" "Kallisti_Widgets_App_Store_v2.mobileprovision" "widgets"
+sign_bundle "$APP" "Kallisti_App_Store_v2.mobileprovision" "app"
 codesign --verify --strict --deep "$APP"
 
 say "=== checks ==="
