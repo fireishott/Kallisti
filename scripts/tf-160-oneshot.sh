@@ -29,9 +29,11 @@ say "manager: $(launchctl managername 2>/dev/null || echo unknown)"
 [ -f "$SIGN_DB" ] || { say "ABORT: $SIGN_DB missing"; exit 2; }
 
 # The login password. Present in the Mac's own env file; never printed.
+# Read the one assignment, do not source the file: it holds prose and comments
+# that a shell would try to run.
 if [ -z "${MBP_KEYCHAIN_PW:-}" ] && [ -f "$HOME/.hermes/.env" ]; then
-  # shellcheck disable=SC1091
-  set -a; . "$HOME/.hermes/.env"; set +a
+  MBP_KEYCHAIN_PW=$(grep -E '^MBP_KEYCHAIN_PW=' "$HOME/.hermes/.env" | head -1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//')
+  export MBP_KEYCHAIN_PW
 fi
 [ -n "${MBP_KEYCHAIN_PW:-}" ] || { say "ABORT: MBP_KEYCHAIN_PW not in the environment or ~/.hermes/.env"; exit 2; }
 
