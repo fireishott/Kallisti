@@ -50,7 +50,7 @@ final class CronStore {
     /// than one object keeps the store independent of the client type, the
     /// same shape the DSH hook already uses.
     var erisCronProvider: (@MainActor () async throws -> [CronJob])?
-    var erisCreate: (@MainActor (_ name: String, _ schedule: String, _ prompt: String) async throws -> CronJob)?
+    var erisCreate: (@MainActor (_ name: String, _ schedule: String, _ prompt: String, _ deliver: String?) async throws -> CronJob)?
     var erisToggle: (@MainActor (_ id: String, _ enabled: Bool) async throws -> CronJob)?
     var erisUpdate: (@MainActor (_ id: String, _ name: String, _ schedule: String, _ prompt: String) async throws -> CronJob)?
     var erisDelete: (@MainActor (_ id: String) async throws -> Void)?
@@ -110,12 +110,12 @@ final class CronStore {
         }
     }
 
-    func createJob(name: String, schedule: String, prompt: String) async throws {
+    func createJob(name: String, schedule: String, prompt: String, deliver: String? = nil) async throws {
         if dshCronProvider != nil {
             throw CronStoreError.unsupportedOnDSH("Creating a schedule")
         }
         if let erisCreate {
-            jobs.append(try await erisCreate(name, schedule, prompt))
+            jobs.append(try await erisCreate(name, schedule, prompt, deliver))
             return
         }
         if let nativeFeatureClient = nativeFeatureClientProvider() {

@@ -13,6 +13,12 @@ enum Route: Hashable {
     case daemonSettings
     /// The daemon's archives: take one, or go back to one.
     case backups
+    /// Every past conversation, searched.
+    case search
+    /// Background work the daemon is running.
+    case processes
+    /// The assistant's two bounded note files.
+    case memory
 }
 
 // MARK: - Sheet Destinations

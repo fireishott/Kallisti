@@ -64,6 +64,19 @@ enum ErisRoute: Equatable, Sendable {
     case createBackup
     /// `POST /v1/backups/{name}/restore` - replace the live state from one.
     case restoreBackup(name: String)
+    /// `GET /v1/search?q=&limit=` - the transcript, searched.
+    ///
+    /// Answered by the daemon's own FTS5 index rather than by a model, so it
+    /// costs no tokens and arrives in milliseconds.
+    case search(query: String, limit: Int)
+    /// `GET /v1/processes` - background work the daemon is running.
+    case processes
+    /// `POST /v1/processes/{id}/kill` - stop one.
+    case killProcess(id: String)
+    /// `GET /v1/metrics?window=24h|7d` - cost and latency for a window.
+    case metrics(window: String)
+    /// `GET /v1/memory` - the assistant's two bounded note files.
+    case memory
     /// `POST /v1/settings/full-access` - the switch that decides whether `full`
     /// is a sandbox a save may pick. Enabling needs the word typed; disabling
     /// needs nothing and demotes a `full` sandbox with it.
@@ -247,7 +260,40 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/gw/restart/preflight"
         case .gwRestart:
             return "/v1/gw/restart"
+        case .search:
+            return "/v1/search"
+        case .processes:
+            return "/v1/processes"
+        case .killProcess(let id):
+            return "/v1/processes/\(Self.segment(id))/kill"
+        case .metrics:
+            return "/v1/metrics"
+        case .memory:
+            return "/v1/memory"
         }
+    }
+
+    /// The query string this route carries, already encoded, or empty.
+    ///
+    /// A route is the one place a path and its query are decided, so a caller
+    /// cannot build half a request and forget the other half.
+    var query: String {
+        switch self {
+        case .search(let text, let limit):
+            return "?q=\(Self.queryValue(text))&limit=\(limit)"
+        case .metrics(let window):
+            return "?window=\(Self.queryValue(window))"
+        default:
+            return ""
+        }
+    }
+
+    /// Percent-encode one query value. `&`, `=` and `+` are separators in a query
+    /// string, so they are encoded even though Foundation allows them raw.
+    static func queryValue(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=?#+")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
     }
 
     /// The HTTP method the daemon's router binds this path to.
@@ -257,7 +303,7 @@ enum ErisRoute: Equatable, Sendable {
              .backups, .attachment,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .cron, .skills, .aux, .noteRun, .noteRunEvents, .gwHealth, .gwPreflight,
-             .subagents, .subagent, .asked:
+             .subagents, .subagent, .asked, .search, .processes, .metrics, .memory:
             return "GET"
         case .skill(_, let verb):
             return verb
@@ -266,7 +312,7 @@ enum ErisRoute: Equatable, Sendable {
              .fullAccess, .createBackup, .restoreBackup,
              .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote,
              .setModel, .createCron, .setAux,
-             .noteRecognition, .noteRuns, .cancelNoteRun, .gwRestart, .answer:
+             .noteRecognition, .noteRuns, .cancelNoteRun, .gwRestart, .answer, .killProcess:
             return "POST"
         case .renameConversation:
             return "PATCH"
@@ -468,7 +514,7 @@ actor ErisClient {
         if route.path.hasPrefix("/v1/"), trimmed.hasSuffix("/v1") {
             trimmed.removeLast(3)
         }
-        guard let url = URL(string: trimmed + route.path) else {
+        guard let url = URL(string: trimmed + route.path + route.query) else {
             throw ErisError.invalidBaseURL(base)
         }
         return url
@@ -895,10 +941,20 @@ actor ErisClient {
     }
 
     /// `POST /v1/cron` - create one schedule.
-    func createControlCron(name: String, schedule: String, prompt: String) async throws -> ErisControlCronJobEnvelope {
+    func createControlCron(
+        name: String,
+        schedule: String,
+        prompt: String,
+        deliver: String? = nil
+    ) async throws -> ErisControlCronJobEnvelope {
         try await sendJSON(
             route: .createCron,
-            body: ErisControlCronContent(name: name, schedule: schedule, prompt: prompt)
+            body: ErisControlCronContent(
+                name: name,
+                schedule: schedule,
+                prompt: prompt,
+                deliver: deliver
+            )
         ) as ErisControlCronJobEnvelope
     }
 
@@ -1062,6 +1118,39 @@ actor ErisClient {
     func restoreBackup(name: String) async throws -> ErisBackupRestored {
         let data = try await send(route: .restoreBackup(name: name), form: nil)
         return try decode(ErisBackupRestored.self, from: data)
+    }
+
+    /// `GET /v1/search?q=&limit=` - the transcript, searched.
+    ///
+    /// One row per conversation, best match first, with the excerpt carrying the
+    /// matched words in brackets.
+    func searchTranscript(query: String, limit: Int = 20) async throws -> ErisSearchPage {
+        let data = try await send(route: .search(query: query, limit: limit), form: nil)
+        return try decode(ErisSearchPage.self, from: data)
+    }
+
+    /// `GET /v1/processes` - background work the daemon is running.
+    func processes() async throws -> ErisProcessPage {
+        let data = try await send(route: .processes, form: nil)
+        return try decode(ErisProcessPage.self, from: data)
+    }
+
+    /// `POST /v1/processes/{id}/kill` - stop one, SIGTERM then SIGKILL.
+    func killProcess(id: String) async throws -> ErisProcessKilled {
+        let data = try await send(route: .killProcess(id: id), form: nil)
+        return try decode(ErisProcessKilled.self, from: data)
+    }
+
+    /// `GET /v1/metrics?window=` - cost and latency for one window.
+    func metrics(window: String = "24h") async throws -> ErisMetrics {
+        let data = try await send(route: .metrics(window: window), form: nil)
+        return try decode(ErisMetrics.self, from: data)
+    }
+
+    /// `GET /v1/memory` - the assistant's two bounded note files.
+    func memory() async throws -> ErisMemorySnapshot {
+        let data = try await send(route: .memory, form: nil)
+        return try decode(ErisMemoryEnvelope.self, from: data).memory
     }
 
     /// `POST /v1/settings/full-access` - turn full host access on or off.

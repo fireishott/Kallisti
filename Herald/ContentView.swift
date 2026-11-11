@@ -146,6 +146,12 @@ struct MainTabView: View {
             DaemonSettingsScreen()
         case .backups:
             BackupsScreen()
+        case .search:
+            SearchScreen()
+        case .processes:
+            ProcessesScreen()
+        case .memory:
+            MemoryScreen()
         case .configEditor:
             ConfigEditorScreen()
         }

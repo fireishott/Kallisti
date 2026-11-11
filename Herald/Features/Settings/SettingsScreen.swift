@@ -1721,6 +1721,97 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
+                NavigationLink(value: Route.search) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Colors.accent)
+                            .frame(width: 20, alignment: .center)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Search")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("Every past conversation, indexed")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.search")
+
+                sectionDivider
+
+                NavigationLink(value: Route.processes) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "gearshape.2")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Colors.accent)
+                            .frame(width: 20, alignment: .center)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Processes")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("Background work, and how to stop it")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.processes")
+
+                sectionDivider
+
+                NavigationLink(value: Route.memory) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "brain")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Colors.accent)
+                            .frame(width: 20, alignment: .center)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Memory")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("What it keeps about itself and you")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.memory")
+
+                sectionDivider
+
+                SettingsCostLine()
+
+                sectionDivider
+
                 // Connector Version
                 settingsRow(
                     icon: "arrow.triangle.swap",
@@ -3862,3 +3953,63 @@ private struct EnrichmentModelPickerSheet: View {
     }
 }
 
+
+// MARK: - Cost line
+//
+// One line, because that is what belongs in a list of settings rows: which model
+// is answering, how much of the prompt came from cache, and how slow the worst
+// fifth of turns is. The full table lives on the daemon's dashboard.
+//
+// The model named is the busiest one in the window, which is what a person means
+// by "the model" on a daemon that can route a turn three ways.
+
+private struct SettingsCostLine: View {
+    @Environment(ChatStore.self) private var chatStore
+
+    @State private var metrics: ErisMetrics?
+    @State private var failed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Cost and latency")
+                .font(Design.Typography.callout)
+                .foregroundStyle(Design.Colors.foreground)
+            Text(detail)
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: Design.Size.minTapTarget)
+        .task { await load() }
+        .accessibilityIdentifier("settings.cost")
+    }
+
+    private var detail: String {
+        if failed { return "The daemon did not answer." }
+        guard let metrics else { return "Reading the transcript…" }
+        let top = metrics.models.first
+        let cache = Int((metrics.cacheRate * 100).rounded())
+        let p95: String
+        if let ms = top?.p95Ms {
+            p95 = ms >= 1000 ? String(format: "%.1fs", ms / 1000) : String(format: "%.0fms", ms)
+        } else {
+            p95 = "—"
+        }
+        let model = top?.model ?? "no answer yet"
+        return "\(model) · \(cache)% cached · p95 \(p95) · \(metrics.calls) turns, 24h"
+    }
+
+    private func load() async {
+        guard let eris = chatStore.heraldClient as? ErisHeraldClient else {
+            failed = true
+            return
+        }
+        guard let client = await eris.client() else {
+            failed = true
+            return
+        }
+        metrics = try? await client.metrics(window: "24h")
+        failed = metrics == nil
+    }
+}

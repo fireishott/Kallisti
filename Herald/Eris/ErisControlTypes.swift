@@ -72,9 +72,11 @@ struct ErisControlCronJob: Decodable, Sendable, Identifiable {
     let lastStatus: String?
     let lastError: String?
     let firedCount: Int
+    /// What happens to the answer. Absent on a daemon older than 1.6.0.
+    let deliver: String?
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, schedule, prompt, enabled
+        case id, name, schedule, prompt, enabled, deliver
         case nextRun = "next_run"
         case lastRun = "last_run"
         case lastStatus = "last_status"
@@ -98,6 +100,9 @@ struct ErisControlCronContent: Encodable, Sendable {
     let name: String
     let schedule: String
     let prompt: String
+    /// Where the answer goes: `none`, `push`, `email` or `both`. Omitted when the
+    /// caller has no opinion, in which case the daemon's default (`push`) stands.
+    var deliver: String?
 }
 
 /// The `PATCH` switch body.

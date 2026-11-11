@@ -5,6 +5,61 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-11-11
+
+Search, background work, memory and delivery: four things the daemon could tell
+you nothing about, now reachable from the phone.
+
+### Added
+
+- **Search every past conversation.** A field on the Search screen, and a result
+  for any word that appears in a transcript the daemon has ever kept. Results
+  arrive as you type, one row per conversation with an excerpt that brackets the
+  words you matched, and tapping one opens that conversation in Chat. The answer
+  comes from the daemon's own index rather than a model, so a search costs no
+  tokens and never waits on a provider. Every word is tried first and then any of
+  them, so a half-remembered phrase still finds the thread.
+- **Processes.** Work a turn starts in the background - a build, a refresh, a test
+  suite - appears on a Processes screen with its command, its age, how much output
+  it has written, and a Stop button. Stopping asks first, then asks the process to
+  exit and kills it only if it refuses. A process that dies from a signal says so in
+  words: "terminated by signal 9: SIGKILL - often the kernel OOM killer", instead of
+  an exit code you have to look up.
+- **Memory.** A Memory screen under Settings shows the two short notes the
+  assistant keeps: what it has decided to remember about its own working habits,
+  and what it knows about you. Both are capped, both show how much of the cap is
+  used, and both are read-only here, because every write goes through the daemon's
+  own checks.
+- **Cost and latency.** One line in Settings: the busiest model over the last day,
+  how much of the prompt came from cache, and the 95th percentile turn duration.
+- **Delivery per schedule.** New schedules carry a delivery choice: `push` for the
+  paired devices, `email` for the one permitted address, `both`, or `none` to only
+  write the conversation. The sheet says what each one does.
+
+### Changed
+
+- **Long commands no longer have to be shortened.** A turn can start work that
+  outlives the thirty-second foreground limit and check on it afterwards, which is
+  what makes a nightly refresh or a full test run possible from the phone at all.
+- **A page that needs JavaScript is readable.** The assistant can open a page in a
+  real browser, or search the web when it has no URL in hand, instead of giving up
+  on a fetch that came back empty.
+- **The skill list a turn carries is shorter and better ordered.** It names the
+  forty procedures most likely to matter rather than the first forty
+  alphabetically, and says how many it left out.
+- **A refused review is corrected instead of discarded.** When the learning loop's
+  own write breaks one of its rules by a word, it is repaired and retried once
+  rather than lost.
+
+### Fixed
+
+- **A scheduled run's answer goes somewhere.** Schedules could fire but nothing
+  carried the result to a person; a run now reports how it was delivered, or says
+  plainly that delivery failed and why.
+- **The update row tells the truth about a staged build.** A build staged beside
+  the running binary is named, and "nothing staged" stays a sentence rather than a
+  blank.
+
 ## [1.5.0] - 2026-11-10
 
 ### Changed

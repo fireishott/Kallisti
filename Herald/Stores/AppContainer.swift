@@ -888,8 +888,8 @@ final class AppContainer {
         container.cronStore.erisCronProvider = {
             ErisControlMapping.jobs(try await erisClient().controlCron())
         }
-        container.cronStore.erisCreate = { name, schedule, prompt in
-            ErisControlMapping.job(try await erisClient().createControlCron(name: name, schedule: schedule, prompt: prompt).job)
+        container.cronStore.erisCreate = { name, schedule, prompt, deliver in
+            ErisControlMapping.job(try await erisClient().createControlCron(name: name, schedule: schedule, prompt: prompt, deliver: deliver).job)
         }
         container.cronStore.erisToggle = { id, enabled in
             ErisControlMapping.job(try await erisClient().setControlCronEnabled(id: id, enabled: enabled).job)

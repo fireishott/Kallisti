@@ -81,8 +81,15 @@ struct CronManagerView: View {
             }
         }
         .sheet(isPresented: $showCreateSheet) {
-            CreateCronJobSheet { name, schedule, prompt in
-                Task { try? await cronStore.createJob(name: name, schedule: schedule, prompt: prompt) }
+            CreateCronJobSheet { name, schedule, prompt, deliver in
+                Task {
+                    try? await cronStore.createJob(
+                        name: name,
+                        schedule: schedule,
+                        prompt: prompt,
+                        deliver: deliver
+                    )
+                }
             }
         }
     }
