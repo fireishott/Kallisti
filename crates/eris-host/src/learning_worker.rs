@@ -654,15 +654,25 @@ pub fn run_curator(db: &Db, shelf: &Shelf) -> Result<CuratorOutcome, LearningErr
     Ok(outcome)
 }
 
+/// The sandbox a review runs in: the review's workspace, read-only.
+///
+/// Deliberately without the curated memory files. A review writes agent chatter
+/// about a turn; the curated tier holds what the operator chose to keep, and a
+/// background review is not a party to that choice.
+#[must_use]
+fn review_sandbox(workspace: std::path::PathBuf) -> crate::tools::Sandbox {
+    crate::tools::Sandbox::new(
+        workspace,
+        crate::onboarding::permissions::SandboxMode::ReadOnly,
+    )
+}
+
 /// The production runner: one tool-less turn through the ordinary loop, with the
 /// review's system message and no chance to act on anything it reads.
 fn production_runner(request: &WorkRequest) -> Result<WorkOutput, (String, String)> {
     let key = crate::oauth::credential::resolve_key_now(&request.config.key_ref)
         .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
-    let sandbox = crate::tools::Sandbox::new(
-        request.workspace.clone(),
-        crate::onboarding::permissions::SandboxMode::ReadOnly,
-    );
+    let sandbox = review_sandbox(request.workspace.clone());
     // A review reads a digest that is already in its prompt. A tool call would be
     // the model deciding to go looking on its own, which is an action with no
     // operator watching it; there is no surface to refuse from, so every call is
@@ -1253,5 +1263,34 @@ mod tests {
         );
         let switches = Switches::read(db);
         assert!(switches.curator);
+    }
+
+    /// A review may not write the curated tier. It runs unattended on a timer,
+    /// so a note it kept would be unattributable agent text in the operator's
+    /// own files.
+    #[test]
+    fn a_learning_review_cannot_reach_the_memory_files() {
+        let sandbox = review_sandbox(std::path::PathBuf::from("."));
+        assert!(
+            sandbox.memory().is_none(),
+            "a review sandbox must not carry the curated files"
+        );
+        let refused = crate::tools::execute(
+            "memory_manage",
+            &serde_json::json!({
+                "target": "memory",
+                "action": "add",
+                "text": "a review wrote this",
+            }),
+            &sandbox,
+        );
+        assert!(refused.is_error, "{}", refused.content);
+        assert!(
+            refused
+                .content
+                .contains("the memory files are not available to this turn"),
+            "{}",
+            refused.content
+        );
     }
 }

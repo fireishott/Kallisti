@@ -63,7 +63,12 @@ pub fn approve_and_run(
         .permissions()
         .map(|permissions| permissions.sandbox_mode)
         .unwrap_or(crate::onboarding::permissions::SandboxMode::ReadOnly);
-    let sandbox = crate::tools::Sandbox::new(workspace, mode);
+    // An approved call runs where the call that parked it would have run, so the
+    // memory files are attached here too: without them a parked write replays as a
+    // refusal, which reads as a permission problem rather than a missing handle.
+    let sandbox = crate::tools::Sandbox::new(workspace, mode).with_memory(std::sync::Arc::new(
+        crate::selfmemory::Access::new(&paths.state_dir),
+    ));
 
     // A namespaced name is an MCP tool: approving it has to reach the server, not
     // the local file executor. `display` is what the transcript keeps - a server's

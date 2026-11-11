@@ -1375,4 +1375,33 @@ mod tests {
         assert_eq!(elapsed_label(-5), "0s");
         assert_eq!(elapsed_label(4925), "82m 05s");
     }
+
+    /// A child turn may not touch the curated tier. A delegated child has no
+    /// operator watching it and its prompt is model-written, so a note it kept
+    /// would land in the operator's own files with no one able to attribute it.
+    #[test]
+    fn a_child_turn_cannot_reach_the_memory_files() {
+        let sandbox = child_sandbox(std::path::PathBuf::from("."));
+        assert!(
+            sandbox.memory().is_none(),
+            "a child sandbox must not carry the curated files"
+        );
+        let refused = crate::tools::execute(
+            "memory_manage",
+            &serde_json::json!({
+                "target": "memory",
+                "action": "add",
+                "text": "a child turn wrote this",
+            }),
+            &sandbox,
+        );
+        assert!(refused.is_error, "{}", refused.content);
+        assert!(
+            refused
+                .content
+                .contains("the memory files are not available to this turn"),
+            "{}",
+            refused.content
+        );
+    }
 }

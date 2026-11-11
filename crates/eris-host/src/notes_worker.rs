@@ -572,6 +572,19 @@ fn truncate(text: &str, limit: usize) -> String {
     out
 }
 
+/// The sandbox an enrichment runs in: the note's workspace, read-only.
+///
+/// Deliberately without the curated memory files. An enrichment reads a note and
+/// the vault; the curated tier is the operator's, and this worker has no turn to
+/// attribute a note it wrote to.
+#[must_use]
+fn enrichment_sandbox(workspace: std::path::PathBuf) -> crate::tools::Sandbox {
+    crate::tools::Sandbox::new(
+        workspace,
+        crate::onboarding::permissions::SandboxMode::ReadOnly,
+    )
+}
+
 /// The production runner: one tool-less turn through `run_turn_with_key`.
 ///
 /// No tools and one round, the same settings [`crate::subagents::child_settings`]
@@ -589,10 +602,7 @@ fn production_runner(
     // it did before.
     let key = crate::oauth::credential::resolve_key_now(&request.config.key_ref)
         .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
-    let sandbox = crate::tools::Sandbox::new(
-        request.workspace.clone(),
-        crate::onboarding::permissions::SandboxMode::ReadOnly,
-    );
+    let sandbox = enrichment_sandbox(request.workspace.clone());
     // An enrichment may read: the vault, the brain, a file the note names. It may
     // not write, run a command or fetch a page, because those are actions and this
     // worker has no approval surface to park one on. Reading is how a note about a
@@ -998,6 +1008,35 @@ mod tests {
     fn an_enrichment_title_marks_the_derivation() {
         assert_eq!(enrichment_title("  Notes  "), "Notes (enriched)");
         assert_eq!(enrichment_title(""), "Enrichment");
+    }
+
+    /// An enrichment may not write the curated tier. It runs from a note with no
+    /// turn behind it, so a note it kept would be unattributable agent text in the
+    /// operator's own files.
+    #[test]
+    fn an_enrichment_cannot_reach_the_memory_files() {
+        let sandbox = enrichment_sandbox(std::path::PathBuf::from("."));
+        assert!(
+            sandbox.memory().is_none(),
+            "an enrichment sandbox must not carry the curated files"
+        );
+        let refused = crate::tools::execute(
+            "memory_manage",
+            &serde_json::json!({
+                "target": "memory",
+                "action": "add",
+                "text": "an enrichment wrote this",
+            }),
+            &sandbox,
+        );
+        assert!(refused.is_error, "{}", refused.content);
+        assert!(
+            refused
+                .content
+                .contains("the memory files are not available to this turn"),
+            "{}",
+            refused.content
+        );
     }
 }
 

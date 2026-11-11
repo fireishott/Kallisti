@@ -501,8 +501,14 @@ impl TurnPolicy {
         // A phone can start background work too, and it lands in the same jobs
         // table and the same log directory as the browser's.
         let desk = std::sync::Arc::new(crate::process::Desk::new(engine.db().clone(), &workspace));
+        // The same files the prompt block at turn start reads. Without this the
+        // device lane lists `memory_manage` and can never write through it, so the
+        // refusal at dispatch reads to the model as a permission problem.
+        let memory = std::sync::Arc::new(crate::selfmemory::Access::new(&engine.paths().state_dir));
         Self {
-            sandbox: crate::tools::Sandbox::new(workspace, mode).with_processes(desk),
+            sandbox: crate::tools::Sandbox::new(workspace, mode)
+                .with_processes(desk)
+                .with_memory(memory),
             approval_policy,
             tools: crate::tools::enabled(setting(crate::tools::SETTING_TOOLS_ENABLED).as_deref()),
             max_rounds: crate::tools::max_rounds(
@@ -3373,5 +3379,28 @@ mod tests {
         let done = serde_json::json!({ "text": "ok", "usage": {} });
         store.finish(&job, FrameKind::Done, &done).expect("finish");
         assert_eq!(fail_orphaned(store.db()).expect("swept"), 0);
+    }
+
+    /// The device lane reads the curated block from the directory it derives from
+    /// the database path, and writes through the access built from
+    /// `engine.paths().state_dir`. Those have to be one directory: two lanes that
+    /// disagree means a note written on the phone is invisible in the browser.
+    #[test]
+    fn the_device_lane_reads_and_writes_one_state_directory() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = crate::config::Paths::for_root(root.path());
+        let db = Db::open(&paths.db_file).expect("database");
+        let engine = crate::onboarding::SetupEngine::new(db.clone(), paths.clone());
+        let policy = TurnPolicy::from_engine(&engine);
+
+        assert!(
+            policy.sandbox.memory().is_some(),
+            "the device lane offers the memory tool and must carry the files"
+        );
+        assert_eq!(
+            db.path().and_then(std::path::Path::parent),
+            Some(paths.state_dir.as_path()),
+            "the prompt block and the write path disagree on the state directory"
+        );
     }
 }
