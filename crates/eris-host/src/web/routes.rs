@@ -608,6 +608,12 @@ fn build_dashboard_view(state: &AppState) -> Result<DashboardView, FormError> {
         .cloned()
         .unwrap_or_default();
     view.processes_running = snapshot["running"].as_u64().unwrap_or(0) as usize;
+    // What the transcript says about cost and time, over the two windows the
+    // panel draws. One query each, through the index migration 0027 added.
+    view.cost_day = crate::metrics::summary(db, crate::metrics::Window::Day)
+        .map_err(|error| db_error(&error))?;
+    view.cost_week = crate::metrics::summary(db, crate::metrics::Window::Week)
+        .map_err(|error| db_error(&error))?;
     // Facts this page was missing while the rest of the list grew: what is
     // waiting on the operator, what is broken, and when the last answer landed.
     view.approvals_waiting = crate::approvals::pending(db)

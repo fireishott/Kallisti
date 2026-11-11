@@ -55,6 +55,7 @@ pub mod learning;
 pub mod learning_worker;
 pub mod mcp;
 pub mod memory;
+pub mod metrics;
 pub mod notes;
 pub mod notes_worker;
 pub mod oauth;

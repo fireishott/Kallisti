@@ -240,6 +240,10 @@ pub struct DashboardView {
     pub processes: Vec<serde_json::Value>,
     /// How many of those are still running.
     pub processes_running: usize,
+    /// Cost and latency over the last day.
+    pub cost_day: crate::metrics::Summary,
+    /// Cost and latency over the last week.
+    pub cost_week: crate::metrics::Summary,
 }
 
 impl DashboardView {
@@ -252,6 +256,8 @@ impl DashboardView {
             version: version.into(),
             processes: Vec::new(),
             processes_running: 0,
+            cost_day: crate::metrics::Summary::default(),
+            cost_week: crate::metrics::Summary::default(),
             db_ok: true,
             sessions_live: 0,
             device_sessions: 0,
@@ -1542,6 +1548,80 @@ pub fn login_page(state: SetupState, error: Option<&FormError>, chrome: &Chrome)
     layout("Sign in", state, body, chrome)
 }
 
+/// A duration the way a person reads it.
+fn duration_ms(value: Option<i64>) -> String {
+    match value {
+        Some(ms) if ms >= 1_000 => format!("{:.1}s", ms as f64 / 1_000.0),
+        Some(ms) => format!("{ms}ms"),
+        None => "-".to_owned(),
+    }
+}
+
+/// One token count, with separators so six digits stay readable.
+fn token_count(value: i64) -> String {
+    let digits = value.unsigned_abs().to_string();
+    let mut out = String::new();
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    if value < 0 { format!("-{out}") } else { out }
+}
+
+/// One cost window, as a table.
+fn cost_table(window: crate::metrics::Window, summary: &crate::metrics::Summary) -> Markup {
+    html! {
+        h3 { "Last " (window.label()) }
+        @if summary.is_empty() {
+            p .small { "No answer finished in this window." }
+        } @else {
+            p .small {
+                (summary.calls) " answer"
+                @if summary.calls != 1 { "s" }
+                ", " (summary.failed) " failed, "
+                (token_count(summary.prompt_tokens)) " prompt tokens in, "
+                (token_count(summary.completion_tokens)) " completion tokens out, "
+                (format!("{:.0}%", summary.cache_rate() * 100.0)) " of the prompt served from cache."
+                @if summary.unmeasured > 0 {
+                    " " (summary.unmeasured) " row"
+                    @if summary.unmeasured != 1 { "s" }
+                    " recorded no duration and are not in the percentiles."
+                }
+            }
+            table {
+                thead {
+                    tr {
+                        th scope="col" { "Model" }
+                        th scope="col" { "Calls" }
+                        th scope="col" { "Median" }
+                        th scope="col" { "p95" }
+                        th scope="col" { "In" }
+                        th scope="col" { "Out" }
+                        th scope="col" { "Cache" }
+                        th scope="col" { "Failed" }
+                    }
+                }
+                tbody {
+                    @for row in &summary.rows {
+                        tr {
+                            td .mono .small { (row.model) }
+                            td .mono .small { (row.calls) }
+                            td .mono .small { (duration_ms(row.median_ms)) }
+                            td .mono .small { (duration_ms(row.p95_ms)) }
+                            td .mono .small { (token_count(row.prompt_tokens)) }
+                            td .mono .small { (token_count(row.completion_tokens)) }
+                            td .mono .small { (format!("{:.0}%", row.cache_rate() * 100.0)) }
+                            td .mono .small { (row.failed) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The dashboard page.
 pub fn dashboard_page(view: &DashboardView) -> Markup {
     let error = view.error.as_ref();
@@ -1587,6 +1667,18 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
                 dt { "Database" }
                 dd { (view.db_size) " on disk" }
             }
+        }
+
+        section .card aria-labelledby="cost-heading" {
+            h2 id="cost-heading" { "Cost and latency" }
+            p .small {
+                "Every finished answer already recorded its model, its tokens and how long it "
+                "took. This is what those rows say, for the last day and the last week. "
+                "Percentiles are nearest-rank over the turns that recorded a duration, and "
+                "the count that did not is stated rather than hidden."
+            }
+            (cost_table(crate::metrics::Window::Day, &view.cost_day))
+            (cost_table(crate::metrics::Window::Week, &view.cost_week))
         }
 
         section .card aria-labelledby="quick-actions" {

@@ -758,6 +758,67 @@ pub async fn search_transcript(
     }
 }
 
+/// `GET /v1/metrics?window=24h|7d` - cost and latency for one window.
+///
+/// The phone's Settings line needs three numbers: the model in use, the cache hit
+/// rate and the p95 latency. It reads them here rather than deriving them, because
+/// a client that computes a percentile computes a different one than the page.
+pub async fn metrics(
+    State(service): State<DeviceService>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let engine = service.engine();
+    let window = params
+        .get("window")
+        .and_then(|value| crate::metrics::Window::parse(value))
+        .unwrap_or(crate::metrics::Window::Day);
+    let summary = match crate::metrics::summary(engine.db(), window) {
+        Ok(summary) => summary,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the transcript: {error}"))
+                .into_response();
+        }
+    };
+    let rows: Vec<serde_json::Value> = summary
+        .rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "model": row.model,
+                "calls": row.calls,
+                "failed": row.failed,
+                "median_ms": row.median_ms,
+                "p95_ms": row.p95_ms,
+                "prompt_tokens": row.prompt_tokens,
+                "completion_tokens": row.completion_tokens,
+                "cached_tokens": row.cached_tokens,
+                "cache_rate": row.cache_rate(),
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "window": window.label(),
+        "calls": summary.calls,
+        "failed": summary.failed,
+        "prompt_tokens": summary.prompt_tokens,
+        "completion_tokens": summary.completion_tokens,
+        "cached_tokens": summary.cached_tokens,
+        "cache_rate": summary.cache_rate(),
+        "unmeasured": summary.unmeasured,
+        "models": rows,
+    }))
+    .into_response()
+}
+
 /// `GET /v1/processes` - background work this daemon is running.
 ///
 /// Background work used to be invisible off the host: a `nohup` shell a turn left
