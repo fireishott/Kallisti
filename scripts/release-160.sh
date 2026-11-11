@@ -82,7 +82,7 @@ APP="$PAYLOAD/Payload/Kallisti.app"
 # way to ship an IPA whose appex signature no longer matches.
 sign_bundle() {
   local target="$1" profile="$2" label="$3"
-  local prov="$PROFILES/$profile"
+  local prov="$PROFILES/$profile.mobileprovision"
   [ -d "$target" ] || { say "ABORT: $label bundle missing at $target"; exit 4; }
   cp "$prov" "$target/embedded.mobileprovision"
   security cms -D -i "$prov" -o "/tmp/kallisti-profile-$label.plist"
