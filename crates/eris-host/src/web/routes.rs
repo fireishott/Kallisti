@@ -10037,18 +10037,30 @@ fn spawn_turn(
         }
 
         // What the daemon already knows, before it is asked to answer.
+        //
+        // Two lanes: the configured backend, which is the operator's curated store,
+        // and the consolidated tier in the database, which no file mirrors. They
+        // are merged rather than concatenated so a fact that reached both is one
+        // line in the prompt, not two.
         let backend = memory_backend;
-        let (recalls, recall_error) = crate::memory::recall_with(
+        let (external, recall_error) = crate::memory::recall_with(
             backend,
             memory_gbrain.as_deref(),
             memory_vault.as_deref().map(std::path::Path::new),
             &question,
             crate::memory::MAX_RECALLS,
         );
-        let detail = match &recall_error {
-            Some(reason) => format!("backend={}; recalled=0; reason={reason}", backend.as_str()),
-            None => format!("backend={}; recalled={}", backend.as_str(), recalls.len()),
-        };
+        let lane_a = external.len();
+        let consolidated = crate::memory::consolidated(&db, &question, crate::memory::MAX_RECALLS);
+        let lane_b = consolidated.len();
+        let recalls = crate::memory::merge(external, consolidated, crate::memory::MAX_RECALLS);
+        let detail = crate::memory::recall_detail(
+            backend.as_str(),
+            recalls.len(),
+            lane_a,
+            lane_b,
+            recall_error.as_deref(),
+        );
         let _ = title_audit.audit("loopback", "memory.recall", Some(&detail));
         let recalled = crate::memory::render(&recalls);
 
