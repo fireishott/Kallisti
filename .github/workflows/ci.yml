@@ -33,6 +33,13 @@ jobs:
       - name: no retired namespace tokens
         run: bash scripts/check-namespace.sh
 
+      # The repository is public and it is the release source: what lands here is
+      # what a stranger clones. A login, a work address or a LAN address is not
+      # part of the product. The iOS bundle id and the release repository are
+      # excluded on purpose, because removing those breaks a running install.
+      - name: no operator identifiers
+        run: bash scripts/check-identifiers.sh
+
       - name: test
         run: cargo test --workspace
 
