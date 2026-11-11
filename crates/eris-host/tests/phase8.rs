@@ -7316,6 +7316,38 @@ async fn the_update_check_answers_both_methods_and_carries_the_release() {
         assert_eq!(body["update_available"], true, "{}", response.body);
         assert_eq!(body["latest"]["tag"], "v99.0.0-build.999");
         assert_eq!(body["latest"]["has_checksum"], true);
+
+        // The legacy envelope, in the SAME document. The shipped phone decodes
+        // `data.components["hermes-agent"]`; the flat keys above are what this
+        // build and the dashboard read. One answer, both readers.
+        let component = &body["data"]["components"]["hermes-agent"];
+        for key in [
+            "currentVersion",
+            "latestVersion",
+            "updateAvailable",
+            "behindCount",
+            "releaseURL",
+            "changelog",
+            "commits",
+            "lastCheckedAt",
+            "error",
+        ] {
+            assert!(
+                component.get(key).is_some(),
+                "{method} envelope is missing `{key}`: {}",
+                response.body
+            );
+        }
+        assert_eq!(component["updateAvailable"], true);
+        assert_eq!(component["commits"], serde_json::json!([]));
+        assert!(
+            component["latestVersion"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("99.0.0"),
+            "the envelope names the newest release: {}",
+            response.body
+        );
         assert_eq!(
             body["checked"], false,
             "a served-from-cache answer does not claim a fresh check"
