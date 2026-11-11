@@ -69,6 +69,7 @@ Settings.
 ## Features (0.4.0 UI)
 
 - **Rich chat** - streaming, markdown, syntax-highlighted code, and the model's reasoning streamed into the thought card while the turn runs rather than after it
+- **Cost and latency in the chat** - each conversation shows its own model, cache rate, p95 and turn count under the composer, asked of the daemon by conversation rather than as one daemon-wide window in Settings
 - **Health and sensors** - HealthKit, CoreLocation, CoreMotion into Eris `sensors.db`
 - **Inbox** - Eris inbox items and actions
 - **Notes** - enrichment runs on the daemon; the app opens a run and streams its progress
