@@ -477,11 +477,11 @@ mod tests {
         .with_transport(Arc::new(Fixed(seen)))
         .with_account(Arc::new(|provider, _token| match provider {
             Provider::Claude => Discovered {
-                account: Some("curtis@example.test".to_owned()),
+                account: Some("operator@example.test".to_owned()),
                 ..Discovered::default()
             },
             Provider::Antigravity => Discovered {
-                account: Some("curtis@example.test".to_owned()),
+                account: Some("operator@example.test".to_owned()),
                 project: Some("aicode-123".to_owned()),
                 note: None,
             },
@@ -515,7 +515,7 @@ mod tests {
         ]);
         assert!(outcome.ok, "{}", outcome.message);
         assert_eq!(outcome.provider, Provider::Claude);
-        assert_eq!(outcome.account.as_deref(), Some("curtis@example.test"));
+        assert_eq!(outcome.account.as_deref(), Some("operator@example.test"));
 
         let sent = seen.lock().expect("lock").clone();
         assert_eq!(sent.len(), 1, "one exchange");
@@ -526,7 +526,7 @@ mod tests {
         let record = store.load("claude").expect("loads").expect("a record");
         assert_eq!(record.access_token, "at-value");
         assert_eq!(record.origin, core_domain::TokenOrigin::Login);
-        assert_eq!(record.account.as_deref(), Some("curtis@example.test"));
+        assert_eq!(record.account.as_deref(), Some("operator@example.test"));
         assert!(record.expires_at.is_some());
         assert_eq!(callbacks.last(), Some(outcome));
     }
@@ -549,7 +549,7 @@ mod tests {
         // Discovery found an account and no project, which is a fresh Google
         // login with nothing onboarded yet.
         .with_account(Arc::new(|_provider, _token| Discovered {
-            account: Some("curtis@example.test".to_owned()),
+            account: Some("operator@example.test".to_owned()),
             project: None,
             note: Some("the account answered but named no cloud project".to_owned()),
         }));
@@ -571,7 +571,7 @@ mod tests {
             .expect("loads")
             .expect("a record");
         assert_eq!(record.project_id.as_deref(), Some("aicode-from-file"));
-        assert_eq!(record.account.as_deref(), Some("curtis@example.test"));
+        assert_eq!(record.account.as_deref(), Some("operator@example.test"));
     }
 
     #[test]

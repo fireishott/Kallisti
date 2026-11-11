@@ -243,8 +243,8 @@ mod tests {
     #[test]
     fn the_label_comes_from_the_email_field_only() {
         assert_eq!(
-            account_from_userinfo(r#"{"email":"curtis@example.test","name":"X"}"#).as_deref(),
-            Some("curtis@example.test")
+            account_from_userinfo(r#"{"email":"operator@example.test","name":"X"}"#).as_deref(),
+            Some("operator@example.test")
         );
         assert_eq!(account_from_userinfo(r#"{"name":"X"}"#), None);
         assert_eq!(account_from_userinfo("[]"), None);
@@ -266,11 +266,11 @@ mod tests {
     #[test]
     fn a_full_answer_records_the_account_and_the_project() {
         let transport = Answers::new(
-            Some((200, r#"{"email":"curtis@example.test"}"#)),
+            Some((200, r#"{"email":"operator@example.test"}"#)),
             Some((200, r#"{"cloudaicompanionProject":"aicode-123"}"#)),
         );
         let found = discover(&transport, Provider::Antigravity, "AT");
-        assert_eq!(found.account.as_deref(), Some("curtis@example.test"));
+        assert_eq!(found.account.as_deref(), Some("operator@example.test"));
         assert_eq!(found.project.as_deref(), Some("aicode-123"));
         assert!(found.note.is_none());
         assert_eq!(
@@ -298,11 +298,11 @@ mod tests {
     #[test]
     fn an_answer_with_no_project_says_what_to_do_and_does_not_fail() {
         let transport = Answers::new(
-            Some((200, r#"{"email":"curtis@example.test"}"#)),
+            Some((200, r#"{"email":"operator@example.test"}"#)),
             Some((200, r#"{"allowedTiers":[]}"#)),
         );
         let found = discover(&transport, Provider::Antigravity, "AT-token-value");
-        assert_eq!(found.account.as_deref(), Some("curtis@example.test"));
+        assert_eq!(found.account.as_deref(), Some("operator@example.test"));
         assert_eq!(found.project, None);
         let note = found.note.expect("a note");
         assert!(note.contains("oauth-clients.toml"), "{note}");

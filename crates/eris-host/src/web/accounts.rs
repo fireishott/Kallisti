@@ -276,7 +276,7 @@ mod tests {
             project_id: Some("aicode-test".to_owned()),
             token_type: Some("Bearer".to_owned()),
             last_refresh: None,
-            account: Some("curtis@example.test".to_owned()),
+            account: Some("operator@example.test".to_owned()),
             origin: TokenOrigin::Login,
         }
     }
@@ -306,7 +306,7 @@ mod tests {
         let rows = rows(&callbacks, 0, &[]);
         let claude = &rows[0];
         assert!(claude.connected);
-        assert_eq!(claude.account.as_deref(), Some("curtis@example.test"));
+        assert_eq!(claude.account.as_deref(), Some("operator@example.test"));
         assert_eq!(claude.origin.as_deref(), Some("login"));
         assert!(!claude.expired);
         assert!(!claude.to_string_has_a_token());

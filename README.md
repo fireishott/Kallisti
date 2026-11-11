@@ -313,7 +313,7 @@ reaches it over ssh. One thing bites: `ssh mbp` fails on this host because
 
 ```sh
 ssh -F /dev/null -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
-  -i ~/.ssh/mbp_key curtisfreeman@cdf-macbook-pro.tail4d497d.ts.net 'xcodebuild -version'
+  -i ~/.ssh/mbp_key you@your-mac.your-tailnet.ts.net 'xcodebuild -version'
 ```
 
 Either fix that symlink's ownership on the host, or keep using `-F /dev/null`.

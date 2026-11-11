@@ -221,7 +221,7 @@ mod tests {
             project_id: None,
             token_type: Some("Bearer".to_owned()),
             last_refresh: None,
-            account: Some("curtis@example.test".to_owned()),
+            account: Some("operator@example.test".to_owned()),
             origin: TokenOrigin::Login,
         }
     }

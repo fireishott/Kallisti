@@ -179,11 +179,11 @@ const SMALL_TALK: &[&str] = &[
     "haha",
     "ha",
     // Names a greeting is likely to carry, so "morning ignyte" still counts.
-    "curt",
-    "curtis",
     "ignyte",
     "eris",
     "kallisti",
+    "buddy",
+    "chief",
 ];
 
 /// The longest a message can be and still be a greeting, in words.
@@ -277,7 +277,7 @@ mod tests {
     fn the_reported_greetings_are_small_talk() {
         assert!(is_small_talk("Sup"));
         assert!(is_small_talk("Good morning"));
-        assert!(is_small_talk("Good morning, Curtis"));
+        assert!(is_small_talk("Good morning, chief"));
         assert!(is_small_talk("morning"));
         assert!(is_small_talk("what's up"));
         assert!(is_small_talk("How are you?"));

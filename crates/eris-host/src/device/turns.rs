@@ -319,6 +319,8 @@ enum Signal {
         capped: bool,
         /// How many tool rounds ran.
         rounds: u64,
+        /// Wall time from the first round to the last byte.
+        duration_ms: u64,
     },
     /// The provider failed.
     Failed {
@@ -2042,6 +2044,7 @@ impl TurnHub {
                             usage,
                             capped,
                             rounds,
+                            duration_ms,
                         } => {
                             if let Ok(mut last) = last_turn.lock() {
                                 *last = Some((capped, text.clone()));
@@ -2064,7 +2067,7 @@ impl TurnHub {
                                             Some(&reasoning),
                                             &tools,
                                             Some(&usage),
-                                            accounting_from(&usage, capped, rounds),
+                                            accounting_from(&usage, capped, rounds, duration_ms),
                                         );
                                         // Then, and only then, the name. A title
                                         // is a nicety and never sits between the
@@ -2192,6 +2195,10 @@ impl TurnHub {
         // and round count are flushed so a re-attached phone (or a page watching
         // from the dashboard) sees progress instead of an empty streaming bubble.
         // The writer task still owns the settle; this only keeps the row current.
+        // The turn's own clock. Without it the row settles with no duration, and
+        // every per-chat p95 on the phone reads as "not measured" - the one number
+        // the chat footer exists to show.
+        let turn_started = std::time::Instant::now();
         let progress_conversation = conversation.clone();
         let progress_db = store.db().clone();
         // Work the model may hand to the next turn. The sink is built here rather
@@ -2611,6 +2618,7 @@ impl TurnHub {
                         usage,
                         capped: outcome.capped,
                         rounds: outcome.rounds as u64,
+                        duration_ms: turn_started.elapsed().as_millis() as u64,
                     });
                 }
                 Err((code, message)) => {
@@ -2845,13 +2853,14 @@ fn accounting_from(
     usage: &serde_json::Value,
     capped: bool,
     rounds: u64,
+    duration_ms: u64,
 ) -> crate::web::chat::Accounting {
     serde_json::from_value::<core_domain::Usage>(usage.clone())
         .map(|usage| crate::web::chat::Accounting {
             prompt_tokens: usage.input_tokens(),
             completion_tokens: usage.output_tokens(),
             cached_tokens: usage.cache_read_tokens(),
-            duration_ms: None,
+            duration_ms: Some(duration_ms),
             rounds: Some(rounds),
             // The terminal frame carries the turn's summed usage, not a single
             // round, so the live context size is not something this worker knows.
@@ -2904,10 +2913,11 @@ mod tests {
             core_domain::UnavailableReason::FieldsAbsent,
         ))
         .expect("usage is serialisable");
-        let accounting = accounting_from(&usage, true, 60);
+        let accounting = accounting_from(&usage, true, 60, 95_000);
         assert_eq!(accounting.capped, Some(true));
         assert_eq!(accounting.rounds, Some(60));
-        let clean = accounting_from(&usage, false, 3);
+        assert_eq!(accounting.duration_ms, Some(95_000));
+        let clean = accounting_from(&usage, false, 3, 4_000);
         assert_eq!(clean.capped, Some(false));
         assert_eq!(clean.rounds, Some(3));
     }

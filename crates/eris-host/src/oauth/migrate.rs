@@ -464,7 +464,7 @@ mod tests {
                 .execute(
                     "INSERT INTO providerConnections VALUES
                         ('1','claude','oauth','Claude','',0,1,?1),
-                        ('2','antigravity','oauth','Antigravity','freemancurtisd@gmail.com',1,1,?2),
+                        ('2','antigravity','oauth','Antigravity','operator@example.test',1,1,?2),
                         ('3','deepseek','apikey','DeepSeek','',2,1,'{\"apiKey\":\"x\"}')",
                     rusqlite::params![claude_blob(), antigravity_blob()],
                 )

@@ -26,9 +26,11 @@ observe; commit history carries the detail.
   The worker now renews every twenty seconds on the frames it is already
   streaming. `build 185`.
 
-- **Phone turns record what the budget did.** The terminal frame carries the cap
-  and the round count, and the settled row stores both, so a capped turn is
-  visible in the transcript instead of arriving with the flag unset. `build 185`.
+- **Phone turns record what the budget did, and how long it took.** The terminal
+  frame carries the cap, the round count and the wall time, and the settled row
+  stores all three, so a capped turn is visible in the transcript instead of
+  arriving with the flag unset, and a chat's p95 is a measurement rather than
+  "not measured". `build 185`.
 
 - **`/v1/metrics` answers for one conversation.** `GET /v1/metrics?conversation=`
   narrows the same rows, and `window=all` reads a chat over its whole life instead

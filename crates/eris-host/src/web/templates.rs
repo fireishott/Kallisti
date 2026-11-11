@@ -8887,7 +8887,7 @@ const CHAT_JS: &str = r##"(function () {
         slot = document.createElement("div");
         slot.className = "asked-slot";
         // In the reply's own slot: after the run log and the thinking bubble,
-        // where the answer would have gone. Curtis asked for this - the question
+        // where the answer would have gone. the operator asked for this - the question
         // is what the operator has to act on, and their eye is already in the
         // answer's position, not at the top of a log they have to scroll back to
         // find. `bubble` is hoisted, so it is assigned by the time a frame
