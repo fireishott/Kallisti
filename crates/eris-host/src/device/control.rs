@@ -325,6 +325,9 @@ fn schedule_json(row: &Schedule) -> serde_json::Value {
         "last_status": row.last_status,
         "last_error": row.last_error,
         "fired_count": row.fired_count,
+        // What happens to the answer. A client that cannot see this cannot tell a
+        // schedule that pings the phone from one that writes and stays quiet.
+        "deliver": row.deliver,
     })
 }
 
@@ -457,6 +460,13 @@ pub async fn create_cron(
         Ok(id) => id,
         Err(error) => return schedule_failure(error, "schedule").into_response(),
     };
+    // The channel rides on the create when the body names one; otherwise the
+    // column's default (`push`) stands.
+    if let Some(channel) = fields.get("deliver")
+        && let Err(error) = scheduler::set_deliver(engine.db(), &id, channel)
+    {
+        return schedule_failure(error, "schedule").into_response();
+    }
     if let Err(error) = audit(
         &service,
         token.device_id(),

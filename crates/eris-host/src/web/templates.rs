@@ -3928,6 +3928,21 @@ fn schedules_group(view: &SettingsView) -> Markup {
                     "conversation named after this schedule."
                 }
             }
+            div .field {
+                label for="schedule_deliver" { "Delivery" }
+                select id="schedule_deliver" name="schedule_deliver" {
+                    @for channel in crate::delivery::CHANNELS {
+                        option value=(channel) selected[channel == crate::delivery::DEFAULT_CHANNEL] {
+                            (channel)
+                        }
+                    }
+                }
+                span .hint {
+                    "Where the answer goes. `push` alerts the paired devices, `email` writes "
+                    "to the one permitted address, `both` does both, and `none` only writes "
+                    "the conversation. The address rule is not configurable here."
+                }
+            }
             input type="hidden" name="schedules_action" value="create";
             div .actions {
                 button type="submit" { "Add schedule" }

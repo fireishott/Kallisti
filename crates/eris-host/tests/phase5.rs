@@ -69,12 +69,12 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // `subagents`, 0015 added the `admin` flag on `pairing_codes`, 0017 added
     // `schedules` and `schedule_runs`, and 0018 added `context_tokens`, 0021 added the compression summary, 0022
     // added the capped flag on an answer, 0023 added the wrapped-up flag beside
-    // it, 0024 added the three learning tables, and 0025 added the transcript
-    // index, so the version and count below are the current ones and `TABLES` is
-    // the list.)
+    // it, 0024 added the three learning tables, 0025 added the transcript
+    // index, and 0026 added the delivery column, so the version and count below are
+    // the current ones and `TABLES` is the list.)
     let first = Db::open(&path).expect("first open");
-    assert_eq!(first.schema_version().expect("version"), 25);
-    assert_eq!(first.applied_migration_count().expect("count"), 25);
+    assert_eq!(first.schema_version().expect("version"), 26);
+    assert_eq!(first.applied_migration_count().expect("count"), 26);
 
     let mut names = first.table_names().expect("table names");
     for expected in TABLES {
@@ -109,10 +109,10 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // Second open of the same file: no error, no duplicate version row, no
     // duplicate app_state row.
     let second = Db::open(&path).expect("second open must not fail");
-    assert_eq!(second.schema_version().expect("version"), 25);
+    assert_eq!(second.schema_version().expect("version"), 26);
     assert_eq!(
         second.applied_migration_count().expect("count"),
-        25,
+        26,
         "re-running migrations must not add a version row"
     );
     assert_eq!(

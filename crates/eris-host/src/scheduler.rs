@@ -299,6 +299,8 @@ pub struct Schedule {
     pub last_error: Option<String>,
     /// How many times it has fired.
     pub fired_count: i64,
+    /// What happens to the answer: `none`, `push`, `email` or `both`.
+    pub deliver: String,
 }
 
 /// Why a schedule could not be saved or read.
@@ -354,7 +356,7 @@ pub fn validate(name: &str, cron: &str, prompt: &str) -> Result<Cron, ScheduleEr
 // ---------------------------------------------------------------------------
 
 const COLUMNS: &str = "id, name, cron, prompt, enabled, next_fire_at, last_fired_at, \
-                       last_status, last_error, fired_count";
+                       last_status, last_error, fired_count, COALESCE(deliver, 'push')";
 
 fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
     Ok(Schedule {
@@ -368,6 +370,7 @@ fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
         last_status: row.get(7)?,
         last_error: row.get(8)?,
         fired_count: row.get(9)?,
+        deliver: row.get(10)?,
     })
 }
 
@@ -665,6 +668,48 @@ pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
         }
         transaction.commit()?;
         Ok(changed)
+    })
+}
+
+/// Set what happens to a run's answer.
+///
+/// # Errors
+///
+/// A refused channel, or a database failure.
+pub fn set_deliver(db: &Db, id: &str, value: &str) -> Result<(), ScheduleError> {
+    let channel = value.trim().to_ascii_lowercase();
+    if !crate::delivery::valid(&channel) {
+        return Err(ScheduleError::Text(format!(
+            "`{value}` is not a delivery channel; this daemon has {} and defaults to {}",
+            crate::delivery::CHANNELS.join(", "),
+            crate::delivery::DEFAULT_CHANNEL
+        )));
+    }
+    let changed = db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE schedules SET deliver = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              WHERE id = ?1",
+            rusqlite::params![id, channel],
+        )
+    })?;
+    if changed == 0 {
+        return Err(ScheduleError::Text(format!("no schedule `{id}` to change")));
+    }
+    Ok(())
+}
+
+/// Record what a run's delivery did, beside the run rather than inside its status.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn record_delivery(db: &Db, run_id: &str, delivered: &str, note: &str) -> Result<(), DbError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE schedule_runs SET delivered = ?2, delivery_note = ?3 WHERE id = ?1",
+            rusqlite::params![run_id, delivered, note],
+        )?;
+        Ok(())
     })
 }
 
@@ -1175,5 +1220,118 @@ mod tests {
         assert_eq!(now.len(), 20, "{now}");
         // It parses as the same format the rows store.
         assert!(OffsetDateTime::parse(&now, &Rfc3339).is_ok(), "{now}");
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    fn db() -> Db {
+        Db::open_in_memory().expect("in-memory db")
+    }
+
+    #[test]
+    fn migration_twenty_six_gives_every_schedule_a_channel() {
+        let db = db();
+        assert!(db.schema_version().expect("version") >= 26);
+        let columns = db.column_names("schedules").expect("columns");
+        assert!(columns.iter().any(|name| name == "deliver"), "{columns:?}");
+        let run_columns = db.column_names("schedule_runs").expect("columns");
+        assert!(
+            run_columns.iter().any(|name| name == "delivered"),
+            "{run_columns:?}"
+        );
+        assert!(
+            run_columns.iter().any(|name| name == "delivery_note"),
+            "{run_columns:?}"
+        );
+        // An existing schedule that predates the column reads as `push`, which is
+        // what the default promises.
+        let id = create(
+            &db,
+            "Brief",
+            "0 7 * * *",
+            "what happened",
+            time::UtcOffset::UTC,
+        )
+        .expect("created");
+        let row = get(&db, &id).expect("read").expect("a row");
+        assert_eq!(row.deliver, "push");
+    }
+
+    #[test]
+    fn a_channel_is_validated_where_it_is_written() {
+        let db = db();
+        let id = create(
+            &db,
+            "Brief",
+            "0 7 * * *",
+            "what happened",
+            time::UtcOffset::UTC,
+        )
+        .expect("created");
+        set_deliver(&db, &id, "both").expect("a known channel");
+        assert_eq!(get(&db, &id).unwrap().unwrap().deliver, "both");
+        set_deliver(&db, &id, "EMAIL").expect("case does not matter");
+        assert_eq!(get(&db, &id).unwrap().unwrap().deliver, "email");
+        let refused = set_deliver(&db, &id, "telegram").expect_err("an unknown channel");
+        assert!(
+            refused.to_string().contains("not a delivery channel"),
+            "{refused}"
+        );
+        assert_eq!(
+            get(&db, &id).unwrap().unwrap().deliver,
+            "email",
+            "a refusal writes nothing"
+        );
+        let missing = set_deliver(&db, "nope", "push").expect_err("an unknown id");
+        assert!(missing.to_string().contains("no schedule"), "{missing}");
+    }
+
+    #[test]
+    fn a_run_records_what_delivery_actually_did() {
+        let db = db();
+        let id = create(
+            &db,
+            "Brief",
+            "0 7 * * *",
+            "what happened",
+            time::UtcOffset::UTC,
+        )
+        .expect("created");
+        let run = open_run(&db, &id).expect("a run");
+        // The run's conversation is a real foreign key, so the row it names has to
+        // exist before the run that names it.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_conversations (id, title) VALUES ('conv-1', 'Brief')",
+                [],
+            )
+        })
+        .expect("a conversation");
+        settle_run(
+            &db,
+            &id,
+            &run,
+            "ok",
+            Some("conv-1"),
+            Some("all quiet"),
+            None,
+        )
+        .expect("settled");
+        record_delivery(&db, &run, "push", "pushed to 1 device(s)").expect("recorded");
+        let (delivered, note): (String, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COALESCE(delivered, ''), COALESCE(delivery_note, '') \
+                       FROM schedule_runs WHERE id = ?1",
+                    rusqlite::params![run],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+            })
+            .expect("read");
+        assert_eq!(delivered, "push");
+        assert!(note.contains("1 device"), "{note}");
     }
 }

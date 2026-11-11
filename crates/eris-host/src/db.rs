@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 25;
+pub const SCHEMA_VERSION: i64 = 26;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -200,6 +200,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 25,
         name: "0025_transcript_search",
         sql: MIGRATION_0025,
+    },
+    Migration {
+        version: 26,
+        name: "0026_schedule_delivery",
+        sql: MIGRATION_0026,
     },
 ];
 
@@ -904,6 +909,22 @@ CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE ON chat_messages 
 END;
 ";
 
+/// Migration 0026: delivery is part of a schedule, not an afterthought.
+///
+/// `deliver` names a channel from a closed set. It is a plain column with a
+/// default rather than a CHECK constraint because SQLite cannot add a constrained
+/// column to an existing table; the closed set is enforced where a value is
+/// written, which is the only place it can be wrong.
+///
+/// The two run columns record what actually left the daemon. "The run finished"
+/// and "the operator was told" are separate facts, and a schedules page that
+/// conflates them cannot answer the only question worth asking of a cron entry.
+const MIGRATION_0026: &str = r"
+ALTER TABLE schedules ADD COLUMN deliver TEXT NOT NULL DEFAULT 'push';
+ALTER TABLE schedule_runs ADD COLUMN delivered TEXT;
+ALTER TABLE schedule_runs ADD COLUMN delivery_note TEXT;
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 
@@ -1311,7 +1332,7 @@ mod tests {
     #[test]
     fn migration_0023_adds_wrapped_up_and_re_running_it_changes_nothing() {
         let db = Db::open_in_memory().expect("a database");
-        assert_eq!(db.schema_version().expect("version"), 25);
+        assert_eq!(db.schema_version().expect("version"), 26);
         assert!(
             db.column_names("chat_messages")
                 .expect("columns")
@@ -1328,7 +1349,7 @@ mod tests {
         );
         assert_eq!(
             db.applied_migration_count().expect("count"),
-            25,
+            26,
             "one row per migration, and the new one is the last"
         );
 
@@ -1341,8 +1362,8 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, 25, "one row per migration, on a fresh file");
-        assert_eq!(first.schema_version().expect("version"), 25);
+        assert_eq!(applied, 26, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 26);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");
         assert_eq!(

@@ -44,6 +44,7 @@ pub mod backup;
 pub mod commands;
 pub mod config;
 pub mod db;
+pub mod delivery;
 pub mod device;
 pub mod doctor;
 pub mod error;

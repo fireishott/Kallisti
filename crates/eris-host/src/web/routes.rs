@@ -9668,6 +9668,13 @@ pub(crate) async fn run_scheduled(
         summary.as_deref(),
         error_code.as_deref(),
     );
+    // The answer is written; now it goes somewhere. The result is recorded beside
+    // the run rather than folded into its status: a run that finished and failed to
+    // notify is both facts, and a page that shows one cannot explain the other.
+    let (delivered, note) =
+        crate::delivery::deliver(state, &schedule, &run_id, &conversation, summary.as_deref())
+            .await;
+    let _ = crate::scheduler::record_delivery(&db, &run_id, &delivered, &note);
 }
 
 fn spawn_turn(
@@ -10959,6 +10966,22 @@ async fn save_schedules(
                     );
                 }
             };
+            // Delivery is part of creating the schedule, not a second trip: a
+            // schedule that fires into nowhere is the defect this release fixes.
+            let channel = field(&fields, "schedule_deliver").trim().to_owned();
+            if !channel.is_empty()
+                && let Err(error) = crate::scheduler::set_deliver(db, &id, &channel)
+            {
+                return fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(
+                        Some("schedule_deliver"),
+                        "schedule_invalid",
+                        error.to_string(),
+                    ),
+                );
+            }
             let _ = state.engine.auth().audit(
                 "loopback",
                 "settings.schedules",
