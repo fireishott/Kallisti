@@ -349,6 +349,16 @@ impl Access {
         ToolResult::ok(state)
     }
 
+    /// Both files, for the device route and the app's memory viewer.
+    #[must_use]
+    pub fn snapshot(&self) -> serde_json::Value {
+        let mut files = Vec::new();
+        for target in [Target::Memory, Target::User] {
+            files.push(self.state(target, None));
+        }
+        serde_json::json!({ "files": files })
+    }
+
     /// The live state of one file, for every tool response.
     fn state(&self, target: Target, changed: Option<usize>) -> serde_json::Value {
         let entries = self.entries(target);

@@ -758,6 +758,23 @@ pub async fn search_transcript(
     }
 }
 
+/// `GET /v1/memory` - the assistant's two bounded note files.
+///
+/// Read-only. The write path is the `memory_manage` tool inside a turn, because a
+/// note that changes without passing the injection scan is a note nobody checked.
+pub async fn memory_files(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let engine = service.engine();
+    let access = crate::selfmemory::Access::new(&engine.paths().state_dir);
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "memory": access.snapshot(),
+    }))
+    .into_response()
+}
+
 /// `GET /v1/metrics?window=24h|7d` - cost and latency for one window.
 ///
 /// The phone's Settings line needs three numbers: the model in use, the cache hit

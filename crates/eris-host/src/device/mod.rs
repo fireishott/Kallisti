@@ -123,6 +123,9 @@ pub const ROUTE_REFRESH: &str = "/v1/token/refresh";
 /// `POST /v1/turns` - queue one turn.
 pub const ROUTE_TURNS: &str = "/v1/turns";
 
+/// `GET /v1/memory` - the assistant's two bounded note files.
+pub const ROUTE_MEMORY: &str = "/v1/memory";
+
 /// `GET /v1/metrics?window=24h|7d` - cost and latency for a window.
 pub const ROUTE_METRICS: &str = "/v1/metrics";
 
@@ -1102,6 +1105,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_PAIR, post(handlers::pair))
         .route(ROUTE_REFRESH, post(handlers::refresh))
         .route(ROUTE_TURNS, post(handlers::create_turn))
+        .route(ROUTE_MEMORY, get(control::memory_files))
         .route(ROUTE_METRICS, get(control::metrics))
         .route(ROUTE_PROCESSES, get(control::processes))
         .route(ROUTE_PROCESS_KILL, post(control::kill_process))
