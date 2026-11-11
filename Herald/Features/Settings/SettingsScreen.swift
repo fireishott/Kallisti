@@ -629,7 +629,7 @@ struct SettingsScreen: View {
                 sectionDivider
 
                 // Build 135.38: full-row tap target. Wrapping the row in a
-                // Button makes the whole row tappable (Curtis's "touch the
+                // Button makes the whole row tappable (the operator's "touch the
                 // whole row" ask). .contentShape(Rectangle()) ensures the
                 // tappable region covers the whole row, not just the text
                 // or the trailing chevron.
@@ -1076,7 +1076,7 @@ struct SettingsScreen: View {
     private func gatewayRestartButton(label: String, target: String) -> some View {
         // Build 135.38: confirm before firing. Restarting the connector or
         // Hermes tears down the relay, voice, WS, jobs, and Live Activity
-        // state. Curtis has hit this button by accident more than once, so
+        // state. the operator has hit this button by accident more than once, so
         // route every restart action through a confirmation alert that
         // names the target and the live state. The Hermes Agent restart
         // already has its own preflight/confirm flow; this covers the
@@ -1805,10 +1805,6 @@ struct SettingsScreen: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("settings.memory")
-
-                sectionDivider
-
-                SettingsCostLine()
 
                 sectionDivider
 
@@ -3370,7 +3366,7 @@ struct SettingsScreen: View {
     ) -> some View {
         // Build 118: full-row tap target. A stock Toggle only responds on the
         // switch itself; wrapping the row in a Button makes the whole row
-        // tappable (Curtis's "touch the whole row" ask) while keeping a
+        // tappable (the operator's "touch the whole row" ask) while keeping a
         // switch-style indicator.
         Button {
             isOn.wrappedValue.toggle()
@@ -3950,66 +3946,5 @@ private struct EnrichmentModelPickerSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationContentInteraction(.scrolls)
-    }
-}
-
-
-// MARK: - Cost line
-//
-// One line, because that is what belongs in a list of settings rows: which model
-// is answering, how much of the prompt came from cache, and how slow the worst
-// fifth of turns is. The full table lives on the daemon's dashboard.
-//
-// The model named is the busiest one in the window, which is what a person means
-// by "the model" on a daemon that can route a turn three ways.
-
-private struct SettingsCostLine: View {
-    @Environment(ChatStore.self) private var chatStore
-
-    @State private var metrics: ErisMetrics?
-    @State private var failed = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Cost and latency")
-                .font(Design.Typography.callout)
-                .foregroundStyle(Design.Colors.foreground)
-            Text(detail)
-                .font(Design.Typography.caption)
-                .foregroundStyle(Design.Colors.secondaryForeground)
-                .lineLimit(2)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(minHeight: Design.Size.minTapTarget)
-        .task { await load() }
-        .accessibilityIdentifier("settings.cost")
-    }
-
-    private var detail: String {
-        if failed { return "The daemon did not answer." }
-        guard let metrics else { return "Reading the transcript…" }
-        let top = metrics.models.first
-        let cache = Int((metrics.cacheRate * 100).rounded())
-        let p95: String
-        if let ms = top?.p95Ms {
-            p95 = ms >= 1000 ? String(format: "%.1fs", ms / 1000) : String(format: "%.0fms", ms)
-        } else {
-            p95 = "—"
-        }
-        let model = top?.model ?? "no answer yet"
-        return "\(model) · \(cache)% cached · p95 \(p95) · \(metrics.calls) turns, 24h"
-    }
-
-    private func load() async {
-        guard let eris = chatStore.heraldClient as? ErisHeraldClient else {
-            failed = true
-            return
-        }
-        guard let client = await eris.client() else {
-            failed = true
-            return
-        }
-        metrics = try? await client.metrics(window: "24h")
-        failed = metrics == nil
     }
 }

@@ -440,6 +440,13 @@ struct ChatScreen: View {
                     )
                 }
 
+                // The chat's own cost and latency, at the bottom where it belongs:
+                // one chat, not a daemon-wide window. Hidden in terminal mode
+                // because the terminal owns the whole screen.
+                if !usesEmbeddedTerminal {
+                    ConversationCostFooter()
+                }
+
                 // Build 118: frosted chat-switch overlay. Shown while the
                 // target conversation loads from the host so switching chats
                 // never looks like a frozen old thread.
@@ -1451,7 +1458,7 @@ struct ChatScreen: View {
     /// The array is the merge/insertion order, which can diverge from wall
     /// clock when a row's stream starts early but its terminal write lands
     /// late - a message stamped 7:59 PM used to render BELOW an 8:04 PM row
-    /// simply because its completion arrived last (Curtis screenshot
+    /// simply because its completion arrived last (the operator screenshot
     /// 2026-08-16 20:07). Sorting here fixes the visible order without
     /// touching the merge logic that builds the array. Stable sort: equal
     /// timestamps (same-second tool-boundary rows, optimistic user rows)
@@ -2538,4 +2545,102 @@ struct QueueManagerSheet: View {
 struct InAppLink: Identifiable {
     let id = UUID()
     let url: URL
+}
+
+/// One chat's cost and latency, under the composer.
+///
+/// This used to be a single aggregate line on the Settings page: the busiest
+/// model across every chat, over a window. Both halves of that were wrong for the
+/// operator reading a thread. It answered for chats they were not looking at, and
+/// it answered for the last twenty-four hours of a conversation that may have
+/// been running for weeks.
+///
+/// The numbers belong to the chat in front of you, so the row lives where the chat
+/// is and the daemon is asked for that conversation's rows alone
+/// (`/v1/metrics?conversation=`). It is a footer rather than a settings row
+/// because it is a fact about the thread, not a setting.
+struct ConversationCostFooter: View {
+    @Environment(ChatStore.self) private var chatStore
+
+    @State private var metrics: ErisMetrics?
+    @State private var failed = false
+
+    /// The daemon's id for this chat. `sessionKey` is the binding the loader
+    /// already resolved; a chat that has never been sent has none yet.
+    private var conversationID: String? {
+        chatStore.conversation?.sessionKey
+    }
+
+    var body: some View {
+        HStack(spacing: Design.Spacing.xxs + 2) {
+            Image(systemName: "chart.bar.xaxis")
+                .font(.system(size: 9, weight: .medium))
+            Text(detail)
+                .font(.system(size: 10))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Design.Colors.secondaryForeground)
+        .padding(.horizontal, Design.Spacing.md)
+        .padding(.top, 2)
+        .padding(.bottom, 4)
+        .contentShape(Rectangle())
+        .task(id: conversationID) { await load() }
+        // A finished turn is when the numbers change. Refreshing on that edge
+        // keeps the line current without a poll on a screen that is often idle.
+        .onChange(of: chatStore.isStreaming) { _, streaming in
+            if !streaming {
+                Task { await load() }
+            }
+        }
+        .accessibilityIdentifier("chat.cost")
+        .accessibilityLabel("Cost and latency for this chat. \(detail)")
+    }
+
+    private var detail: String {
+        if conversationID == nil {
+            return "This chat has no turns yet"
+        }
+        if failed {
+            return "The daemon did not answer"
+        }
+        guard let metrics else {
+            return "Reading this chat…"
+        }
+        if metrics.calls == 0 {
+            return "No answered turns in this chat yet"
+        }
+        let top = metrics.models.first
+        let p95: String
+        if let ms = top?.p95Ms {
+            p95 = ms >= 1000
+                ? String(format: "%.1fs", ms / 1000)
+                : String(format: "%.0fms", ms)
+        } else {
+            p95 = "—"
+        }
+        let cache = Int((metrics.cacheRate * 100).rounded())
+        let model = top?.model ?? "no answer yet"
+        let turns = metrics.calls == 1 ? "1 turn" : "\(metrics.calls) turns"
+        return "\(model) · \(cache)% cached · p95 \(p95) · \(turns)"
+    }
+
+    private func load() async {
+        guard let conversationID, !conversationID.isEmpty else {
+            metrics = nil
+            failed = false
+            return
+        }
+        guard let eris = chatStore.heraldClient as? ErisHeraldClient else {
+            failed = true
+            return
+        }
+        guard let client = await eris.client() else {
+            failed = true
+            return
+        }
+        metrics = try? await client.metrics(conversation: conversationID)
+        failed = metrics == nil
+    }
 }

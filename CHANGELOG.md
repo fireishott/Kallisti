@@ -60,6 +60,16 @@ you nothing about, now reachable from the phone.
   the running binary is named, and "nothing staged" stays a sentence rather than a
   blank.
 
+### Changed
+
+- **Cost and latency moved from Settings to the chat that it describes.** The
+  Settings row reported one aggregate line for every conversation on the daemon:
+  the busiest model, a cache rate and a p95 over a twenty-four hour window. It
+  answered for chats the operator was not reading, and its window cut a long chat
+  down to its last day. The numbers now live in the footer under the composer and
+  are asked for by conversation (`/v1/metrics?conversation=`), over that chat's
+  whole life, and they refresh when a turn ends. `build 160`.
+
 ## [1.5.0] - 2026-11-10
 
 ### Changed

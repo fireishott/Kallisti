@@ -2329,7 +2329,7 @@ final class ChatStore {
                 // keep Hermes busy for minutes with zero deltas reaching
                 // the client; re-marking stalled every 5 polls is exactly
                 // the "Stream stalled - 24s elapsed - attempt 1" banner
-                // Curtis saw while `tool: terminal (263s)` was legitimately
+                // the operator saw while `tool: terminal (263s)` was legitimately
                 // executing. When the server confirms the job lives, keep
                 // the waiting label but do NOT mark the turn stalled.
                 let serverRunning = await self.heraldClient.resumeActiveSessionIfNeeded()
@@ -2369,7 +2369,7 @@ final class ChatStore {
         // event handler below writes into `conversation` (the CURRENT
         // conversation); without this identity guard a stream that outlives a
         // New Chat / session switch keeps mutating the new conversation with
-        // the OLD turn's content (the new-chat bleed Curtis hit: old session
+        // the OLD turn's content (the new-chat bleed the operator hit: old session
         // build messages + queued counts appearing in a fresh chat). The
         // activeAttemptID guard alone is not enough - cancelStreaming bumps it
         // synchronously on installLocalConversation, but a stream that was
@@ -2901,7 +2901,7 @@ final class ChatStore {
                         // not stream-start time. The placeholder's timestamp is
                         // frozen at creation (e.g. 7:59 PM) while a deep turn
                         // can run 30+ minutes; leaving it made long turns read
-                        // as old messages sitting below newer ones (Curtis
+                        // as old messages sitting below newer ones (the operator
                         // "look at time stamps" screenshots 2026-08-16). The
                         // stamp is stamped when the terminal write lands so the
                         // bubble reads the time it actually finished.
@@ -4960,7 +4960,7 @@ final class ChatStore {
                 // fetch-failure, so an SSE stream that died silently (socket
                 // alive, no data, no terminal event) left a permanently stuck
                 // ".sending"/"Thinking..." row stamped with its creation time
-                // forever (Curtis screenshots 20:07-20:47, identical frame).
+                // forever (the operator screenshots 20:07-20:47, identical frame).
                 // After every poll merge, settle any streaming row that has no
                 // live owner (not in activeStreams, pendingStreamPlaceholders,
                 // or the server-turn placeholder set).

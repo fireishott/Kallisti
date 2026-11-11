@@ -202,14 +202,14 @@ private func installDefaultRoutes() {
                 id: startedConversationID,
                 title: "Casual Check-In",
                 question: "What's good homie.",
-                answer: "What's good, Curtis. Desk's open."
+                answer: "What's good, operator. Desk's open."
             ))
         case "/v1/conversations/\(mintedConversationID)":
             return (200, detailBody(
                 id: mintedConversationID,
                 title: "Casual Check-In",
                 question: "What's good homie.",
-                answer: "What's good, Curtis. Desk's open."
+                answer: "What's good, operator. Desk's open."
             ))
         case "/v1/conversations/\(otherConversationID)":
             return (200, detailBody(
@@ -248,7 +248,7 @@ struct ErisConversationIdentityTests {
 
         #expect(conversation.messages.count == 2)
         #expect(conversation.messages.first?.content == "What's good homie.")
-        #expect(conversation.messages.last?.content == "What's good, Curtis. Desk's open.")
+        #expect(conversation.messages.last?.content == "What's good, operator. Desk's open.")
         // The row and the transcript name the same conversation.
         #expect(conversation.sessionKey == startedConversationID)
 

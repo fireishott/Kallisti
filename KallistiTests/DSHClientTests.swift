@@ -245,7 +245,7 @@ struct CronStoreDSHTests {
     func dshProviderWins() async {
         let store = CronStore(apiClient: nil, accessTokenProvider: { nil })
         store.dshCronProvider = {
-            [Self.job("s1", "Morning digest", "every 1d"), Self.job("s2", "Call Kristie", "at 22:00")]
+            [Self.job("s1", "Morning digest", "every 1d"), Self.job("s2", "Call Mom", "at 22:00")]
         }
 
         await store.loadJobs()

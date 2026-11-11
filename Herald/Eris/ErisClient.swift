@@ -73,8 +73,12 @@ enum ErisRoute: Equatable, Sendable {
     case processes
     /// `POST /v1/processes/{id}/kill` - stop one.
     case killProcess(id: String)
-    /// `GET /v1/metrics?window=24h|7d` - cost and latency for a window.
-    case metrics(window: String)
+    /// `GET /v1/metrics?window=24h|7d|all&conversation=` - cost and latency.
+    ///
+    /// `conversation` narrows the numbers to one chat. The footer under the
+    /// composer asks that question, and it is a different question from the one a
+    /// daemon-wide panel answers.
+    case metrics(window: String, conversation: String?)
     /// `GET /v1/memory` - the assistant's two bounded note files.
     case memory
     /// `POST /v1/settings/full-access` - the switch that decides whether `full`
@@ -281,8 +285,12 @@ enum ErisRoute: Equatable, Sendable {
         switch self {
         case .search(let text, let limit):
             return "?q=\(Self.queryValue(text))&limit=\(limit)"
-        case .metrics(let window):
-            return "?window=\(Self.queryValue(window))"
+        case .metrics(let window, let conversation):
+            var query = "?window=\(Self.queryValue(window))"
+            if let conversation, !conversation.isEmpty {
+                query += "&conversation=\(Self.queryValue(conversation))"
+            }
+            return query
         default:
             return ""
         }
@@ -1141,9 +1149,16 @@ actor ErisClient {
         return try decode(ErisProcessKilled.self, from: data)
     }
 
-    /// `GET /v1/metrics?window=` - cost and latency for one window.
-    func metrics(window: String = "24h") async throws -> ErisMetrics {
-        let data = try await send(route: .metrics(window: window), form: nil)
+    /// `GET /v1/metrics?window=&conversation=` - cost and latency.
+    ///
+    /// A conversation is read over its whole life by default: the footer is
+    /// answering "what has this chat cost", and a 24h window would report the tail
+    /// of a long chat as if it were the whole thing.
+    func metrics(window: String = "24h", conversation: String? = nil) async throws -> ErisMetrics {
+        let data = try await send(
+            route: .metrics(window: conversation == nil ? window : "all", conversation: conversation),
+            form: nil
+        )
         return try decode(ErisMetrics.self, from: data)
     }
 

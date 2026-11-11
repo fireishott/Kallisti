@@ -68,7 +68,7 @@ struct NativeTerminalView: UIViewRepresentable {
         // allowMouseReporting=false routing panSelectionHandler into
         // sendKey(arrow) (iOSTerminalView.swift ~line 1086) instead of
         // scrolling, the toolbar toggle sent arrow keys to the PTY on
-        // every swipe - matching Curtis's "I can highlight but not scroll
+        // every swipe - matching the operator's "I can highlight but not scroll
         // via touch" report. 128.93 routes touch scroll through an
         // explicit UIPanGestureRecognizer that lives on the host view
         // (installed once in makeUIView) so vertical drags always drive
@@ -96,14 +96,14 @@ struct NativeTerminalView: UIViewRepresentable {
         func send(source: TerminalView, data: ArraySlice<UInt8>) {
             model.send(Array(data))
             // Build 128.89: keyboard auto-dismiss on Enter removed at
-            // Curtis's request - he wants the keyboard to stay up for
+            // the operator's request - he wants the keyboard to stay up for
             // consecutive commands.
         }
 
         func send(source: TerminalView, key: String) {
             model.send(Array(key.utf8))
             // Build 128.89: keyboard auto-dismiss on Enter removed at
-            // Curtis's request - keyboard stays up for consecutive commands.
+            // the operator's request - keyboard stays up for consecutive commands.
         }
 
         func scrolled(source: TerminalView, position: Double) {}
@@ -370,7 +370,7 @@ final class NativeTerminalModel: ObservableObject {
 
     /// Build 128.90: resign first responder on the terminal view so the
     /// software keyboard drops (manual dismiss - the Enter auto-dismiss was
-    /// removed at Curtis's request). Called from the toolbar button, which
+    /// removed at the operator's request). Called from the toolbar button, which
     /// runs on MainActor; resignFirstResponder is MainActor-isolated so
     /// assumeIsolated is safe here (and avoids a @Sendable async hop).
     func dismissKeyboard() {

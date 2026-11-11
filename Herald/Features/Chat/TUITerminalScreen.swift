@@ -160,7 +160,7 @@ struct TUITerminalScreen: View {
                             // Build 128.99: strengthen the ON state so the
                             // mode is unmistakable - solid accent capsule
                             // with dark icon instead of the subtle 18%
-                            // tint, which Curtis reported as invisible on
+                            // tint, which the operator reported as invisible on
                             // the dark toolbar. OFF stays muted.
                             if model.touchScrollEnabled {
                                 Capsule(style: .continuous)
@@ -175,7 +175,7 @@ struct TUITerminalScreen: View {
                 .accessibilityValue(model.touchScrollEnabled ? "Enabled" : "Disabled")
             }
             // Build 128.90: manual keyboard dismissal. The Enter
-            // auto-dismiss was removed at Curtis's request; this button
+            // auto-dismiss was removed at the operator's request; this button
             // resigns first responder so the terminal gets full screen
             // after typing.
             ToolbarItem(placement: .topBarTrailing) {
@@ -232,7 +232,7 @@ struct TUITerminalScreen: View {
         if let first = fetched.first {
             // Surface the dialog with the most-recent resumable session
             // preselected. We only offer the top one for now - the
-            // simple "resume last" choice Curtis asked for - keeping
+            // simple "resume last" choice the operator asked for - keeping
             // the UX a one-tap decision.
             _ = first
             showSessionPrompt = true

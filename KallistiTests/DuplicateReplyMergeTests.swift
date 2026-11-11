@@ -102,12 +102,12 @@ struct DuplicateReplyMergeTests {
         let userId = UUID()
         let placeholder = Message(
             id: UUID(), sender: .herald,
-            content: "Morning, Curtis.",
+            content: "Morning, operator.",
             jobID: job, isStreaming: true
         )
         let serverRow = Message(
             id: UUID(), sender: .herald,
-            content: "Morning, Curtis. Let me get into the warehouse and see where the tinfoil indicator stands.",
+            content: "Morning, operator. Let me get into the warehouse and see where the tinfoil indicator stands.",
             jobID: job, isStreaming: true
         )
         let localConversation = Conversation(
@@ -146,12 +146,12 @@ struct DuplicateReplyMergeTests {
         let userId = UUID()
         let placeholder = Message(
             id: UUID(), sender: .herald,
-            content: "Morning, Curtis.",
+            content: "Morning, operator.",
             jobID: job, isStreaming: true
         )
         let serverRow = Message(
             id: UUID(), sender: .herald,
-            content: "Morning, Curtis. Let me get into the warehouse and see where the tinfoil indicator stands.",
+            content: "Morning, operator. Let me get into the warehouse and see where the tinfoil indicator stands.",
             jobID: job, isStreaming: true
         )
         let localConversation = Conversation(

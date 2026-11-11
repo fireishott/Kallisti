@@ -182,7 +182,7 @@ final class NotesSyncEngine {
 
     /// Build 128.97: sync ONLY the active note (the one being viewed/edited).
     /// The sync button in the note editor must never sweep every dirty note -
-    /// Curtis's rule: one note, one session, one task per press.
+    /// the operator's rule: one note, one session, one task per press.
     func syncNote(id: UUID) async {
         guard !isSyncing else { return }
         guard let note = notesStore.activeNotes.first(where: { $0.id == id }) else {
@@ -358,7 +358,7 @@ final class NotesSyncEngine {
             """
 
         return """
-        You are the Kallisti enrichment engine, embedded in Curtis's note-taking app. This message is an automatic note sync, not a conversation.
+        You are the Kallisti enrichment engine, embedded in the operator's note-taking app. This message is an automatic note sync, not a conversation.
 
         TURN CONTRACT (hard limits):
         - Single shot: reply in THIS turn. Never delegate, never spawn subagents.

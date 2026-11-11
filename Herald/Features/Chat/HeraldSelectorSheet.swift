@@ -122,7 +122,7 @@ struct HeraldSelectorSheet: View {
             .toolbar {
                 // Build 128.99: "Set as default" toggle moved from the
                 // bottom of the Models list to the top-left, opposite the
-                // Done button, per Curtis.
+                // Done button, per the operator.
                 ToolbarItem(placement: .topBarLeading) {
                     Toggle(isOn: $setAsGlobalDefault) {
                         Text("Set as default")

@@ -123,5 +123,5 @@ and it keeps working. The branches here are the source of truth, not a mirror of
 
 ## Development team
 
-- **Curtis Freeman** ([@fireishott](https://github.com/fireishott)) - Creator and lead developer.
+- **fireishott** ([@fireishott](https://github.com/fireishott)) - Creator and lead developer.
 - **Mark Davis** ([@doc-holliday-1](https://github.com/doc-holliday-1)) - iPhone and iPad development.
