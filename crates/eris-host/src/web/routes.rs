@@ -41,9 +41,10 @@ use crate::admin::{
     ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
     ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
-    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE_APPLY,
-    ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS, ROUTE_SETTINGS_WORKSPACE,
-    ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE, VERSION, session_path,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
+    ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE,
+    VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -143,6 +144,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_UPDATE_CHECK, post(update_check))
         .route(ROUTE_SETTINGS_UPDATE_APPLY, post(update_apply))
         .route(ROUTE_SETTINGS_UPDATE_PROGRESS, get(update_progress))
+        .route(ROUTE_SETTINGS_UPDATE, post(update_install))
         .route(ROUTE_SETTINGS_AUX, post(save_aux))
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
         .route(ROUTE_SETTINGS_GREETING, post(save_greeting))
@@ -4329,6 +4331,9 @@ fn saved_group(uri: &Uri) -> Option<SettingsGroup> {
             "greeting" => Some(SettingsGroup::Greeting),
             "schedules" => Some(SettingsGroup::Schedules),
             "skills" => Some(SettingsGroup::Skills),
+            // The Software card's install request. It is a write like any other
+            // save, so it redirects with a notice on the card that produced it.
+            "update" => Some(SettingsGroup::Update),
             // The clock and the notification form save into the settings the
             // greeting and provider groups also own, and there is no group that
             // names them: a notice filed under the wrong card is worse than no
@@ -5908,7 +5913,9 @@ async fn restart_daemon(
 /// Where "Check now" returns to. The tab is named because the notice lands on the
 /// System card and the operator should not have to find it.
 const SAVED_UPDATE_CHECKED: &str = "/dashboard/settings?saved=update_checked";
-/// Where "Install" returns to.
+/// Where "Install staged update" returns to.
+const SAVED_UPDATE: &str = "/dashboard/settings?saved=update";
+/// Where the JSON "Install" route returns to for a browser.
 const SAVED_UPDATE_QUEUED: &str = "/dashboard/settings?saved=update_queued";
 
 /// The System tab's Update card, composed from what is stored on disk.
@@ -5936,6 +5943,7 @@ fn build_update_card(state: &AppState) -> UpdateCard {
     let (progress_state, progress_output, progress_error) =
         crate::device::gateway::progress_snapshot(engine);
     let blocker = crate::device::gateway::host_blocker(engine, latest);
+    let staged = crate::device::gateway::staged_names();
     UpdateCard {
         current: crate::admin::version_line(),
         latest_tag: latest.map(|release| release.tag.clone()),
@@ -5965,6 +5973,7 @@ fn build_update_card(state: &AppState) -> UpdateCard {
         progress_state,
         progress_output,
         progress_error,
+        staged,
     }
 }
 
@@ -6200,6 +6209,81 @@ async fn update_apply(
             "state": "queued",
             "target": "eris",
             "to": latest.tag,
+        }))
+    }
+}
+
+/// `POST /dashboard/settings/update` - the Software card's one write.
+///
+/// The same apply path the device route runs, so a browser and a phone can never
+/// disagree about what pressing the button does. A refusal renders the card that
+/// produced it with the daemon's own sentence; a success redirects, because a page
+/// that reposts on refresh is a page that queues an install every time the operator
+/// presses reload.
+async fn update_install(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let _ = read_fields(&headers, body).await;
+
+    // The same readiness guard the restart card carries: a daemon that has not
+    // finished setup has no unit to install over.
+    if !state.engine.is_ready().unwrap_or(false) {
+        return fail_update(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "not_ready",
+                "the daemon is not ready: finish setup before asking for an update",
+            ),
+        );
+    }
+
+    let start = match crate::device::gateway::start_install(&state.engine, "loopback") {
+        Ok(start) => start,
+        Err(reason) => {
+            return fail_update(
+                &state,
+                as_html,
+                FormError::new(None, "update_unavailable", &reason),
+            );
+        }
+    };
+
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.update",
+        Some(&format!(
+            "{} from {} to {}",
+            if start.already_running {
+                "already running"
+            } else {
+                "install requested"
+            },
+            start.from,
+            start.to
+        )),
+    ) {
+        return audit_failure(&request_id.0, "settings.update", error);
+    }
+
+    if as_html {
+        see_other(SAVED_UPDATE)
+    } else {
+        ok_json(serde_json::json!({
+            "ok": true,
+            "state": start.state,
+            "already_running": start.already_running,
+            "unit": start.unit,
+            "from": start.from,
+            "to": start.to,
         }))
     }
 }

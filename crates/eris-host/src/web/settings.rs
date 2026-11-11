@@ -2326,6 +2326,88 @@ fn seed_update_release_with(
         .expect("seeded stamp");
 }
 
+/// The Software card states the running identity and the staged list, and its
+/// install button is disabled with a plain sentence when nothing is staged.
+#[test]
+fn the_software_card_states_what_is_running_and_what_is_staged() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let page = block_on(send(
+        &app,
+        Call::get("/dashboard/settings?tab=system")
+            .html()
+            .cookie(Some(cookie.as_str())),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+
+    assert!(body.contains("id=\"update-heading\""), "the card renders");
+    assert!(body.contains(">Software<"), "the card is titled Software");
+    assert!(
+        body.contains(&crate::admin::version_line()),
+        "the card states the running identity line"
+    );
+    assert!(body.contains("Staged"), "the card names the staged list");
+    assert!(
+        body.contains("nothing staged"),
+        "and says plainly when nothing is staged"
+    );
+    assert!(
+        body.contains("Install staged update"),
+        "the button is present even when it is disabled"
+    );
+    assert!(
+        body.contains("disabled"),
+        "a button with nothing to install is disabled"
+    );
+    // And the form posts to the one write the card owns.
+    assert!(
+        body.contains(crate::admin::ROUTE_SETTINGS_UPDATE),
+        "the form posts to the update route"
+    );
+}
+
+/// The card's route is session-gated and audited like every other settings write.
+#[test]
+fn the_software_install_route_refuses_a_bad_session_and_audits_a_good_one() {
+    let (_dir, engine, app, cookie) = ready_app();
+
+    let anonymous = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_UPDATE, ""),
+    ));
+    assert!(
+        anonymous.status == StatusCode::FORBIDDEN || anonymous.status == StatusCode::UNAUTHORIZED,
+        "a post with no session is refused: {}",
+        anonymous.status
+    );
+
+    let reply = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_UPDATE, "")
+            .html()
+            .cookie(Some(cookie.as_str())),
+    ));
+    // Either it queued an install (303 to the card) or it refused on the card
+    // itself (400 with the daemon's words). Both are correct; a 500 is not.
+    assert!(
+        reply.status == StatusCode::SEE_OTHER || reply.status == StatusCode::BAD_REQUEST,
+        "the card answers a page, not a server error: {} {}",
+        reply.status,
+        reply.body
+    );
+
+    let rows = super::harness::audit_rows(engine.db());
+    let audited = rows.iter().any(|row| row.action == "settings.update");
+    if reply.status == StatusCode::SEE_OTHER {
+        assert!(audited, "a queued install is recorded as settings.update");
+    } else {
+        assert!(
+            !audited,
+            "a refused install is not recorded as one that ran"
+        );
+    }
+}
+
 /// The card states what is installed, what is newest, and why the button is off.
 #[test]
 fn the_system_tab_states_the_installed_and_newest_versions() {
@@ -2346,10 +2428,7 @@ fn the_system_tab_states_the_installed_and_newest_versions() {
         body.contains("id=\"update-heading\""),
         "the Update card renders"
     );
-    assert!(
-        body.contains("Installed"),
-        "the card names what is installed"
-    );
+    assert!(body.contains("Running"), "the card names what is running");
     assert!(
         body.contains(&crate::admin::version_line()),
         "the running identity line is on the page"
@@ -2367,17 +2446,21 @@ fn the_system_tab_states_the_installed_and_newest_versions() {
         "the release notes are shown"
     );
 
-    // The button exists and names the version it would install. Whether it is
-    // enabled depends on the host, so the disabled half is proven separately, by
-    // a release that publishes no checksum.
+    // The button names what it installs. It says "staged" because that is what it
+    // acts on; the release it would otherwise fetch is named on the row above it.
     assert!(
-        body.contains("Install 99.0.0"),
-        "the button names the version"
+        body.contains("Install staged update"),
+        "the button names what it installs"
     );
 
-    // The two forms post to the two routes the daemon serves.
+    // The forms post to the routes the daemon serves. The card's own write is the
+    // one form; the JSON apply route is for API clients and is not on the page.
+    assert!(body.contains(crate::admin::ROUTE_SETTINGS_UPDATE));
     assert!(body.contains(crate::admin::ROUTE_SETTINGS_UPDATE_CHECK));
-    assert!(body.contains(crate::admin::ROUTE_SETTINGS_UPDATE_APPLY));
+    assert!(
+        !body.contains(crate::admin::ROUTE_SETTINGS_UPDATE_APPLY),
+        "the page posts to its own route, not the API one"
+    );
 
     // The card sits directly above the Daemon card: the two answer the same
     // question, and the update is the answer that keeps the settings.
@@ -2446,9 +2529,16 @@ fn the_update_card_is_calm_when_nothing_is_cached() {
         page.body.contains("never"),
         "an unchecked host says so rather than showing a fake version"
     );
+    // The button is always on the card now, because its job is "install what is
+    // staged" and that is true whether or not a release exists. With nothing
+    // staged it is disabled and the card says so.
     assert!(
-        !page.body.contains("Install "),
-        "no release means no install button at all"
+        page.body.contains("Install staged update"),
+        "the button is present"
+    );
+    assert!(
+        page.body.contains("disabled") && page.body.contains("nothing staged"),
+        "and it is disabled with the reason"
     );
     // No red banner and no error page: an offline daemon is not a failure.
     assert_eq!(page.status, StatusCode::OK);

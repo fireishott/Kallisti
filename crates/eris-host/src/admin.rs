@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 182;
+pub const BUILD: u32 = 183;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -244,6 +244,14 @@ pub const ROUTE_SETTINGS_UPDATE_CHECK: &str = "/dashboard/settings/update/check"
 
 /// `POST /dashboard/settings/update/apply` - start the host-side install.
 pub const ROUTE_SETTINGS_UPDATE_APPLY: &str = "/dashboard/settings/update/apply";
+
+/// `POST /dashboard/settings/update` - install from the Software card.
+///
+/// The card's one write, and the route the dashboard has always been missing: a
+/// plain form post that runs the same apply path as the device route and redirects
+/// to `?saved=update`. It exists beside the two JSON routes above rather than
+/// instead of them, because the card has to work with JavaScript off.
+pub const ROUTE_SETTINGS_UPDATE: &str = "/dashboard/settings/update";
 
 /// `GET /dashboard/settings/update/progress` - the helper's live state as JSON.
 ///
@@ -444,6 +452,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_UPDATE_CHECK,
     ROUTE_SETTINGS_UPDATE_APPLY,
+    ROUTE_SETTINGS_UPDATE,
     ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_MCP,
     ROUTE_SETTINGS_GREETING,

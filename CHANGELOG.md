@@ -6,6 +6,42 @@ observe; commit history carries the detail.
 
 ## 1.5.0
 
+- **The update check answers the legacy envelope again, beside the flat keys.**
+  The phone this build ships with reads `data.components["hermes-agent"]` with its
+  nine keys; the dashboard, the card and the newer client read the flat set. One
+  document now carries both, so neither client has to be re-shipped for the
+  other's sake and a caller that only knows one shape still gets an answer.
+  `updateAvailable` is true when a build is staged **or** a newer release is
+  published, and a staged filename that does not parse is not an offer. `build 183`.
+
+- **`POST /v1/gw/update/apply` installs a staged binary.** A build placed beside
+  the running one as `eris.new-<version>-<build>` is now the preferred install: the
+  daemon writes a helper script into its own state directory and starts it as a
+  transient unit, and the script backs up, installs, restarts, and restores the
+  backup if anything fails. The published-release path - download, checksum, swap -
+  stays as the fallback for a host with nothing staged. Both answer the same
+  `{ok, data:{state, alreadyRunning, pid, output}}` shape the phone decodes, and
+  both go through one entry point so the card and the phone cannot disagree.
+  `build 183`.
+
+- **The Software card installs from the dashboard.** The System tab's card is
+  titled Software, states the running identity from the daemon's own version line,
+  lists what is staged by name, and carries one button - **Install staged update** -
+  that is disabled with a plain sentence when nothing is staged. It posts to its own
+  route, records the write as `settings.update` in the audit trail, and redirects
+  with a notice on the card that produced it. The check and the release manifest
+  stay on separate buttons, so pressing Install can never be mistaken for pressing
+  Check. `build 183`.
+
+- **Update progress answers both key spellings.** The phone decodes `exitCode`,
+  `startedAt` and `finishedAt`; this daemon's earlier row decodes `exit_code`,
+  `started_at` and `finished_at`. Both keys now carry the same value, the output is
+  capped at 200 lines of 500 bytes each, and the route reads the staged helper's
+  `progress.json` first with `state.json` as the fallback. A missing document is
+  still `200 idle`, never a `404`. `build 183`.
+
+## 1.5.0
+
 - **The update button does something.** `GET /v1/gw/update/check` now asks the
   release server what is newest, caches the answer for six hours, and reports the
   version, build, publish date, notes, download URL and checksum for the asset

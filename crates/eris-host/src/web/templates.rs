@@ -1786,11 +1786,13 @@ pub enum SettingsGroup {
     Skills,
     /// The connected accounts: a browser login per provider, and its status.
     Accounts,
+    /// The Software card: installing a staged or published build.
+    Update,
 }
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Provider,
         Self::Accounts,
         Self::Workspace,
@@ -1800,6 +1802,7 @@ impl SettingsGroup {
         Self::Greeting,
         Self::Schedules,
         Self::Skills,
+        Self::Update,
     ];
 
     /// The anchor and error-region id for this group.
@@ -1815,6 +1818,7 @@ impl SettingsGroup {
             Self::Schedules => "schedules",
             Self::Skills => "skills",
             Self::Accounts => "accounts",
+            Self::Update => "update",
         }
     }
 
@@ -1858,6 +1862,10 @@ impl SettingsGroup {
                 field,
                 "account_provider" | "account_action" | "account_paste"
             ),
+            // The Software card is buttons and a progress block: it has no form
+            // field, so nothing can be filed next to one. A refusal from it lands
+            // in the page-level region, which is where the card renders it.
+            Self::Update => false,
         }
     }
 
@@ -1874,6 +1882,7 @@ impl SettingsGroup {
             Self::Schedules => "schedules saved",
             Self::Skills => "skills saved",
             Self::Accounts => "account updated",
+            Self::Update => "update requested",
         }
     }
 }
@@ -2023,6 +2032,12 @@ pub struct UpdateCard {
     pub progress_output: Vec<String>,
     /// The helper's failure sentence, when it failed.
     pub progress_error: Option<String>,
+    /// Staged `eris.new-<version>-<build>` binaries sitting beside the running one.
+    ///
+    /// This is the thing the Software card's button acts on, so the card states it
+    /// rather than describing it: "nothing staged" is a complete sentence and it is
+    /// the reason the button is disabled.
+    pub staged: Vec<String>,
 }
 
 impl UpdateCard {
@@ -2429,7 +2444,9 @@ impl SettingsTab {
                 Self::Assistant
             }
             SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
-            SettingsGroup::Workspace | SettingsGroup::Permissions => Self::System,
+            SettingsGroup::Workspace | SettingsGroup::Permissions | SettingsGroup::Update => {
+                Self::System
+            }
         }
     }
 
@@ -2448,6 +2465,7 @@ impl SettingsTab {
             "memory" => Self::Memory,
             "device" | "devices" => Self::Devices,
             "schedules" | "skills" | "mcp" | "automation" => Self::Automation,
+            "update" | "update_checked" | "update_queued" => Self::System,
             _ => Self::System,
         }
     }
@@ -4341,19 +4359,34 @@ fn tab_automation(view: &SettingsView) -> Markup {
 /// what is installed, what is newest, and what pressing the button will do.
 fn update_card(view: &SettingsView) -> Markup {
     let card = &view.update;
+    let staged = !card.staged.is_empty();
     html! {
         section .card.service aria-labelledby="update-heading" {
-            h2 id="update-heading" { "Update" }
+            h2 id="update-heading" { "Software" }
+            /* One paragraph of plain English: what is installed, what pressing the
+               button does, and where the work happens. The daemon cannot write its
+               own binary, so saying who does is part of being honest about it. */
             p .small {
-                "This installs a published release over the running binary and restarts the "
-                "daemon. The download, the checksum, the backup and the swap are done by a small "
-                "helper unit, because the daemon runs with its home directory read-only and "
-                "cannot replace the binary it started from. If anything goes wrong the previous "
-                "binary is put back and the daemon comes up on it."
+                "This installs a build over the running binary and restarts the daemon. A small "
+                "helper unit does the copy, the backup and the restart, because the daemon runs "
+                "with its home directory read-only and cannot replace the binary it started from. "
+                "If the new binary does not come up, the previous one is put back and the daemon "
+                "restarts on it."
             }
             dl .kv {
-                dt { "Installed" }
+                dt { "Running" }
                 dd { code { (card.current) } }
+                dt { "Staged" }
+                dd {
+                    @if staged {
+                        @for (index, name) in card.staged.iter().enumerate() {
+                            @if index > 0 { ", " }
+                            code { (name) }
+                        }
+                    } @else {
+                        "nothing staged beside the running binary"
+                    }
+                }
                 @if let Some(tag) = card.latest_tag.as_ref() {
                     dt { "Newest release" }
                     dd {
@@ -4379,9 +4412,6 @@ fn update_card(view: &SettingsView) -> Markup {
                         (true, None) => { "confirmed with the release server" }
                         (false, None) => { "never: no release manifest is cached on this host" }
                     }
-                    @if card.source == "cache" && !card.checked {
-                        " " span .hint { "The release server was unreachable, so nothing above is fresh." }
-                    }
                 }
             }
             @if let Some(note) = card.note.as_ref() {
@@ -4394,21 +4424,27 @@ fn update_card(view: &SettingsView) -> Markup {
                 }
             }
             div .update-actions {
+                /* The one write. A plain form, so the card works with JavaScript
+                   blocked and the answer is a page rather than a script's job. */
+                form method="post" action=(crate::admin::ROUTE_SETTINGS_UPDATE) novalidate {
+                    @if card.can_install {
+                        button type="submit" class="danger" { "Install staged update" }
+                    } @else {
+                        button type="submit" class="danger" disabled { "Install staged update" }
+                    }
+                }
                 form method="post" action=(crate::admin::ROUTE_SETTINGS_UPDATE_CHECK) novalidate {
                     button type="submit" class="secondary" { "Check now" }
-                }
-                @if card.update_available {
-                    form method="post" action=(crate::admin::ROUTE_SETTINGS_UPDATE_APPLY) novalidate {
-                        @if card.can_install {
-                            button type="submit" class="danger" { "Install " (card.latest_version) }
-                        } @else {
-                            button type="submit" class="danger" disabled { "Install " (card.latest_version) }
-                        }
-                    }
                 }
             }
             @if let Some(blocker) = card.blocker.as_ref() {
                 p .small .hint { (blocker) }
+            } @else if !staged {
+                p .small .hint {
+                    "Nothing is staged, so there is nothing for this button to install. Stage a "
+                    "build as " code { "eris.new-<version>-<build>" } " beside the running binary "
+                    "first, or wait for a published release."
+                }
             }
             @if card.running() {
                 p .small {
@@ -4419,9 +4455,7 @@ fn update_card(view: &SettingsView) -> Markup {
             @if card.progress_state != "idle" {
                 div .update-progress {
                     h3 { "Install progress" }
-                    p .small {
-                        "State: " code { (card.progress_state) }
-                    }
+                    p .small { "State: " code { (card.progress_state) } }
                     @if let Some(error) = card.progress_error.as_ref() {
                         p .error { (error) }
                     }
@@ -4433,11 +4467,6 @@ fn update_card(view: &SettingsView) -> Markup {
                         }
                     }
                 }
-            }
-            p .small {
-                "While the daemon is being replaced it is down for a few seconds. A phone that "
-                "was polling it sees connection errors during that window, which is the update "
-                "working, not failing."
             }
         }
     }
