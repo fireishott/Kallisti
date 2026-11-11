@@ -138,8 +138,14 @@ impl Handle {
             .unwrap_or(0)
     }
 
-    /// One check, counting the quiet ones so the notify flag arms itself.
-    fn check(&self) -> (Option<ExitStatus>, bool) {
+    /// One check.
+    ///
+    /// `observed` is whether the *model* looked: the monitor thread checks every
+    /// hundred milliseconds so the jobs row is correct on its own, and those
+    /// internal checks must not count toward the two-quiet-checks rule. Counting
+    /// them armed notify-on-complete before a caller had asked once, which is a
+    /// promise the tool had no way to keep.
+    fn check(&self, observed: bool) -> (Option<ExitStatus>, bool) {
         let length = self.length();
         let mut inner = lock(&self.inner);
         if inner.finished.is_none()
@@ -153,9 +159,11 @@ impl Handle {
             return (inner.finished, false);
         }
         if length == inner.last_seen {
-            inner.quiet = inner.quiet.saturating_add(1);
-            if inner.quiet >= QUIET_CHECKS_TO_NOTIFY {
-                inner.notify = true;
+            if observed {
+                inner.quiet = inner.quiet.saturating_add(1);
+                if inner.quiet >= QUIET_CHECKS_TO_NOTIFY {
+                    inner.notify = true;
+                }
             }
         } else {
             inner.quiet = 0;
@@ -275,7 +283,7 @@ impl Desk {
         let db = self.db.clone();
         std::thread::spawn(move || {
             loop {
-                let Some(status) = handle.check().0 else {
+                let Some(status) = handle.check(false).0 else {
                     std::thread::sleep(TICK);
                     continue;
                 };
@@ -358,7 +366,7 @@ impl Desk {
         let handles: Vec<Arc<Handle>> = lock(&REGISTRY).values().cloned().collect();
         let mut rows: Vec<serde_json::Value> = handles
             .iter()
-            .map(|handle| info(handle, handle.check().0, handle.inner_notify()))
+            .map(|handle| info(handle, handle.check(true).0, handle.inner_notify()))
             .collect();
         // A hash map has no order, and a list that reorders itself between two
         // polls is a list the operator cannot read.
@@ -380,7 +388,7 @@ impl Desk {
     }
 
     fn report(&self, handle: &Arc<Handle>, tail_bytes: u64) -> ToolResult {
-        let (status, notify) = handle.check();
+        let (status, notify) = handle.check(true);
         if let Some(status) = status {
             // Whoever observes the end writes it down, so the row is correct even
             // when the monitor thread is descheduled behind a busy turn.
@@ -401,7 +409,7 @@ impl Desk {
     fn block(&self, handle: &Arc<Handle>, timeout_ms: u64) -> ToolResult {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            let (status, notify) = handle.check();
+            let (status, notify) = handle.check(true);
             if let Some(status) = status {
                 settle_row(&self.db, &handle.id, status);
                 return ToolResult::ok(finished_body(handle, status, handle.tail(POLL_TAIL_BYTES)));
@@ -437,7 +445,7 @@ impl Desk {
             .status();
         let deadline = Instant::now() + KILL_GRACE;
         loop {
-            if let Some(status) = handle.check().0 {
+            if let Some(status) = handle.check(true).0 {
                 settle_row(&self.db, &handle.id, status);
                 let mut body = finished_body(handle, status, String::new());
                 body["killed"] = serde_json::Value::Bool(true);
@@ -480,7 +488,7 @@ impl Desk {
     fn await_exit(&self, handle: &Arc<Handle>) -> Option<ExitStatus> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if let Some(status) = handle.check().0 {
+            if let Some(status) = handle.check(true).0 {
                 return Some(status);
             }
             if Instant::now() >= deadline {

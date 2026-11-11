@@ -45,9 +45,19 @@ say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 
 # How many turns are running right now. A missing database is not a reason to
 # refuse: a fresh host has nothing to wait for.
+#
+# An expired lease is not a running turn. A worker that died mid-turn leaves its
+# row at `running` with a lease that has already lapsed, and counting that as busy
+# made this script wait five minutes and then refuse to deploy forever. Only a row
+# whose lease is still live can be a turn somebody is watching.
 running() {
   if [ ! -f "$DB" ]; then echo 0; return; fi
-  sqlite3 "file:$DB?mode=ro" "SELECT COUNT(*) FROM jobs WHERE status = 'running';" 2>/dev/null || echo 0
+  sqlite3 "file:$DB?mode=ro" \
+    "SELECT COUNT(*) FROM jobs
+      WHERE status = 'running'
+        AND (lease_expires_at IS NULL
+             OR lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));" \
+    2>/dev/null || echo 0
 }
 
 if [ "$build" -eq 1 ]; then

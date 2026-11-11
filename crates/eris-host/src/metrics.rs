@@ -167,8 +167,7 @@ pub fn summary(db: &Db, window: Window) -> Result<Summary, DbError> {
     })?;
 
     // One pass into per-model buckets, then a sort per model for the percentiles.
-    let mut buckets: std::collections::BTreeMap<String, Bucket> =
-        std::collections::BTreeMap::new();
+    let mut buckets: std::collections::BTreeMap<String, Bucket> = std::collections::BTreeMap::new();
     let mut summary = Summary::default();
     for (model, duration, prompt, completion, cached, failed) in rows {
         let bucket = buckets.entry(model).or_default();

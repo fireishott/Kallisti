@@ -706,11 +706,11 @@ pub async fn search_transcript(
     Query(params): Query<SearchQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let token = match authenticate(&service, &headers) {
-        Ok(token) => token,
-        Err(error) => return error.into_response(),
-    };
-    if let Err(error) = require_admin(&token) {
+    // A paired device reading the transcript it already chats in is an ordinary
+    // assistant capability, not a settings change. Requiring the administration
+    // scope here made search dead on every phone paired without it, which is every
+    // phone this operator has.
+    if let Err(error) = authenticate(&service, &headers) {
         return error.into_response();
     }
     let text = params.q.trim();
@@ -768,11 +768,9 @@ pub async fn metrics(
     Query(params): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
-    let token = match authenticate(&service, &headers) {
-        Ok(token) => token,
-        Err(error) => return error.into_response(),
-    };
-    if let Err(error) = require_admin(&token) {
+    // Read-only numbers about this operator's own turns: authenticated, not
+    // administrative, for the same reason search is.
+    if let Err(error) = authenticate(&service, &headers) {
         return error.into_response();
     }
     let engine = service.engine();
@@ -825,11 +823,9 @@ pub async fn metrics(
 /// behind was in no table and on no screen. This route reads the same handle table
 /// the `process` tool reads, so the phone and the model see one list.
 pub async fn processes(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
-    let token = match authenticate(&service, &headers) {
-        Ok(token) => token,
-        Err(error) => return error.into_response(),
-    };
-    if let Err(error) = require_admin(&token) {
+    // Seeing what is running is a read of this operator's own work. Stopping it is
+    // an administrative act and is gated below.
+    if let Err(error) = authenticate(&service, &headers) {
         return error.into_response();
     }
     let engine = service.engine();
