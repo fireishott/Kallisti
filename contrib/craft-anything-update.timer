@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily Craft Anything update check
+
+[Timer]
+# 04:23 local: clear of the warehouse gameday sweeps (11:15, 15:15, 18:15) and
+# of the nightly lane work (02:30).
+OnCalendar=*-*-* 04:23:00
+Persistent=false
+AccuracySec=5min
+Unit=craft-anything-update.service
+
+[Install]
+WantedBy=timers.target

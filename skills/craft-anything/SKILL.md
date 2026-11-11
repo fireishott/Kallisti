@@ -158,3 +158,24 @@ text` lists them with paths.
   what is next. Read those before promising a result.
 - Keep the offered tool list small: the core 30 plus one or two toolsets. Every listed tool costs
   context on every round of every turn.
+
+## Keeping it current
+
+Upstream ships releases often, so the CLI is refreshed by a timer instead of by hand.
+
+- `~/.local/bin/craft-anything-update` asks GitHub for the newest tag and does nothing when the
+  installed CLI already is that version.
+- `craft-anything-update.timer` runs it daily at 04:23 local.
+  `journalctl --user -u craft-anything-update.service` shows what it did.
+- Every download is checked twice: the release `SHA256SUMS.txt` must carry a good GPG signature from
+  the pinned ArtCraft release key (fingerprint `2B76 741B 414A AD6C D33E 6312 13A0 05C0 B9D7 C3ED`),
+  and the tarball must match that signed list. A mismatch aborts and changes nothing.
+- The new binary lands at `~/.local/bin/craft-anything-cli` and the old one is kept under
+  `~/.local/share/craft-anything-update/backups/`. If `craft-anything-cli doctor` does not report
+  healthy afterwards, the backup is restored and the run is reported as failed.
+- The version and the tool counts in this file are rewritten by the same run, so this skill never
+  points at an old build.
+- A running MCP child is stopped after a successful swap, so the daemon starts the new binary on
+  the next turn.
+- Check the state by hand: `craft-anything-cli --version`, `craft-anything-cli doctor`, and
+  `cat ~/.local/share/craft-anything-update/state.json`.

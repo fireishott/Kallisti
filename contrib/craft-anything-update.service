@@ -1,0 +1,13 @@
+[Unit]
+Description=Craft Anything CLI update check (newest upstream release, checksum and signature verified)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/craft-anything-update
+# The swap replaces a binary the running daemon may be using, so it stays low
+# priority and never competes with the warehouse sweeps.
+Nice=10
+StandardOutput=journal
+StandardError=journal
