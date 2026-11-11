@@ -486,6 +486,51 @@ pub fn record_fire(
     })
 }
 
+/// Retire every live row for one target that the file no longer lists.
+///
+/// The file is the authority. [`crate::selfmemory::Access`] writes the whole body
+/// on every change, so the only reliable statement of what the operator kept is
+/// the set of lines that survived; this is how the projection learns what the
+/// file dropped. It is one statement on purpose: the membership test is the SQL
+/// `NOT IN`, so a fetch-and-filter in Rust cannot disagree with the predicate
+/// that did the update.
+///
+/// A row that already carries a `superseded_by` is left alone. A consolidation
+/// decision is recorded there, and a later file edit must not overwrite it with
+/// this marker and lose the reason the row was retired.
+///
+/// Returns how many rows moved.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn supersede_missing(db: &Db, target: &str, keep: &[String]) -> Result<usize, DbError> {
+    db.with_conn(|conn| {
+        // An empty keep set has no placeholders to build, so the predicate is
+        // spelled out instead: every live row for the target is now absent.
+        if keep.is_empty() {
+            let moved = conn.execute(
+                "UPDATE mem_entries SET superseded_by = 'curated-rewrite'
+                  WHERE target = ?1 AND superseded_by IS NULL",
+                [target],
+            )?;
+            return Ok(moved);
+        }
+        let placeholders = vec!["?"; keep.len()].join(", ");
+        let sql = format!(
+            "UPDATE mem_entries SET superseded_by = 'curated-rewrite'
+              WHERE target = ?1 AND superseded_by IS NULL AND entry NOT IN ({placeholders})"
+        );
+        let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(keep.len() + 1);
+        values.push(&target);
+        for entry in keep {
+            values.push(entry);
+        }
+        let moved = conn.execute(&sql, values.as_slice())?;
+        Ok(moved)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

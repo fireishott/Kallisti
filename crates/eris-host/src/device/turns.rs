@@ -504,7 +504,9 @@ impl TurnPolicy {
         // The same files the prompt block at turn start reads. Without this the
         // device lane lists `memory_manage` and can never write through it, so the
         // refusal at dispatch reads to the model as a permission problem.
-        let memory = std::sync::Arc::new(crate::selfmemory::Access::new(&engine.paths().state_dir));
+        let memory = std::sync::Arc::new(
+            crate::selfmemory::Access::new(&engine.paths().state_dir).with_db(engine.db().clone()),
+        );
         Self {
             sandbox: crate::tools::Sandbox::new(workspace, mode)
                 .with_processes(desk)

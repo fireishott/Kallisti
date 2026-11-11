@@ -9722,9 +9722,10 @@ fn spawn_turn(
         let desk = std::sync::Arc::new(crate::process::Desk::new(db.clone(), &workspace));
         // The assistant's own notes live under the state directory, not the
         // workspace, so a restore of the workspace cannot lose them.
-        memory = std::sync::Arc::new(crate::selfmemory::Access::new(
-            &state.engine.paths().state_dir,
-        ));
+        memory = std::sync::Arc::new(
+            crate::selfmemory::Access::new(&state.engine.paths().state_dir)
+                .with_db(state.engine.db().clone()),
+        );
         crate::tools::Sandbox::new(workspace, mode)
             .with_processes(desk)
             .with_memory(std::sync::Arc::clone(&memory))

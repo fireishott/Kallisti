@@ -67,7 +67,7 @@ pub fn approve_and_run(
     // memory files are attached here too: without them a parked write replays as a
     // refusal, which reads as a permission problem rather than a missing handle.
     let sandbox = crate::tools::Sandbox::new(workspace, mode).with_memory(std::sync::Arc::new(
-        crate::selfmemory::Access::new(&paths.state_dir),
+        crate::selfmemory::Access::new(&paths.state_dir).with_db(db.clone()),
     ));
 
     // A namespaced name is an MCP tool: approving it has to reach the server, not
