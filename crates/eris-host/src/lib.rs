@@ -55,6 +55,8 @@ pub mod learning;
 pub mod learning_worker;
 pub mod mcp;
 pub mod mem;
+pub mod memconsolidate;
+pub mod memintent;
 pub mod memory;
 pub mod metrics;
 pub mod notes;
