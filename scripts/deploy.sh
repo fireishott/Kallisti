@@ -83,6 +83,21 @@ if [ -x "$BIN" ]; then
   cp -p "$BIN" "$BIN.bak-$( "$BIN" version 2>/dev/null | awk '{print $3}' )-$stamp" || true
 fi
 
+# Keep the install prefix bounded. Every deploy writes a full copy of the
+# previous binary, and nothing used to prune them: 159 files and 3.7 GB by
+# build 183. Five timestamped backups is enough to step back through a bad
+# ship, and the oldest is kept as the pre-release anchor nothing else replaces.
+KEEP_BAK=5
+if [ -d "$(dirname "$BIN")" ]; then
+  # shellcheck disable=SC2012
+  ls -1t "$(dirname "$BIN")"/"$(basename "$BIN")".bak-* 2>/dev/null \
+    | tail -n +$((KEEP_BAK + 1)) \
+    | while IFS= read -r old; do
+        [ "$(basename "$old")" = "$(basename "$BIN").bak-p6-20261019" ] && continue
+        rm -f -- "$old"
+      done
+fi
+
 say "stopping $UNIT"
 systemctl --user stop "$UNIT"
 install -m 755 "$BUILT" "$BIN"

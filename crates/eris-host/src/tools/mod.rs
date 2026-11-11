@@ -679,14 +679,59 @@ fn read_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
         ));
     }
 
-    match std::fs::read_to_string(&path) {
-        Ok(content) => ToolResult::ok(serde_json::json!({
+    // Bytes first, then decode: a file from a Windows host is UTF-16, and refusing
+    // it as "not a text file" is a wrong answer to a normal question. The result
+    // says which encoding it read, so a caller can tell a transcode from a plain
+    // UTF-8 read rather than having to guess.
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => return ToolResult::error(format!("{requested}: {error}")),
+    };
+    match decode_text(&bytes) {
+        Ok((content, encoding)) => ToolResult::ok(serde_json::json!({
             "path": requested,
             "bytes": metadata.len(),
+            "encoding": encoding,
             "content": content,
         })),
-        Err(error) => ToolResult::error(format!("{requested}: {error}")),
+        Err(message) => ToolResult::error(format!("{requested}: {message}")),
     }
+}
+
+/// Decode file bytes as UTF-8, or as UTF-16 when a byte-order mark says so.
+///
+/// The mark is what makes this safe. Guessing UTF-16 from a run of zero bytes
+/// would misread a binary file as text with every other character missing, so a
+/// file without a mark that is not valid UTF-8 is still an error.
+fn decode_text(bytes: &[u8]) -> Result<(String, &'static str), String> {
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return utf16(rest, true).map(|text| (text, "utf-16le"));
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return utf16(rest, false).map(|text| (text, "utf-16be"));
+    }
+    std::str::from_utf8(bytes)
+        .map(|text| (text.to_owned(), "utf-8"))
+        .map_err(|error| format!("it is not UTF-8 and carries no UTF-16 byte-order mark: {error}"))
+}
+
+fn utf16(bytes: &[u8], little_endian: bool) -> Result<String, String> {
+    if !bytes.len().is_multiple_of(2) {
+        return Err("it is not a whole number of UTF-16 code units".to_owned());
+    }
+    let units: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            if little_endian {
+                u16::from_le_bytes(*pair)
+            } else {
+                u16::from_be_bytes(*pair)
+            }
+        })
+        .collect();
+    String::from_utf16(&units).map_err(|error| format!("the UTF-16 text is invalid: {error}"))
 }
 
 fn write_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
@@ -1566,5 +1611,101 @@ mod tests {
         assert_eq!(super::goal_rounds_ceiling(Some("0")), 60);
         assert_eq!(super::goal_rounds_ceiling(Some("121")), 60);
         assert_eq!(super::goal_rounds_ceiling(Some("99999")), 60);
+    }
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    fn sandbox(dir: &std::path::Path) -> Sandbox {
+        Sandbox::new(dir.to_path_buf(), SandboxMode::ReadOnly)
+    }
+
+    fn utf16le(text: &str) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_utf16_file_from_a_windows_host_is_transcoded_and_says_so() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            dir.path().join("notes.txt"),
+            utf16le("deploy notes\r\nsecond line\r\n"),
+        )
+        .expect("write");
+        let result = execute(
+            "read_file",
+            &serde_json::json!({"path": "notes.txt"}),
+            &sandbox(dir.path()),
+        );
+        assert!(!result.is_error, "{}", result.content);
+        let body: serde_json::Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(body["encoding"], "utf-16le");
+        assert_eq!(
+            body["content"], "deploy notes\r\nsecond line\r\n",
+            "the text survives the transcode"
+        );
+    }
+
+    #[test]
+    fn a_utf16_big_endian_file_is_read_the_same_way() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut bytes = vec![0xFE, 0xFF];
+        for unit in "hello".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_be_bytes());
+        }
+        std::fs::write(dir.path().join("be.txt"), bytes).expect("write");
+        let result = execute(
+            "read_file",
+            &serde_json::json!({"path": "be.txt"}),
+            &sandbox(dir.path()),
+        );
+        let body: serde_json::Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(body["encoding"], "utf-16be");
+        assert_eq!(body["content"], "hello");
+    }
+
+    #[test]
+    fn plain_utf8_is_unchanged_and_labelled() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("plain.txt"), "just text").expect("write");
+        let result = execute(
+            "read_file",
+            &serde_json::json!({"path": "plain.txt"}),
+            &sandbox(dir.path()),
+        );
+        let body: serde_json::Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(body["encoding"], "utf-8");
+        assert_eq!(body["content"], "just text");
+    }
+
+    #[test]
+    fn bytes_that_are_neither_are_still_refused_rather_than_mangled() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            dir.path().join("binary.bin"),
+            [0x00, 0x9F, 0xFF, 0xFE, 0x00],
+        )
+        .expect("write");
+        let result = execute(
+            "read_file",
+            &serde_json::json!({"path": "binary.bin"}),
+            &sandbox(dir.path()),
+        );
+        assert!(
+            result.is_error,
+            "a binary file is not text: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("byte-order mark"),
+            "the refusal says what it looked for: {}",
+            result.content
+        );
     }
 }

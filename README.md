@@ -294,6 +294,22 @@ Read it before you pipe it to `sh` - it is 311 lines and nothing in it needs roo
 curl -fsSL https://raw.githubusercontent.com/fireishott/Kallisti/main/install.sh | less
 ```
 
+## Building for the phone
+
+The iOS client is built on the Mac, not on the daemon host, and the daemon host
+reaches it over ssh. One thing bites: `ssh mbp` fails on this host because
+`/etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf` is a symlink owned by
+`nobody:nogroup`, and ssh refuses a config drop-in it considers unsafe
+(`Bad owner or permissions`). The working invocation ignores the system config:
+
+```sh
+ssh -F /dev/null -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+  -i ~/.ssh/mbp_key curtisfreeman@cdf-macbook-pro.tail4d497d.ts.net 'xcodebuild -version'
+```
+
+Either fix that symlink's ownership on the host, or keep using `-F /dev/null`.
+The second is what every build in this release used.
+
 ## Build from source
 
 ```sh
