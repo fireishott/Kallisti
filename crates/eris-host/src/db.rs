@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 28;
+pub const SCHEMA_VERSION: i64 = 29;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -41,8 +41,9 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// adds `approvals`; 0013 adds `projects`; 0014 adds `subagents`; 0015 adds the
 /// opt-in `admin` flag to `pairing_codes` and no table at all; 0017 adds
 /// `schedules` and `schedule_runs`; 0020 adds a column to `chat_conversations`
-/// and no table at all; 0024 adds the three learning tables.
-pub const TABLES: [&str; 22] = [
+/// and no table at all; 0024 adds the three learning tables; 0029 adds the four
+/// memory-tier tables.
+pub const TABLES: [&str; 26] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
@@ -52,10 +53,15 @@ pub const TABLES: [&str; 22] = [
     "chat_attachments",
     "chat_conversations",
     "chat_messages",
+    "curator_runs",
     "devices",
     "job_events",
     "jobs",
     "learning_runs",
+    "mem_entries",
+    "mem_intents",
+    "mem_intents_fires",
+    "mem_sweeps",
     "pairing_codes",
     "projects",
     "schedule_runs",
@@ -64,7 +70,6 @@ pub const TABLES: [&str; 22] = [
     "settings",
     "skill_usage",
     "subagents",
-    "curator_runs",
 ];
 
 /// One forward migration. Never edited once released; add a new version.
@@ -215,6 +220,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 28,
         name: "0028_turn_chain",
         sql: MIGRATION_0028,
+    },
+    Migration {
+        version: 29,
+        name: "0029_memory_tiers",
+        sql: MIGRATION_0029,
     },
 ];
 
@@ -958,9 +968,85 @@ ALTER TABLE jobs ADD COLUMN conversation_id TEXT REFERENCES chat_conversations (
 ALTER TABLE jobs ADD COLUMN chain_depth INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Migration 0029: the memory tiers below the curated files.
+///
+/// The two tier-1 files stay on disk and stay authoritative for the prompt block.
+/// These tables are where the tiers that need provenance live: a consolidated
+/// entry carries where it came from in a column, so "delete everything the model
+/// wrote" and "show me the operator's own facts" are both SQL rather than a Rust
+/// filter after a fetch.
+///
+/// `trusted` defaults to 0 on purpose. A row is untrusted until something in code
+/// says otherwise, and imported content is never trusted: the operator's notes
+/// arrived from a prior install and are recalled as evidence, not as fact.
+///
+/// `mem_sweeps` has no unique index on `outcome = 'running'`. A unique index is a
+/// permanent latch - one crash between the claim and the finish blocks
+/// consolidation until a human edits the table - so staleness is a timestamp the
+/// claimant checks, and a reclaim is adoption rather than an INSERT that has to
+/// win a race.
+const MIGRATION_0029: &str = r"
+CREATE TABLE IF NOT EXISTS mem_entries (
+    id            TEXT PRIMARY KEY NOT NULL,
+    tier          TEXT NOT NULL CHECK (tier IN ('curated', 'consolidated')),
+    target        TEXT NOT NULL CHECK (target IN ('memory', 'user')),
+    entry         TEXT NOT NULL CHECK (length(entry) BETWEEN 1 AND 400),
+    origin        TEXT NOT NULL
+                  CHECK (origin IN ('operator', 'model', 'tool_result', 'import', 'consolidation')),
+    source_ref    TEXT,
+    trusted       INTEGER NOT NULL DEFAULT 0 CHECK (trusted IN (0, 1)),
+    content_hash  TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    superseded_by TEXT,
+    UNIQUE (target, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS mem_entries_live
+    ON mem_entries (target, trusted, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS mem_intents (
+    id                TEXT PRIMARY KEY NOT NULL,
+    name              TEXT NOT NULL UNIQUE,
+    body              TEXT NOT NULL,
+    trigger_kind      TEXT NOT NULL CHECK (trigger_kind IN ('interval', 'manual')),
+    cooldown_secs     INTEGER NOT NULL CHECK (cooldown_secs >= 300),
+    budget_per_window INTEGER NOT NULL DEFAULT 3 CHECK (budget_per_window BETWEEN 1 AND 10),
+    window_secs       INTEGER NOT NULL DEFAULT 86400,
+    enabled           INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mem_intents_fires (
+    id         TEXT PRIMARY KEY NOT NULL,
+    intent_id  TEXT NOT NULL REFERENCES mem_intents (id) ON DELETE CASCADE,
+    fired_at   TEXT NOT NULL,
+    suppressed INTEGER NOT NULL DEFAULT 0 CHECK (suppressed IN (0, 1)),
+    reason     TEXT,
+    turn_id    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS mem_intents_fires_recent
+    ON mem_intents_fires (intent_id, fired_at DESC);
+
+CREATE TABLE IF NOT EXISTS mem_sweeps (
+    id              TEXT PRIMARY KEY NOT NULL,
+    outcome         TEXT NOT NULL
+                    CHECK (outcome IN ('running', 'completed', 'failed', 'abandoned')),
+    claimed_at      TEXT NOT NULL,
+    heartbeat_at    TEXT NOT NULL,
+    finished_at     TEXT,
+    preimage_sha256 TEXT,
+    entries_in      INTEGER NOT NULL DEFAULT 0 CHECK (entries_in >= 0),
+    entries_out     INTEGER NOT NULL DEFAULT 0 CHECK (entries_out >= 0),
+    attempt         INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+    note            TEXT
+);
+
+CREATE INDEX IF NOT EXISTS mem_sweeps_claim ON mem_sweeps (outcome, heartbeat_at);
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
-
 /// `setup` until onboarding completes, `ready` after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupState {
@@ -1382,7 +1468,7 @@ mod tests {
         );
         assert_eq!(
             db.applied_migration_count().expect("count"),
-            28,
+            29,
             "one row per migration, and the new one is the last"
         );
 
@@ -1395,8 +1481,8 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, 28, "one row per migration, on a fresh file");
-        assert_eq!(first.schema_version().expect("version"), 28);
+        assert_eq!(applied, 29, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 29);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");
         assert_eq!(
@@ -1429,5 +1515,28 @@ mod tests {
         ));
         assert_eq!(SetupState::Setup.as_str(), "setup");
         assert_eq!(SetupState::Ready.as_str(), "ready");
+    }
+
+    /// Migration 0029 adds the four memory-tier tables. `TABLES` is what the
+    /// doctor page compares a live file against, so a table that exists in the
+    /// migration and not in that list reads as a missing table on a healthy host.
+    #[test]
+    fn migration_0029_adds_the_memory_tier_tables() {
+        let db = Db::open_in_memory().expect("a database");
+        let present = db.table_names().expect("tables");
+        for table in [
+            "mem_entries",
+            "mem_intents",
+            "mem_intents_fires",
+            "mem_sweeps",
+        ] {
+            assert!(TABLES.contains(&table), "{table} is missing from TABLES");
+            assert!(
+                present.iter().any(|name| name == table),
+                "{table} was not created by the migration"
+            );
+        }
+        assert_eq!(db.schema_version().expect("version"), 29);
+        assert_eq!(TABLES.len(), 26, "the list and the schema agree on arity");
     }
 }

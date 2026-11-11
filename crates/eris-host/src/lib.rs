@@ -54,6 +54,7 @@ pub mod inbox;
 pub mod learning;
 pub mod learning_worker;
 pub mod mcp;
+pub mod mem;
 pub mod memory;
 pub mod metrics;
 pub mod notes;
