@@ -62,7 +62,13 @@ running() {
 
 if [ "$build" -eq 1 ]; then
   say "building release"
-  ( cd "$REPO" && cargo build --release )
+  # An installed binary embeds the path of every source file it can panic from,
+  # and that path carries the login of whoever built it. Remapped to `/build` and
+  # `/cargo` so a local build matches what the release workflow ships. Expanded
+  # here because cargo does not expand `$HOME` inside `rustflags`.
+  ( cd "$REPO" && \
+    RUSTFLAGS="--remap-path-prefix=$HOME=/build --remap-path-prefix=$HOME/.cargo=/cargo" \
+    cargo build --release )
 fi
 [ -f "$BUILT" ] || { say "ABORT: no binary at $BUILT (build first)"; exit 2; }
 

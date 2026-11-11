@@ -50,8 +50,24 @@ jobs:
           --component clippy
           --component rustfmt
 
+      # A release build embeds the absolute path of every source file it can
+      # panic from, and those paths contain the login of whoever built it. The
+      # binary is published and installed on other people's machines, so the
+      # prefixes are rewritten to neutral roots first. `$HOME` is expanded here
+      # rather than in `.cargo/config.toml` because cargo does not expand it
+      # inside `rustflags`, which makes a config that looks right do nothing.
       - name: Build
-        run: cargo build --release --locked
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=$HOME=/build --remap-path-prefix=$HOME/.cargo=/cargo"
+          cargo build --release --locked
+
+      - name: The release binary names no build path
+        run: |
+          if strings target/release/eris | grep -qF "$HOME"; then
+            echo "::error::the release binary embeds the build host's home directory"
+            exit 1
+          fi
+          echo "release binary carries no build-host path"
 
       - name: Name the tag
         id: tag
