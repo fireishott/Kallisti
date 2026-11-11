@@ -9693,6 +9693,7 @@ fn spawn_turn(
     let persona = state.persona.clone();
     // The sandbox is a boundary, so an unreadable workspace or permission row
     // falls back to the narrowest mode rather than to a permissive default.
+    let memory: std::sync::Arc<crate::selfmemory::Access>;
     let sandbox = {
         let workspace = state
             .engine
@@ -9706,7 +9707,14 @@ fn spawn_turn(
         // Background work is recorded against the daemon's own database and logs
         // under the workspace, so the desk needs both.
         let desk = std::sync::Arc::new(crate::process::Desk::new(db.clone(), &workspace));
-        crate::tools::Sandbox::new(workspace, mode).with_processes(desk)
+        // The assistant's own notes live under the state directory, not the
+        // workspace, so a restore of the workspace cannot lose them.
+        memory = std::sync::Arc::new(crate::selfmemory::Access::new(
+            &state.engine.paths().state_dir,
+        ));
+        crate::tools::Sandbox::new(workspace, mode)
+            .with_processes(desk)
+            .with_memory(std::sync::Arc::clone(&memory))
     };
     let mcp = state.mcp.clone();
     let approval_policy = state
@@ -10109,6 +10117,17 @@ fn spawn_turn(
             )),
             (None, Some(summary)) => Some(crate::web::context::carry(&summary)),
             (system, None) => system,
+        };
+
+        // What the assistant remembers about itself and the operator, rendered
+        // once for this turn and never re-rendered: a block that changes mid-turn
+        // would break the prompt prefix cache on every round.
+        let system = match memory.block() {
+            Some(block) => Some(match system {
+                Some(system) => format!("{system}\n\n{block}"),
+                None => block,
+            }),
+            None => system,
         };
 
         // The skill catalog rides at the end of the prompt: names, descriptions

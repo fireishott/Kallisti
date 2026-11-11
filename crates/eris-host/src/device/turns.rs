@@ -1702,6 +1702,22 @@ impl TurnHub {
         let skills = skills_catalog
             .is_some()
             .then(|| crate::skills::Access::new(store.db().clone(), skills_dir.clone()));
+        // The state directory is the database file's own directory, which this
+        // lane holds rather than the full paths struct.
+        let state_dir = store
+            .db()
+            .path()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let memory = crate::selfmemory::Access::new(&state_dir);
+        let system = match memory.block() {
+            Some(block) => Some(match system {
+                Some(system) => format!("{system}\n\n{block}"),
+                None => block,
+            }),
+            None => system,
+        };
         let system = match skills_catalog {
             Some(catalog) => Some(match system {
                 Some(system) => format!("{system}\n\n{catalog}"),

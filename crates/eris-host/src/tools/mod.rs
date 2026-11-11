@@ -235,6 +235,8 @@ pub struct Sandbox {
     /// Absent in a test and in a turn with no database, which is why every use
     /// site answers a refusal instead of assuming it is there.
     processes: Option<std::sync::Arc<crate::process::Desk>>,
+    /// The assistant's own bounded notes, when the caller wired them up.
+    memory: Option<std::sync::Arc<crate::selfmemory::Access>>,
 }
 
 impl std::fmt::Debug for Sandbox {
@@ -243,6 +245,7 @@ impl std::fmt::Debug for Sandbox {
             .field("workspace", &self.workspace)
             .field("mode", &self.mode)
             .field("processes", &self.processes.is_some())
+            .field("memory", &self.memory.is_some())
             .finish()
     }
 }
@@ -263,6 +266,7 @@ impl Sandbox {
             workspace,
             mode,
             processes: None,
+            memory: None,
         }
     }
 
@@ -280,6 +284,19 @@ impl Sandbox {
     #[must_use]
     pub fn processes(&self) -> Option<&std::sync::Arc<crate::process::Desk>> {
         self.processes.as_ref()
+    }
+
+    /// Give this sandbox the assistant's own notes.
+    #[must_use]
+    pub fn with_memory(mut self, access: std::sync::Arc<crate::selfmemory::Access>) -> Self {
+        self.memory = Some(access);
+        self
+    }
+
+    /// The memory files, when this turn was given them.
+    #[must_use]
+    pub fn memory(&self) -> Option<&std::sync::Arc<crate::selfmemory::Access>> {
+        self.memory.as_ref()
     }
 
     /// The directory every path resolves against.
@@ -488,6 +505,11 @@ pub fn specs_offering(mode: SandboxMode, agents: bool) -> Vec<ToolSpec> {
     offered.push(crate::reach::browse_spec());
     offered.push(crate::reach::search_spec());
 
+    // The assistant's own notes. Offered in every mode: the files are the daemon's
+    // own bounded state, not the workspace, and a confined turn writing a note to
+    // itself reaches nothing the sandbox is protecting.
+    offered.push(crate::selfmemory::spec());
+
     // Command execution is offered only where the sandbox will honour it. A tool
     // the daemon refuses must never reach the model's list, or every turn spends
     // a round trip discovering a refusal the prompt could have prevented.
@@ -556,6 +578,12 @@ pub fn execute_streaming(
         "write_file" => write_file(arguments, sandbox),
         "run_command" => run_command(arguments, sandbox, sink),
         "fetch_url" => fetch_url(arguments, sandbox),
+        "memory_manage" => match sandbox.memory() {
+            Some(access) => access.call(arguments),
+            None => ToolResult::refused(
+                "the memory files are not available to this turn, so nothing was written",
+            ),
+        },
         "browse" => crate::reach::browse(arguments),
         "web_search" => crate::reach::search(arguments),
         // The handle for work that outlives the foreground cap. It lives on the

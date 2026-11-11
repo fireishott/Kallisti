@@ -68,6 +68,7 @@ pub mod reach;
 pub mod release;
 pub mod scheduler;
 pub mod search;
+pub mod selfmemory;
 pub mod sensors;
 pub mod skills;
 pub mod subagents;
