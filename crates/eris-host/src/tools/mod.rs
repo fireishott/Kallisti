@@ -476,11 +476,17 @@ pub fn specs_offering(mode: SandboxMode, agents: bool) -> Vec<ToolSpec> {
         },
     ];
 
-    // Reading the transcript is a read, so it is offered in every mode. It is
+    // The transcript is a read, so it is offered in every mode. It is
     // also the one tool that makes the whole history cheap to consult, which is
     // why it sits here rather than behind the `Full` switch that guards the tools
     // which spend the host's resources.
     offered.push(crate::search::spec());
+
+    // Reaching the web when a plain fetch is not enough. Offered wherever
+    // `fetch_url` is, which is every mode: both are network reads, so a confined
+    // turn gets the same reach it already had and no more.
+    offered.push(crate::reach::browse_spec());
+    offered.push(crate::reach::search_spec());
 
     // Command execution is offered only where the sandbox will honour it. A tool
     // the daemon refuses must never reach the model's list, or every turn spends
@@ -550,6 +556,8 @@ pub fn execute_streaming(
         "write_file" => write_file(arguments, sandbox),
         "run_command" => run_command(arguments, sandbox, sink),
         "fetch_url" => fetch_url(arguments, sandbox),
+        "browse" => crate::reach::browse(arguments),
+        "web_search" => crate::reach::search(arguments),
         // The handle for work that outlives the foreground cap. It lives on the
         // sandbox because it needs a database, and a turn without one refuses
         // rather than pretending the tool is absent.
