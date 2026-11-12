@@ -7573,7 +7573,18 @@ async fn update_apply_is_not_ready_before_onboarding_finishes() {
     harness.stop();
 }
 
-/// Nothing newer is a refusal that names both versions, not a silent success.
+/// Nothing newer is a refusal, not a silent success.
+///
+/// Two refusals are correct here and which one wins depends on the host, so both
+/// are accepted. `start_install` reads the real
+/// `$HOME/.config/systemd/user/kallisti-eris-update.service`: on a host where
+/// install.sh wrote it - the developer's - the daemon gets as far as "nothing
+/// staged, no newer release", and the sentence names the running version. On a
+/// bare runner there is no helper unit, so "the update unit is not installed"
+/// answers first and that is the honest answer for that host. Asserting only the
+/// first made this test green here and red on CI, which is a test measuring the
+/// machine rather than the code. The sentence itself is asserted on the pure
+/// function in `device::gateway`.
 #[tokio::test]
 async fn update_apply_refuses_when_there_is_no_newer_release() {
     let provider = StubProvider::start(&["o"], Duration::ZERO).await;
@@ -7606,9 +7617,16 @@ async fn update_apply_refuses_when_there_is_no_newer_release() {
     let body = response.json();
     assert_eq!(body["code"], "update_unavailable");
     let message = body["message"].as_str().unwrap_or_default().to_owned();
+    // Either the helper unit is absent, or it is present and there is nothing to
+    // install. Both are refusals and both name what to do about it; a `200` with
+    // an empty body would be the defect this test exists for.
+    let names_the_unit_gap =
+        message.contains("update unit is not installed") && message.contains("install.sh");
+    let names_nothing_newer =
+        message.contains(eris_host::admin::VERSION) && message.contains("nothing newer");
     assert!(
-        message.contains(eris_host::admin::VERSION),
-        "the refusal names what is running: {message}"
+        names_the_unit_gap || names_nothing_newer,
+        "the refusal explains itself either way: {message}"
     );
 
     harness.stop();

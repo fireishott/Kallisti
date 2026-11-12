@@ -870,12 +870,24 @@ pub fn start_install(
     if let Some(blocker) = mechanical_blocker(m) {
         return Err(blocker);
     }
-    Err(format!(
+    Err(nothing_newer_message())
+}
+
+/// The refusal for "there is deliberately nothing to install".
+///
+/// A named function rather than an inline `format!` because the sentence is the
+/// contract: it has to name the running version, so an operator can tell "nothing
+/// newer exists" from "the check failed". A test asserts that without needing a
+/// host that has the helper unit installed, which is what made the integration
+/// test green here and red on CI.
+#[must_use]
+pub fn nothing_newer_message() -> String {
+    format!(
         "nothing staged beside the running binary, and no newer release is published for this \
          host: this daemon is {}, and there is nothing newer to install. Place an \
          `eris.new-<version>-<build>` binary beside the running one first",
         admin::version_line()
-    ))
+    )
 }
 
 /// Write `run-update.sh` and launch it as a transient user unit.
@@ -1382,6 +1394,32 @@ mod tests {
             install_blocker(mechanics_of(true, true, false), Some(&release)),
             None,
             "an installed unit, a newer signed release and an idle host is installable"
+        );
+    }
+
+    /// The "nothing newer" sentence names the running version.
+    ///
+    /// This lives here rather than only in the integration suite because that
+    /// suite reaches the sentence through `start_install`, which reads the real
+    /// `$HOME/.config/systemd/user/` for the helper unit. On a host where
+    /// install.sh wrote it - this one - the assertion was reached; on CI it was
+    /// not, so a different refusal answered first and the test failed for a reason
+    /// that had nothing to do with the sentence. The claim belongs to a pure
+    /// function, so it is asserted against one.
+    #[test]
+    fn nothing_newer_names_the_running_version() {
+        let message = nothing_newer_message();
+        assert!(
+            message.contains(admin::VERSION),
+            "names what is running: {message}"
+        );
+        assert!(
+            message.contains("nothing newer"),
+            "and says there is nothing to install: {message}"
+        );
+        assert!(
+            message.contains("eris.new-"),
+            "and says how to stage one by hand: {message}"
         );
     }
 
