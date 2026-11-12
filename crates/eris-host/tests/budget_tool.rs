@@ -128,11 +128,7 @@ fn the_answer_does_not_depend_on_a_queue_sink() {
     .expect("a row");
     // The conversation the turn belongs to, applied by the caller the way the
     // turn applies it: a bare call is narrowed to this chat.
-    let result = budget::execute(
-        &db,
-        None,
-        &serde_json::json!({ "conversation": "conv-2" }),
-    );
+    let result = budget::execute(&db, None, &serde_json::json!({ "conversation": "conv-2" }));
     assert!(!result.is_error, "{}", result.content);
     let body: serde_json::Value = serde_json::from_str(&result.content).expect("json");
     assert_eq!(body["turns"], 1);

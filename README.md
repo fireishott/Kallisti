@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/daemon-1.7.1-C8CCD2?style=flat-square&labelColor=0C0C10" alt="daemon 1.7.1"/>
   <img src="https://img.shields.io/badge/iOS-1.5.0-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 1.5.0"/>
   <img src="https://img.shields.io/badge/Rust-1.99-F74C00?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99"/>
-  <img src="https://img.shields.io/badge/tests-1534-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1534 tests"/>
+  <img src="https://img.shields.io/badge/tests-1535-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1535 tests"/>
   <img src="https://img.shields.io/badge/device_api-no_relay-C8CCD2?style=flat-square&labelColor=0C0C10" alt="no relay"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
@@ -141,6 +141,32 @@ is not in your hand.
   skill you wrote. A ledger tracks reads, pins and age; a weekly pass moves learned
   skills active -> stale -> archived with `.archive` recovery. Both the dashboard
   and the phone carry the catalog and `read_skill`.
+- **A standing roster.** A named specialist is a row: a name, a role, a standing
+  brief, a tool allowance, an optional model role and an optional directory scope.
+  A turn hands work to one with `dispatch_agent` and the `agent` field, and the child
+  turn carries that brief instead of the operator re-explaining it. A `read_only` row
+  is offered no writing tools and runs in a read-only sandbox, so a write is refused
+  twice rather than once. A row that names a scope is canonicalised and prefix-checked
+  at dispatch, and a scope resolving outside the workspace refuses the dispatch. The
+  table has its own page at `/dashboard/roster`, a read-only `GET /v1/roster` for the
+  phone, and `eris roster --json`.
+- **Triggers: one POST, one durable turn.** A trigger is a saved prompt with a minted
+  token, and `POST /hooks/<token>` starts the turn through the same path a schedule
+  uses, in a conversation named after the trigger. The token is shown once, when it is
+  minted, and stored only as a SHA-256 hash plus a short prefix, so a leaked database
+  is a leak of verifiers rather than of credentials. Unknown, revoked and disabled
+  tokens all answer one indistinguishable `404`; the last comparison is a constant-
+  time fold; the body is capped at 8 KiB with the ceiling named; and a fire over the
+  hourly ceiling answers `429` and leaves a `refused` row. Admin listener only, POST
+  only, and saving an existing trigger rotates its token in the same write.
+- **A budget a turn can read before it spends.** The `budget` tool answers the window's
+  turn count, prompt and completion tokens, the stored soft cap, what is left and the
+  window's p95 turn duration, and says plainly when the cap is reached: stop and report
+  rather than continue. It reads through the same aggregate the settings panel and the
+  phone footer read, so the figure a turn acts on is one an operator can check. The cap
+  is `quota.soft_cap_tokens`, validated between 1,000 and 10,000,000. Nothing is cut off
+  at it: the tool reports, it does not refuse. `eris budget --json` prints the same
+  numbers.
 - **Backups that cannot leak the key.** Three members: the database, the env file of
   references, the config. The setup passphrase is excluded unconditionally.
 
@@ -225,7 +251,7 @@ hostname that points at a private address.
 | `ios-host` | on-device surface stub: a UniFFI export with no I/O of its own, so the core never imports a device framework and every permission prompt belongs to the Swift shell. |
 
 ```sh
-cargo test --workspace        # 1534 tests across the unit and integration suites, 0 failures
+cargo test --workspace        # 1535 tests across the unit and integration suites, 0 failures
 cargo clippy --workspace --all-targets
 cargo fmt --check
 ```
@@ -390,16 +416,25 @@ add `--insecure-storage`, or set `GH_TOKEN` and skip the login step entirely.
 
 ## Status
 
-Shipped and running: **Kallisti-Eris 1.4.15, build 176**, with the cron scheduler and
-the skills library switched on. The web client is server-rendered HTML with an inlined
-stylesheet and one script, so a transcript renders on a browser with no scripting and a
-turn that is already running can be reattached to.
+Shipped and running: **Kallisti-Eris 1.7.1, build 186**, schema 31, with the cron
+scheduler, the skills library, the standing roster, webhook triggers and the budget tool
+switched on. The web client is server-rendered HTML with an inlined stylesheet and one
+script, so a transcript renders on a browser with no scripting and a turn that is
+already running can be reattached to.
 
-Build 175 opened the skills library for editing, and build 176 made the delete a real
-one. A procedure can be rewritten whole from the dashboard or the phone, and deleted
-outright: that skill's own directory and its `SKILL.md`, with the library and every
-other skill left alone. A learned skill takes its ledger row with it, so the curator
-and the learning loop cannot write it back. The same build puts a ceiling on the round
+Build 186 is the roster, the triggers and the budget. A turn hands work to a named
+specialist whose brief lives in a table; a webhook starts a durable turn through the
+same path a schedule uses; and a turn can read what it has spent before it spends more.
+Migration `0030` adds the roster and `0031` adds the triggers and their fire ledger, so
+a fire that never became a turn is a row an operator can see rather than a request
+nobody can account for. Both new tables arrive with their own pages, a `--json` CLI
+verb, and tests that drive the refusal paths.
+
+Before that, build 176 made the skill delete a real one. A procedure can be rewritten
+whole from the dashboard or the phone, and deleted outright: that skill's own
+directory and its `SKILL.md`, with the library and every other skill left alone. A
+learned skill takes its ledger row with it, so the curator and the learning loop cannot
+write it back. The same build puts a ceiling on the round
 budget: an ordinary question keeps the operator's `tool_rounds`, and only a turn whose
 message names a long job is raised, up to a `goal_rounds_ceiling` the operator sets in
 Settings. Before that, every non-greeting turn was raised to 60 rounds, so a question
