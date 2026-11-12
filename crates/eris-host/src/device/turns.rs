@@ -337,6 +337,14 @@ enum Signal {
         usage: serde_json::Value,
         /// Whether the tool budget, not the model, ended the turn.
         capped: bool,
+        /// Whether the engine took the tools away early on purpose and the model
+        /// wrote the answer itself.
+        ///
+        /// A separate fact from `capped`, not a shade of it, and it has to cross
+        /// this boundary or the column is dead: the transcript row is written
+        /// from this signal, so a field the signal does not carry can never be
+        /// recorded no matter what the turn loop decided.
+        wrapped_up: bool,
         /// How many tool rounds ran.
         rounds: u64,
         /// Wall time from the first round to the last byte.
@@ -2226,6 +2234,7 @@ impl TurnHub {
                             text,
                             usage,
                             capped,
+                            wrapped_up,
                             rounds,
                             duration_ms,
                         } => {
@@ -2250,7 +2259,13 @@ impl TurnHub {
                                             Some(&reasoning),
                                             &tools,
                                             Some(&usage),
-                                            accounting_from(&usage, capped, rounds, duration_ms),
+                                            accounting_from(
+                                                &usage,
+                                                capped,
+                                                wrapped_up,
+                                                rounds,
+                                                duration_ms,
+                                            ),
                                         );
                                         // Then, and only then, the name. A title
                                         // is a nicety and never sits between the
@@ -2820,6 +2835,7 @@ impl TurnHub {
                         text: outcome.text,
                         usage,
                         capped: outcome.capped,
+                        wrapped_up: outcome.wrapped_up,
                         rounds: outcome.rounds as u64,
                         duration_ms: turn_started.elapsed().as_millis() as u64,
                     });
@@ -3055,6 +3071,7 @@ impl TurnHub {
 fn accounting_from(
     usage: &serde_json::Value,
     capped: bool,
+    wrapped_up: bool,
     rounds: u64,
     duration_ms: u64,
 ) -> crate::web::chat::Accounting {
@@ -3068,11 +3085,13 @@ fn accounting_from(
             // The terminal frame carries the turn's summed usage, not a single
             // round, so the live context size is not something this worker knows.
             context_tokens: None,
-            // The terminal frame now carries these two, so the row records what
-            // the loop decided instead of leaving "not measured" on every phone
-            // turn. That gap is why the cap was invisible in the transcript.
+            // Both facts cross the terminal frame, so the row records what the
+            // loop decided instead of leaving "not measured" on every phone
+            // turn. `wrapped_up` used to be hardcoded to `None` here because
+            // `Signal::Done` did not carry it, which made the column dead on this
+            // lane no matter what the loop decided.
             capped: Some(capped),
-            wrapped_up: None,
+            wrapped_up: Some(wrapped_up),
         })
         .unwrap_or_default()
 }
@@ -3116,13 +3135,26 @@ mod tests {
             core_domain::UnavailableReason::FieldsAbsent,
         ))
         .expect("usage is serialisable");
-        let accounting = accounting_from(&usage, true, 60, 95_000);
+        let accounting = accounting_from(&usage, true, false, 60, 95_000);
         assert_eq!(accounting.capped, Some(true));
         assert_eq!(accounting.rounds, Some(60));
         assert_eq!(accounting.duration_ms, Some(95_000));
-        let clean = accounting_from(&usage, false, 3, 4_000);
+        assert_eq!(accounting.capped, Some(true), "the budget ended this turn");
+        let clean = accounting_from(&usage, false, true, 3, 4_000);
         assert_eq!(clean.capped, Some(false));
         assert_eq!(clean.rounds, Some(3));
+        // The other fact survives the boundary. It was dead before: the signal
+        // had no field for it, so every device row stored NULL.
+        assert_eq!(
+            clean.wrapped_up,
+            Some(true),
+            "a turn that wrapped up and wrote its own answer says so"
+        );
+        assert_eq!(
+            accounting.wrapped_up,
+            Some(false),
+            "a capped turn did not wrap up"
+        );
     }
 
     /// Reasoning keeps its own budget and cannot evict the answer.
