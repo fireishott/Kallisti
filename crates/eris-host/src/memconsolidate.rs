@@ -1,12 +1,18 @@
 //! The consolidation sweep: it retires duplicates and proposes, nothing more.
 //!
-//! This module never opens `memory/MEMORY.md` or `memory/USER.md`, and it never
-//! writes them. There is exactly one writer of the two tier-1 files and it is
+//! This module never writes `memory/MEMORY.md` or `memory/USER.md`. There is
+//! exactly one writer of the two tier-1 files and it is
 //! [`crate::selfmemory::Access::write`]. If a sweep could write a file directly,
 //! the row that says where an entry came from and the text on disk would be two
 //! independent writers of one fact, and provenance would collapse: a line the
 //! model wrote, a line the operator kept and a line an import carried would all
 //! look the same after one sweep.
+//!
+//! It does read them. Once per sweep, before a proposal exists and before a row
+//! moves, the two files are read and their concatenation is hashed onto the
+//! `mem_sweeps` row. That digest is the pre-image a finished sweep is checked
+//! against. A read is not a write: it cannot move provenance, and it is the only
+//! time this module opens the two paths.
 //!
 //! So the sweep proposes. A proposal is a `mem_entries` row with
 //! `tier = consolidated`, `origin = consolidation` and `trusted = 0`. Recall
@@ -21,20 +27,23 @@
 //!   `running` row whose heartbeat has gone stale, in one immediate transaction.
 //!   There is no unique index to make a crash a permanent latch.
 //! - **A refusal is a real outcome.** When too much of the live set would be
-//!   retired at once the sweep settles `failed` and writes nothing, because a
+//!   retired at once, measured in the characters the tier-1 cap counts rather
+//!   than in rows, the sweep settles `failed` and writes nothing, because a
 //!   sweep that quietly halves memory is worse than a sweep that did not run.
 //! - **Untrusted rows are dropped before clustering, not filtered after.** An
 //!   imported line must not be able to vote a real entry out of existence.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
+use sha2::{Digest, Sha256};
 use time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::db::{Db, DbError};
 use crate::mem::{self, Entry, NewEntry, Origin, Tier};
-use crate::selfmemory::Target;
+use crate::selfmemory::{self, Target};
 
 /// How stale a claim's heartbeat may be before another sweep adopts it.
 ///
@@ -46,7 +55,13 @@ pub const STALE_SECS: i64 = 900;
 /// takes a heartbeat before it starts writing.
 pub const HANDFUL: usize = 8;
 
-/// The share of the live trusted set one sweep may retire, as a percentage.
+/// The share of live tier-1 characters one sweep may retire, as a percentage.
+///
+/// The unit is characters, not rows, because the cap this bound protects is
+/// stated in characters: [`crate::selfmemory::MEMORY_LIMIT`] and
+/// [`crate::selfmemory::USER_LIMIT`] bound a file by `chars().count()`. Retiring
+/// many short rows is cheap and retiring one long row may not be, so a count of
+/// rows is not the quantity the cap is about.
 ///
 /// The bound is a refusal, not a rate limit: a sweep that would cross it does
 /// nothing at all, so the operator sees a `failed` row with a reason rather than
@@ -110,11 +125,29 @@ pub fn sweep(db: &Db, now: &str) -> Result<SweepOutcome, DbError> {
         live.extend(mem::live_entries(db, target.label(), true, 10_000)?);
     }
 
+    // The claim wrote a digest of the row table. That is not the pre-image the
+    // gate is about, so it is replaced here with the one that can be checked
+    // against disk: the two tier-1 files, read now, before this sweep has
+    // retired a row or proposed one.
+    record_preimage(db, &sweep_id, &preimage(db))?;
+
     let plan = plan(&live);
 
-    let live_count = i64::try_from(live.len()).unwrap_or(i64::MAX);
-    let retire_count = i64::try_from(plan.retire.len()).unwrap_or(i64::MAX);
-    if retire_count * 100 > live_count * LOSS_BOUND_PERCENT {
+    // The bound is stated in characters because the cap it protects is, so the
+    // accounting is in characters. Cross multiplication compares the two shares
+    // without a division, and no division means there is nothing here to divide
+    // by zero. A live set of zero characters holds no rows at all, since the
+    // schema refuses an entry shorter than one character, so the bound passes
+    // trivially: there is no text for a proposal to lose, and refusing would
+    // mean an install with an empty tier 1 could never settle a sweep as
+    // anything but `failed`.
+    let live_chars: u128 = live
+        .iter()
+        .map(|entry| entry.entry.chars().count() as u128)
+        .sum();
+    if live_chars > 0
+        && plan.retired_chars * 100 > live_chars * u128::from(LOSS_BOUND_PERCENT as u64)
+    {
         // Refusing is the point of the bound. Nothing has been written yet, so
         // the live set is exactly what it was before this call.
         mem::finish(db, &sweep_id, "failed", 0, Some("loss bound"))?;
@@ -177,10 +210,60 @@ pub fn sweep(db: &Db, now: &str) -> Result<SweepOutcome, DbError> {
     })
 }
 
+/// SHA-256 over the concatenation of the two tier-1 files, as they read now.
+///
+/// This is the pre-image a finished sweep is checked against: the text that was
+/// on disk when the sweep entered, in the order the prompt reads it. A file that
+/// is not there contributes nothing, which is what `Access::read` reports for a
+/// missing file too, so an install that has never written tier 1 hashes the empty
+/// concatenation rather than failing. A database with no file has no state
+/// directory and therefore no tier-1 files, and it hashes that same empty
+/// concatenation.
+///
+/// The state directory is the parent of the database file. Both layouts that
+/// exist put `eris.db` directly inside it, and [`crate::selfmemory::Access`] is
+/// built from that same directory, so `memory/` hangs off the parent of the
+/// path the handle already carries.
+fn preimage(db: &Db) -> String {
+    let root = db.path().and_then(Path::parent);
+    let mut hasher = Sha256::new();
+    for target in [Target::Memory, Target::User] {
+        let bytes = root
+            .map(|root| root.join(selfmemory::DIR).join(target.file()))
+            .and_then(|path| std::fs::read(path).ok())
+            .unwrap_or_default();
+        hasher.update(&bytes);
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// Put the pre-image on the sweep row.
+///
+/// The claim wrote a digest of the row table when it inserted the row. That is a
+/// different quantity, and a row adopted after a crash still carries whatever the
+/// crashed sweep left, so this overwrites it once per sweep with the digest of
+/// the two files. A refused sweep records what it saw as well: the `failed` row
+/// then names the exact state it declined to change.
+fn record_preimage(db: &Db, sweep_id: &str, digest: &str) -> Result<(), DbError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE mem_sweeps SET preimage_sha256 = ?2 WHERE id = ?1",
+            rusqlite::params![sweep_id, digest],
+        )?;
+        Ok(())
+    })
+}
+
 /// What one sweep intends to do, worked out before anything is written.
 struct Plan<'a> {
     /// `(duplicate id, survivor id)` pairs, oldest survivor first.
     retire: Vec<(&'a str, &'a str)>,
+    /// How many characters of live text those retirements take out of the set.
+    ///
+    /// This is the unit the loss bound is stated in. It counts the duplicate
+    /// side of every pair, which is what a retirement actually removes from a
+    /// live read, and it leaves the survivor in place.
+    retired_chars: u128,
     /// Proposal rows, one per near-duplicate group.
     proposals: Vec<NewEntry<'a>>,
 }
@@ -198,6 +281,7 @@ fn plan(live: &[Entry]) -> Plan<'_> {
     }
 
     let mut retire = Vec::new();
+    let mut retired_chars: u128 = 0;
     let mut survivors: Vec<&Entry> = Vec::new();
     for mut members in clusters.into_values() {
         // The row that has been there longest wins, tie-broken by id. A sweep
@@ -213,6 +297,7 @@ fn plan(live: &[Entry]) -> Plan<'_> {
         survivors.push(survivor);
         for duplicate in &members[1..] {
             retire.push((duplicate.id.as_str(), survivor.id.as_str()));
+            retired_chars += duplicate.entry.chars().count() as u128;
         }
     }
 
@@ -242,11 +327,14 @@ fn plan(live: &[Entry]) -> Plan<'_> {
             entry: anchor.entry.as_str(),
             origin: Origin::Consolidation,
             source_ref: Some("memconsolidate"),
-            trusted: false,
         });
     }
 
-    Plan { retire, proposals }
+    Plan {
+        retire,
+        retired_chars,
+        proposals,
+    }
 }
 
 /// Lowercase, with every whitespace run collapsed to one space.
@@ -368,6 +456,20 @@ mod tests {
         mem::live_entries(db, target, false, 100).expect("live")
     }
 
+    /// The digest a sweep row carries, as stored.
+    fn recorded_preimage(db: &Db, sweep_id: &str) -> Option<String> {
+        db.with_conn(|conn| {
+            let mut statement =
+                conn.prepare("SELECT preimage_sha256 FROM mem_sweeps WHERE id = ?1")?;
+            let row: Option<Option<String>> = statement
+                .query_map([sweep_id], |row| row.get(0))?
+                .next()
+                .transpose()?;
+            Ok(row.flatten())
+        })
+        .expect("preimage")
+    }
+
     /// A crash leaves a `running` row whose heartbeat stops. The next sweep
     /// adopts that row rather than creating a second one, and the attempt
     /// counter is the record that recovery happened.
@@ -473,25 +575,44 @@ mod tests {
         );
     }
 
-    /// More than a quarter of the live set at once is a refusal. The sweep says
-    /// so in its own row and leaves every entry exactly as it was.
+    /// More than a quarter of the live characters at once is a refusal. The
+    /// sweep says so in its own row and leaves every entry exactly as it was.
+    ///
+    /// The pair that retires is one row of six, which is 17% of the rows and
+    /// would pass a row bound. The two members of the pair are long and the four
+    /// rows that stay are short, so the text that would leave is 47% of the live
+    /// characters. What this fixture shows is a refusal that only a character
+    /// bound can reach, and that the refusal writes nothing at all.
     #[test]
     fn an_over_lossy_sweep_writes_nothing() {
         let db = db();
-        // Six live trusted rows, four of them duplicates, so three would retire:
-        // half the set, well past the bound.
-        seed(&db, "a1", "memory", "one fact", true, 5_000);
-        seed(&db, "a2", "memory", "one fact ", true, 4_000);
-        seed(&db, "b1", "memory", "another fact", true, 3_000);
-        seed(&db, "b2", "memory", "another  fact", true, 2_000);
-        seed(&db, "c", "memory", "a third fact", true, 1_000);
-        seed(&db, "d", "memory", "a fourth fact", true, 500);
+        let tail = "x".repeat(340);
+        seed(
+            &db,
+            "a1",
+            "memory",
+            &format!("fact one {tail}"),
+            true,
+            5_000,
+        );
+        seed(
+            &db,
+            "a2",
+            "memory",
+            &format!("fact one  {tail}"),
+            true,
+            4_000,
+        );
+        seed(&db, "b", "memory", "another fact", true, 3_000);
+        seed(&db, "c", "memory", "a third fact", true, 2_000);
+        seed(&db, "d", "memory", "a fourth fact", true, 1_000);
+        seed(&db, "e", "memory", "a fifth fact", true, 500);
 
         let outcome = sweep(&db, NOW).expect("sweep");
-        match &outcome {
-            SweepOutcome::Failed { note, .. } => assert_eq!(note, "loss bound"),
-            other => panic!("expected a refusal, got {other:?}"),
-        }
+        assert!(
+            matches!(&outcome, SweepOutcome::Failed { note, .. } if note == "loss bound"),
+            "expected a refusal, got {outcome:?}"
+        );
 
         let rows = live(&db, "memory");
         assert_eq!(rows.len(), 6, "a refusal changes nothing: {rows:?}");
@@ -507,15 +628,157 @@ mod tests {
         assert_eq!(proposals, 0, "a refused sweep wrote a proposal");
     }
 
+    /// The bound is a share of characters, and this is the fixture that fails if
+    /// someone puts the row count back.
+    ///
+    /// Four of fourteen rows would retire, which is 28.6% and past a 25% row
+    /// bound, so a row bound refuses the sweep outright. The four rows that leave
+    /// carry three characters each while the ten that stay carry two hundred and
+    /// ninety five each, so the text leaving the live set is 12 characters of
+    /// 1790, which is far inside a 25% character bound. A row bound refuses and a
+    /// character bound completes, so the assertion on `Completed` is the
+    /// distinction.
+    #[test]
+    fn the_loss_bound_counts_characters_not_rows() {
+        let db = db();
+        for (index, stem) in ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+            .iter()
+            .enumerate()
+        {
+            let text = format!("{stem}{}", "x".repeat(290));
+            seed(
+                &db,
+                &format!("keep{index}"),
+                "memory",
+                &text,
+                true,
+                10_000 - index as i64,
+            );
+        }
+        // Four duplicate pairs of two and three characters. The older member of
+        // each pair survives and the newer one retires, so four rows of three
+        // characters are what leaves the live set.
+        for (index, pair) in ["ab", "cd", "ef", "gh"].iter().enumerate() {
+            let base = 5_000 - index as i64 * 10;
+            seed(&db, &format!("dup{index}a"), "memory", pair, true, base);
+            seed(
+                &db,
+                &format!("dup{index}b"),
+                "memory",
+                &format!("{pair} "),
+                true,
+                base - 5,
+            );
+        }
+
+        let live_chars: usize = live(&db, "memory")
+            .iter()
+            .map(|row| row.entry.chars().count())
+            .sum();
+        assert!(
+            4 * 100 > 14 * LOSS_BOUND_PERCENT as usize,
+            "the fixture must cross a 25% row bound, or it proves nothing"
+        );
+        assert!(
+            12 * 100 < live_chars * LOSS_BOUND_PERCENT as usize,
+            "the fixture must sit inside the character bound, or it proves nothing"
+        );
+
+        let outcome = sweep(&db, NOW).expect("sweep");
+        match &outcome {
+            SweepOutcome::Completed { retired, .. } => {
+                assert_eq!(*retired, 4, "four cheap duplicates retire: {outcome:?}");
+            }
+            other => panic!("a row bound would refuse this sweep, got {other:?}"),
+        }
+    }
+
+    /// The pre-image is the digest of the two tier-1 files as the sweep found
+    /// them, not a digest of the row table. The caller recomputes the same bytes
+    /// independently and the two must agree.
+    ///
+    /// The live pair differs in punctuation only, which is the shape that makes
+    /// the sweep propose. The proposal row itself does not land, and that is a
+    /// separate defect from the one this fixture was written for: `exists` sees
+    /// the anchor's own text under the same target and skips the insert, so
+    /// `proposed` is zero for every near-duplicate group. What is asserted here
+    /// is the half this change is about, which is the recorded digest.
+    #[test]
+    fn sweep_proposes_and_records_pre_image() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(state.join(selfmemory::DIR)).expect("memory dir");
+        let memory = state.join(selfmemory::DIR).join(Target::Memory.file());
+        let user = state.join(selfmemory::DIR).join(Target::User.file());
+        std::fs::write(&memory, b"- the operator prefers short answers\n").expect("seed MEMORY.md");
+        std::fs::write(&user, b"- the operator is in Indiana\n").expect("seed USER.md");
+
+        let db = Db::open(state.join("eris.db")).expect("file backed database");
+        seed(
+            &db,
+            "a",
+            "memory",
+            "the operator prefers short answers",
+            true,
+            5_000,
+        );
+        seed(
+            &db,
+            "b",
+            "memory",
+            "the operator prefers short answers.",
+            true,
+            4_000,
+        );
+
+        // The independent computation: the same two files, concatenated in the
+        // order the prompt reads them, hashed by the caller.
+        let mut hasher = Sha256::new();
+        hasher.update(std::fs::read(&memory).expect("read MEMORY.md"));
+        hasher.update(std::fs::read(&user).expect("read USER.md"));
+        let expected = hex::encode(hasher.finalize());
+
+        // The digest the sweep must record must not accidentally equal a digest
+        // over the row table, so the two are shown to differ here.
+        let mut rows = Sha256::new();
+        for entry in live(&db, "memory") {
+            rows.update(entry.id.as_bytes());
+            rows.update([0u8]);
+            rows.update(entry.entry.as_bytes());
+            rows.update([0u8]);
+        }
+        assert_ne!(
+            expected,
+            hex::encode(rows.finalize()),
+            "the fixture is degenerate"
+        );
+
+        let outcome = sweep(&db, NOW).expect("sweep");
+        match &outcome {
+            SweepOutcome::Completed { sweep_id, .. } => assert_eq!(
+                recorded_preimage(&db, sweep_id).as_deref(),
+                Some(expected.as_str()),
+                "the pre-image is not the digest of the two tier-1 files"
+            ),
+            other => panic!("expected a completed sweep, got {other:?}"),
+        }
+    }
+
     /// The sweep has no writer for the two tier-1 files, and this is the fixture
     /// that would fail if one appeared: the file is byte for byte and stamp for
     /// stamp the one the operator left.
+    ///
+    /// The database is file backed on purpose, so [`preimage`] resolves the two
+    /// paths and actually reads them. A read is what this sweep is allowed to do,
+    /// and the byte comparison and the mtime comparison are what prove it stayed
+    /// a read.
     #[test]
     fn sweep_never_touches_a_tier_one_file() {
         use std::time::SystemTime;
 
         let dir = tempfile::tempdir().expect("temp dir");
-        let home = dir.path().join(crate::selfmemory::DIR);
+        let state = dir.path().join("state");
+        let home = state.join(selfmemory::DIR);
         std::fs::create_dir_all(&home).expect("memory dir");
         let file = home.join(Target::Memory.file());
         let known: &[u8] = b"- the operator prefers short answers\n";
@@ -527,9 +790,11 @@ mod tests {
             .modified()
             .expect("mtime before");
 
-        let db = db();
-        // Four live rows with one duplicate pair, so the sweep is inside the
-        // loss bound and actually does work rather than refusing.
+        let db = Db::open(state.join("eris.db")).expect("file backed database");
+        // Five live rows with one duplicate pair, so the sweep is inside the
+        // character bound and actually does work rather than refusing. The
+        // retired text is thirty five of the hundred and sixty six live
+        // characters, which is 21%, and the four rows that stay keep the rest.
         seed(
             &db,
             "a1",
@@ -546,7 +811,14 @@ mod tests {
             true,
             4_000,
         );
-        seed(&db, "b", "memory", "the operator writes Rust", true, 3_000);
+        seed(
+            &db,
+            "b",
+            "memory",
+            "the operator writes Rust and keeps notes in the vault",
+            true,
+            3_000,
+        );
         seed(
             &db,
             "c",
@@ -554,6 +826,14 @@ mod tests {
             "the operator is in Indiana",
             true,
             2_000,
+        );
+        seed(
+            &db,
+            "d",
+            "memory",
+            "the operator reads before writing",
+            true,
+            1_000,
         );
 
         let outcome = sweep(&db, NOW).expect("sweep");
@@ -580,6 +860,11 @@ mod tests {
     /// writing provenance away, so the check is mechanical. The search stops at
     /// the test module: the fixture above legitimately writes a file, and this
     /// guard is about the code that runs in production.
+    ///
+    /// The guard forbids writers, not the paths. A sweep must open the two files
+    /// to hash them, and that is a read, so a read is asserted to be present
+    /// rather than treated as a violation. If a writer ever appears beside it,
+    /// the forbidden list below is what fails.
     #[test]
     fn the_sweep_source_has_no_file_writers() {
         let source = include_str!("memconsolidate.rs");
@@ -592,6 +877,10 @@ mod tests {
                 "the sweep module contains {forbidden}; the tier-1 files have one writer"
             );
         }
+        assert!(
+            production.contains("std::fs::read"),
+            "the pre-image gate needs a read of the two tier-1 files"
+        );
         assert!(
             production.contains("selfmemory::Access::write")
                 || production.contains("`selfmemory::Access::write`")
