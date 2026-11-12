@@ -4488,6 +4488,12 @@ pub fn drive_tool_loop(
     // round still has tools, the answer round does not.
     let mut last_action_told = false;
     let mut answer_told = false;
+    // What the closing instruction is allowed to ask for, measured once the loop
+    // knows how much work there was. Held outside the loop because the last-resort
+    // answer round below the loop needs the same shape the turn was given, not a
+    // second guess at it. A turn that never reached a closing round leaves this at
+    // the terse default, which is the shape it would have been given anyway.
+    let mut answer_shape = AnswerBudget::Terse;
     // Whether the turn ended because the budget ran out rather than because the
     // model was finished. Reported, not inferred from the text. Every break below
     // assigns it, which is why it has no default: a third way out would have to
@@ -4534,15 +4540,26 @@ pub fn drive_tool_loop(
         // lookahead at all is told the budget is spent. Pushed once each, so a
         // steer arrives as the operator's own words rather than behind a pile of
         // notices.
+        // Measured here rather than at the top of the turn: `rounds` and
+        // `records` are exactly what has run so far, and the closing instruction
+        // is a statement about this turn's work rather than about its budget.
+        // Recomputed at each closing round because the two are not the same
+        // moment - the action round and the answer round can differ by one round
+        // and by whatever that round's calls produced.
         if last_action && !last_action_told {
             last_action_told = true;
             messages.push(ChatMessage::text(ChatRole::User, LAST_ACTION));
         } else if answering && !answer_told {
             answer_told = true;
-            messages.push(ChatMessage::text(ChatRole::User, WRAP_UP));
+            answer_shape = answer_budget(rounds, &records);
+            messages.push(ChatMessage::text(ChatRole::User, wrap_up(answer_shape)));
         } else if !tools_allowed && !budget_told && !last_action_told && !answer_told {
             budget_told = true;
-            messages.push(ChatMessage::text(ChatRole::User, BUDGET_SPENT));
+            answer_shape = answer_budget(rounds, &records);
+            messages.push(ChatMessage::text(
+                ChatRole::User,
+                budget_spent(answer_shape),
+            ));
         }
         // Said before the call, not after it. The model call is the longest
         // silence in a turn, and a page that hears nothing for two minutes cannot
@@ -4757,7 +4774,7 @@ pub fn drive_tool_loop(
             return Err(stopped());
         }
         let mut ask = messages.clone();
-        ask.push(ChatMessage::text(ChatRole::User, ANSWER_NOW));
+        ask.push(ChatMessage::text(ChatRole::User, answer_now(answer_shape)));
         if let Ok(completion) = stream(&ask, false, &mut *sink) {
             usage = Some(match usage {
                 None => completion.usage,
@@ -4805,6 +4822,93 @@ pub fn drive_tool_loop(
     })
 }
 
+/// How much answering room this turn has earned.
+///
+/// A fixed six lines was right for the turn this instruction was written for: one
+/// that spent its budget and has a list of facts to leave behind. It is wrong for
+/// the turn that did the job. The operator asked for a skills audit across 146
+/// directories and got six bullets five times in a row; the same turn had 128k
+/// characters of reasoning behind a 683-character answer, a ratio of 187 to 1.
+/// The model was not choosing brevity, it was obeying the only instruction it had
+/// about length.
+///
+/// So the budget is a function of what the turn actually did, measured by two
+/// facts the loop already holds at the closing rounds. `rounds` is how many
+/// rounds ran with tools, which is time spent. `records.len()` is how many calls
+/// ran, which is work done. Neither alone is enough: a turn that made one call
+/// per round for twelve rounds explored a lot and may still have one fact to
+/// report, and a turn that made ten calls in two rounds swept something real.
+/// The larger of the two, mapped onto a line count, is what the instruction
+/// names.
+///
+/// The thresholds are deliberately asymmetric, because the two mistakes are not
+/// equally expensive. Too small a budget is the bug this fixes: real work with no
+/// room to say what it found, which is what made the operator ask a second time
+/// for a synopsis and get six more bullets. Too large a budget costs a longer
+/// read on an answer that did not need it, and the operator has asked for brevity
+/// before. So substantial is set where a turn cannot plausibly have finished in
+/// six lines: eight rounds, or ten calls, which is most of a default twelve-round
+/// budget spent on real calls rather than on looking around. Everything below
+/// that keeps exactly the text it had, so a trivial turn is untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnswerBudget {
+    /// The six-line bullet shape, unchanged from before this existed.
+    Terse,
+    /// A real summary: headings and sections permitted, still no filler.
+    Substantial {
+        /// The line cap the instruction states, so the text can name it.
+        lines: usize,
+    },
+}
+
+/// Rounds at which a turn has spent most of an ordinary budget on real work.
+///
+/// Eight of the twelve a default turn gets. Below that the turn is still in the
+/// part of its budget where a six-line answer is the honest shape, because a
+/// turn that ran three rounds has three rounds' worth of findings.
+const SUBSTANTIAL_ROUNDS: usize = 8;
+
+/// Calls at which a turn has done enough to have something to summarise.
+///
+/// Ten, which is more calls than a default twelve-round budget can fit at one
+/// per round, so this only fires on a turn that made several calls some round.
+/// Two gates rather than one because the shape of the work differs: fewer, wider
+/// rounds is a sweep, and a sweep is exactly the case that produced the six
+/// bullets about 146 directories.
+const SUBSTANTIAL_CALLS: usize = 10;
+
+/// The line cap a substantial turn is given: enough for a heading or two, a
+/// section of bullets per part of the job, and a closing line about what it
+/// proves. Twelve is the floor of "a real summary" and the cap is twenty, which
+/// is roughly a browser screen of text: past that the answer stops being a
+/// summary and becomes the report the turn should have written to a file.
+const SUBSTANTIAL_LINES_MIN: usize = 12;
+const SUBSTANTIAL_LINES_MAX: usize = 20;
+
+/// What this turn has earned, from the two facts the loop knows.
+///
+/// The scaled figure is the larger of the round count and the call count, so a
+/// sweep of many calls is credited for the calls even when it fitted in few
+/// rounds, and a long careful turn is credited for its rounds even when each one
+/// was a single call.
+#[must_use]
+fn answer_budget(rounds: usize, records: &[ToolRecord]) -> AnswerBudget {
+    let calls = records.len();
+    if rounds < SUBSTANTIAL_ROUNDS && calls < SUBSTANTIAL_CALLS {
+        return AnswerBudget::Terse;
+    }
+    // One line per round or call past the threshold, rather than a flat floor: a
+    // turn that ran eighteen rounds did more than twice the work of one that ran
+    // eight, and the difference is legitimately more to say. The cap is what keeps
+    // a pathological turn - an operator who raised the budget to two hundred
+    // rounds - from asking for an essay the answer box is not the place for.
+    let over = rounds.max(calls).saturating_sub(SUBSTANTIAL_ROUNDS);
+    let lines = SUBSTANTIAL_LINES_MIN + over;
+    AnswerBudget::Substantial {
+        lines: lines.clamp(SUBSTANTIAL_LINES_MIN, SUBSTANTIAL_LINES_MAX),
+    }
+}
+
 /// The instruction the last action round opens with.
 ///
 /// Pushed one round before the answer round, and only once. It has one job:
@@ -4813,13 +4917,17 @@ pub fn drive_tool_loop(
 /// tools taken away two rounds early, so it could only describe the job it never
 /// did. This tells it that this round is for doing, and that the next one writes
 /// the answer.
+///
+/// This one does not name a length. It is the round that makes the deliverable,
+/// and the round after it is the one that has to describe what was made, so the
+/// length belongs in that instruction and nowhere else.
 const LAST_ACTION: &str = "Your tool budget for this turn has one round left with tools. \
      This round is for finishing the job, not for more research: write the files and run the \
      commands the task needs, and put the deliverable on disk. Do not start new inspection and \
      do not fix unrelated things. The next round has no tools and you will write the answer \
      there.";
 
-/// The instruction the answer round opens with.
+/// The instruction the answer round opens with, for the work this turn did.
 ///
 /// Pushed for the final round of the budget, once, after the last action round
 /// has had its tools. It has to do three things in one paragraph: say the budget
@@ -4828,28 +4936,86 @@ const LAST_ACTION: &str = "Your tool budget for this turn has one round left wit
 /// only "the tools are gone" writes the call it could not make and calls that an
 /// answer. It reports; it never hands the work back, and it never writes a next
 /// step for a later turn.
-const WRAP_UP: &str = "Your tool budget for this turn is nearly spent and the tools are now \
-     withdrawn. Stop exploring and answer now, with no tool calls. Use short bullets: at most \
-     six lines, one fact per line, no headings and no section list, and no paragraph longer than \
-     three lines. Say what you did and what it proves. Report only: do not hand the work back, do \
-     not ask for permission, and do not write next steps for a later turn.";
+///
+/// The shape of the answer is the one thing that changes with [`AnswerBudget`].
+/// Every prohibition is the same sentence in both versions on purpose. Short
+/// bullets, no filler, no restating the question, no next steps and no handing
+/// the work back are the operator's standing preferences and they do not become
+/// wrong because the turn did more. What a substantial turn gets in addition is
+/// room: a heading structure, sections per part of the job, and enough lines to
+/// finish a thought. A terse turn gets exactly the instruction it got before.
+#[must_use]
+fn wrap_up(budget: AnswerBudget) -> String {
+    match budget {
+        AnswerBudget::Terse => "Your tool budget for this turn is nearly spent and the tools \
+             are now withdrawn. Stop exploring and answer now, with no tool calls. Use short \
+             bullets: at most six lines, one fact per line, no headings and no section list, \
+             and no paragraph longer than three lines. Say what you did and what it proves. \
+             Report only: do not hand the work back, do not ask for permission, and do not \
+             write next steps for a later turn."
+            .to_owned(),
+        AnswerBudget::Substantial { lines } => format!(
+            "Your tool budget for this turn is nearly spent and the tools are now withdrawn. \
+             Stop exploring and answer now, with no tool calls. This turn did substantial work \
+             and the answer is where it gets reported, so write the summary it earned: at most \
+             {lines} lines, with short headings and sections if the work had parts, and short \
+             bullets under them. Lead with what you found, not with what you looked at. No \
+             filler, no restating the question, and no paragraph longer than three lines. Say \
+             what you did and what it proves. Report only: do not hand the work back, do not \
+             ask for permission, and do not write next steps for a later turn."
+        ),
+    }
+}
 
 /// The instruction the tool-free round opens with.
 ///
 /// A model that is only denied tools still writes the call it wanted to make, and
 /// on the wire that markup arrives as the answer. Telling it the budget is spent
 /// is what turns "reaching for a tool I cannot have" into "say what I found".
-const BUDGET_SPENT: &str = "Your tool budget for this turn is spent and no more tools are \
-     available. Answer now in short bullets: at most six lines, one fact per line, no headings \
-     and no section list. Do not request or write out any further tool calls.";
+///
+/// It carries the shape too, and for the same reason the wrap-up does: a turn
+/// that reached the end of its tools by another path has the same amount of work
+/// behind it, and the length it is allowed must not depend on which of the two
+/// sentences it happened to be given.
+#[must_use]
+fn budget_spent(budget: AnswerBudget) -> String {
+    match budget {
+        AnswerBudget::Terse => "Your tool budget for this turn is spent and no more tools are \
+             available. Answer now in short bullets: at most six lines, one fact per line, no \
+             headings and no section list. Do not request or write out any further tool calls."
+            .to_owned(),
+        AnswerBudget::Substantial { lines } => format!(
+            "Your tool budget for this turn is spent and no more tools are available. Answer now: \
+             at most {lines} lines, with short headings and sections if the work had parts, and \
+             short bullets under them. Lead with what you found. No filler, no restating the \
+             question, and no paragraph longer than three lines. Do not request or write out any \
+             further tool calls."
+        ),
+    }
+}
 
 /// The instruction the last-resort answer round opens with.
 ///
 /// Reached only when the tool-free round produced nothing usable, so this states
 /// the output shape rather than relying on the model to infer it a second time.
-const ANSWER_NOW: &str = "Answer in short bullets only, at most six lines, one fact per line, \
-     with no tool calls, no headings and no section list. Report only: do not ask for permission \
-     and do not write next steps for a later turn.";
+/// The budget comes from the same measurement as the other two, because this is
+/// the round most likely to be reached by the turn that did the most work: a
+/// model with fourteen findings and no room has the hardest time starting.
+#[must_use]
+fn answer_now(budget: AnswerBudget) -> String {
+    match budget {
+        AnswerBudget::Terse => "Answer in short bullets only, at most six lines, one fact per \
+             line, with no tool calls, no headings and no section list. Report only: do not ask \
+             for permission and do not write next steps for a later turn."
+            .to_owned(),
+        AnswerBudget::Substantial { lines } => format!(
+            "Answer now, with no tool calls: at most {lines} lines, with short headings and \
+             sections if the work had parts, and short bullets under them. Lead with what you \
+             found, not with what you looked at. No filler and no restating the question. Report \
+             only: do not ask for permission and do not write next steps for a later turn."
+        ),
+    }
+}
 
 /// What a turn says when its budget ran out and it produced no prose of its own.
 ///
@@ -7150,8 +7316,9 @@ mod tests {
              only for the answer round"
         );
         // The snapshots accumulate, so the last one is the whole history. One
-        // LAST_ACTION and one WRAP_UP in it means each was pushed once; a push
-        // per round would leave more.
+        // LAST_ACTION and one wrap-up in it means each was pushed once; a push
+        // per round would leave more. The wrap-up is the terse one: two rounds of
+        // one call each is not a turn with a deliverable to summarise.
         let history = seen.last().expect("the provider was called");
         let actions: usize = history
             .iter()
@@ -7159,7 +7326,7 @@ mod tests {
             .count();
         let answers: usize = history
             .iter()
-            .filter(|message| message.content == WRAP_UP)
+            .filter(|message| message.content == wrap_up(AnswerBudget::Terse))
             .count();
         assert_eq!(actions, 1, "the action round is named once");
         assert_eq!(answers, 1, "the answer round is named once");
@@ -7179,9 +7346,19 @@ mod tests {
     /// to ask for one plain paragraph. That is the wall of prose the operator
     /// rejected: the closing rounds must ask for short bullets instead, while
     /// still banning the next-step footer.
+    ///
+    /// The terse shape is the one this test was written for and it is unchanged,
+    /// including its six-line cap. It is asserted through the builder rather than
+    /// against a constant because the cap is now a function of the turn's work,
+    /// and the turn this test describes - few rounds, one call each - is exactly
+    /// the one that must keep it.
     #[test]
-    fn the_closing_prompts_ask_for_short_bullets_not_a_wall() {
-        for prompt in [WRAP_UP, BUDGET_SPENT, ANSWER_NOW] {
+    fn the_terse_closing_prompts_keep_the_six_line_bullet_shape() {
+        for prompt in [
+            wrap_up(AnswerBudget::Terse),
+            budget_spent(AnswerBudget::Terse),
+            answer_now(AnswerBudget::Terse),
+        ] {
             assert!(
                 prompt.contains("bullets"),
                 "the closing instruction asks for bullets: {prompt}"
@@ -7195,6 +7372,258 @@ mod tests {
                 "a plain paragraph is the wall the operator rejects: {prompt}"
             );
         }
+    }
+
+    /// A turn that did the job is given room to say what it found.
+    ///
+    /// The bug this fixes was a fixed six-line cap applied to fourteen rounds of
+    /// real work, which is how 128k characters of reasoning became 683 characters
+    /// of answer. Both gates are exercised separately, because they are two
+    /// different shapes of substantial work: many rounds of few calls, and few
+    /// rounds of many calls.
+    #[test]
+    fn a_substantial_turn_is_allowed_a_real_summary() {
+        let many_rounds = vec![
+            ToolRecord {
+                name: "read_file".to_owned(),
+                arguments: "{}".to_owned(),
+                output: "ok".to_owned(),
+                is_error: false,
+                asked: None,
+            };
+            SUBSTANTIAL_ROUNDS
+        ];
+        let budget = answer_budget(SUBSTANTIAL_ROUNDS, &many_rounds);
+        assert_eq!(
+            budget,
+            AnswerBudget::Substantial {
+                lines: SUBSTANTIAL_LINES_MIN
+            },
+            "eight rounds of eight calls is substantial, at the floor of the range"
+        );
+
+        // The other gate: the sweep that produced the bug. Two rounds, fifteen
+        // calls, which is more calls than a default budget fits at one per round.
+        let wide = vec![
+            ToolRecord {
+                name: "list_dir".to_owned(),
+                arguments: "{}".to_owned(),
+                output: "ok".to_owned(),
+                is_error: false,
+                asked: None,
+            };
+            SUBSTANTIAL_CALLS + 5
+        ];
+        let budget = answer_budget(2, &wide);
+        let AnswerBudget::Substantial { lines } = budget else {
+            panic!("fifteen calls in two rounds is a sweep, not a short answer");
+        };
+        assert!(
+            lines > 6,
+            "a real deliverable gets more than the six-line cap: {lines}"
+        );
+
+        let prompt = wrap_up(budget);
+        assert!(
+            prompt.contains(&format!("at most {lines} lines")),
+            "the instruction names the real number rather than a vague allowance: {prompt}"
+        );
+        assert!(
+            prompt.contains("headings") && prompt.contains("sections"),
+            "a summary of parts is allowed to have parts: {prompt}"
+        );
+        assert!(
+            !prompt.contains("six lines"),
+            "the six-line cap is what this fixes: {prompt}"
+        );
+    }
+
+    /// The range is bounded in both directions, so a raised budget cannot turn
+    /// every long job into a report and a barely-substantial one still gets a
+    /// summary worth reading.
+    #[test]
+    fn the_answer_budget_scales_with_the_work_and_then_stops() {
+        let records = |count: usize| {
+            vec![
+                ToolRecord {
+                    name: "read_file".to_owned(),
+                    arguments: "{}".to_owned(),
+                    output: "ok".to_owned(),
+                    is_error: false,
+                    asked: None,
+                };
+                count
+            ]
+        };
+        // Just under both gates keeps the old shape exactly.
+        assert_eq!(
+            answer_budget(SUBSTANTIAL_ROUNDS - 1, &records(1)),
+            AnswerBudget::Terse
+        );
+        assert_eq!(
+            answer_budget(1, &records(SUBSTANTIAL_CALLS - 1)),
+            AnswerBudget::Terse
+        );
+        // Past the gate the number grows with the work rather than jumping to a
+        // fixed figure, because eighteen rounds genuinely has more to say than
+        // eight.
+        let AnswerBudget::Substantial { lines: low } = answer_budget(SUBSTANTIAL_ROUNDS, &[])
+        else {
+            panic!("eight rounds is substantial");
+        };
+        let AnswerBudget::Substantial { lines: high } = answer_budget(SUBSTANTIAL_ROUNDS + 3, &[])
+        else {
+            panic!("eleven rounds is substantial");
+        };
+        assert!(high > low, "more rounds earn more lines: {low} then {high}");
+        // And it stops. An operator who raised the ceiling to two hundred rounds
+        // must not be handed a request for a two-hundred-line answer.
+        let AnswerBudget::Substantial { lines: capped } = answer_budget(500, &records(500)) else {
+            panic!("five hundred rounds is substantial");
+        };
+        assert_eq!(
+            capped, SUBSTANTIAL_LINES_MAX,
+            "the cap is what keeps a summary from becoming the report the turn \
+             should have written to a file"
+        );
+    }
+
+    /// A trivial turn keeps today's shape. This is the half of the change that is
+    /// allowed to do nothing: the operator has asked for brevity, and a two-round
+    /// answer does not become an essay because some other turn earned one.
+    #[test]
+    fn a_trivial_turn_keeps_the_terse_shape() {
+        let one_call = [ToolRecord {
+            name: "read_file".to_owned(),
+            arguments: "{}".to_owned(),
+            output: "ok".to_owned(),
+            is_error: false,
+            asked: None,
+        }];
+        assert_eq!(answer_budget(2, &one_call), AnswerBudget::Terse);
+        assert_eq!(
+            answer_budget(0, &[]),
+            AnswerBudget::Terse,
+            "a turn that never used a tool is terse"
+        );
+        let prompt = wrap_up(AnswerBudget::Terse);
+        assert!(
+            prompt.contains("at most six lines"),
+            "the trivial turn is told six lines, as before: {prompt}"
+        );
+        assert!(
+            !prompt.contains("headings and sections"),
+            "a six-line answer has no parts to head: {prompt}"
+        );
+    }
+
+    /// Both shapes keep every prohibition. The change is about allowing a real
+    /// summary to exist, not about relaxing what the operator asked not to see,
+    /// so the bans on tool calls, permission-seeking and next-step footers are
+    /// asserted in both budgets rather than in the new one alone.
+    #[test]
+    fn both_budgets_keep_the_prohibitions() {
+        for budget in [
+            AnswerBudget::Terse,
+            AnswerBudget::Substantial {
+                lines: SUBSTANTIAL_LINES_MIN,
+            },
+        ] {
+            for prompt in [wrap_up(budget), answer_now(budget)] {
+                assert!(
+                    prompt.contains("no tool calls") || prompt.contains("no further tool calls"),
+                    "the answer may not ask for a tool: {prompt}"
+                );
+                assert!(
+                    prompt.contains("do not ask for permission"),
+                    "it may not hand the decision back: {prompt}"
+                );
+                assert!(
+                    prompt.contains("next steps"),
+                    "and it may not write next steps for a later turn: {prompt}"
+                );
+                assert!(
+                    prompt.contains("Report only:"),
+                    "reporting is the whole job of the closing round: {prompt}"
+                );
+            }
+            // The budget-spent round never carried the permission or next-step
+            // bans - it is not the round that writes the answer, it is the round
+            // that says the tools are gone - so only the ban it did carry is
+            // checked here.
+            let prompt = budget_spent(budget);
+            assert!(
+                prompt.contains("Do not request or write out any further tool calls."),
+                "the tool ban is unchanged in both shapes: {prompt}"
+            );
+        }
+    }
+
+    /// The wiring, not the function: a turn that really runs ten rounds of tool
+    /// calls must be handed the substantial instruction by the loop itself.
+    #[test]
+    fn the_loop_hands_a_long_turn_the_substantial_instruction() {
+        let root = scratch_workspace("substantial");
+        std::fs::write(root.join("a.txt"), "alpha").expect("file");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::ReadOnly,
+        );
+
+        let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
+        let mut last: Option<core_runtime::provider::Completion> = None;
+        let outcome = drive_tool_loop(
+            &mut |call: &core_domain::ToolCall,
+                  chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
+                crate::tools::execute_streaming(&call.name, &call.arguments, &sandbox, chunks)
+            },
+            vec![ChatMessage::text(ChatRole::User, "audit every directory")],
+            &mut |_call| GateDecision::Run,
+            MAX_TOOL_ROUNDS,
+            None,
+            &mut |_part| {},
+            &mut || TurnSignal::Continue,
+            |messages, tools, _emit| {
+                seen.push(messages.to_vec());
+                if tools {
+                    let call = core_domain::ToolCall::new(
+                        0,
+                        format!("call_{}", seen.len()),
+                        "read_file",
+                        serde_json::json!({"path": "a.txt"}),
+                    )
+                    .expect("a call");
+                    Ok(completion_with_calls(vec![call], ""))
+                } else {
+                    let done = completion_with_calls(Vec::new(), "the audit found nothing");
+                    last = Some(done.clone());
+                    Ok(done)
+                }
+            },
+        )
+        .expect("a turn");
+        assert!(last.is_some(), "the answer round ran");
+        assert_eq!(outcome.text, "the audit found nothing");
+
+        let history = seen.last().expect("the provider was called");
+        let substantial: Vec<&ChatMessage> = history
+            .iter()
+            .filter(|message| message.content.contains("lines, with short headings"))
+            .collect();
+        assert_eq!(
+            substantial.len(),
+            1,
+            "a ten-round, ten-call turn is told to write a real summary"
+        );
+        assert!(
+            !substantial[0].content.contains("at most six lines"),
+            "the six-line cap is what starved the turn this fixes: {}",
+            substantial[0].content
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The same turn, but the model does what it was told.
@@ -7468,8 +7897,11 @@ mod tests {
         )
         .expect("a turn");
         assert!(
-            seen.iter()
-                .all(|messages| messages.iter().all(|message| message.content != WRAP_UP)),
+            seen.iter().all(|messages| messages.iter().all(|message| {
+                !message
+                    .content
+                    .starts_with("Your tool budget for this turn is nearly spent")
+            })),
             "there is nowhere to look ahead to in a one-round budget"
         );
         assert!(outcome.capped, "the budget still ends the turn");
