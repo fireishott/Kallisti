@@ -7,7 +7,7 @@ metadata:
 
 # Craft Anything: evidence-first study and rebuild
 
-Craft Anything is a pure-Rust reverse-engineering engine: 322 CLI commands, 303 engine tools in 17
+Craft Anything is a pure-Rust reverse-engineering engine: 323 CLI commands, 303 engine tools in 17
 toolsets. It inspects a program, app bundle, APK, Electron app, WASM module, firmware image, crash
 dump or HAR capture, and it can have a coding agent rebuild a clean-room version of it. Use it when
 the answer depends on shipped bytes. If the source is available and the question is about the
@@ -15,7 +15,7 @@ source, read the source instead.
 
 ## Where it lives on this host
 
-- CLI: `~/.local/bin/craft-anything-cli` (v0.6.0, from the official GitHub release
+- CLI: `~/.local/bin/craft-anything-cli` (v0.6.1, from the official GitHub release
   tarball, SHA256 verified against the release `SHA256SUMS.txt`).
 - Source clone for docs and tool lists: `~/research/storytold/craft-anything`
   (`docs/tools.md`, `docs/tool-ids.md`, `docs/STATUS.md`, `docs/ROADMAP.md`).
