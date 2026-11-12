@@ -99,7 +99,9 @@ pub enum Target {
 }
 
 impl Target {
-    fn parse(value: &str) -> Option<Self> {
+    /// Parse the spelling the tool's `target` argument and the CLI both use.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
         match value.trim() {
             "memory" => Some(Self::Memory),
             "user" => Some(Self::User),
@@ -267,29 +269,7 @@ impl Access {
 
         match action {
             "read" => ToolResult::ok(self.state(target, None)),
-            "add" => {
-                if text.is_empty() {
-                    return ToolResult::refused("`add` needs `text`");
-                }
-                if let Err(refusal) = scan(text) {
-                    return ToolResult::refused(&refusal);
-                }
-                let mut entries = self.entries(target);
-                // One line, and one space between words: a duplicate must not be
-                // able to hide behind a second space.
-                let entry = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                if entries
-                    .iter()
-                    .any(|existing| existing.eq_ignore_ascii_case(&entry))
-                {
-                    return ToolResult::refused(&format!(
-                        "that entry is already in {}; nothing was added",
-                        target.label()
-                    ));
-                }
-                entries.push(entry);
-                self.write(target, &entries, None, "add")
-            }
+            "add" => self.add_as(target, text, mem::Origin::Model),
             "patch" => {
                 if needle.is_empty() {
                     return ToolResult::refused("`patch` needs `match`");
@@ -349,18 +329,79 @@ impl Access {
         }
     }
 
+    /// Append one entry, whoever asked.
+    ///
+    /// The duplicate rule and the scan are the same on both doors. The scan is
+    /// the model's guard rather than the operator's: the file is quoted into every
+    /// prompt, so text shaped like an instruction or a credential is refused
+    /// whoever typed it, and `Origin::Operator` buys no exemption from that.
+    ///
+    /// Public because `eris memory add` is the operator's door and it must run the
+    /// same append, the same duplicate refusal and the same single writer.
+    #[must_use]
+    pub fn add_as(&self, target: Target, text: &str, origin: mem::Origin) -> ToolResult {
+        let text = text.trim();
+        if text.is_empty() {
+            return ToolResult::refused("`add` needs `text`");
+        }
+        if let Err(refusal) = scan(text) {
+            return ToolResult::refused(&refusal);
+        }
+        let mut entries = self.entries(target);
+        // One line, and one space between words: a duplicate must not be able
+        // to hide behind a second space.
+        let entry = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if entries
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&entry))
+        {
+            return ToolResult::refused(&format!(
+                "that entry is already in {}; nothing was added",
+                target.label()
+            ));
+        }
+        entries.push(entry);
+        self.write_as(target, &entries, None, "add", origin)
+    }
+
     /// Write a list of entries, or refuse and say exactly how far over the line it is.
     ///
     /// `action` is the action `call` dispatched, carried here only so the audit
     /// event can name it. The refusal path returns before anything is touched, so
     /// an overflow writes no file, mirrors no row and leaves no audit trail: the
     /// only record of a refused write is the tool result the model already sees.
+    ///
+    /// This is the model's door. It delegates to [`Self::write_as`] with
+    /// [`mem::Origin::Model`], so the cap, the scans and the audit detail are the
+    /// same code the operator's own path runs.
     fn write(
         &self,
         target: Target,
         entries: &[String],
         changed: Option<usize>,
         action: &str,
+    ) -> ToolResult {
+        self.write_as(target, entries, changed, action, mem::Origin::Model)
+    }
+
+    /// The same write, with the entry's provenance named by the caller.
+    ///
+    /// The origin is threaded through to three places: the mirrored row, which is
+    /// what [`mem::classify`] turns into the `trusted` column, and the audit
+    /// detail. Nothing else about the write differs, so a refusal is a refusal on
+    /// either door and the file's bytes are the same shape whoever asked.
+    ///
+    /// `Origin::Model` keeps the tool path byte-identical to what it wrote before
+    /// this parameter existed. `Origin::Operator` is what the CLI passes, and it is
+    /// the only origin whose rows [`mem::classify`] trusts.
+    #[must_use]
+    pub fn write_as(
+        &self,
+        target: Target,
+        entries: &[String],
+        changed: Option<usize>,
+        action: &str,
+        origin: mem::Origin,
     ) -> ToolResult {
         let body = render(entries);
         let used = body.chars().count();
@@ -403,7 +444,7 @@ impl Access {
             .map(|meta| meta.len())
             .unwrap_or(0);
         let delta = after as i64 - before as i64;
-        self.project(target, entries, action, delta);
+        self.project(target, entries, action, delta, origin);
         let mut state = self.state(target, changed);
         state["written"] = serde_json::Value::Bool(true);
         ToolResult::ok(state)
@@ -415,7 +456,18 @@ impl Access {
     /// is about to be told so; a projection that cannot reach the database is a
     /// bookkeeping problem, and turning it into a tool error would tell a model
     /// whose entry did land that it did not, which invites it to write again.
-    fn project(&self, target: Target, entries: &[String], action: &str, delta: i64) {
+    ///
+    /// `origin` decides the mirrored row's trust and appears in the audit detail.
+    /// It is not a trust flag: the row's `trusted` column comes from
+    /// [`mem::classify`], so this function cannot store a trusted model row.
+    fn project(
+        &self,
+        target: Target,
+        entries: &[String],
+        action: &str,
+        delta: i64,
+        origin: mem::Origin,
+    ) {
         let Some(db) = self.mirror.as_ref() else {
             return;
         };
@@ -426,16 +478,15 @@ impl Access {
                     tier: mem::Tier::Curated,
                     target: target.label(),
                     entry,
-                    origin: mem::Origin::Model,
+                    origin,
                     source_ref: None,
-                    trusted: true,
                 },
             );
         }
         // Rows the file no longer has are retired here, so the projection cannot
         // drift into listing entries the file dropped.
         let _ = mem::supersede_missing(db, target.label(), entries);
-        let detail = write_detail(target, action, delta);
+        let detail = write_detail(target, action, delta, origin);
         let _ = crate::auth::AuthStore::new(db.clone()).audit(
             "loopback",
             "memory.write",
@@ -532,11 +583,15 @@ fn render(entries: &[String]) -> String {
 /// entries that are most likely to hit the cap. A sign is always printed,
 /// including for zero and for a removal, so a reader never has to guess whether
 /// `bytes=0` means nothing changed or the field was truncated.
-fn write_detail(target: Target, action: &str, delta: i64) -> String {
+///
+/// `origin` is the provenance of the write, not its trust. It reads `model` for
+/// every tool call, which is what this field said before the operator had a door
+/// of its own, and `operator` only for `eris memory add`.
+fn write_detail(target: Target, action: &str, delta: i64, origin: mem::Origin) -> String {
     format!(
         "target={}; action={action}; bytes={delta:+}; origin={}",
         target.label(),
-        mem::Origin::Model.as_str()
+        origin.as_str()
     )
 }
 
@@ -882,11 +937,25 @@ mod tests {
         );
         assert!(!added.is_error, "{}", added.content);
 
-        let live = mem::live_entries(&db, "memory", true, 50).expect("live entries");
+        // Read the untrusted-inclusive set, because the row is there and the
+        // trusted-only read is what it is checked against below.
+        let live = mem::live_entries(&db, "memory", false, 50).expect("live entries");
         assert_eq!(live.len(), 1, "{live:?}");
         assert_eq!(live[0].entry, "the operator prefers short answers");
         assert_eq!(live[0].origin, "model");
-        assert!(live[0].trusted, "a model entry is trusted by default");
+        // A model entry is stored so it can be inspected, and is not recallable
+        // until something promotes it. Trust follows the origin, so a line the
+        // model wrote through `memory_manage` is untrusted by construction.
+        assert!(
+            !live[0].trusted,
+            "a model entry is stored but not recallable"
+        );
+        assert!(
+            mem::live_entries(&db, "memory", true, 50)
+                .expect("trusted entries")
+                .is_empty(),
+            "recall must not surface a model entry"
+        );
         assert_eq!(live[0].tier, "curated");
 
         let details: Vec<String> = db
@@ -908,6 +977,66 @@ mod tests {
             "{}",
             details[0]
         );
+        // The model's door still audits the origin it always did, so the detail
+        // string on the tool path is unchanged by the operator path existing.
+        assert!(details[0].ends_with("; origin=model"), "{}", details[0]);
+    }
+
+    /// The operator's door writes the same file through the same writer, and it
+    /// is the only origin whose row is trusted.
+    ///
+    /// The file assertion is the one that keeps this honest: an operator entry is
+    /// still one bullet line, byte for byte the format every other entry uses, so
+    /// provenance did not change the file. The row assertion is what makes the
+    /// `trusted` column mean something, because the origin reached
+    /// [`mem::classify`] rather than being handed in.
+    #[test]
+    fn a_write_records_provenance_without_changing_the_file() {
+        let (_dir, access, db) = mirrored();
+        let written = access.write_as(
+            Target::Memory,
+            &["the operator wrote this one".to_owned()],
+            None,
+            "add",
+            mem::Origin::Operator,
+        );
+        assert!(!written.is_error, "{}", written.content);
+
+        assert_eq!(
+            std::fs::read_to_string(memory_file(&access)).expect("the file exists"),
+            "- the operator wrote this one\n",
+            "an operator entry is one bullet line, the same shape as any other"
+        );
+
+        let live = mem::live_entries(&db, "memory", false, 50).expect("live entries");
+        assert_eq!(live.len(), 1, "exactly one row, not one per read: {live:?}");
+        assert_eq!(live[0].entry, "the operator wrote this one");
+        assert_eq!(live[0].origin, "operator");
+        assert!(live[0].trusted, "an operator entry is trusted");
+        assert_eq!(live[0].tier, "curated");
+
+        // And the audit trail names the origin, which is how a reader tells the
+        // two doors apart after the fact.
+        let details: Vec<String> = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT detail FROM audit_log WHERE action = 'memory.write' ORDER BY id",
+                )?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row?);
+                }
+                Ok(out)
+            })
+            .expect("audit rows");
+        assert_eq!(details.len(), 1, "{details:?}");
+        assert!(
+            details[0].starts_with("target=memory; action=add; bytes=+"),
+            "{}",
+            details[0]
+        );
+        assert!(details[0].ends_with("; origin=operator"), "{}", details[0]);
     }
 
     #[test]

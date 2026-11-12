@@ -72,7 +72,22 @@ impl Origin {
     }
 }
 
+/// Whether an origin may be surfaced by recall without review.
+///
+/// Only the operator's own text is trusted. Everything else, including a
+/// model writing through `memory_manage`, is stored for inspection but is
+/// not recallable until something promotes it.
+#[must_use]
+pub fn classify(origin: Origin) -> bool {
+    matches!(origin, Origin::Operator)
+}
+
 /// A row on its way in.
+///
+/// There is no `trusted` field on purpose. Trust is a function of the origin and
+/// nothing else, so [`insert_entry`] computes it with [`classify`]. A field here
+/// would let any caller hand in a trusted model row, which is exactly the defect
+/// this shape removes: the column is no longer an input a caller can choose.
 #[derive(Debug, Clone)]
 pub struct NewEntry<'a> {
     /// Which tier.
@@ -82,12 +97,10 @@ pub struct NewEntry<'a> {
     pub target: &'a str,
     /// The entry itself. The schema caps it at 400 characters.
     pub entry: &'a str,
-    /// Where it came from.
+    /// Where it came from. This decides trust.
     pub origin: Origin,
     /// Which conversation, tool call or file it came from, when there is one.
     pub source_ref: Option<&'a str>,
-    /// Whether a recall may surface it. Imported content is never trusted.
-    pub trusted: bool,
 }
 
 /// A row on its way out.
@@ -155,11 +168,16 @@ pub fn content_hash(entry: &str) -> String {
 
 /// Store one entry. A duplicate in the same target changes nothing.
 ///
+/// The `trusted` column is derived here rather than accepted from the caller:
+/// [`classify`] is the only statement of the rule, so a row cannot be stored
+/// trusted unless its origin says the operator wrote it.
+///
 /// # Errors
 ///
 /// A database failure, or a row the CHECK constraints refuse.
 pub fn insert_entry(db: &Db, new: &NewEntry<'_>) -> Result<(), DbError> {
     let hash = content_hash(new.entry);
+    let trusted = classify(new.origin);
     db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO mem_entries
@@ -173,12 +191,37 @@ pub fn insert_entry(db: &Db, new: &NewEntry<'_>) -> Result<(), DbError> {
                 new.entry,
                 new.origin.as_str(),
                 new.source_ref,
-                i64::from(new.trusted),
+                i64::from(trusted),
                 hash,
                 now(),
             ],
         )?;
         Ok(())
+    })
+}
+
+/// The columns every read in this module selects, in the order [`entry_from`]
+/// maps them.
+///
+/// One list rather than three identical SELECT bodies: a column added to this
+/// table has exactly one place to appear, and a read cannot map a value to the
+/// wrong field.
+const ENTRY_COLUMNS: &str = "id, tier, target, entry, origin, source_ref, trusted, \
+                             content_hash, created_at, superseded_by";
+
+/// Map one selected row onto [`Entry`].
+fn entry_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
+    Ok(Entry {
+        id: row.get(0)?,
+        tier: row.get(1)?,
+        target: row.get(2)?,
+        entry: row.get(3)?,
+        origin: row.get(4)?,
+        source_ref: row.get(5)?,
+        trusted: row.get::<_, i64>(6)? != 0,
+        content_hash: row.get(7)?,
+        created_at: row.get(8)?,
+        superseded_by: row.get(9)?,
     })
 }
 
@@ -197,32 +240,108 @@ pub fn live_entries(
     limit: usize,
 ) -> Result<Vec<Entry>, DbError> {
     db.with_conn(|conn| {
-        let mut statement = conn.prepare(
-            "SELECT id, tier, target, entry, origin, source_ref, trusted, content_hash,
-                    created_at, superseded_by
+        let sql = format!(
+            "SELECT {ENTRY_COLUMNS}
                FROM mem_entries
               WHERE target = ?1 AND superseded_by IS NULL
                 AND (?2 = 0 OR trusted = 1)
               ORDER BY created_at DESC, id DESC
-              LIMIT ?3",
-        )?;
+              LIMIT ?3"
+        );
+        let mut statement = conn.prepare(&sql)?;
         let rows = statement.query_map(
             params![target, i64::from(trusted_only), limit as i64],
-            |row| {
-                Ok(Entry {
-                    id: row.get(0)?,
-                    tier: row.get(1)?,
-                    target: row.get(2)?,
-                    entry: row.get(3)?,
-                    origin: row.get(4)?,
-                    source_ref: row.get(5)?,
-                    trusted: row.get::<_, i64>(6)? != 0,
-                    content_hash: row.get(7)?,
-                    created_at: row.get(8)?,
-                    superseded_by: row.get(9)?,
-                })
-            },
+            entry_from,
         )?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    })
+}
+
+/// One row by primary key, trusted or not, live or superseded.
+///
+/// The accept path reads the row before it writes anything, because it needs the
+/// text and the target the file write is about. That read is not the decision:
+/// [`accept_entry`] still settles eligibility in SQL, and a row another writer
+/// moves between these two calls simply reports that nothing moved.
+///
+/// # Errors
+///
+/// A database failure, or a stored row the mapping cannot read.
+pub fn entry_by_id(db: &Db, id: &str) -> Result<Option<Entry>, DbError> {
+    db.with_conn(|conn| {
+        let sql = format!("SELECT {ENTRY_COLUMNS} FROM mem_entries WHERE id = ?1");
+        let entry = conn.query_row(&sql, [id], entry_from).optional()?;
+        Ok(entry)
+    })
+}
+
+/// Promote one row to trusted. Returns whether a row moved.
+///
+/// The eligibility test is in the statement rather than in Rust. `trusted = 0`
+/// and `superseded_by IS NULL` are the `WHERE`, so there is one statement whose
+/// own predicate decides the update: a fetch-then-write would read a row, decide
+/// it was still a proposal, and then flip a row some other writer had already
+/// settled in between. A row that is already trusted, already superseded or
+/// simply absent moves nothing and reports `false`, which is a normal answer for
+/// the caller to print rather than an error.
+///
+/// The row keeps its provenance. Acceptance says the operator kept the entry, so
+/// the text lands in the file as their own, but the row still records that a
+/// sweep wrote it. That is what makes an accepted proposal readable as a
+/// proposal rather than as something the operator typed.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn accept_entry(db: &Db, id: &str) -> Result<bool, DbError> {
+    db.with_conn(|conn| {
+        let moved = conn.execute(
+            "UPDATE mem_entries SET trusted = 1
+              WHERE id = ?1 AND trusted = 0 AND superseded_by IS NULL",
+            [id],
+        )?;
+        Ok(moved > 0)
+    })
+}
+
+/// The rows nothing has accepted yet: live and untrusted, oldest first.
+///
+/// Oldest first because this is a queue a person works from the front. A new
+/// sweep appends to the end instead of pushing the proposal that has waited
+/// longest out of the window, which is what a newest-first list would do. A
+/// `created_at` tie is broken by `id`, and that tie-break runs the same way
+/// because the key is a UUIDv7 stamped at insert time, so the order is total and
+/// two runs of the same command list the same rows in the same sequence.
+///
+/// Both tiers are read. A curated row the model wrote through `memory_manage`
+/// is waiting on the same acceptance, and a queue that hid those would be a
+/// queue that can never be emptied.
+///
+/// One thing this queue does not protect against is documented rather than
+/// fixed here. [`supersede_missing`] retires every live row for a target that the
+/// tier-1 file no longer lists, and it does not exclude proposals, so any write to
+/// a file retires that target's pending proposals as `curated-rewrite`. The queue
+/// therefore reports what is live now, and an operator who expects a proposal to
+/// survive an unrelated edit will not find it here.
+///
+/// # Errors
+///
+/// A database failure, or a stored row the mapping cannot read.
+pub fn pending_entries(db: &Db, limit: usize) -> Result<Vec<Entry>, DbError> {
+    db.with_conn(|conn| {
+        let sql = format!(
+            "SELECT {ENTRY_COLUMNS}
+               FROM mem_entries
+              WHERE trusted = 0 AND superseded_by IS NULL
+              ORDER BY created_at ASC, id ASC
+              LIMIT ?1"
+        );
+        let mut statement = conn.prepare(&sql)?;
+        let rows = statement.query_map([limit as i64], entry_from)?;
         let mut entries = Vec::new();
         for row in rows {
             entries.push(row?);
@@ -539,14 +658,35 @@ mod tests {
         Db::open_in_memory().expect("in-memory database")
     }
 
-    fn new_entry<'a>(entry: &'a str, trusted: bool) -> NewEntry<'a> {
+    fn new_entry<'a>(entry: &'a str, origin: Origin) -> NewEntry<'a> {
         NewEntry {
             tier: Tier::Consolidated,
             target: "memory",
             entry,
-            origin: Origin::Consolidation,
+            origin,
             source_ref: Some("sweep-1"),
-            trusted,
+        }
+    }
+
+    /// Trust is a function of origin and of nothing else, so the whole map is
+    /// pinned here: five variants in, five answers out. Only the operator's own
+    /// text may be recalled unreviewed.
+    #[test]
+    fn an_operator_entry_is_trusted_and_a_tool_entry_is_not() {
+        let table = [
+            (Origin::Operator, true),
+            (Origin::Model, false),
+            (Origin::ToolResult, false),
+            (Origin::Import, false),
+            (Origin::Consolidation, false),
+        ];
+        for (origin, expected) in table {
+            assert_eq!(
+                classify(origin),
+                expected,
+                "{} must classify as {expected}",
+                origin.as_str()
+            );
         }
     }
 
@@ -556,9 +696,21 @@ mod tests {
     #[test]
     fn provenance_is_a_column_and_a_duplicate_is_a_no_op() {
         let db = db();
-        insert_entry(&db, &new_entry("the operator prefers short answers", true)).expect("insert");
-        insert_entry(&db, &new_entry("imported from another install", false)).expect("insert");
-        insert_entry(&db, &new_entry("imported from another install", false)).expect("duplicate");
+        insert_entry(
+            &db,
+            &new_entry("the operator prefers short answers", Origin::Operator),
+        )
+        .expect("insert");
+        insert_entry(
+            &db,
+            &new_entry("imported from another install", Origin::Import),
+        )
+        .expect("insert");
+        insert_entry(
+            &db,
+            &new_entry("imported from another install", Origin::Import),
+        )
+        .expect("duplicate");
         insert_entry(
             &db,
             &NewEntry {
@@ -567,14 +719,13 @@ mod tests {
                 entry: "imported from another install",
                 origin: Origin::Import,
                 source_ref: Some("/tmp/USER.md"),
-                trusted: false,
             },
         )
         .expect("same text, other target");
 
         let trusted = live_entries(&db, "memory", true, 50).expect("trusted");
         assert_eq!(trusted.len(), 1, "{trusted:?}");
-        assert_eq!(trusted[0].origin, "consolidation");
+        assert_eq!(trusted[0].origin, "operator");
         assert!(trusted[0].trusted);
 
         let all = live_entries(&db, "memory", false, 50).expect("all");
@@ -590,7 +741,11 @@ mod tests {
     #[test]
     fn a_live_claim_is_refused_and_a_stale_one_is_adopted() {
         let db = db();
-        insert_entry(&db, &new_entry("a fact the sweep will see", true)).expect("insert");
+        insert_entry(
+            &db,
+            &new_entry("a fact the sweep will see", Origin::Consolidation),
+        )
+        .expect("insert");
 
         let first = claim_sweep(&db, "1970-01-01T00:00:00Z")
             .expect("claim")
