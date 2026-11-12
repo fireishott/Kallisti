@@ -145,6 +145,11 @@ enum Command {
         #[command(subcommand)]
         command: ApprovalsCommand,
     },
+    /// The operator's own memory writes. Nothing here reaches a provider.
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommand,
+    },
     /// Report what this process verified: config, database, provider reachability.
     Doctor,
     /// Placeholder. The evaluation harness is not part of this build.
@@ -184,6 +189,42 @@ enum ApprovalsCommand {
     },
 }
 
+/// The `memory` subcommands.
+///
+/// `add` is the operator's own door into the two tier-1 files: rows written here
+/// carry `origin=operator`, the only origin the recall predicate trusts, so it is
+/// the one way an entry becomes recallable without a review step.
+///
+/// `pending` and `accept` are the review step. A consolidation sweep stores a
+/// proposal as an untrusted row, and recall reads only trusted ones, so without
+/// these two a proposal is stored, inspectable and permanently invisible. `accept`
+/// is the only code in the tree that moves `trusted` off zero.
+#[derive(Debug, Subcommand)]
+enum MemoryCommand {
+    /// Append one entry to a tier-1 file, as the operator.
+    Add {
+        /// Which file: `memory` for the assistant's own notes, `user` for what
+        /// it knows about the operator.
+        #[arg(long, value_name = "TARGET", default_value = "memory")]
+        target: String,
+        /// The entry. It is stored as one bullet line, the same shape the tool
+        /// writes, and the same cap and duplicate rules apply.
+        #[arg(long, value_name = "TEXT")]
+        text: String,
+    },
+    /// List the entries nothing has accepted yet, oldest first.
+    Pending {
+        /// The most rows to list.
+        #[arg(long, value_name = "N", default_value_t = 50)]
+        limit: usize,
+    },
+    /// Accept one entry: promote it to trusted and write it into its own file.
+    Accept {
+        /// The id shown by `memory pending`.
+        id: String,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -209,6 +250,13 @@ fn main() -> ExitCode {
             ),
         },
         Some(Command::Approvals { command }) => run_approvals(cli.json, cli.state_dir, command),
+        Some(Command::Memory { command }) => match command {
+            MemoryCommand::Add { target, text } => {
+                run_memory_add(cli.json, &target, &text, cli.state_dir)
+            }
+            MemoryCommand::Pending { limit } => run_memory_pending(cli.json, limit, cli.state_dir),
+            MemoryCommand::Accept { id } => run_memory_accept(cli.json, &id, cli.state_dir),
+        },
         Some(Command::Eval) => not_implemented(
             cli.json,
             "eval",
@@ -387,6 +435,323 @@ fn run_approvals(json: bool, state_dir: Option<PathBuf>, command: ApprovalsComma
             }
         }
     }
+}
+
+/// `eris memory add` - append one entry to a tier-1 file, as the operator.
+///
+/// One writer, not two: this goes through `selfmemory::Access`, the same door
+/// `memory_manage` uses, so the cap, the duplicate rule, the instruction and
+/// credential scans, the file format and the `mem_entries` mirror are all the
+/// code the tool path already runs. The only difference is the origin, which is
+/// what makes the row recallable.
+///
+/// Without a database this still writes the file, exactly as a lane with no
+/// mirror does, and says so rather than reporting a projection it did not make.
+fn run_memory_add(json: bool, target: &str, text: &str, state_dir: Option<PathBuf>) -> ExitCode {
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(message) => {
+            eprintln!("eris memory add: {message}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let Some(target) = eris_host::selfmemory::Target::parse(target) else {
+        eprintln!(
+            "eris memory add: `{target}` is not a target; it must be `memory` or `user`, so \
+             nothing was written"
+        );
+        return ExitCode::from(EXIT_FAILURE);
+    };
+    // The database is opened before the file is touched: a row this command
+    // cannot record is provenance the operator would not get back, and the file
+    // is the authority everywhere else in this lane.
+    let db = match Db::open(&paths.db_file) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!(
+                "eris memory add: cannot open {}: {error}",
+                paths.db_file.display()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let access = eris_host::selfmemory::Access::new(&paths.state_dir).with_db(db);
+    let result = access.add_as(target, text, eris_host::mem::Origin::Operator);
+
+    if result.is_error {
+        // The content is the tool result's JSON, whose `error` field is the
+        // sentence the operator needs: it already names the cap, the duplicate or
+        // the marker that fired. A body without one is printed whole rather than
+        // swallowed.
+        let message = serde_json::from_str::<serde_json::Value>(&result.content)
+            .ok()
+            .and_then(|body| {
+                body.get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| result.content.clone());
+        eprintln!("eris memory add: {message}");
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    if json {
+        println!("{}", result.content);
+    } else {
+        println!("added one entry to {}", target.file());
+    }
+    ExitCode::SUCCESS
+}
+
+/// `eris memory pending` - list the rows nothing has accepted yet.
+///
+/// This is the other half of consolidation. A sweep proposes by inserting an
+/// untrusted row, and recall reads only trusted ones, so a proposal that no
+/// surface lists is a proposal nobody can act on. The listing is the whole queue,
+/// oldest first, with the fields an operator needs to decide: the id to accept,
+/// where it came from, which file it would land in, and the text itself.
+fn run_memory_pending(json: bool, limit: usize, state_dir: Option<PathBuf>) -> ExitCode {
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(message) => {
+            eprintln!("eris memory pending: {message}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let db = match Db::open(&paths.db_file) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!(
+                "eris memory pending: cannot open {}: {error}",
+                paths.db_file.display()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let waiting = match eris_host::mem::pending_entries(&db, limit) {
+        Ok(waiting) => waiting,
+        Err(error) => {
+            eprintln!("eris memory pending: {error}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    if json {
+        let rows: Vec<serde_json::Value> = waiting
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "id": row.id,
+                    "origin": row.origin,
+                    "target": row.target,
+                    "entry": row.entry,
+                    "created_at": row.created_at,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::json!({ "pending": rows }));
+    } else if waiting.is_empty() {
+        println!("no entries are waiting to be accepted");
+    } else {
+        for row in &waiting {
+            println!("{}  {}  {}  {}", row.id, row.origin, row.target, row.entry);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `eris memory accept` - add one proposal to the tier-1 file and trust it.
+///
+/// The order here is the whole point, and it is file first, flag second.
+///
+/// The file is the authority in this lane. `write_as` is the only writer of the
+/// two tier-1 files, so it is what enforces the cap, the duplicate rule and the
+/// instruction and credential scans. A refusal there means the text is not in the
+/// file's live set, and a row marked trusted whose text never landed there is
+/// exactly the disagreement this lane exists to prevent: the table would report a
+/// memory the prompt block does not carry, and no read would ever notice. So the
+/// file is written first and a refusal returns before the row is touched. Nothing
+/// is marked trusted, nothing is half-written, and the operator is told why.
+///
+/// The one refusal that is not a failure is the duplicate. A row the model wrote
+/// through `memory_manage` is in the file and is still untrusted, so it appears in
+/// `memory pending` and accepting it must not fail just because the text is
+/// already where it belongs. That case is settled by asking the file directly:
+/// when the entry is already in the live set, the file half of the accept is
+/// already done and only the flag is left.
+///
+/// Only after the text is on disk does the row move, and it moves through
+/// [`eris_host::mem::accept_entry`], whose predicate keeps the decision in one
+/// statement. If that write fails the file holds the text and the row is still
+/// untrusted, which is the harmless direction: the entry is readable in the file
+/// and the next accept settles it.
+///
+/// The projection runs with `Origin::Operator`, because the origin names who
+/// decided the entry belongs in memory and that decision is the operator's. It is
+/// also what `mem::classify` trusts, so the row the file write mirrors cannot
+/// disagree with the accept that preceded it. In practice that insert is a no-op:
+/// the row already holds this `(target, content_hash)` pair, so the unique key
+/// keeps one row and the accept is what changes it. The row keeps
+/// `origin=consolidation`, which is the truthful provenance of an entry a sweep
+/// proposed and a person kept.
+fn run_memory_accept(json: bool, id: &str, state_dir: Option<PathBuf>) -> ExitCode {
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(message) => {
+            eprintln!("eris memory accept: {message}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let db = match Db::open(&paths.db_file) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!(
+                "eris memory accept: cannot open {}: {error}",
+                paths.db_file.display()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let entry = match eris_host::mem::entry_by_id(&db, id) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            eprintln!("eris memory accept: no entry has id {id}, so nothing was changed");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+        Err(error) => {
+            eprintln!("eris memory accept: {error}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    // Read before the write so the answer names the reason rather than reporting
+    // a refusal from a write that could not have moved anything anyway.
+    if entry.superseded_by.is_some() {
+        eprintln!(
+            "eris memory accept: {id} was superseded by another entry, so nothing was changed"
+        );
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    if entry.trusted {
+        eprintln!("eris memory accept: {id} is already trusted, so nothing was changed");
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    let Some(target) = eris_host::selfmemory::Target::parse(&entry.target) else {
+        eprintln!(
+            "eris memory accept: {id} names `{}`, which is not a target; it must be `memory` or \
+             `user`, so nothing was written",
+            entry.target
+        );
+        return ExitCode::from(EXIT_FAILURE);
+    };
+
+    // One writer, not two. `add_as` is the same append `memory add` and
+    // `memory_manage` run: the same scan, the same duplicate rule, the same cap,
+    // the same file format and the same `mem_entries` mirror. The accept step owns
+    // a different question, which is whether the row is trusted, and it does not
+    // get to write the file to answer it.
+    let access = eris_host::selfmemory::Access::new(&paths.state_dir).with_db(db.clone());
+    let written = access.add_as(target, &entry.entry, eris_host::mem::Origin::Operator);
+    if written.is_error {
+        // A refusal is only a failure when the text is not already in the file.
+        // The membership test is the authority question itself, not a reading of
+        // the refusal message, so the cap, the scan and the duplicate rule all
+        // resolve the same way.
+        if !file_lists(&access, target, &entry.entry) {
+            let message = tool_message(&written.content);
+            eprintln!(
+                "eris memory accept: {id} was not accepted, so the row is still untrusted and {} \
+                 is unchanged: {message}",
+                target.file()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    }
+
+    match eris_host::mem::accept_entry(&db, id) {
+        Ok(true) => {}
+        Ok(false) => {
+            // The text is in the file and the row did not move. Another writer
+            // settled it between the read and this statement. The file is correct
+            // either way; the row is not, so this is reported as a failure rather
+            // than dressed up as an accept.
+            eprintln!(
+                "eris memory accept: {} has the entry, but {id} did not move, so it is still \
+                 untrusted",
+                target.file()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+        Err(error) => {
+            eprintln!(
+                "eris memory accept: {} has the entry, but {id} could not be promoted: {error}",
+                target.file()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "id": id,
+                "status": "accepted",
+                "target": target.label(),
+                "file": target.file(),
+                "entry": entry.entry,
+            })
+        );
+    } else {
+        println!("accepted {id} into {}", target.file());
+    }
+    ExitCode::SUCCESS
+}
+
+/// The sentence a tool result carries, or the whole body when it carries none.
+fn tool_message(content: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|body| {
+            body.get("error")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| content.to_owned())
+}
+
+/// Whether a tier-1 file already lists this entry.
+///
+/// Read through `Access::snapshot`, the same public read the phone and the memory
+/// page use, rather than by parsing the file here: the bullet format belongs to
+/// `selfmemory`, and a second parser in the CLI is a second way for the two to
+/// disagree about what a line means.
+///
+/// The comparison is the one `add_as` makes, whitespace collapsed to single
+/// spaces and case-insensitive. Anything looser would call an entry present that
+/// the writer would then append a second time, and anything tighter would report
+/// an entry missing that the writer refuses as a duplicate.
+fn file_lists(
+    access: &eris_host::selfmemory::Access,
+    target: eris_host::selfmemory::Target,
+    entry: &str,
+) -> bool {
+    let wanted = collapse(entry);
+    let snapshot = access.snapshot();
+    let Some(files) = snapshot.get("files").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    files
+        .iter()
+        .filter(|file| {
+            file.get("target").and_then(serde_json::Value::as_str) == Some(target.label())
+        })
+        .filter_map(|file| file.get("entries").and_then(serde_json::Value::as_array))
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .any(|listed| collapse(listed).eq_ignore_ascii_case(&wanted))
+}
+
+/// One entry as a comparison key: single spaces, no surrounding whitespace.
+fn collapse(entry: &str) -> String {
+    entry.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn run_serve(

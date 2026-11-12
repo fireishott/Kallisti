@@ -811,10 +811,15 @@ mod tests {
 
     /// Lane B is the consolidated tier: overlap ranks, zero overlap drops, and an
     /// untrusted row is never read at all, because the predicate is in the SQL.
+    ///
+    /// A proposal becomes recallable only after it is accepted. The rows here are
+    /// inserted the way a sweep inserts them, which leaves them untrusted, so the
+    /// ranking assertion below runs on accepted rows only: the table is asked what
+    /// it will actually answer with.
     #[test]
     fn lane_b_ranks_overlap_and_never_reads_an_untrusted_entry() {
         let db = Db::open_in_memory().expect("in-memory database");
-        let insert = |entry: &str, target: &str, trusted: bool| {
+        let insert = |entry: &str, target: &str| {
             mem::insert_entry(
                 &db,
                 &mem::NewEntry {
@@ -823,15 +828,34 @@ mod tests {
                     entry,
                     origin: mem::Origin::Consolidation,
                     source_ref: Some("sweep-1"),
-                    trusted,
                 },
             )
             .expect("insert");
         };
-        insert("the warehouse ingest runs at three", "memory", true);
-        insert("a warehouse once appeared in passing", "memory", true);
-        insert("lunch is at noon", "memory", true);
-        insert("the warehouse schema is imported", "user", false);
+        // The proposal a sweep wrote. Nothing has accepted it, so it is stored and
+        // invisible.
+        insert("the warehouse ingest runs at three", "memory");
+        assert!(
+            consolidated(&db, "warehouse ingest", MAX_RECALLS).is_empty(),
+            "a proposal is not recallable until the operator accepts it"
+        );
+
+        insert("a warehouse once appeared in passing", "memory");
+        insert("lunch is at noon", "memory");
+        insert("the warehouse schema is imported", "user");
+
+        // Acceptance is what moves a proposal into the lane. The `user` row is
+        // deliberately left waiting, so the assertion below still proves that an
+        // unaccepted row is unreadable rather than merely unranked.
+        for row in mem::pending_entries(&db, 50).expect("pending") {
+            if row.target == "memory" {
+                assert!(
+                    mem::accept_entry(&db, &row.id).expect("accept"),
+                    "a live untrusted row moves: {}",
+                    row.entry
+                );
+            }
+        }
 
         let found = consolidated(&db, "warehouse ingest", MAX_RECALLS);
         assert_eq!(
@@ -851,6 +875,69 @@ mod tests {
             !found.iter().any(|r| r.text.contains("schema is imported")),
             "an untrusted entry is never recalled: {:?}",
             found.iter().map(|r| &r.text).collect::<Vec<_>>()
+        );
+
+        // The same target, so the last assertion cannot be explained away by the
+        // row living somewhere else: an unaccepted row with the query's own words
+        // in it is still not read.
+        insert("the warehouse ingest rules are written down", "memory");
+        let found = consolidated(&db, "warehouse ingest", MAX_RECALLS);
+        assert!(
+            !found
+                .iter()
+                .any(|r| r.text.contains("rules are written down")),
+            "a proposal in the same target is not recalled: {:?}",
+            found.iter().map(|r| &r.text).collect::<Vec<_>>()
+        );
+    }
+
+    /// The whole life of one proposal: invisible, accepted once, recallable, and
+    /// not acceptable twice. The second accept is how the command learns there is
+    /// nothing left to do, so it returns false rather than an error.
+    #[test]
+    fn a_proposal_is_invisible_until_the_operator_accepts_it() {
+        let db = Db::open_in_memory().expect("in-memory database");
+        mem::insert_entry(
+            &db,
+            &mem::NewEntry {
+                tier: mem::Tier::Consolidated,
+                target: "memory",
+                entry: "the warehouse ingest runs at three",
+                origin: mem::Origin::Consolidation,
+                source_ref: Some("sweep-1"),
+            },
+        )
+        .expect("insert");
+
+        let pending = mem::pending_entries(&db, 50).expect("pending");
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(!pending[0].trusted, "a proposal arrives untrusted");
+        assert!(
+            consolidated(&db, "warehouse ingest", MAX_RECALLS).is_empty(),
+            "an unaccepted proposal is not recalled"
+        );
+
+        let id = pending[0].id.clone();
+        assert!(
+            mem::accept_entry(&db, &id).expect("accept"),
+            "the first accept moves the row"
+        );
+        let found = consolidated(&db, "warehouse ingest", MAX_RECALLS);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].text, "the warehouse ingest runs at three");
+        assert!(
+            mem::pending_entries(&db, 50).expect("pending").is_empty(),
+            "an accepted row leaves the queue"
+        );
+
+        assert!(
+            !mem::accept_entry(&db, &id).expect("second accept"),
+            "a second accept has nothing to move"
+        );
+        assert_eq!(
+            consolidated(&db, "warehouse ingest", MAX_RECALLS).len(),
+            1,
+            "the second accept changed no state"
         );
     }
 
