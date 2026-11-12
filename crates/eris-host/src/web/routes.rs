@@ -11363,6 +11363,11 @@ fn spawn_turn(
                 // built to. Resolved from the model the composer picked, not the
                 // primary, because those are not always the same provider.
                 context_budget,
+                // The database and the conversation this turn writes into. The
+                // browser has no queue sink, and the budget read must not depend
+                // on one.
+                db: Some(db.clone()),
+                conversation: Some(conversation.clone()),
                 soft_cap,
             },
             Some(&ask),

@@ -3134,7 +3134,7 @@ pub fn show_tool_log(stored: Option<&str>) -> bool {
 }
 
 /// What the operator configured about tool use for this turn.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct TurnSettings {
     /// Whether a turn may call tools at all.
     pub tools: bool,
@@ -3156,6 +3156,20 @@ pub struct TurnSettings {
     /// window is a property of the model the caller resolved, and the loop serves
     /// the browser, the phone, a subagent and a note worker from one body.
     pub context_budget: Option<u64>,
+    /// The database the `budget` tool reads.
+    ///
+    /// Carried on the settings rather than borrowed from the queue sink because
+    /// the browser lane has no sink: a queued task written from a browser turn
+    /// would never run, so that surface passes `None` for the queue. The budget
+    /// read is not a queue operation, and tying it to one was a real refusal a
+    /// live fires test caught: "no conversation row, so no total_tokens exists to
+    /// quote", in a lane that had a perfectly good database in hand.
+    pub db: Option<Db>,
+    /// The conversation this turn is writing into, when it has one.
+    ///
+    /// Read by the `budget` tool so a bare call reports this chat rather than the
+    /// whole daemon, which is the question a turn mid-job is actually asking.
+    pub conversation: Option<String>,
     /// The stored soft token cap, as the operator set it.
     ///
     /// Carried here for the same reason `context_budget` is: the `budget` tool reads
@@ -3908,17 +3922,23 @@ pub fn run_turn_with_key(
         // check. It is answered here rather than in the sandbox because the sandbox
         // has no database; both turn surfaces reach this one branch.
         if call.name == crate::budget::TOOL {
-            let Some(queue) = queue.as_ref() else {
+            let Some(db) = settings.db.as_ref() else {
                 return crate::tools::ToolResult::refused(
-                    "this turn has no conversation row, so there is no budget to report and \
+                    "this turn was given no database, so there is no budget to report and \
                      nothing was read",
                 );
             };
-            return crate::budget::execute(
-                &queue.db,
-                settings.soft_cap.as_deref(),
-                &call.arguments,
-            );
+            // Defaulted to the conversation this turn belongs to when the caller
+            // did not name one: "how much has this chat spent" is the question a
+            // turn asks, and a bare call should answer it rather than report the
+            // whole daemon.
+            let mut arguments = call.arguments.clone();
+            if arguments.get("conversation").is_none()
+                && let Some(conversation) = settings.conversation.as_deref()
+            {
+                arguments["conversation"] = serde_json::Value::String(conversation.to_owned());
+            }
+            return crate::budget::execute(db, settings.soft_cap.as_deref(), &arguments);
         }
         if call.name == crate::web::attach::TOOL {
             let Some(target) = attach else {

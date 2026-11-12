@@ -2338,6 +2338,13 @@ impl TurnHub {
         let soft_cap = crate::web::store::settings_get(store.db(), crate::budget::SETTING_SOFT_CAP)
             .ok()
             .flatten();
+        // The same two handles the `TurnSettings` hands the `budget` tool. Taken
+        // out here, before the closure owns the store, because they are needed
+        // inside it and a clone there would be a borrow of a moved value.
+        let budget_db = store.db().clone();
+        let budget_conversation = conversation
+            .as_ref()
+            .map(|write| write.conversation.clone());
 
         // The pool this turn offers, read once before the worker thread is
         // spawned: the hub owns it behind a lock, and a turn must not take that
@@ -2417,6 +2424,10 @@ impl TurnHub {
                 // child never sees the tool.
                 agents: dispatch_target.is_some(),
                 context_budget,
+                // The database the turn already writes to, and the conversation it
+                // is writing into: a bare `budget` call reports this chat.
+                db: Some(budget_db.clone()),
+                conversation: budget_conversation.clone(),
                 // The ceiling the operator stored, read once here so the `budget`
                 // tool reports the same number the settings page shows.
                 soft_cap: soft_cap.clone(),

@@ -672,6 +672,10 @@ pub fn child_settings() -> TurnSettings {
         // grow past a window by itself. The budget the parent resolved does not
         // apply here, and inventing one would cut a result for no reason.
         context_budget: None,
+        // No database and no conversation: a child turn is not offered the
+        // `budget` tool, so there is nothing for it to read.
+        db: None,
+        conversation: None,
         soft_cap: None,
     }
 }
@@ -691,6 +695,10 @@ pub fn agent_settings() -> TurnSettings {
         max_rounds: 8,
         agents: false,
         context_budget: None,
+        // No database and no conversation: a child turn is not offered the
+        // `budget` tool, so there is nothing for it to read.
+        db: None,
+        conversation: None,
         soft_cap: None,
     }
 }

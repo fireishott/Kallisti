@@ -649,6 +649,10 @@ fn production_runner(
             // One note, one prompt, no history: nothing here can grow past a
             // window, so there is no budget to enforce.
             context_budget: None,
+            // A worker lane is offered no `budget` tool: it is not a
+            // conversation turn, so there is no chat to report on.
+            db: None,
+            conversation: None,
             soft_cap: None,
         },
         // A note enrichment runs with no tools and cannot ask anybody anything:

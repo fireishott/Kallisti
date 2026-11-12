@@ -105,6 +105,41 @@ fn a_bare_call_reports_the_whole_daemon() {
     assert_eq!(body["cap_reached"], false);
 }
 
+/// The tool answers in a lane that has a database but no queue sink.
+///
+/// This is the shape the browser and the webhook receiver have: `queue` is `None`
+/// because neither can drain a queued task, and the budget read must not depend on
+/// one. A live fire found this the hard way - the tool refused with "no
+/// conversation row" in a lane that held a perfectly good database - so the two
+/// fields are asserted separately here.
+#[test]
+fn the_answer_does_not_depend_on_a_queue_sink() {
+    let db = Db::open_in_memory().expect("a database");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO chat_messages (id, conversation_id, role, body, state, model, \
+             prompt_tokens, completion_tokens, created_at) \
+             VALUES ('m-2', 'conv-2', 'assistant', 'an answer', 'complete', 'a-model', \
+             500, 100, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("a row");
+    // The conversation the turn belongs to, applied by the caller the way the
+    // turn applies it: a bare call is narrowed to this chat.
+    let result = budget::execute(
+        &db,
+        None,
+        &serde_json::json!({ "conversation": "conv-2" }),
+    );
+    assert!(!result.is_error, "{}", result.content);
+    let body: serde_json::Value = serde_json::from_str(&result.content).expect("json");
+    assert_eq!(body["turns"], 1);
+    assert_eq!(body["total_tokens"], 600);
+    assert_eq!(body["soft_cap_tokens"], budget::DEFAULT_SOFT_CAP);
+}
+
 /// The sandbox layer refuses by name rather than claiming an unknown tool.
 #[test]
 fn the_sandbox_layer_refuses_by_name() {

@@ -137,6 +137,8 @@ async fn run(
                 // No window in this suite: the fallback path is about retries,
                 // and a budget would only make the prompt a moving target.
                 context_budget: None,
+                db: None,
+                conversation: None,
                 soft_cap: None,
             },
             // No operator to ask: this suite is about the fallback path, and a
