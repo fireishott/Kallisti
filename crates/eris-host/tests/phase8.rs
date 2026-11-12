@@ -6778,32 +6778,44 @@ async fn a_phone_turn_can_attach_a_file_it_made() {
         .await;
     assert_eq!(queued.status, 202, "{}", queued.body);
 
-    // Wait for the answer row to settle, then read the transcript the way the app
-    // does: the file has to be on the assistant's own row.
+    // Settle the turn, then read the transcript the way the app does: the file
+    // has to be on the assistant's own row. Draining the stream is the wait, not
+    // a poll for the row: the worker settles the row and then publishes `done`,
+    // so a terminal frame means the row is already final. This used to poll the
+    // row a hundred times at 50ms, which is a five second ceiling that a cold run
+    // under a loaded suite can miss, and it read as "the answer settled" with no
+    // hint of what it saw.
     let db = harness.engine.db();
-    let mut settled = false;
-    for _ in 0..100 {
-        let state: Option<String> = db
-            .with_conn(|conn| {
-                let found: Result<String, _> = conn.query_row(
-                    "SELECT state FROM chat_messages WHERE conversation_id = ?1 AND role = 'assistant'",
-                    rusqlite::params![conversation],
-                    |row| row.get(0),
-                );
-                match found {
-                    Ok(state) => Ok(Some(state)),
-                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                    Err(error) => Err(error),
-                }
-            })
-            .expect("the row reads");
-        if state.as_deref() == Some("complete") {
-            settled = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(settled, "the answer settled");
+    let job_id = queued.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(30)).await;
+    assert_eq!(frames.last().expect("a terminal frame").event, "done");
+
+    // And the row the stream promised is final is `complete`, not merely present.
+    let state: Option<String> = db
+        .with_conn(|conn| {
+            let found: Result<String, _> = conn.query_row(
+                "SELECT state FROM chat_messages WHERE conversation_id = ?1 AND role = 'assistant'",
+                rusqlite::params![conversation],
+                |row| row.get(0),
+            );
+            match found {
+                Ok(state) => Ok(Some(state)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(error),
+            }
+        })
+        .expect("the row reads");
+    assert_eq!(state.as_deref(), Some("complete"), "the answer settled");
 
     let transcript = harness
         .request(
@@ -6876,27 +6888,37 @@ async fn a_phone_turn_carries_the_exchange_before_it() {
             .await;
         assert_eq!(queued.status, 202, "{}", queued.body);
 
-        // Wait for this turn's answer row to settle before starting the next one.
+        // Settle this turn before starting the next one: the row has to be
+        // final before the second request can carry it. Draining the stream is
+        // the wait, for the same reason as the attach test: the worker settles
+        // the row and then publishes `done`, so a terminal frame means the row
+        // is already written.
         let expected = index + 1;
-        let mut settled = false;
-        for _ in 0..200 {
-            let complete: i64 = db
-                .with_conn(|conn| {
-                    conn.query_row(
-                        "SELECT COUNT(*) FROM chat_messages \
-                          WHERE conversation_id = ?1 AND role = 'assistant' AND state = 'complete'",
-                        rusqlite::params![conversation],
-                        |row| row.get(0),
-                    )
-                })
-                .expect("counted");
-            if complete >= expected as i64 {
-                settled = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(settled, "turn {expected} settled");
+        let job_id = queued.json()["job_id"]
+            .as_str()
+            .expect("a job id")
+            .to_owned();
+        let mut stream = Sse::open(
+            harness.addr,
+            &format!("/v1/turns/{job_id}/events"),
+            &token,
+            None,
+        )
+        .await;
+        let frames = stream.frames_until_end(Duration::from_secs(30)).await;
+        assert_eq!(frames.last().expect("a terminal frame").event, "done");
+
+        let complete: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM chat_messages \
+                      WHERE conversation_id = ?1 AND role = 'assistant' AND state = 'complete'",
+                    rusqlite::params![conversation],
+                    |row| row.get(0),
+                )
+            })
+            .expect("counted");
+        assert_eq!(complete, expected as i64, "turn {expected} settled");
     }
 
     let seen = stub.bodies();
