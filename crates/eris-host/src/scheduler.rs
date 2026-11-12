@@ -27,6 +27,8 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::db::{Db, DbError};
+use crate::memconsolidate::SweepOutcome;
+use crate::selfmemory::Target;
 
 /// The `settings` row holding the global switch.
 pub const SETTING_ENABLED: &str = "schedules.enabled";
@@ -39,6 +41,16 @@ pub const TICK: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The longest gap a single recompute will search, in minutes (about 400 days).
 pub const MAX_SEARCH_MINUTES: i64 = 400 * 24 * 60;
+
+/// How often memory is swept for consolidation.
+///
+/// A sweep claims a row in `mem_sweeps`, does its work and settles that row, so a
+/// sweep on every tick would write two rows every thirty seconds to learn nothing.
+/// The spacing is the sweep's own staleness bound: a sweep this loop starts can
+/// never be one its own next sweep has to adopt, because no claim of ours is still
+/// `running` this long after we started it.
+pub const SWEEP_EVERY: std::time::Duration =
+    std::time::Duration::from_secs(crate::memconsolidate::STALE_SECS as u64);
 
 /// The longest prompt a schedule may carry, in characters.
 pub const MAX_PROMPT_CHARS: usize = 8_000;
@@ -866,17 +878,63 @@ pub fn now_utc() -> String {
     )
 }
 
+/// Whether anything is live for a sweep to look at.
+///
+/// The sweep reads this set itself, after it has already claimed a `mem_sweeps`
+/// row and written a pre-image of it. Asking first is what makes "nothing to
+/// consolidate" one indexed lookup instead of a claim, a pre-image and a settle
+/// on an install that holds no entries. `LIMIT 1` because the question is
+/// whether the set is empty, not what is in it.
+fn has_live_entries(db: &Db) -> Result<bool, DbError> {
+    for target in [Target::Memory, Target::User] {
+        if !crate::mem::live_entries(db, target.label(), true, 1)?.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// One consolidation sweep, in the shape the tick starts on a blocking task.
+///
+/// `None` means there was nothing live to consolidate and the sweep was never
+/// called. `Some(Err(..))` is a database failure for the tick to log; the sweep's
+/// own refusals are outcomes inside `SweepOutcome`, not errors.
+fn sweep_memory(db: &Db, now: &str) -> Option<Result<SweepOutcome, DbError>> {
+    match has_live_entries(db) {
+        Ok(true) => Some(crate::memconsolidate::sweep(db, now)),
+        Ok(false) => None,
+        // A read that fails here is the same failure `sweep` would have taken one
+        // line later, so it is handed back rather than swallowed.
+        Err(error) => Some(Err(error)),
+    }
+}
+
 /// Run due schedules on a thirty-second tick until the daemon stops.
 ///
 /// The tick reads the database on this daemon's own runtime, then drives each
 /// due schedule through the same turn path the composer uses. It never blocks the
 /// listener: the provider round trips run in the turn's own blocking task, and
 /// this loop only claims, opens and awaits.
+///
+/// It also drives memory, on a slower clock of its own: the consolidation sweep
+/// runs at most once per [`SWEEP_EVERY`], on a blocking task, and only when there
+/// is something live to consolidate. The interval intents are not fired here.
+/// `memintent` answers which intents are due and deliberately does not record a
+/// fire or start a turn, because a fire has to be written in the same transaction
+/// as the turn it starts; there is no intent turn path in this crate to pair one
+/// with, so recording a fire alone would claim work that never happened.
 pub async fn tick(state: crate::admin::AppState) {
     let mut interval = tokio::time::interval(TICK);
     // The first tick fires immediately; a schedule saved between ticks does not
     // wait an extra thirty seconds for nothing.
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first tick sweeps immediately, so a daemon that was off catches up on
+    // memory the same way its schedules catch up on the fire they missed.
+    let mut next_sweep = tokio::time::Instant::now();
+    // At most one sweep is in flight, and its handle lives here rather than being
+    // dropped: a dropped handle detaches the work, so the loop would never learn
+    // whether it failed and would start a second one behind it.
+    let mut sweeping: Option<tokio::task::JoinHandle<Option<Result<SweepOutcome, DbError>>>> = None;
     loop {
         interval.tick().await;
         let db = state.engine.db();
@@ -901,6 +959,45 @@ pub async fn tick(state: crate::admin::AppState) {
         );
         let offset = local_offset(db, &zone.modifier());
         let now = now_utc();
+
+        // Memory work sits before the schedule work and never returns early, so
+        // no failure in it can keep a due schedule from firing.
+        if let Some(handle) = sweeping.take() {
+            if handle.is_finished() {
+                // Awaiting a finished handle costs nothing, and collecting the
+                // result is where a database failure inside the sweep is logged.
+                match handle.await {
+                    Ok(Some(Ok(SweepOutcome::Busy))) => {}
+                    // Busy is the normal case and says nothing; a sweep that ran
+                    // is recorded in its own `mem_sweeps` row, so this line is a
+                    // pointer to that row rather than the record itself.
+                    Ok(Some(Ok(outcome))) => {
+                        tracing::debug!(?outcome, "scheduler: memory consolidated");
+                    }
+                    Ok(Some(Err(error))) => {
+                        tracing::error!(%error, "scheduler: cannot consolidate memory");
+                    }
+                    Ok(None) => {}
+                    Err(join) => {
+                        tracing::error!(%join, "scheduler: the memory sweep did not finish");
+                    }
+                }
+            } else {
+                // Still going. Put it back and let this tick's schedule work run:
+                // a sweep takes the one database connection, so waiting on it here
+                // would hold every turn behind it.
+                sweeping = Some(handle);
+            }
+        }
+        if sweeping.is_none() && tokio::time::Instant::now() >= next_sweep {
+            next_sweep = tokio::time::Instant::now() + SWEEP_EVERY;
+            let sweep_db = db.clone();
+            let sweep_now = now.clone();
+            sweeping = Some(tokio::task::spawn_blocking(move || {
+                sweep_memory(&sweep_db, &sweep_now)
+            }));
+        }
+
         let due = match due(db, &now) {
             Ok(rows) => rows,
             Err(error) => {
@@ -1220,6 +1317,80 @@ mod tests {
         assert_eq!(now.len(), 20, "{now}");
         // It parses as the same format the rows store.
         assert!(OffsetDateTime::parse(&now, &Rfc3339).is_ok(), "{now}");
+    }
+
+    /// An install that holds no entries must not pay for a sweep. The gate is
+    /// what makes that true: without it every tick claims a `mem_sweeps` row,
+    /// hashes an empty pre-image and settles the row, which is three writes to
+    /// learn nothing.
+    #[test]
+    fn a_sweep_is_not_started_with_nothing_to_consolidate() {
+        let db = db();
+        assert!(
+            sweep_memory(&db, "2026-10-22T00:00:00Z").is_none(),
+            "an empty install was handed a sweep"
+        );
+        let rows: i64 = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM mem_sweeps", [], |row| row.get(0))
+            })
+            .expect("counted");
+        assert_eq!(rows, 0, "an empty install claimed a sweep row");
+    }
+
+    /// Seed one live entry, the way the `memintent` and `memconsolidate`
+    /// fixtures do: the row is written directly so the test asserts on the gate
+    /// and not on whichever stamp `mem::now` happened to reach.
+    fn seed(db: &Db, id: &str, trusted: bool) {
+        let text = format!("a fact from {id}");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO mem_entries
+                     (id, tier, target, entry, origin, source_ref, trusted, content_hash,
+                      created_at, superseded_by)
+                 VALUES (?1, 'curated', 'memory', ?2, 'operator', NULL, ?3, ?4, ?5, NULL)",
+                rusqlite::params![
+                    id,
+                    text,
+                    i64::from(trusted),
+                    crate::mem::content_hash(&text),
+                    "2026-01-01T00:00:00Z",
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("seed an entry");
+    }
+
+    /// With something live, the same call does reach the sweep, and the sweep
+    /// records its own row. The gate is a filter on emptiness, not a mute button.
+    #[test]
+    fn a_sweep_runs_once_there_is_something_live() {
+        let db = db();
+        seed(&db, "kept", true);
+        match sweep_memory(&db, "2026-10-22T00:00:00Z") {
+            Some(Ok(SweepOutcome::Completed { .. })) => {}
+            other => panic!("expected a completed sweep, got {other:?}"),
+        }
+        let rows: i64 = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM mem_sweeps", [], |row| row.get(0))
+            })
+            .expect("counted");
+        assert_eq!(rows, 1, "a sweep that ran left its own row");
+    }
+
+    /// An untrusted row is not something a sweep may act on, so it does not open
+    /// the gate. `sweep` reads only trusted rows, and the gate has to agree or it
+    /// would pay for a sweep that can do nothing.
+    #[test]
+    fn an_untrusted_entry_alone_does_not_open_the_gate() {
+        let db = db();
+        seed(&db, "imported", false);
+        assert!(
+            sweep_memory(&db, "2026-10-22T00:00:00Z").is_none(),
+            "an install holding only untrusted rows was handed a sweep"
+        );
     }
 }
 
