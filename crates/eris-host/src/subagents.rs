@@ -248,6 +248,10 @@ pub struct Request<'a> {
     pub prompt: &'a str,
     /// The model that will run it.
     pub model: &'a str,
+    /// The standing agent this dispatch names, when there is one. It lands in
+    /// the label and the child's brief, not in a column of its own: the row
+    /// shows who did the work through its label.
+    pub agent: Option<&'a str>,
 }
 
 /// The columns every read shares, so a new field cannot be added to one query and
@@ -584,6 +588,21 @@ pub fn running_count(db: &Db) -> Result<i64, DbError> {
 // A child turn
 // ---------------------------------------------------------------------------
 
+/// What a standing agent's child carries, resolved before it starts.
+///
+/// Resolved at dispatch time rather than read again at run time, so the row and
+/// the child are working from the same roster state: a row edited between the
+/// two does not change what was dispatched.
+#[derive(Debug, Clone)]
+pub struct AgentContext {
+    /// The canonical roster name, for the label and the run log.
+    pub name: String,
+    /// Its tool allowance.
+    pub tool_policy: crate::roster::ToolPolicy,
+    /// Where its file tools are rooted: the memory scope, or the workspace root.
+    pub root: PathBuf,
+}
+
 /// What one child turn is asked for.
 #[derive(Debug, Clone)]
 pub struct RunRequest {
@@ -593,9 +612,12 @@ pub struct RunRequest {
     pub system: Option<String>,
     /// The task.
     pub prompt: String,
-    /// The parent's workspace. A child is confined to it and may not write to it,
-    /// because it has no tools; see [`child_sandbox`].
+    /// The parent's workspace. A plain child is confined to it and may not
+    /// write to it, because it has no tools; see [`child_sandbox`]. A standing
+    /// agent's child is rooted at its own resolved scope instead.
     pub workspace: PathBuf,
+    /// The standing agent this child carries, when it was dispatched to one.
+    pub agent: Option<AgentContext>,
     /// The key the parent turn already resolved, when the caller supplied one.
     ///
     /// A child runs on the parent's provider and model, so re-reading the
@@ -650,6 +672,26 @@ pub fn child_settings() -> TurnSettings {
         // grow past a window by itself. The budget the parent resolved does not
         // apply here, and inventing one would cut a result for no reason.
         context_budget: None,
+        soft_cap: None,
+    }
+}
+
+/// What a standing agent's child turn is allowed to do.
+///
+/// Its tools come from its allowance; dispatching never does. The recursion
+/// guard is the one rule that does not bend with the policy: a child that could
+/// dispatch would be an unbounded fan-out of processes on the operator's box.
+#[must_use]
+pub fn agent_settings() -> TurnSettings {
+    TurnSettings {
+        tools: true,
+        // Enough rounds to call a tool and then answer with what it returned.
+        // Bounded because each round is a provider call; the watchdog is the
+        // backstop for the whole child.
+        max_rounds: 8,
+        agents: false,
+        context_budget: None,
+        soft_cap: None,
     }
 }
 
@@ -671,11 +713,24 @@ fn run_child_turn(request: &RunRequest) -> Result<RunOutput, (String, String)> {
         None => crate::oauth::credential::resolve_key_now(&request.config.key_ref)
             .map_err(|error| (error.kind().to_owned(), error.to_string()))?,
     };
-    let sandbox = child_sandbox(request.workspace.clone());
-    // Nothing a child asks for may run, including a call that a provider invented
-    // despite being offered an empty tool list.
-    let mut gate = |_call: &core_domain::ToolCall| chat::GateDecision::Refuse {
-        reason: "a subagent has no tools".to_owned(),
+    let (sandbox, settings) = match &request.agent {
+        // A standing agent's child is rooted at its resolved scope and runs its
+        // allowance there: the tools reach only what the scope covers.
+        Some(context) => (
+            crate::tools::Sandbox::new(context.root.clone(), context.tool_policy.sandbox_mode()),
+            agent_settings(),
+        ),
+        None => (child_sandbox(request.workspace.clone()), child_settings()),
+    };
+    // Nothing a plain child asks for may run, including a call that a provider
+    // invented despite being offered an empty tool list. A standing agent's
+    // child runs its calls inside its own sandbox, which is what confines them:
+    // the allowance came from an operator's roster row, not from this turn.
+    let mut gate = |_call: &core_domain::ToolCall| match &request.agent {
+        Some(_) => chat::GateDecision::Run,
+        None => chat::GateDecision::Refuse {
+            reason: "a subagent has no tools".to_owned(),
+        },
     };
     let mut sink = |_part: chat::StreamPart<'_>| {};
     let mut poll = || chat::TurnSignal::Continue;
@@ -703,7 +758,7 @@ fn run_child_turn(request: &RunRequest) -> Result<RunOutput, (String, String)> {
         None,
         // No queue: a child has no conversation of its own to queue into.
         None,
-        child_settings(),
+        settings,
         // A child cannot ask: there is no surface holding its question, so
         // offering the tool would park a turn nobody is watching.
         None,
@@ -806,16 +861,60 @@ impl Desk {
     /// The row is written here, before anything is spawned, so a caller that gets
     /// an id back can read it: the id is not a promise, it is a row.
     pub fn dispatch(&self, label: &str, prompt: &str) -> Result<String, ReserveError> {
-        let label = label_for(label, prompt);
+        self.dispatch_as(label, prompt, None)
+    }
+
+    /// Dispatch to a named standing agent, or plainly when `agent` is `None`.
+    ///
+    /// The roster row is resolved here rather than in [`reserve`] because the
+    /// scope check needs the workspace root and the spawn needs the resolved
+    /// allowance and root: one resolution, used by the row and the child. An
+    /// unknown or disabled name is a refusal that lists who is enabled, not an
+    /// "unknown tool".
+    pub fn dispatch_as(
+        &self,
+        label: &str,
+        prompt: &str,
+        agent: Option<&str>,
+    ) -> Result<String, ReserveError> {
+        let resolved = match agent {
+            Some(name) => Some(
+                crate::roster::resolve_for_dispatch(&self.db, name, &self.workspace).map_err(
+                    |error| ReserveError::Refused(Refusal::new(error.code(), error.reason())),
+                )?,
+            ),
+            None => None,
+        };
+        let (prompt, label) = match &resolved {
+            Some(row) => {
+                // The task names the row; the brief leads the child. With no
+                // task the brief alone is the prompt.
+                let task = label_for(label, prompt);
+                let prompt = if prompt.trim().is_empty() {
+                    row.instructions.clone()
+                } else {
+                    format!("{}\n\n{}", row.instructions, prompt)
+                };
+                let label = clip(&format!("{}: {}", row.name, task), MAX_LABEL_CHARS);
+                (prompt, label)
+            }
+            None => (prompt.to_owned(), label_for(label, prompt)),
+        };
         let request = Request {
             conversation: &self.conversation,
             parent_turn: self.parent_turn.as_deref(),
             label: &label,
-            prompt,
+            prompt: &prompt,
             model: &self.config.model,
+            agent: resolved.as_ref().map(|row| row.name.as_str()),
         };
         let id = reserve(&self.db, &request)?;
-        self.spawn(id.clone(), label, prompt.to_owned());
+        let context = resolved.map(|row| AgentContext {
+            name: row.name,
+            tool_policy: row.tool_policy,
+            root: row.root,
+        });
+        self.spawn(id.clone(), label, prompt, context);
         Ok(id)
     }
 
@@ -825,7 +924,7 @@ impl Desk {
     /// the row if it outlives [`DEADLINE`]. Without one - a unit test that drives
     /// the lifecycle by hand - the work still runs, just with nobody watching the
     /// clock.
-    pub fn spawn(&self, id: String, label: String, prompt: String) {
+    pub fn spawn(&self, id: String, label: String, prompt: String, agent: Option<AgentContext>) {
         let desk = self.clone();
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
@@ -834,7 +933,7 @@ impl Desk {
                 let watched_label = label.clone();
                 handle.spawn(async move {
                     let child = tokio::task::spawn_blocking(move || {
-                        desk.execute(&id, &label, &prompt);
+                        desk.execute(&id, &label, &prompt, agent);
                     });
                     if tokio::time::timeout(DEADLINE, child).await.is_err() {
                         watcher.expire(&watched_id, &watched_label);
@@ -843,7 +942,7 @@ impl Desk {
             }
             Err(_) => {
                 std::thread::spawn(move || {
-                    desk.execute(&id, &label, &prompt);
+                    desk.execute(&id, &label, &prompt, agent);
                 });
             }
         }
@@ -853,7 +952,13 @@ impl Desk {
     ///
     /// Returns whether this call owned the row. A row that was already settled by
     /// the watchdog or a stop is not run, and its recorded outcome stands.
-    pub fn execute(&self, id: &str, label: &str, prompt: &str) -> bool {
+    pub fn execute(
+        &self,
+        id: &str,
+        label: &str,
+        prompt: &str,
+        agent: Option<AgentContext>,
+    ) -> bool {
         match mark_running(&self.db, id) {
             Ok(true) => {}
             // A row that cannot be claimed is a row somebody else owns. Not
@@ -867,6 +972,7 @@ impl Desk {
             system: self.system.clone(),
             prompt: prompt.to_owned(),
             workspace: self.workspace.clone(),
+            agent,
             key: self.key.clone(),
         };
         let (status, outcome) = match (self.runner)(&request) {
@@ -930,11 +1036,13 @@ pub fn spec() -> ToolSpec {
             "Hand one self-contained task to a subagent and return immediately with its id. \
              The subagent is a separate model turn with this turn's system prompt and persona, \
              its own token budget and its own timeout, running in the background while this \
-             turn carries on. It has no tools at all: it cannot read or write files, run \
-             commands, browse, or dispatch another subagent, so give it a task that can be \
-             done in one answer from the prompt alone. At most {MAX_RUNNING} run at once and \
-             {MAX_PER_TURN} per turn; beyond that the call is refused and says why. The result \
-             appears on the subagents control in the top bar."
+             turn carries on. With no agent it has no tools at all: it cannot read or write \
+             files, run commands, browse, or dispatch another subagent, so give it a task that \
+             can be done in one answer from the prompt alone. With agent set to a standing \
+             agent's name it carries that agent's brief and tool allowance, and works inside \
+             its own scope. At most {MAX_RUNNING} run at once and {MAX_PER_TURN} per turn; \
+             beyond that the call is refused and says why. The result appears on the \
+             subagents control in the top bar."
         ),
         parameters: serde_json::json!({
             "type": "object",
@@ -949,10 +1057,18 @@ pub fn spec() -> ToolSpec {
                 "prompt": {
                     "type": "string",
                     "description": "The whole task, written as if to the model itself. The \
-                                    subagent cannot ask a follow-up question."
+                                    subagent cannot ask a follow-up question. Required unless \
+                                    a standing agent's instructions already are the task."
+                },
+                "agent": {
+                    "type": "string",
+                    "description": "The name of a standing agent from the roster to use, which \
+                                    brings its standing brief and tool allowance. Omit for a \
+                                    plain tool-less subagent. An unknown or disabled name is \
+                                    refused and lists the enabled agents."
                 }
             },
-            "required": ["label", "prompt"]
+            "required": ["label"]
         }),
     }
 }
@@ -1005,6 +1121,7 @@ mod tests {
             label,
             prompt,
             model: "stub/model",
+            agent: None,
         }
     }
 
@@ -1052,16 +1169,21 @@ mod tests {
     #[test]
     fn migration_fourteen_creates_the_subagent_row() {
         let db = db();
-        // The pin follows the newest migration, which is 0029. This test owns the
-        // "the binary and the file agree on the version" claim for the whole
-        // database, so it is the one place that number is written down twice.
+        // This test owns the "the binary and the file agree" claim, so it compares
+        // the three numbers to each other rather than to a literal: a later
+        // migration must not make it fail for a reason it is not about.
         assert_eq!(
+            db.schema_version().expect("version"),
             crate::db::SCHEMA_VERSION,
-            29,
-            "the binary declares the version it migrated to"
+            "the file is migrated to the version the binary declares"
         );
-        assert_eq!(db.schema_version().expect("version"), 29);
-        assert_eq!(db.applied_migration_count().expect("count"), 29);
+        assert_eq!(
+            db.applied_migration_count().expect("count"),
+            crate::db::SCHEMA_VERSION,
+            "one row per migration, up to and including the newest"
+        );
+        // 0030 is the migration this test is about; a later one must not fail it.
+        assert!(db.schema_version().expect("version") >= 30);
         assert!(
             crate::db::TABLES.contains(&"subagents"),
             "the table is in the documented list"
@@ -1199,7 +1321,7 @@ mod tests {
         assert!(queued.finished_at.is_none());
 
         let desk = desk(&db, runner);
-        assert!(desk.execute(&id, "summary", "summarise the incident"));
+        assert!(desk.execute(&id, "summary", "summarise the incident", None));
 
         assert_eq!(
             *seen.lock().expect("observer"),
@@ -1227,7 +1349,7 @@ mod tests {
         });
         let desk = desk(&db, runner);
         let id = reserve(&db, &request("main", Some("t"), "one", "work")).expect("queued");
-        assert!(desk.execute(&id, "one", "work"));
+        assert!(desk.execute(&id, "one", "work", None));
 
         let row = get(&db, &id).expect("read").expect("one row");
         assert_eq!(row.status, Status::Failed);
@@ -1246,7 +1368,7 @@ mod tests {
         assert!(finish(&db, &id, Status::Failed, &expired).expect("settled"));
 
         assert!(
-            !desk.execute(&id, "one", "work"),
+            !desk.execute(&id, "one", "work", None),
             "a claimed-and-settled row is not run"
         );
         let row = get(&db, &id).expect("read").expect("one row");
@@ -1282,6 +1404,142 @@ mod tests {
         let clipped = label_for("", &long);
         assert!(clipped.ends_with(" ..."), "{clipped}");
         assert_eq!(clipped.chars().count(), MAX_LABEL_CHARS + 4);
+    }
+
+    /// A desk over a workspace of the caller's choosing.
+    fn desk_in(db: &Db, workspace: PathBuf, runner: Arc<Runner>) -> Desk {
+        let config = TurnConfig {
+            base_url: "http://127.0.0.1:1/v1".to_owned(),
+            key_ref: core_runtime::provider::SecretRef::try_from("env:KALLISTI_TEST_KEY")
+                .expect("a valid reference"),
+            model: "stub/model".to_owned(),
+            dialect: core_domain::ApiDialect::ChatCompletions,
+            reasoning_split: false,
+            direct: false,
+            project: None,
+        };
+        Desk::new(
+            db.clone(),
+            config,
+            Some("you are eris".to_owned()),
+            workspace,
+            "main".to_owned(),
+            Some("answer-row".to_owned()),
+        )
+        .with_runner(runner)
+    }
+
+    fn roster_draft(name: &str, scope: Option<&str>) -> crate::roster::Draft {
+        crate::roster::Draft {
+            name: name.to_owned(),
+            role: "watches the web".to_owned(),
+            instructions: "Report findings with citations.".to_owned(),
+            tool_policy: crate::roster::ToolPolicy::ReadOnly,
+            model_role: None,
+            memory_scope: scope.map(str::to_owned),
+        }
+    }
+
+    /// A standing agent's dispatch leads with its brief and names the row
+    /// `agent: task`, so the bar shows who is doing the work.
+    #[test]
+    fn a_standing_agent_dispatch_merges_the_brief_and_names_the_label() {
+        let db = db();
+        crate::roster::create(&db, &roster_draft("Scout", None)).expect("roster row");
+        let desk = desk(&db, quiet_runner("done"));
+
+        let id = desk
+            .dispatch_as("probe", "check the feeds", Some("scout"))
+            .expect("dispatched");
+        let row = get(&db, &id).expect("read").expect("the row exists");
+        assert_eq!(row.label, "scout: probe");
+        assert_eq!(
+            row.prompt, "Report findings with citations.\n\ncheck the feeds",
+            "the brief leads and the task follows"
+        );
+
+        let bare = desk
+            .dispatch_as("probe", "", Some("scout"))
+            .expect("dispatched");
+        let row = get(&db, &bare).expect("read").expect("the row exists");
+        assert_eq!(
+            row.prompt, "Report findings with citations.",
+            "with no task the brief alone is the prompt"
+        );
+    }
+
+    /// A roster scope that resolves outside the workspace refuses the dispatch
+    /// by name and writes no row: a standing agent is not a way to hand a child
+    /// a new root.
+    #[test]
+    fn a_scope_that_escapes_the_workspace_is_refused_by_name() {
+        let db = db();
+        let workspace =
+            std::env::temp_dir().join(format!("subagent-scope-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        crate::roster::create(&db, &roster_draft("scout", Some(".."))).expect("roster row");
+        let desk = desk_in(&db, workspace, quiet_runner("done"));
+
+        let refused = desk
+            .dispatch_as("probe", "check the feeds", Some("scout"))
+            .expect_err("the scope escapes the workspace");
+        assert_eq!(refused.code(), "roster_scope_outside_workspace");
+        assert_eq!(
+            db.row_count("subagents").expect("rows"),
+            0,
+            "a refused dispatch writes no row"
+        );
+    }
+
+    /// A standing agent's child runs with its allowance and rooted at its scope;
+    /// the resolved context is the one the dispatch resolved, not a fresh read.
+    #[test]
+    fn a_standing_agents_child_gets_its_allowance_and_scope() {
+        let db = db();
+        let workspace =
+            std::env::temp_dir().join(format!("subagent-scope-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(workspace.join("scout-notes")).expect("workspace");
+        crate::roster::create(&db, &roster_draft("scout", Some("scout-notes")))
+            .expect("roster row");
+
+        let seen: Arc<std::sync::Mutex<Vec<RunRequest>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = Arc::clone(&seen);
+        let runner: Arc<Runner> = Arc::new(move |run: &RunRequest| {
+            capture.lock().expect("seen").push(run.clone());
+            Ok(answered("done"))
+        });
+        let desk = desk_in(&db, workspace.clone(), runner);
+
+        let resolved =
+            crate::roster::resolve_for_dispatch(&db, "scout", &workspace).expect("resolved");
+        let context = AgentContext {
+            name: resolved.name.clone(),
+            tool_policy: resolved.tool_policy,
+            root: resolved.root.clone(),
+        };
+        let prompt = format!("{}\n\n{}", resolved.instructions, "check the feeds");
+        let id = reserve(
+            &db,
+            &request("main", Some("answer-row"), "scout: probe", &prompt),
+        )
+        .expect("queued");
+        assert!(desk.execute(&id, "scout: probe", &prompt, Some(context)));
+
+        let captured = seen.lock().expect("seen").clone();
+        let run = captured.first().expect("the child ran");
+        let agent = run.agent.as_ref().expect("the child carried its agent");
+        assert_eq!(agent.name, "scout");
+        assert_eq!(agent.tool_policy, crate::roster::ToolPolicy::ReadOnly);
+        assert_eq!(
+            agent.root,
+            std::fs::canonicalize(workspace.join("scout-notes")).expect("canonical"),
+            "the child is rooted at its scope"
+        );
+        assert_eq!(
+            run.prompt,
+            "Report findings with citations.\n\ncheck the feeds"
+        );
     }
 
     /// The whole point of the caps: an interrupted daemon must not leave the
@@ -1355,7 +1613,9 @@ mod tests {
             .get("required")
             .and_then(serde_json::Value::as_array)
             .expect("required parameters");
-        assert_eq!(required.len(), 2, "label and prompt: {}", spec.parameters);
+        // Only label is required: a standing agent's instructions may already
+        // be the task, so a prompt is optional whenever an agent is named.
+        assert_eq!(required.len(), 1, "just label: {}", spec.parameters);
     }
 
     #[test]

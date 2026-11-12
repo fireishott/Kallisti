@@ -34,6 +34,7 @@ fn dispatched(db: &crate::db::Db, label: &str, prompt: &str, turn: &str) -> Stri
             label,
             prompt,
             model: "stub/model",
+            agent: None,
         },
     )
     .expect("a reserved row")

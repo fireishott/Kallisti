@@ -510,6 +510,11 @@ pub fn specs_offering(mode: SandboxMode, agents: bool) -> Vec<ToolSpec> {
     // itself reaches nothing the sandbox is protecting.
     offered.push(crate::selfmemory::spec());
 
+    // What this turn has already spent, in every mode. Reading a number costs
+    // nothing and changes nothing, and the tool exists precisely so a confined
+    // turn can decide to stop rather than find out by failing.
+    offered.push(crate::budget::spec());
+
     // Command execution is offered only where the sandbox will honour it. A tool
     // the daemon refuses must never reach the model's list, or every turn spends
     // a round trip discovering a refusal the prompt could have prevented.
@@ -611,6 +616,7 @@ pub fn execute_streaming(
             "dispatching needs the turn that offered it, so this call did nothing; \
              it runs inside a conversation turn and not in the sandbox layer",
         ),
+        "budget" => crate::budget::sandbox_refusal(),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
 }

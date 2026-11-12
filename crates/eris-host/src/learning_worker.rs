@@ -706,6 +706,7 @@ fn production_runner(request: &WorkRequest) -> Result<WorkOutput, (String, Strin
             max_rounds: 1,
             agents: false,
             context_budget: None,
+            soft_cap: None,
         },
         None,
         &mut poll,

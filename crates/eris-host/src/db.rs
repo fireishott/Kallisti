@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 29;
+pub const SCHEMA_VERSION: i64 = 31;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -42,8 +42,9 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// opt-in `admin` flag to `pairing_codes` and no table at all; 0017 adds
 /// `schedules` and `schedule_runs`; 0020 adds a column to `chat_conversations`
 /// and no table at all; 0024 adds the three learning tables; 0029 adds the four
-/// memory-tier tables.
-pub const TABLES: [&str; 26] = [
+/// memory-tier tables. 0030 adds the standing roster. 0031 adds the webhook
+/// triggers and the fires they record.
+pub const TABLES: [&str; 29] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
@@ -64,12 +65,15 @@ pub const TABLES: [&str; 26] = [
     "mem_sweeps",
     "pairing_codes",
     "projects",
+    "roster",
     "schedule_runs",
     "schedules",
     "sessions",
     "settings",
     "skill_usage",
     "subagents",
+    "trigger_fires",
+    "triggers",
 ];
 
 /// One forward migration. Never edited once released; add a new version.
@@ -225,6 +229,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 29,
         name: "0029_memory_tiers",
         sql: MIGRATION_0029,
+    },
+    Migration {
+        version: 30,
+        name: "0030_roster",
+        sql: MIGRATION_0030,
+    },
+    Migration {
+        version: 31,
+        name: "0031_triggers",
+        sql: MIGRATION_0031,
     },
 ];
 
@@ -1045,6 +1059,68 @@ CREATE TABLE IF NOT EXISTS mem_sweeps (
 CREATE INDEX IF NOT EXISTS mem_sweeps_claim ON mem_sweeps (outcome, heartbeat_at);
 ";
 
+/// Migration 0030: the standing roster. One row is one named agent the model may
+/// hand work to. `tool_policy` is a closed set because it is read as a tool
+/// allowance at dispatch time; `model_role` is stored now and resolved later;
+/// `memory_scope` is a directory under the workspace, checked at dispatch.
+const MIGRATION_0030: &str = r"
+CREATE TABLE IF NOT EXISTS roster (
+    id            TEXT PRIMARY KEY NOT NULL,
+    name          TEXT NOT NULL,
+    role          TEXT NOT NULL,
+    instructions  TEXT NOT NULL,
+    tool_policy   TEXT NOT NULL DEFAULT 'inherit'
+                  CHECK (tool_policy IN ('inherit', 'read_only')),
+    model_role    TEXT,
+    memory_scope  TEXT,
+    enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_roster_name ON roster (name COLLATE NOCASE);
+";
+
+/// Migration 0031: webhook triggers, and one row per fire.
+///
+/// A trigger is a saved prompt with a minted token: one POST starts one durable
+/// turn. The token is stored hashed and never in plaintext, so a leaked database
+/// is not a leaked credential. `trigger_fires` is the ledger: it is what the rate
+/// limit counts, what the dashboard shows, and how a refused fire is distinguishable
+/// from a fire nobody made.
+const MIGRATION_0031: &str = r"
+CREATE TABLE IF NOT EXISTS triggers (
+    id             TEXT PRIMARY KEY NOT NULL,
+    name           TEXT NOT NULL,
+    prompt         TEXT NOT NULL,
+    token_hash     TEXT NOT NULL,
+    token_prefix   TEXT NOT NULL,
+    enabled        INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    max_per_hour   INTEGER NOT NULL DEFAULT 60 CHECK (max_per_hour BETWEEN 1 AND 600),
+    fire_count     INTEGER NOT NULL DEFAULT 0,
+    last_fired_at  TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_triggers_name ON triggers (name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_triggers_hash ON triggers (token_hash);
+
+CREATE TABLE IF NOT EXISTS trigger_fires (
+    id           TEXT PRIMARY KEY NOT NULL,
+    trigger_id   TEXT NOT NULL REFERENCES triggers (id) ON DELETE CASCADE,
+    status       TEXT NOT NULL DEFAULT 'queued'
+                 CHECK (status IN ('queued', 'running', 'ok', 'failed', 'refused')),
+    conversation TEXT,
+    job_id       TEXT,
+    note         TEXT,
+    fired_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    settled_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_trigger_fires_trigger ON trigger_fires (trigger_id, fired_at);
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 /// `setup` until onboarding completes, `ready` after.
@@ -1468,7 +1544,7 @@ mod tests {
         );
         assert_eq!(
             db.applied_migration_count().expect("count"),
-            29,
+            31,
             "one row per migration, and the new one is the last"
         );
 
@@ -1481,8 +1557,8 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, 29, "one row per migration, on a fresh file");
-        assert_eq!(first.schema_version().expect("version"), 29);
+        assert_eq!(applied, 31, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 31);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");
         assert_eq!(
@@ -1536,7 +1612,23 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 29);
-        assert_eq!(TABLES.len(), 26, "the list and the schema agree on arity");
+        assert_eq!(db.schema_version().expect("version"), 31);
+        assert_eq!(TABLES.len(), 29, "the list and the schema agree on arity");
+    }
+
+    /// Migration 0031 adds the trigger tables, and `TABLES` names both.
+    #[test]
+    fn migration_thirty_one_adds_the_trigger_tables() {
+        let db = Db::open_in_memory().expect("a database");
+        let present = db.table_names().expect("tables");
+        for table in ["triggers", "trigger_fires"] {
+            assert!(TABLES.contains(&table), "{table} is missing from TABLES");
+            assert!(
+                present.iter().any(|name| name == table),
+                "{table} was not created by the migration"
+            );
+        }
+        assert_eq!(db.schema_version().expect("version"), 31);
+        assert_eq!(TABLES.len(), 29, "the list and the schema agree on arity");
     }
 }

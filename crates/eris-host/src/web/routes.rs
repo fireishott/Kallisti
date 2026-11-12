@@ -34,8 +34,9 @@ use crate::admin::{
     ROUTE_DASHBOARD_PROCESS_KILL, ROUTE_DEVICE_REMOVE, ROUTE_DEVICES, ROUTE_ENV, ROUTE_ENV_DELETE,
     ROUTE_JOB_CANCEL, ROUTE_LEARNING, ROUTE_LEARNING_CURATOR, ROUTE_LEARNING_SAVE,
     ROUTE_LEARNING_SKILL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN,
-    ROUTE_SEARCH, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL,
+    ROUTE_ROSTER, ROUTE_ROSTER_DELETE, ROUTE_ROSTER_SAVE, ROUTE_ROSTER_TOGGLE, ROUTE_SEARCH,
+    ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
+    ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL,
     ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
     ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
     ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT,
@@ -44,7 +45,8 @@ use crate::admin::{
     ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
     ROUTE_SETTINGS_UPDATE, ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK,
     ROUTE_SETTINGS_UPDATE_PROGRESS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS,
-    ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE, VERSION, session_path,
+    ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE, ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE,
+    ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -62,10 +64,12 @@ use crate::web::store;
 use crate::web::templates::{
     ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
     DashboardView, DeviceRow, DevicesView, EnvRow, EnvView, FormError, IssuedCodeView,
-    LearningView, SearchHitRow, SearchView, SessionDetailView, SessionsView, SettingsGroup,
-    SettingsView, SetupView, SkillEditor, SkillsView, UpdateCard, activity_page, backups_page,
-    chat_page, dashboard_page, devices_page, env_page, error_page, learning_page, login_page,
-    search_page, session_page, sessions_page, settings_page, setup_page, skills_page, type_badge,
+    LearningView, MintedToken, RosterDraft, RosterView, SearchHitRow, SearchView,
+    SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView, SkillEditor,
+    SkillsView, TriggerDraft, TriggersView, UpdateCard, activity_page, backups_page, chat_page,
+    dashboard_page, devices_page, env_page, error_page, learning_page, login_page, roster_page,
+    search_page, session_page, sessions_page, settings_page, setup_page, skills_page,
+    triggers_page, type_badge,
 };
 use crate::web::wallpaper;
 
@@ -89,6 +93,17 @@ const MAX_BODY_BYTES: usize = 16 * 1024;
 /// The semantic cap is [`crate::skills::MAX_SKILL_BYTES`], checked on the decoded
 /// text; this one pads for form encoding, which can spend three bytes per byte.
 const SKILL_FORM_BYTES: usize = 3 * crate::skills::MAX_SKILL_BYTES as usize + 8 * 1024;
+
+/// The roster form's ceiling.
+///
+/// One brief is capped at 4,000 characters and a character is at most three bytes
+/// in this form, so the body ceiling is that many bytes plus room for the other
+/// five fields and the encoding overhead. A body over this is refused with the
+/// ceiling named, rather than arriving truncated.
+const ROSTER_FORM_BYTES: usize = 4 * crate::roster::MAX_INSTRUCTIONS_CHARS + 8 * 1024;
+
+/// The trigger form's ceiling: one prompt, at three bytes a character at worst.
+const TRIGGER_FORM_BYTES: usize = 3 * crate::trigger::MAX_PROMPT_CHARS + 8 * 1024;
 
 /// The ceiling on one chat send: every attachment the turn may carry, plus the
 /// multipart framing and the text fields around them.
@@ -171,6 +186,10 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
             post(save_skill).layer(DefaultBodyLimit::max(SKILL_FORM_BYTES)),
         )
         .route(ROUTE_SKILLS_DELETE, post(delete_skill))
+        .route(ROUTE_ROSTER, get(roster_page_handler))
+        .route(ROUTE_ROSTER_SAVE, post(save_roster_agent))
+        .route(ROUTE_ROSTER_TOGGLE, post(toggle_roster_agent))
+        .route(ROUTE_ROSTER_DELETE, post(delete_roster_agent))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
         .route(ROUTE_SESSION, get(session_detail))
@@ -206,6 +225,249 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route("/dashboard/provider/rotate", post(rotate_provider))
         .route("/dashboard/device/revoke", post(revoke_device))
         .route("/dashboard/mode", post(mode))
+        // The webhook receiver. POST only, admin listener only, and its own body
+        // ceiling so an oversized fire is refused with the number named rather
+        // than read and then rejected.
+        .route(
+            "/hooks/{token}",
+            post(fire_hook).layer(DefaultBodyLimit::max(HOOK_BODY_BYTES)),
+        )
+        .route(ROUTE_TRIGGERS, get(triggers_page_handler))
+        .route(ROUTE_TRIGGERS_SAVE, post(save_trigger))
+        .route(ROUTE_TRIGGERS_TOGGLE, post(toggle_trigger))
+        .route(ROUTE_TRIGGERS_DELETE, post(delete_trigger))
+}
+
+// ---------------------------------------------------------------------------
+// Webhook triggers
+// ---------------------------------------------------------------------------
+
+/// The request body one fire may carry.
+///
+/// The route states its own ceiling rather than inheriting axum's 2 MiB default:
+/// a caller that sends more than this gets a 413 with the number named, instead of
+/// a body read into memory first and refused second.
+const HOOK_BODY_BYTES: usize = crate::trigger::MAX_FIRE_BYTES;
+
+/// `POST /hooks/{token}` - one request, one durable turn.
+///
+/// The token is the only credential, so this route sits on the admin listener and
+/// nowhere else, and it is POST only. Everything about a refusal is deliberately
+/// uniform: an unknown token, a revoked token and a disabled one all answer 404
+/// with the same body, because a distinguishable refusal is a token oracle.
+///
+/// The order of operations is the whole design:
+///
+/// 1. resolve the token, and answer 404 before writing anything;
+/// 2. count the trailing hour and refuse over the ceiling with a `refused` row,
+///    so a hammering client is visible rather than invisible;
+/// 3. record the fire as `queued`;
+/// 4. start the turn through [`run_one_turn`], the same path the ticker uses;
+/// 5. settle the fire with the conversation and how the turn ended.
+///
+/// Nothing here reads a body into a log, and nothing here logs the token.
+async fn fire_hook(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    axum::extract::Path(token): axum::extract::Path<String>,
+    body: Body,
+) -> Response {
+    let db = state.engine.db().clone();
+    // A token that resolves to nothing is one answer, whatever the reason was.
+    let trigger = match crate::trigger::resolve_by_token(&db, &token) {
+        Ok(Some(trigger)) => trigger,
+        Ok(None) => return hook_not_found(),
+        Err(error) => {
+            tracing::error!(%error, "hooks: cannot resolve the presented credential");
+            return ApiError::internal(
+                request_id.0,
+                "the trigger table could not be read, so nothing fired",
+            )
+            .into_response();
+        }
+    };
+    // The appended text is optional and capped. A body over the ceiling is a 413
+    // that names the ceiling, not a truncated prompt.
+    let appended = match axum::body::to_bytes(body, HOOK_BODY_BYTES).await {
+        Ok(bytes) => match std::str::from_utf8(&bytes) {
+            Ok(text) => parse_hook_text(text),
+            Err(_) => {
+                return hook_refused(
+                    "hook_body_not_utf8",
+                    "the body must be UTF-8, so nothing fired",
+                );
+            }
+        },
+        Err(_) => {
+            return hook_refused(
+                "hook_body_too_large",
+                &format!("a fire's body is at most {HOOK_BODY_BYTES} bytes, so nothing fired"),
+            );
+        }
+    };
+    let prompt = match appended {
+        Some(text) if !text.trim().is_empty() => {
+            let combined = format!("{}\n\n{}", trigger.prompt, text.trim());
+            if combined.chars().count() > crate::trigger::MAX_PROMPT_CHARS {
+                return hook_refused(
+                    "hook_prompt_too_long",
+                    &format!(
+                        "the trigger's prompt plus this request is over {} characters, so \
+                         nothing fired",
+                        crate::trigger::MAX_PROMPT_CHARS
+                    ),
+                );
+            }
+            combined
+        }
+        _ => trigger.prompt.clone(),
+    };
+
+    // The trailing hour, from the trigger's own clock rather than the process's:
+    // a restart does not reset a rate limit.
+    let since = trailing_hour();
+    let recent = match crate::trigger::fires_since(&db, &trigger.id, &since) {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::error!(%error, trigger = %trigger.name, "hooks: cannot count fires");
+            return ApiError::internal(
+                request_id.0,
+                "the fire ledger could not be read, so nothing fired",
+            )
+            .into_response();
+        }
+    };
+    if recent >= trigger.max_per_hour {
+        // The refusal is recorded and answered as a 429 that names both numbers.
+        let _ =
+            crate::trigger::record_fire(&db, &trigger.id, "refused", None, Some("rate_limited"));
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(serde_json::json!({
+                "status": "refused",
+                "error": "rate_limited",
+                "detail": format!(
+                    "this trigger allows {} fires an hour and it has had {}",
+                    trigger.max_per_hour,
+                    recent
+                ),
+            })),
+        )
+            .into_response();
+    }
+
+    let fire = match crate::trigger::record_fire(&db, &trigger.id, "queued", None, None) {
+        Ok(fire) => fire,
+        Err(error) => {
+            tracing::error!(%error, trigger = %trigger.name, "hooks: cannot record a fire");
+            return ApiError::internal(
+                request_id.0,
+                "the fire could not be recorded, so nothing fired",
+            )
+            .into_response();
+        }
+    };
+    // The byte count, never the body and never the token.
+    tracing::info!(
+        trigger = %trigger.id,
+        fire = %fire.id,
+        bytes = prompt.len(),
+        "hooks: firing"
+    );
+
+    let (status, error_code) = match run_one_turn(&state, &prompt, &trigger.name).await {
+        TurnOutcome::NoProvider => ("failed", Some("no_provider")),
+        TurnOutcome::Conversation {
+            conversation,
+            status,
+            error_code,
+            summary,
+        } => {
+            // The answer is the turn's own row; the fire records where it landed
+            // and how it ended, and the summary is the note an operator reads on
+            // the dashboard without opening the conversation.
+            let _ = crate::trigger::settle_fire(
+                &db,
+                &fire.id,
+                status,
+                Some(&conversation),
+                summary.as_deref().or(error_code.as_deref()),
+            );
+            return hook_queued(&fire.id, &conversation, status);
+        }
+    };
+    let _ = crate::trigger::settle_fire(&db, &fire.id, status, None, error_code);
+    hook_queued(&fire.id, "", status)
+}
+
+/// The text a fire's body carried, from either a JSON object or a plain body.
+///
+/// `{"text": "..."}` is the documented shape. Anything else is taken as the text
+/// itself, which is what makes `curl -d 'check the build'` work without a JSON
+/// encoder on the caller's side.
+fn parse_hook_text(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('{')
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
+    {
+        return value
+            .get("text")
+            .and_then(|text| text.as_str())
+            .map(str::to_owned);
+    }
+    // A body that starts with a brace and does not parse is text the caller meant
+    // to send, not a JSON document. Treating it as the prompt is the forgiving
+    // answer that cannot silently drop a person's words.
+    Some(trimmed.to_owned())
+}
+
+/// The one 404 every unauthenticated fire earns.
+fn hook_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({
+            "status": "not_found",
+            "error": "no_such_hook",
+        })),
+    )
+        .into_response()
+}
+
+/// A refusal that is the caller's fault, with the rule named.
+fn hook_refused(code: &str, message: &str) -> Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        axum::Json(serde_json::json!({
+            "status": "refused",
+            "error": code,
+            "detail": message,
+        })),
+    )
+        .into_response()
+}
+
+/// The 202 a fire earns.
+fn hook_queued(fire: &str, conversation: &str, status: &str) -> Response {
+    (
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({
+            "status": "queued",
+            "fire": fire,
+            "conversation": conversation,
+            "turn": status,
+        })),
+    )
+        .into_response()
+}
+
+/// One hour ago, in the format the fire rows are stamped with.
+fn trailing_hour() -> String {
+    let now = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+    now.format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| String::from("1970-01-01T00:00:00Z"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,6 +1266,12 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .map_err(|error| form_error(&error))?
             .as_deref(),
     );
+    view.soft_cap_tokens = crate::budget::soft_cap(
+        engine
+            .setting(crate::budget::SETTING_SOFT_CAP)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
     view.show_quota = crate::web::quota::show_quota(
         engine
             .setting(crate::web::quota::SETTING_SHOW_QUOTA)
@@ -1763,6 +2031,593 @@ async fn delete_skill(
         }
         Err(error) => fail_skills(&state, as_html, skill_form_error(error), None),
     }
+}
+
+/// `GET /dashboard/roster` - the standing agents, and the form that edits one.
+///
+/// `?edit=<name>` fills the form with a row; `?saved=` carries the notice a
+/// redirect left behind. A name in `?delete=` asks the page to render its
+/// confirmation instead of the form, which is the same two-press shape the skill
+/// library uses so the two pages cannot differ about what a delete costs.
+async fn roster_page_handler(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let notice = match query.get("saved").map(String::as_str) {
+        Some("create") => Some("The standing agent is added.".to_owned()),
+        Some("update") => Some("The standing agent is saved.".to_owned()),
+        Some("toggle") => Some("The standing agent is switched.".to_owned()),
+        Some("delete") => Some("The standing agent is deleted.".to_owned()),
+        _ => None,
+    };
+    let edit = query.get("edit").map(String::as_str);
+    let confirming = query.get("delete").cloned();
+    match build_roster_view(&state, notice, edit, confirming, None) {
+        Ok(view) => page(roster_page(&view)),
+        Err(error) => refusal(error),
+    }
+}
+
+/// `POST /dashboard/roster/save` - create a row, or replace the one with that name.
+///
+/// One handler for both, because a row's identity is its name. The refusal path
+/// keeps the operator's text in the form: a save that lost the brief it was
+/// editing would make a bound a data-loss bug.
+async fn save_roster_agent(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields_within(&headers, body, ROSTER_FORM_BYTES).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_roster(&state, as_html, error, None),
+    };
+    let draft = RosterDraft {
+        name: field(&fields, "name").trim().to_owned(),
+        role: field(&fields, "role").trim().to_owned(),
+        instructions: field(&fields, "instructions").trim().to_owned(),
+        tool_policy: if field(&fields, "tool_policy")
+            == crate::roster::ToolPolicy::ReadOnly.as_str()
+        {
+            crate::roster::ToolPolicy::ReadOnly.as_str()
+        } else {
+            crate::roster::ToolPolicy::Inherit.as_str()
+        },
+        model_role: field(&fields, "model_role").trim().to_owned(),
+        memory_scope: field(&fields, "memory_scope").trim().to_owned(),
+        // A create omits the box when it is off, and an edit that leaves it
+        // unchecked means the same thing, so absence is the off signal here too.
+        enabled: flag(&fields, "enabled"),
+    };
+    let canonical = crate::roster::canonical_name(&draft.name);
+    let stored = crate::roster::Draft {
+        name: canonical.clone(),
+        role: draft.role.clone(),
+        instructions: draft.instructions.clone(),
+        tool_policy: if draft.tool_policy == crate::roster::ToolPolicy::ReadOnly.as_str() {
+            crate::roster::ToolPolicy::ReadOnly
+        } else {
+            crate::roster::ToolPolicy::Inherit
+        },
+        model_role: Some(draft.model_role.clone()).filter(|value| !value.is_empty()),
+        memory_scope: Some(draft.memory_scope.clone()).filter(|value| !value.is_empty()),
+    };
+    let existing = match crate::roster::get_by_name(state.engine.db(), &canonical) {
+        Ok(row) => row,
+        Err(error) => {
+            return fail_roster(
+                &state,
+                as_html,
+                FormError::new(None, "roster_unavailable", error.to_string()),
+                None,
+            );
+        }
+    };
+    let result = match &existing {
+        Some(_) => crate::roster::update(state.engine.db(), &canonical, &stored).map(|_| ()),
+        None => crate::roster::create(state.engine.db(), &stored).map(|_| ()),
+    };
+    match result {
+        Ok(()) => {
+            // The switch is a separate column from the brief, so a save states it
+            // explicitly rather than leaving a disabled row enabled by omission.
+            if let Err(error) =
+                crate::roster::set_enabled(state.engine.db(), &canonical, draft.enabled)
+            {
+                return fail_roster(&state, as_html, roster_form_error(error), Some(draft));
+            }
+            let action = if existing.is_some() {
+                "roster.update"
+            } else {
+                "roster.create"
+            };
+            let detail = format!("name={canonical}; enabled={}", draft.enabled);
+            if let Err(error) = state.engine.auth().audit("loopback", action, Some(&detail)) {
+                return audit_failure(&request_id.0, action, error);
+            }
+            see_other_to(format!(
+                "{}?saved={}",
+                ROUTE_ROSTER,
+                if existing.is_some() {
+                    "update"
+                } else {
+                    "create"
+                }
+            ))
+        }
+        Err(error) => fail_roster(&state, as_html, roster_form_error(error), Some(draft)),
+    }
+}
+
+/// `POST /dashboard/roster/toggle` - enable or disable one row.
+async fn toggle_roster_agent(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields_within(&headers, body, ROSTER_FORM_BYTES).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_roster(&state, as_html, error, None),
+    };
+    let name = crate::roster::canonical_name(field(&fields, "name"));
+    let enabled = flag(&fields, "enabled");
+    match crate::roster::set_enabled(state.engine.db(), &name, enabled) {
+        Ok(()) => {
+            let detail = format!("name={name}; enabled={enabled}");
+            if let Err(error) =
+                state
+                    .engine
+                    .auth()
+                    .audit("loopback", "roster.toggle", Some(&detail))
+            {
+                return audit_failure(&request_id.0, "roster.toggle", error);
+            }
+            see_other_to(format!("{ROUTE_ROSTER}?saved=toggle"))
+        }
+        Err(error) => fail_roster(&state, as_html, roster_form_error(error), None),
+    }
+}
+
+/// `POST /dashboard/roster/delete` - remove one row, on the second press.
+async fn delete_roster_agent(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields_within(&headers, body, ROSTER_FORM_BYTES).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_roster(&state, as_html, error, None),
+    };
+    let name = crate::roster::canonical_name(field(&fields, "name"));
+    if !flag(&fields, "confirm") {
+        return match build_roster_view(&state, None, None, Some(name), None) {
+            Ok(view) => page(roster_page(&view)),
+            Err(error) => refusal(error),
+        };
+    }
+    match crate::roster::delete(state.engine.db(), &name) {
+        Ok(true) => {
+            let detail = format!("name={name}");
+            if let Err(error) =
+                state
+                    .engine
+                    .auth()
+                    .audit("loopback", "roster.delete", Some(&detail))
+            {
+                return audit_failure(&request_id.0, "roster.delete", error);
+            }
+            see_other_to(format!("{ROUTE_ROSTER}?saved=delete"))
+        }
+        Ok(false) => fail_roster(
+            &state,
+            as_html,
+            FormError::new(
+                Some("name"),
+                "roster_unknown_agent",
+                format!("`{name}` is not on the roster, so nothing was deleted"),
+            ),
+            None,
+        ),
+        Err(error) => fail_roster(&state, as_html, roster_form_error(error), None),
+    }
+}
+
+/// Build the roster page.
+///
+/// A roster that cannot be read still draws, for the same reason the skills page
+/// does: the table is the thing the operator came for, and a page that refused to
+/// render would hide the fact that the read failed rather than report it.
+fn build_roster_view(
+    state: &AppState,
+    notice: Option<String>,
+    edit: Option<&str>,
+    confirming: Option<String>,
+    draft: Option<RosterDraft>,
+) -> Result<RosterView, FormError> {
+    let engine = &state.engine;
+    let mut view = RosterView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.chrome = state.chrome();
+    view.notice = notice;
+    view.confirming = confirming;
+    view.workspace = match engine.setting(SETTING_WORKSPACE).ok().flatten() {
+        Some(stored) if !stored.trim().is_empty() => stored,
+        _ => engine
+            .workspace_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+    };
+    match crate::roster::list(engine.db()) {
+        Ok(rows) => {
+            // The row being edited, then a failed save's own text, then nothing.
+            view.editing = match draft {
+                Some(draft) => Some(draft),
+                None => edit
+                    .and_then(|name| {
+                        let canonical = crate::roster::canonical_name(name);
+                        rows.iter().find(|row| row.name == canonical)
+                    })
+                    .map(|row| RosterDraft {
+                        name: row.name.clone(),
+                        role: row.role.clone(),
+                        instructions: row.instructions.clone(),
+                        tool_policy: row.tool_policy.as_str(),
+                        model_role: row.model_role.clone().unwrap_or_default(),
+                        memory_scope: row.memory_scope.clone().unwrap_or_default(),
+                        enabled: row.enabled,
+                    }),
+            };
+            view.agents = rows;
+        }
+        Err(error) => {
+            view.error = Some(FormError::new(
+                None,
+                "roster_unavailable",
+                format!("the roster could not be read: {error}"),
+            ));
+        }
+    }
+    Ok(view)
+}
+
+/// Answer a refused roster form, keeping the operator's text in HTML mode.
+fn fail_roster(
+    state: &AppState,
+    as_html: bool,
+    error: FormError,
+    draft: Option<RosterDraft>,
+) -> Response {
+    let status = failure_status(&error.code);
+    if as_html {
+        let name = draft.as_ref().map(|draft| draft.name.clone());
+        match build_roster_view(state, None, name.as_deref(), None, draft) {
+            Ok(mut view) => {
+                view.error = Some(error);
+                page_with_status(roster_page(&view), status)
+            }
+            Err(build_error) => refusal(build_error),
+        }
+    } else {
+        refusal(error)
+    }
+}
+
+/// `GET /dashboard/triggers` - the trigger table and the form that mints one.
+///
+/// `?minted=<token>` is how the one response that carried a token hands it to the
+/// page that shows it. The token is in the redirect URL once, which is the same
+/// single exposure as rendering it inline, and it is never stored.
+async fn triggers_page_handler(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let notice = match query.get("saved").map(String::as_str) {
+        Some("create") => Some("The trigger is added. Its token is below.".to_owned()),
+        Some("rotate") => Some("The trigger is saved and its token is rotated.".to_owned()),
+        Some("toggle") => Some("The trigger is switched.".to_owned()),
+        Some("delete") => Some("The trigger is deleted.".to_owned()),
+        _ => None,
+    };
+    let minted = query
+        .get("minted")
+        .filter(|token| !token.is_empty())
+        .map(|token| MintedToken {
+            name: query.get("name").cloned().unwrap_or_default(),
+            token: token.clone(),
+            path: format!("/hooks/{token}"),
+        });
+    let edit = query.get("edit").map(String::as_str);
+    let confirming = query.get("delete").cloned();
+    match build_triggers_view(&state, notice, edit, confirming, None, minted) {
+        Ok(view) => page(triggers_page(&view)),
+        Err(error) => refusal(error),
+    }
+}
+
+/// `POST /dashboard/triggers/save` - create a trigger, or replace one and rotate.
+async fn save_trigger(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields_within(&headers, body, TRIGGER_FORM_BYTES).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_triggers(&state, as_html, error, None),
+    };
+    let draft = TriggerDraft {
+        name: crate::trigger::canonical_name(field(&fields, "name")),
+        prompt: field(&fields, "prompt").trim().to_owned(),
+        max_per_hour: field(&fields, "max_per_hour")
+            .trim()
+            .parse::<i64>()
+            .unwrap_or(crate::trigger::DEFAULT_MAX_PER_HOUR),
+        enabled: flag(&fields, "enabled"),
+    };
+    let stored = crate::trigger::Draft {
+        name: draft.name.clone(),
+        prompt: draft.prompt.clone(),
+        max_per_hour: draft.max_per_hour,
+    };
+    let existing = match crate::trigger::get_by_name(state.engine.db(), &draft.name) {
+        Ok(row) => row,
+        Err(error) => {
+            return fail_triggers(
+                &state,
+                as_html,
+                FormError::new(None, error.code(), error.reason()),
+                None,
+            );
+        }
+    };
+    let result = match &existing {
+        Some(_) => crate::trigger::update(state.engine.db(), &draft.name, &stored),
+        None => crate::trigger::create(state.engine.db(), &stored),
+    };
+    let minted = match result {
+        Ok(minted) => minted,
+        Err(error) => {
+            return fail_triggers(&state, as_html, trigger_form_error(error), Some(draft));
+        }
+    };
+    if let Err(error) = crate::trigger::set_enabled(state.engine.db(), &draft.name, draft.enabled) {
+        return fail_triggers(&state, as_html, trigger_form_error(error), Some(draft));
+    }
+    let action = if existing.is_some() {
+        "trigger.rotate"
+    } else {
+        "trigger.create"
+    };
+    // The audit row names the row and never the token: a credential in the audit
+    // trail is a credential in every export of it.
+    let detail = format!(
+        "name={}; enabled={}; max_per_hour={}",
+        draft.name, draft.enabled, draft.max_per_hour
+    );
+    if let Err(error) = state.engine.auth().audit("loopback", action, Some(&detail)) {
+        return audit_failure(&request_id.0, action, error);
+    }
+    see_other_to(format!(
+        "{}?saved={}&minted={}&name={}",
+        ROUTE_TRIGGERS,
+        if existing.is_some() {
+            "rotate"
+        } else {
+            "create"
+        },
+        minted.token,
+        draft.name
+    ))
+}
+
+/// `POST /dashboard/triggers/toggle` - enable or disable one row.
+async fn toggle_trigger(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields_within(&headers, body, TRIGGER_FORM_BYTES).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_triggers(&state, as_html, error, None),
+    };
+    let name = crate::trigger::canonical_name(field(&fields, "name"));
+    let enabled = flag(&fields, "enabled");
+    match crate::trigger::set_enabled(state.engine.db(), &name, enabled) {
+        Ok(()) => {
+            let detail = format!("name={name}; enabled={enabled}");
+            if let Err(error) =
+                state
+                    .engine
+                    .auth()
+                    .audit("loopback", "trigger.toggle", Some(&detail))
+            {
+                return audit_failure(&request_id.0, "trigger.toggle", error);
+            }
+            see_other_to(format!("{ROUTE_TRIGGERS}?saved=toggle"))
+        }
+        Err(error) => fail_triggers(&state, as_html, trigger_form_error(error), None),
+    }
+}
+
+/// `POST /dashboard/triggers/delete` - remove one row, on the second press.
+async fn delete_trigger(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields_within(&headers, body, TRIGGER_FORM_BYTES).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_triggers(&state, as_html, error, None),
+    };
+    let name = crate::trigger::canonical_name(field(&fields, "name"));
+    if !flag(&fields, "confirm") {
+        return match build_triggers_view(&state, None, None, Some(name), None, None) {
+            Ok(view) => page(triggers_page(&view)),
+            Err(error) => refusal(error),
+        };
+    }
+    match crate::trigger::delete(state.engine.db(), &name) {
+        Ok(true) => {
+            let detail = format!("name={name}");
+            if let Err(error) =
+                state
+                    .engine
+                    .auth()
+                    .audit("loopback", "trigger.delete", Some(&detail))
+            {
+                return audit_failure(&request_id.0, "trigger.delete", error);
+            }
+            see_other_to(format!("{ROUTE_TRIGGERS}?saved=delete"))
+        }
+        Ok(false) => fail_triggers(
+            &state,
+            as_html,
+            FormError::new(
+                Some("name"),
+                "trigger_unknown",
+                format!("`{name}` is not a trigger, so nothing was deleted"),
+            ),
+            None,
+        ),
+        Err(error) => fail_triggers(&state, as_html, trigger_form_error(error), None),
+    }
+}
+
+/// Build the triggers page.
+fn build_triggers_view(
+    state: &AppState,
+    notice: Option<String>,
+    edit: Option<&str>,
+    confirming: Option<String>,
+    draft: Option<TriggerDraft>,
+    minted: Option<MintedToken>,
+) -> Result<TriggersView, FormError> {
+    let engine = &state.engine;
+    let mut view = TriggersView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.chrome = state.chrome();
+    view.notice = notice;
+    view.confirming = confirming;
+    view.minted = minted;
+    match crate::trigger::list(engine.db()) {
+        Ok(rows) => {
+            view.editing = match draft {
+                Some(draft) => Some(draft),
+                None => edit
+                    .and_then(|name| {
+                        let canonical = crate::trigger::canonical_name(name);
+                        rows.iter().find(|row| row.name == canonical)
+                    })
+                    .map(|row| TriggerDraft {
+                        name: row.name.clone(),
+                        prompt: row.prompt.clone(),
+                        max_per_hour: row.max_per_hour,
+                        enabled: row.enabled,
+                    }),
+            };
+            // The fires of the most recent few rows, so the page answers "did it
+            // run" without an operator opening every conversation.
+            let mut fires = Vec::new();
+            for row in rows.iter().take(5) {
+                if let Ok(mut recent) = crate::trigger::recent_fires(engine.db(), &row.id, 5) {
+                    fires.append(&mut recent);
+                }
+            }
+            fires.sort_by(|left, right| right.fired_at.cmp(&left.fired_at));
+            fires.truncate(20);
+            view.fires = fires;
+            view.triggers = rows;
+        }
+        Err(error) => {
+            view.error = Some(FormError::new(None, error.code(), error.reason()));
+        }
+    }
+    Ok(view)
+}
+
+/// Answer a refused trigger form, keeping the operator's text in HTML mode.
+fn fail_triggers(
+    state: &AppState,
+    as_html: bool,
+    error: FormError,
+    draft: Option<TriggerDraft>,
+) -> Response {
+    let status = failure_status(&error.code);
+    if as_html {
+        let name = draft.as_ref().map(|draft| draft.name.clone());
+        match build_triggers_view(state, None, name.as_deref(), None, draft, None) {
+            Ok(mut view) => {
+                view.error = Some(error);
+                page_with_status(triggers_page(&view), status)
+            }
+            Err(build_error) => refusal(build_error),
+        }
+    } else {
+        refusal(error)
+    }
+}
+
+/// Map a trigger refusal onto the page's field shape.
+fn trigger_form_error(error: crate::trigger::TriggerError) -> FormError {
+    let field = match error.code() {
+        "trigger_name_invalid" | "trigger_name_taken" | "trigger_unknown" => Some("name"),
+        "trigger_prompt_invalid" => Some("prompt"),
+        "trigger_rate_invalid" => Some("max_per_hour"),
+        _ => None,
+    };
+    FormError::new(field, error.code(), error.reason())
+}
+
+/// Map a roster refusal onto the page's field shape.
+fn roster_form_error(error: crate::roster::RosterError) -> FormError {
+    let field = match error.code() {
+        "roster_name_invalid" | "roster_unknown_agent" | "roster_agent_disabled" => Some("name"),
+        "roster_role_invalid" => Some("role"),
+        "roster_instructions_invalid" => Some("instructions"),
+        "roster_tool_policy_invalid" => Some("tool_policy"),
+        "roster_scope_outside_workspace" | "roster_scope_missing" | "roster_scope_unusable" => {
+            Some("memory_scope")
+        }
+        _ => None,
+    };
+    FormError::new(field, error.code(), error.reason())
 }
 
 /// Build the skills page.
@@ -4771,9 +5626,28 @@ async fn save_quota(
     // An unchecked box sends nothing at all, so absence is the off signal here.
     let enabled = matches!(field(&fields, "show_quota").trim(), "on" | "true" | "1");
     let stored = if enabled { "true" } else { "false" };
+    // The soft cap is validated before either write, so a bad number cannot leave
+    // the switch saved and the ceiling not.
+    let cap = match crate::budget::validate_soft_cap(field(&fields, "soft_cap_tokens")) {
+        Ok(cap) => cap,
+        Err(message) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(Some("soft_cap_tokens"), "quota_cap_invalid", message),
+            );
+        }
+    };
     let key = crate::web::quota::SETTING_SHOW_QUOTA;
     if let Err(error) = store::settings_put(state.engine.db(), key, stored) {
         return store_failure(&request_id.0, key, error);
+    }
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::budget::SETTING_SOFT_CAP,
+        &cap.to_string(),
+    ) {
+        return store_failure(&request_id.0, crate::budget::SETTING_SOFT_CAP, error);
     }
     if let Err(error) = state
         .engine
@@ -9542,17 +10416,80 @@ pub(crate) async fn run_scheduled(
     run_id: String,
 ) {
     let db = state.engine.db().clone();
+    let outcome = run_one_turn(state, &schedule.prompt, &schedule.name).await;
+    match outcome {
+        TurnOutcome::NoProvider => {
+            let _ = crate::scheduler::settle_run(
+                &db,
+                &schedule.id,
+                &run_id,
+                "refused",
+                None,
+                None,
+                Some("no_provider"),
+            );
+        }
+        TurnOutcome::Conversation {
+            conversation,
+            status,
+            summary,
+            error_code,
+        } => {
+            let _ = crate::scheduler::settle_run(
+                &db,
+                &schedule.id,
+                &run_id,
+                status,
+                Some(&conversation),
+                summary.as_deref(),
+                error_code.as_deref(),
+            );
+            // The answer is written; now it goes somewhere. The result is recorded
+            // beside the run rather than folded into its status: a run that
+            // finished and failed to notify is both facts, and a page that shows
+            // one cannot explain the other.
+            let (delivered, note) = crate::delivery::deliver(
+                state,
+                &schedule,
+                &run_id,
+                &conversation,
+                summary.as_deref(),
+            )
+            .await;
+            let _ = crate::scheduler::record_delivery(&db, &run_id, &delivered, &note);
+        }
+    }
+}
+
+/// How one background turn ended.
+pub(crate) enum TurnOutcome {
+    /// No provider is configured, so no turn was started.
+    NoProvider,
+    /// A conversation exists and its answer row has a state.
+    Conversation {
+        /// The conversation the turn landed in.
+        conversation: String,
+        /// `ok` or `failed`.
+        status: &'static str,
+        /// The first line of the answer, when there was one.
+        summary: Option<String>,
+        /// The failure code, when the answer carries one.
+        error_code: Option<String>,
+    },
+}
+
+/// Run one prompt as one turn in a fresh conversation, and report how it ended.
+///
+/// This is the one place a background turn is started from: the schedule ticker
+/// and the webhook receiver both call it, so neither can drift from the other
+/// about what a turn is, what names its conversation, or when its answer counts as
+/// settled. It writes no run row and delivers nothing: those are the caller's
+/// bookkeeping, because a schedule run and a trigger fire are recorded in
+/// different tables.
+pub(crate) async fn run_one_turn(state: &AppState, prompt: &str, title: &str) -> TurnOutcome {
+    let db = state.engine.db().clone();
     let Some(config) = chat::turn_config(&state.engine).ok().flatten() else {
-        let _ = crate::scheduler::settle_run(
-            &db,
-            &schedule.id,
-            &run_id,
-            "refused",
-            None,
-            None,
-            Some("no_provider"),
-        );
-        return;
+        return TurnOutcome::NoProvider;
     };
     let model = config.model.clone();
     let context_window = state
@@ -9563,35 +10500,36 @@ pub(crate) async fn run_scheduled(
 
     let conversation = match chat::create_conversation(&db) {
         Ok(id) => id,
-        Err(_) => return,
+        Err(_) => return TurnOutcome::NoProvider,
     };
-    // The conversation is named after the schedule, not after a truncation of
-    // its prompt: that is what makes a scheduled run findable in the rail.
-    let _ = chat::set_title(&db, &conversation, &schedule.prompt, &schedule.name);
+    // The conversation is named after the row that started it, not after a
+    // truncation of its prompt: that is what makes a background run findable in
+    // the rail.
+    let _ = chat::set_title(&db, &conversation, prompt, title);
 
     let _ = chat::append(
         &db,
         &conversation,
         chat::Role::User,
-        &schedule.prompt,
+        prompt,
         chat::State::Complete,
     );
     let answer_id = match chat::append_answer(&db, &conversation, &model, context_window) {
         Ok(id) => id,
-        Err(_) => return,
+        Err(_) => return TurnOutcome::NoProvider,
     };
     let _ = chat::touch_conversation(&db, &conversation);
 
     let transcript = match chat::load(&db, &conversation) {
         Ok(rows) => rows,
-        Err(_) => return,
+        Err(_) => return TurnOutcome::NoProvider,
     };
     let history = chat::history(&transcript, &answer_id);
     let dropped = chat::dropped(&transcript, &answer_id);
 
-    let lease = match state.steering.claim(&conversation, &schedule.prompt) {
+    let lease = match state.steering.claim(&conversation, prompt) {
         chat::Claim::Turn(lease) => lease,
-        chat::Claim::Steered(_) => return,
+        chat::Claim::Steered(_) => return TurnOutcome::NoProvider,
     };
 
     let task = spawn_turn(
@@ -9599,7 +10537,7 @@ pub(crate) async fn run_scheduled(
         config,
         TurnJob {
             conversation: conversation.clone(),
-            question: schedule.prompt.clone(),
+            question: prompt.to_owned(),
             answer_id: answer_id.clone(),
             compression: None,
             vision: None,
@@ -9625,20 +10563,16 @@ pub(crate) async fn run_scheduled(
         None,
     );
     if let Err(join) = task.await {
-        let _ = crate::scheduler::settle_run(
-            &db,
-            &schedule.id,
-            &run_id,
-            "failed",
-            Some(&conversation),
-            None,
-            Some("join_error"),
-        );
         let _ = join;
-        return;
+        return TurnOutcome::Conversation {
+            conversation,
+            status: "failed",
+            summary: None,
+            error_code: Some("join_error".to_owned()),
+        };
     }
 
-    // The turn already settled its answer row, so the run row is read from what
+    // The turn already settled its answer row, so the outcome is read from what
     // the transcript now says rather than from a return value.
     let transcript = chat::load(&db, &conversation).unwrap_or_default();
     let answer = transcript.iter().find(|message| message.id == answer_id);
@@ -9665,22 +10599,12 @@ pub(crate) async fn run_scheduled(
         ),
         None => ("failed", None, Some("no_answer".to_owned())),
     };
-    let _ = crate::scheduler::settle_run(
-        &db,
-        &schedule.id,
-        &run_id,
+    TurnOutcome::Conversation {
+        conversation,
         status,
-        Some(&conversation),
-        summary.as_deref(),
-        error_code.as_deref(),
-    );
-    // The answer is written; now it goes somewhere. The result is recorded beside
-    // the run rather than folded into its status: a run that finished and failed to
-    // notify is both facts, and a page that shows one cannot explain the other.
-    let (delivered, note) =
-        crate::delivery::deliver(state, &schedule, &run_id, &conversation, summary.as_deref())
-            .await;
-    let _ = crate::scheduler::record_delivery(&db, &run_id, &delivered, &note);
+        summary,
+        error_code,
+    }
 }
 
 fn spawn_turn(
@@ -9704,6 +10628,12 @@ fn spawn_turn(
     } = job;
     let db = state.engine.db().clone();
     let persona = state.persona.clone();
+    // The operator's stored soft cap, read here rather than inside the loop: the
+    // loop serves four callers, and a setting read per round would be a database
+    // read per round for a number that cannot change mid-turn.
+    let soft_cap = crate::web::store::settings_get(&db, crate::budget::SETTING_SOFT_CAP)
+        .ok()
+        .flatten();
     // The sandbox is a boundary, so an unreadable workspace or permission row
     // falls back to the narrowest mode rather than to a permissive default.
     let memory: std::sync::Arc<crate::selfmemory::Access>;
@@ -9878,6 +10808,19 @@ fn spawn_turn(
     let skills = skills_catalog
         .is_some()
         .then(|| crate::skills::Access::new(db.clone(), skills_dir.clone()));
+    // The standing roster: named agents a turn may hand work to, rendered for
+    // the prompt as names and roles only. Read before the blocking task, like
+    // the catalog; describe_for_prompt is empty when the roster is empty or
+    // everything is off, and an empty roster means no prompt block at all.
+    let roster_block = crate::roster::describe_for_prompt(&db)
+        .ok()
+        .filter(|text| !text.is_empty())
+        .map(|text| {
+            format!(
+                "## Standing agents\n\n{text}\n\nDispatch to one with `dispatch_agent` \
+                 and the `agent` field."
+            )
+        });
     // Read before the blocking task, like every other setting: the closure owns
     // strings, not a borrow of the app state.
     let agents_enabled = crate::subagents::enabled(
@@ -10173,6 +11116,17 @@ fn spawn_turn(
             }),
             None => system,
         };
+        // The standing roster rides right behind the skill catalog: named
+        // agents the model may hand work to, as `name - role` lines with the one
+        // sentence that says how to dispatch to one. An empty roster adds no
+        // block at all.
+        let system = match roster_block {
+            Some(block) => Some(match system {
+                Some(system) => format!("{system}\n\n{block}"),
+                None => block,
+            }),
+            None => system,
+        };
 
         // What the page can draw, said to the model: a workspace path in
         // `![caption](path)` or `[name](path)` becomes a thumbnail or a chip.
@@ -10409,6 +11363,7 @@ fn spawn_turn(
                 // built to. Resolved from the model the composer picked, not the
                 // primary, because those are not always the same provider.
                 context_budget,
+                soft_cap,
             },
             Some(&ask),
             &mut poll,

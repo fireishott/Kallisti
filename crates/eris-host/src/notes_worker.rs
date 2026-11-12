@@ -649,6 +649,7 @@ fn production_runner(
             // One note, one prompt, no history: nothing here can grow past a
             // window, so there is no budget to enforce.
             context_budget: None,
+            soft_cap: None,
         },
         // A note enrichment runs with no tools and cannot ask anybody anything:
         // it is background work with no operator watching the result.

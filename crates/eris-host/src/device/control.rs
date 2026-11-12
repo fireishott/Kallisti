@@ -775,6 +775,42 @@ pub async fn memory_files(State(service): State<DeviceService>, headers: HeaderM
     .into_response()
 }
 
+/// `GET /v1/roster` - the standing roster, names and roles only.
+///
+/// Shallow on purpose: the standing instructions are the operator's brief to a
+/// specialist, and this route answers who exists rather than what they know.
+/// The rows come from the same read the dashboard makes, so the two surfaces
+/// cannot disagree about who is on the roster.
+pub async fn roster(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let db = service.engine().db().clone();
+    match crate::roster::list(&db) {
+        Ok(rows) => {
+            let agents: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "name": row.name,
+                        "role": row.role,
+                        "enabled": row.enabled,
+                    })
+                })
+                .collect();
+            axum::Json(serde_json::json!({ "ok": true, "agents": agents })).into_response()
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the roster could not be listed");
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "ok": false, "error": "roster_unavailable" })),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// `GET /v1/metrics?window=24h|7d|all&conversation=<id>` - cost and latency.
 ///
 /// The phone's chat footer needs three numbers for the chat it is showing: the

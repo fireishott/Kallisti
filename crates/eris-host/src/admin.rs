@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 185;
+pub const BUILD: u32 = 186;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -335,6 +335,46 @@ pub const ROUTE_SKILLS_SAVE: &str = "/dashboard/skills/save";
 /// posts: the first asks, the second carries `confirm=true`.
 pub const ROUTE_SKILLS_DELETE: &str = "/dashboard/skills/delete";
 
+/// `GET /dashboard/roster` - the standing agents the model may hand work to.
+///
+/// A row is a specialist the operator defines once instead of re-explaining on
+/// every dispatch: a name, a role, a standing brief, a tool allowance, and
+/// optionally a directory its child is confined to. The page is the only editor.
+pub const ROUTE_ROSTER: &str = "/dashboard/roster";
+
+/// `POST /dashboard/roster/save` - create or replace one standing agent.
+///
+/// One route for both because a row's identity is its name: a save whose name
+/// already exists is an update, and a save with a new name is a create. Splitting
+/// them is how the two drift apart.
+pub const ROUTE_ROSTER_SAVE: &str = "/dashboard/roster/save";
+
+/// `POST /dashboard/roster/toggle` - enable or disable one standing agent.
+pub const ROUTE_ROSTER_TOGGLE: &str = "/dashboard/roster/toggle";
+
+/// `POST /dashboard/roster/delete` - remove one standing agent. Two posts: the
+/// first asks, the second carries `confirm=true`.
+pub const ROUTE_ROSTER_DELETE: &str = "/dashboard/roster/delete";
+
+/// `GET /dashboard/triggers` - the webhook trigger table, and the form that mints
+/// one.
+///
+/// A trigger is a saved prompt with a token: one POST to `/hooks/<token>` starts
+/// one durable turn. The page is the only place a token is ever shown in full, and
+/// only in the response that minted it.
+pub const ROUTE_TRIGGERS: &str = "/dashboard/triggers";
+
+/// `POST /dashboard/triggers/save` - create a trigger, or replace one and rotate
+/// its token in the same write.
+pub const ROUTE_TRIGGERS_SAVE: &str = "/dashboard/triggers/save";
+
+/// `POST /dashboard/triggers/toggle` - enable or disable one trigger.
+pub const ROUTE_TRIGGERS_TOGGLE: &str = "/dashboard/triggers/toggle";
+
+/// `POST /dashboard/triggers/delete` - remove one trigger. Two posts: the first
+/// asks, the second carries `confirm=true`.
+pub const ROUTE_TRIGGERS_DELETE: &str = "/dashboard/triggers/delete";
+
 /// `GET /dashboard/env` and `POST /dashboard/env` - the environment file the
 /// daemon reads at start, and the one form that writes a line into it.
 pub const ROUTE_ENV: &str = "/dashboard/env";
@@ -420,6 +460,8 @@ pub const ALL_GET_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_UPDATE_PROGRESS,
     ROUTE_ACTIVITY,
     ROUTE_BACKUPS,
+    ROUTE_ROSTER,
+    ROUTE_TRIGGERS,
     ROUTE_ENV,
     CSS_ROUTE,
 ];
@@ -479,6 +521,12 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_SKILLS,
     ROUTE_SKILLS_SAVE,
     ROUTE_SKILLS_DELETE,
+    ROUTE_ROSTER_SAVE,
+    ROUTE_ROSTER_TOGGLE,
+    ROUTE_ROSTER_DELETE,
+    ROUTE_TRIGGERS_SAVE,
+    ROUTE_TRIGGERS_TOGGLE,
+    ROUTE_TRIGGERS_DELETE,
     ROUTE_SIDEBAR,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",

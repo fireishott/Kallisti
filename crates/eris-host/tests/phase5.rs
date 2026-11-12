@@ -12,7 +12,7 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use eris_host::admin::{self, ADMIN_ADDR, GET_ROUTES, ROUTE_HEALTHZ, VERSION, router};
-use eris_host::db::{Db, TABLES};
+use eris_host::db::{Db, SCHEMA_VERSION, TABLES};
 use eris_host::error::REQUEST_ID_HEADER;
 use tower::ServiceExt;
 
@@ -71,11 +71,15 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // added the capped flag on an answer, 0023 added the wrapped-up flag beside
     // it, 0024 added the three learning tables, 0025 added the transcript
     // index, 0026 added the delivery column, 0028 added the turn chain to
-    // `jobs`, and 0029 added the four memory-tier tables, so the version and count
-    // below are the current ones and `TABLES` is the list.)
+    // `jobs`, 0029 added the four memory-tier tables, 0030 added the roster and
+    // 0031 added the trigger tables, so the version and count below are the
+    // current ones and `TABLES` is the list.)
     let first = Db::open(&path).expect("first open");
-    assert_eq!(first.schema_version().expect("version"), 29);
-    assert_eq!(first.applied_migration_count().expect("count"), 29);
+    assert_eq!(first.schema_version().expect("version"), SCHEMA_VERSION);
+    assert_eq!(
+        first.applied_migration_count().expect("count"),
+        SCHEMA_VERSION
+    );
 
     let mut names = first.table_names().expect("table names");
     for expected in TABLES {
@@ -110,10 +114,10 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // Second open of the same file: no error, no duplicate version row, no
     // duplicate app_state row.
     let second = Db::open(&path).expect("second open must not fail");
-    assert_eq!(second.schema_version().expect("version"), 29);
+    assert_eq!(second.schema_version().expect("version"), SCHEMA_VERSION);
     assert_eq!(
         second.applied_migration_count().expect("count"),
-        29,
+        SCHEMA_VERSION,
         "re-running migrations must not add a version row"
     );
     assert_eq!(

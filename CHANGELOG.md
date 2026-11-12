@@ -4,6 +4,39 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.7.1
+
+- **A turn can hand work to a named specialist.** A roster row is a name, a role and
+  a standing brief, and `dispatch_agent` gains an `agent` field: the child turn
+  carries that brief instead of the operator re-explaining it, and the prompt lists
+  the names it may dispatch to. A read-only row is offered no writing tools and runs
+  in a read-only sandbox, so a write is refused twice rather than once. A row that
+  names a scope directory is canonicalised and prefix-checked at dispatch, and a
+  scope that resolves outside the workspace refuses the dispatch instead of confining
+  the child somewhere new. The roster has its own page, its own settings card, a
+  read-only `GET /v1/roster` on the phone surface, and `eris roster --json`.
+  `build 186`.
+
+- **One POST starts one durable turn.** A trigger is a saved prompt with a minted
+  token; `POST /hooks/<token>` answers 202 and starts the turn through the same path
+  a schedule uses, in a conversation named after the trigger. The token is shown once,
+  when it is minted, and stored only as a SHA-256 hash plus a twelve-character prefix,
+  so a leaked database is a leak of verifiers. Unknown, revoked and disabled tokens
+  all answer one indistinguishable 404, the comparison is constant-time at the last
+  step, the body is capped at 8 KiB with the ceiling named, and a fire over the hourly
+  ceiling answers 429 and leaves a `refused` row. The route is on the admin listener
+  only and is POST only. Saving an existing trigger rotates its token in the same
+  write, because "rotate" and "save" were always the same edit. `build 186`.
+
+- **A turn can read its own budget before it spends it.** A `budget` tool answers the
+  window's turn count, prompt and completion tokens, the stored soft cap, what is left,
+  and the window's p95 turn duration, and it says plainly when the cap is reached:
+  stop and report rather than continue. It reads through the same function the settings
+  panel and the phone footer read, so the figure a turn acts on is the figure an
+  operator can check. The cap is the operator's, `quota.soft_cap_tokens`, validated
+  between 1,000 and 10,000,000 tokens, and nothing is cut off at it: the tool reports,
+  it does not refuse. `eris budget --json` prints the same report. `build 186`.
+
 ## 1.6.0
 
 - **A turn can hand its remainder to the next turn.** `queue_task` writes a

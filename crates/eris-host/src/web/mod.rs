@@ -55,6 +55,14 @@ mod env_page;
 #[cfg(test)]
 mod learning_page;
 
+/// The roster page: the table, the form, and the two-press delete.
+#[cfg(test)]
+mod roster_page;
+
+/// The triggers page: the table, the one-time token, and the fire ledger.
+#[cfg(test)]
+mod triggers_page;
+
 /// The search page: the field, the results, and the link out.
 #[cfg(test)]
 mod search_page;

@@ -3134,7 +3134,7 @@ pub fn show_tool_log(stored: Option<&str>) -> bool {
 }
 
 /// What the operator configured about tool use for this turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnSettings {
     /// Whether a turn may call tools at all.
     pub tools: bool,
@@ -3156,6 +3156,13 @@ pub struct TurnSettings {
     /// window is a property of the model the caller resolved, and the loop serves
     /// the browser, the phone, a subagent and a note worker from one body.
     pub context_budget: Option<u64>,
+    /// The stored soft token cap, as the operator set it.
+    ///
+    /// Carried here for the same reason `context_budget` is: the `budget` tool reads
+    /// it, and a tool that re-read the setting would be a second source for a number
+    /// the turn already has. `None` means the setting was never written, and the
+    /// tool then reports the default rather than inventing a ceiling of zero.
+    pub soft_cap: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3700,7 +3707,9 @@ pub fn run_turn_resilient_with_keys(
         skills,
         search,
         queue,
-        settings,
+        // Cloned because the fallback attempt below needs the same settings, and a
+        // struct that carries the soft cap cannot be copied.
+        settings.clone(),
         ask,
         poll,
         sink,
@@ -3742,6 +3751,7 @@ pub fn run_turn_resilient_with_keys(
                 skills,
                 search,
                 queue,
+                // The fallback's own copy: the primary attempt took the first one.
                 settings,
                 ask,
                 poll,
@@ -3892,6 +3902,24 @@ pub fn run_turn_with_key(
             };
             return crate::queue::execute(queue, &call.arguments);
         }
+        // What this turn has spent. The tool reads the same rows the settings page
+        // and the phone footer read, through the conversation and the window the
+        // caller named, so the number a turn acts on is the number an operator can
+        // check. It is answered here rather than in the sandbox because the sandbox
+        // has no database; both turn surfaces reach this one branch.
+        if call.name == crate::budget::TOOL {
+            let Some(queue) = queue.as_ref() else {
+                return crate::tools::ToolResult::refused(
+                    "this turn has no conversation row, so there is no budget to report and \
+                     nothing was read",
+                );
+            };
+            return crate::budget::execute(
+                &queue.db,
+                settings.soft_cap.as_deref(),
+                &call.arguments,
+            );
+        }
         if call.name == crate::web::attach::TOOL {
             let Some(target) = attach else {
                 return crate::tools::ToolResult::refused(
@@ -3975,18 +4003,38 @@ pub fn run_turn_with_key(
             };
             let prompt = argument("prompt");
             let label = argument("label");
-            return match desk.dispatch(&label, &prompt) {
+            let agent = argument("agent");
+            let agent = if agent.trim().is_empty() {
+                None
+            } else {
+                Some(agent.trim().to_owned())
+            };
+            let note = if agent.is_some() {
+                "The subagent is running in the background with its standing agent's brief \
+                 and tool allowance. Its result lands on its own row in the daemon, not in \
+                 this reply; do not wait for it in this turn."
+            } else {
+                "The subagent is running in the background with no tools. Its result lands \
+                 on its own row in the daemon, not in this reply; do not wait for it in this \
+                 turn."
+            };
+            return match desk.dispatch_as(&label, &prompt, agent.as_deref()) {
                 Ok(id) => crate::tools::ToolResult::ok(serde_json::json!({
                     "status": "dispatched",
                     "id": id,
-                    "label": crate::subagents::label_for(&label, &prompt),
+                    // The row's own label, which is what the bar shows: for a
+                    // standing agent it is `name: task`, and this reply should
+                    // name what the row will be called.
+                    "label": crate::subagents::get(desk.db(), &id)
+                        .ok()
+                        .flatten()
+                        .map(|row| row.label)
+                        .unwrap_or_else(|| crate::subagents::label_for(&label, &prompt)),
                     "model": desk.model(),
                     // Said without naming a control: the dashboard shows these
                     // on its bar and the phone shows them in the run log of this
                     // turn's tool frames, so the sentence has to be true on both.
-                    "note": "The subagent is running in the background with no tools. \
-                             Its result lands on its own row in the daemon, not in this \
-                             reply; do not wait for it in this turn.",
+                    "note": note,
                 })),
                 Err(error) => crate::tools::ToolResult {
                     content: serde_json::json!({
@@ -4073,6 +4121,19 @@ pub fn run_turn_with_key(
                 // last round so the turn ends in an answer instead of a refusal.
                 tools: if tools_allowed && settings.tools {
                     let mut offered = crate::tools::specs_offering(sandbox.mode(), settings.agents);
+                    // A tool this turn cannot honour must never reach the
+                    // model's list. The sandbox decides the write, and the
+                    // turn's own accesses decide the notes and the transcript,
+                    // so a child turn - which is given neither - is offered
+                    // neither, and no turn is offered a write its sandbox
+                    // refuses.
+                    offered.retain(|spec| {
+                        let refused_write = spec.name == "write_file" && !sandbox.allows_write();
+                        let refused_notes =
+                            spec.name == "memory_manage" && sandbox.memory().is_none();
+                        let refused_history = spec.name == crate::search::TOOL && search.is_none();
+                        !(refused_write || refused_notes || refused_history)
+                    });
                     if let Some(pool) = mcp {
                         offered.extend(pool.specs());
                     }

@@ -96,6 +96,26 @@ enum Command {
         /// The prompt to send.
         prompt: String,
     },
+    /// Report the standing roster: every named agent, its role and its state.
+    /// Read-only: the dashboard is what edits a row.
+    Roster,
+    /// Report the token budget: what the window spent, the soft cap, and what is
+    /// left. The same numbers the `budget` tool answers a turn with.
+    Budget {
+        /// The window to count: `24h`, `7d` or `all`. Defaults to `all`.
+        #[arg(long, default_value = "all")]
+        window: String,
+        /// One conversation to report on. Omitted reports every one.
+        #[arg(long, value_name = "ID")]
+        conversation: Option<String>,
+    },
+    /// Report the webhook triggers: name, enabled, token prefix, fire count and
+    /// when each last fired. Never the hash, and never a token.
+    Trigger {
+        /// The action. `list` is the only one, and it is the default.
+        #[arg(default_value = "list")]
+        action: String,
+    },
     /// Report onboarding progress, or reopen the wizard with `--reset`.
     Setup {
         /// Reopen the wizard. Requires the existing admin passphrase on stdin.
@@ -286,6 +306,12 @@ fn main() -> ExitCode {
             force,
             dry_run,
         }) => run_restore(cli.json, cli.state_dir, &from, force, dry_run),
+        Some(Command::Roster) => run_roster(cli.json, cli.state_dir),
+        Some(Command::Budget {
+            window,
+            conversation,
+        }) => run_budget(&window, conversation.as_deref(), cli.json, cli.state_dir),
+        Some(Command::Trigger { action }) => run_trigger(&action, cli.json, cli.state_dir),
         Some(Command::Doctor) => run_doctor(cli.json),
         Some(Command::Version) => {
             println!("eris {} build {}", admin::VERSION, admin::BUILD);
@@ -1350,6 +1376,200 @@ fn run_setup(json: bool, reset: bool, state_dir: Option<PathBuf>) -> ExitCode {
             ExitCode::from(EXIT_FAILURE)
         }
     }
+}
+
+/// `eris roster` - the standing roster, one line per agent.
+///
+/// Read-only in the same way `doctor` is: this reports and exits. A CLI that
+/// could edit a row would be a second editor for the table the dashboard owns,
+/// and two editors is how the two disagree.
+fn run_roster(json: bool, state_dir: Option<PathBuf>) -> ExitCode {
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(message) => {
+            eprintln!("eris roster: {message}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let db = match Db::open(&paths.db_file) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!(
+                "eris roster: cannot open {}: {error}",
+                paths.db_file.display()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let rows = match eris_host::roster::list(&db) {
+        Ok(rows) => rows,
+        Err(error) => {
+            eprintln!("eris roster: the roster could not be read: {error}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    if json {
+        let agents: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "name": row.name,
+                    "role": row.role,
+                    "tool_policy": row.tool_policy.as_str(),
+                    "model_role": row.model_role,
+                    "memory_scope": row.memory_scope,
+                    "enabled": row.enabled,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({ "status": "ok", "roster": agents })
+        );
+    } else if rows.is_empty() {
+        println!("no standing agents");
+    } else {
+        for row in &rows {
+            let state = if row.enabled { "enabled" } else { "disabled" };
+            println!("{} - {} ({state})", row.name, row.role);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `eris budget` - the same report the `budget` tool hands a turn.
+///
+/// It reads through `budget::report`, which reads through `metrics::summary_in`,
+/// which is the function the settings panel and the phone footer call. A CLI that
+/// computed its own numbers would be a fourth place for them to disagree.
+fn run_budget(
+    window: &str,
+    conversation: Option<&str>,
+    json: bool,
+    state_dir: Option<PathBuf>,
+) -> ExitCode {
+    let Some(window) = eris_host::metrics::Window::parse(window) else {
+        eprintln!("eris budget: '{window}' is not a window. Use 24h, 7d or all.");
+        return ExitCode::from(EXIT_FAILURE);
+    };
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(message) => {
+            eprintln!("eris budget: {message}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let db = match Db::open(&paths.db_file) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!(
+                "eris budget: cannot open {}: {error}",
+                paths.db_file.display()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let stored = eris_host::web::store::settings_get(&db, eris_host::budget::SETTING_SOFT_CAP)
+        .ok()
+        .flatten();
+    let cap = eris_host::budget::soft_cap(stored.as_deref());
+    let report = match eris_host::budget::report(&db, conversation, cap, window) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("eris budget: the window could not be read: {error}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "ok",
+                "report": eris_host::budget::to_json(&report),
+            })
+        );
+    } else {
+        println!(
+            "{} - {} turns, {} tokens of {}, {} left",
+            report.window,
+            report.turns,
+            report.total_tokens,
+            report.soft_cap_tokens,
+            report.remaining_tokens
+        );
+        println!("{}", report.verdict());
+    }
+    ExitCode::SUCCESS
+}
+
+/// `eris trigger list` - the webhook triggers, one line each.
+///
+/// Read-only, and deliberately not an editor: minting a token from a shell would
+/// print a credential into a terminal history, which is the one thing the token
+/// rule exists to prevent. The dashboard mints; this reports.
+fn run_trigger(action: &str, json: bool, state_dir: Option<PathBuf>) -> ExitCode {
+    if action != "list" {
+        eprintln!(
+            "eris trigger: '{action}' is not a command. The only one is 'list', because \
+             minting a token here would print a credential into a shell history."
+        );
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(message) => {
+            eprintln!("eris trigger: {message}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let db = match Db::open(&paths.db_file) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!(
+                "eris trigger: cannot open {}: {error}",
+                paths.db_file.display()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let rows = match eris_host::trigger::list(&db) {
+        Ok(rows) => rows,
+        Err(error) => {
+            eprintln!("eris trigger: {}", error.reason());
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    if json {
+        let triggers: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "name": row.name,
+                    "enabled": row.enabled,
+                    "token_prefix": row.token_prefix,
+                    "fire_count": row.fire_count,
+                    "last_fired_at": row.last_fired_at,
+                    "max_per_hour": row.max_per_hour,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({ "status": "ok", "triggers": triggers })
+        );
+    } else if rows.is_empty() {
+        println!("no triggers");
+    } else {
+        for row in &rows {
+            let state = if row.enabled { "enabled" } else { "disabled" };
+            let last = row.last_fired_at.as_deref().unwrap_or("never");
+            println!(
+                "{} - {} ({state}), {} fires, last {last}",
+                row.name, row.token_prefix, row.fire_count
+            );
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn run_doctor(json: bool) -> ExitCode {

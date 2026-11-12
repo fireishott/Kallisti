@@ -912,6 +912,10 @@ pub enum Nav {
     Learning,
     /// The skill library itself: every file, an editor, and the archive button.
     Skills,
+    /// The standing agents: named specialists a turn can dispatch work to.
+    Roster,
+    /// The webhook triggers: saved prompts with their own tokens.
+    Triggers,
     /// The audit trail.
     Activity,
     /// The archive list, the create button, and the restore form.
@@ -923,7 +927,7 @@ pub enum Nav {
 impl Nav {
     /// Every entry, in display order. Every one of them is a page: the nav has
     /// no placeholder in it.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::Chat,
         Self::Dashboard,
         Self::Sessions,
@@ -932,6 +936,8 @@ impl Nav {
         Self::Settings,
         Self::Learning,
         Self::Skills,
+        Self::Roster,
+        Self::Triggers,
         Self::Activity,
         Self::Backups,
         Self::Environment,
@@ -949,6 +955,8 @@ impl Nav {
             Self::Settings => crate::admin::ROUTE_SETTINGS,
             Self::Learning => crate::admin::ROUTE_LEARNING,
             Self::Skills => crate::admin::ROUTE_SKILLS,
+            Self::Roster => crate::admin::ROUTE_ROSTER,
+            Self::Triggers => crate::admin::ROUTE_TRIGGERS,
             Self::Activity => crate::admin::ROUTE_ACTIVITY,
             Self::Backups => crate::admin::ROUTE_BACKUPS,
             Self::Environment => crate::admin::ROUTE_ENV,
@@ -967,6 +975,8 @@ impl Nav {
             Self::Settings => "Settings",
             Self::Learning => "Learning",
             Self::Skills => "Skills",
+            Self::Roster => "Roster",
+            Self::Triggers => "Triggers",
             Self::Activity => "Activity",
             Self::Backups => "Backups",
             Self::Environment => "Environment",
@@ -2270,6 +2280,8 @@ pub struct SettingsView {
     pub streaming: bool,
     /// Whether each answer's footer carries the gateway's quota and reset time.
     pub show_quota: bool,
+    /// The stored soft token cap the `budget` tool reports against.
+    pub soft_cap_tokens: i64,
     /// Whether the run log is shown at all.
     pub show_tool_log: bool,
     /// `full`, `summary` or `off`, for the select.
@@ -2418,6 +2430,7 @@ impl SettingsView {
             show_reasoning: true,
             streaming: true,
             show_quota: false,
+            soft_cap_tokens: crate::budget::DEFAULT_SOFT_CAP,
             show_tool_log: true,
             tool_log_mode: "full".to_owned(),
             reply_state: crate::web::chat::ReplyState::Expanded.as_str().to_owned(),
@@ -2681,7 +2694,7 @@ impl SettingsTab {
             "persona_text" | "persona_enabled" | "assistant_name" | "reply_state"
             | "show_reasoning" | "streaming" | "show_quota" | "show_tool_log" | "tool_log_mode"
             | "greeting_enabled" | "greeting_model" | "greeting_refresh" | "chat_hint"
-            | "goal_text" | "goal_action" => Self::Assistant,
+            | "goal_text" | "goal_action" | "soft_cap_tokens" => Self::Assistant,
             "memory_backend" | "memory_vault" => Self::Memory,
             "device_listen" | "device_relay" | "notify_on_reply" | "notify_scope"
             | "notify_devices" => Self::Devices,
@@ -3276,6 +3289,21 @@ fn quota_group(view: &SettingsView) -> Markup {
                     "answering provider is ok, locked or limited, when the lock clears, and how "
                     "many requests it has served today. A rate or usage limit is always reported "
                     "on a failed turn, whether this is on or not."
+                }
+            }
+            div .field {
+                label for="soft_cap_tokens" { "Soft token cap" }
+                input id="soft_cap_tokens" type="number" name="soft_cap_tokens"
+                    min=(crate::budget::MIN_SOFT_CAP)
+                    max=(crate::budget::MAX_SOFT_CAP)
+                    value=(view.soft_cap_tokens);
+                span .hint {
+                    "Between " (crate::budget::MIN_SOFT_CAP) " and "
+                    (crate::budget::MAX_SOFT_CAP) " tokens, default "
+                    (crate::budget::DEFAULT_SOFT_CAP) ". This is the ceiling the " code { "budget" }
+                    " tool reports to a turn, so a long job can stop on a number instead of "
+                    "discovering the wall by hitting it. It is a report, not a refusal: a turn "
+                    "over it is told to stop, and nothing is cut off."
                 }
             }
             div .actions {
@@ -4533,6 +4561,23 @@ fn tab_automation(view: &SettingsView) -> Markup {
             (skills_group(view))
         }
 
+        section .card aria-labelledby="roster-heading" {
+            h2 id="roster-heading" { "Roster" }
+            p .small {
+                "Named specialists a turn can hand work to. A row is a name, a role and a "
+                "standing brief; the prompt lists them and a turn dispatches to one by name "
+                "instead of re-explaining it every time."
+            }
+            p .small {
+                "The enabling switch is " strong { "Agents" } " above; this card is the pointer "
+                "to the table itself, which has its own page because a brief is a paragraph and "
+                "a paragraph in a settings card is a form nobody can read."
+            }
+            div .actions {
+                a .button href=(crate::admin::ROUTE_ROSTER) { "Open the roster" }
+            }
+        }
+
         section .card aria-labelledby="mcp-heading" {
             h2 id="mcp-heading" { "MCP servers" }
             (mcp_group(view))
@@ -5540,6 +5585,587 @@ pub fn skills_page(view: &SkillsView) -> Markup {
         }
     };
     shell("Skills", view.state, Some(Nav::Skills), body, &view.chrome)
+}
+
+/// Everything the roster page needs.
+///
+/// The page is the roster's only editor. It lists every row with what it may do,
+/// offers one form for a new row and the same form filled in for the row being
+/// edited, and it never invents a state the table does not hold: the list is
+/// [`crate::roster::list`] and nothing else.
+#[derive(Debug, Clone)]
+pub struct RosterView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every row, in the order the table returns them.
+    pub agents: Vec<crate::roster::Agent>,
+    /// The workspace root a `memory_scope` must stay inside.
+    pub workspace: String,
+    /// The row whose fields are in the form, when one is being edited.
+    ///
+    /// `None` with a `notice` of a successful delete is how the form goes back
+    /// to empty. `Some` with an empty name is what a refused create renders: the
+    /// operator's text is still there, and nothing was written.
+    pub editing: Option<RosterDraft>,
+    /// The name waiting for a second press before it is deleted.
+    pub confirming: Option<String>,
+    /// A success line, when a form just saved.
+    pub notice: Option<String>,
+    /// A failure to show.
+    pub error: Option<FormError>,
+}
+
+/// One set of field values, which is both what the form shows and what a save
+/// asked for.
+#[derive(Debug, Clone, Default)]
+pub struct RosterDraft {
+    /// The name as the box carried it.
+    pub name: String,
+    /// The role line.
+    pub role: String,
+    /// The standing brief.
+    pub instructions: String,
+    /// `inherit` or `read_only`.
+    pub tool_policy: &'static str,
+    /// The model role, free text.
+    pub model_role: String,
+    /// The scope directory, relative to the workspace.
+    pub memory_scope: String,
+    /// Whether the row is enabled. A create defaults to on.
+    pub enabled: bool,
+}
+
+impl RosterView {
+    /// An empty view over a ready daemon, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            agents: Vec::new(),
+            workspace: String::new(),
+            editing: None,
+            confirming: None,
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The roster page.
+///
+/// The house rules the rest of the dashboard follows apply here without
+/// exception: every input carries an `id` and a `<label for>`, each form has its
+/// own `role="status"` region, a failed input takes `autofocus` and
+/// `aria-invalid`, there is no script, no purple, and no signal that is colour
+/// alone. A refusal that names no field lands in the page region.
+pub fn roster_page(view: &RosterView) -> Markup {
+    let error = view.error.as_ref();
+    let invalid = |field: &str| error.is_some_and(|error| error.field.as_deref() == Some(field));
+    let draft = view.editing.clone().unwrap_or_default();
+    let creating = draft.name.is_empty();
+    let body = html! {
+        h1 { "Roster" }
+        p .lede {
+            "Named specialists a turn can hand work to. A row is a name, a role and a standing "
+            "brief; the model dispatches to one with " code { "dispatch_agent" } " and the "
+            code { "agent" } " field, and the child turn carries that brief instead of the "
+            "operator re-explaining it. A read-only row is offered no writing tools and its "
+            "files are confined to its scope."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        @if let Some(name) = &view.confirming {
+            section .card aria-labelledby="roster-confirm" {
+                h2 id="roster-confirm" { "Delete " code { (name) } "?" }
+                p {
+                    "This removes the row and nothing else: no file, no child turn, no "
+                    "conversation. Prompts that already dispatched to it keep their transcripts. "
+                    "It cannot be undone, and a prompt that still names it is refused rather "
+                    "than dispatched to nobody."
+                }
+                div .actions {
+                    form method="post" action=(crate::admin::ROUTE_ROSTER_DELETE) {
+                        input type="hidden" name="name" value=(name);
+                        input type="hidden" name="confirm" value="true";
+                        button .danger type="submit" { "Delete it" }
+                    }
+                    a .button.secondary href=(crate::admin::ROUTE_ROSTER) { "Keep it" }
+                }
+            }
+        }
+        section .card aria-labelledby="roster-list" {
+            h2 id="roster-list" { "Standing agents" }
+            @if view.agents.is_empty() {
+                p .empty {
+                    "No standing agents yet. A turn still dispatches ordinary child turns; "
+                    "adding a row is what gives one a name and a standing brief."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th { "Name" } th { "Role" } th { "Tools" } th { "State" } th { "" }
+                        }
+                    }
+                    tbody {
+                        @for agent in &view.agents {
+                            tr {
+                                td {
+                                    strong .mono { (agent.name) }
+                                    @if let Some(scope) = &agent.memory_scope {
+                                        p .small .muted { "scope " code .mono { (scope) } }
+                                    }
+                                }
+                                td { (agent.role) }
+                                td .small { (agent.tool_policy.as_str()) }
+                                td .small {
+                                    @if agent.enabled { "enabled" } @else { "disabled" }
+                                }
+                                td {
+                                    a .button.secondary
+                                        href=(format!("{}?edit={}", crate::admin::ROUTE_ROSTER, agent.name)) {
+                                        "Edit"
+                                    }
+                                    form .inline-form method="post"
+                                        action=(crate::admin::ROUTE_ROSTER_TOGGLE) novalidate {
+                                        input type="hidden" name="name" value=(agent.name);
+                                        input type="hidden" name="enabled"
+                                            value=(if agent.enabled { "false" } else { "true" });
+                                        button type="submit" class="secondary" {
+                                            @if agent.enabled { "Disable" } @else { "Enable" }
+                                        }
+                                    }
+                                    form .inline-form method="post"
+                                        action=(crate::admin::ROUTE_ROSTER_DELETE) novalidate {
+                                        input type="hidden" name="name" value=(agent.name);
+                                        button type="submit" class="danger" { "Delete" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p .small {
+                "Workspace root: " code .mono { (view.workspace) } ". A scope is a directory "
+                "inside it; anything that resolves outside it is refused at dispatch."
+            }
+        }
+        section .card aria-labelledby="roster-form" {
+            h2 id="roster-form" {
+                @if creating { "Add an agent" } @else { "Edit " code { (draft.name) } }
+            }
+            form method="post" action=(crate::admin::ROUTE_ROSTER_SAVE) novalidate {
+                div id="roster-form-status" role="status" aria-live="polite" {
+                    @if let Some(error) = error {
+                        @if error.field.is_some() {
+                            div .alert {
+                                strong { (error.code) } " " (error.message)
+                            }
+                        }
+                    }
+                }
+                div .field {
+                    label for="roster_name" { "Name" }
+                    input id="roster_name" type="text" name="name" value=(draft.name)
+                        autocomplete="off" spellcheck="false"
+                        autofocus[invalid("name")] aria-invalid=[invalid("name").then_some("true")];
+                    span .hint {
+                        "Lowercased on the way in: letters, digits and hyphens, 1 to "
+                        (crate::roster::MAX_NAME_CHARS) " characters. This is what a turn "
+                        "dispatches with, so a rename is a new row."
+                    }
+                }
+                div .field {
+                    label for="roster_role" { "Role" }
+                    input id="roster_role" type="text" name="role" value=(draft.role)
+                        autofocus[invalid("role")] aria-invalid=[invalid("role").then_some("true")];
+                    span .hint {
+                        "One line saying what it is for. This is what the prompt shows, up to "
+                        (crate::roster::MAX_ROLE_CHARS) " characters."
+                    }
+                }
+                div .field {
+                    label for="roster_instructions" { "Standing brief" }
+                    textarea id="roster_instructions" name="instructions" rows="10"
+                        spellcheck="true"
+                        autofocus[invalid("instructions")]
+                        aria-invalid=[invalid("instructions").then_some("true")] {
+                        (draft.instructions)
+                    }
+                    span .hint {
+                        "The child turn carries this. A dispatch that also passes a prompt gets "
+                        "this brief and then the task, still under the dispatch cap. Up to "
+                        (crate::roster::MAX_INSTRUCTIONS_CHARS) " characters; over that is a "
+                        "refusal, never a cut."
+                    }
+                }
+                div .field {
+                    label for="roster_tool_policy" { "Tools" }
+                    select id="roster_tool_policy" name="tool_policy" {
+                        option value="inherit" selected[is_inherit(draft.tool_policy)] {
+                            "Inherit the caller's tools"
+                        }
+                        option value="read_only" selected[!is_inherit(draft.tool_policy)] {
+                            "Read only"
+                        }
+                    }
+                    span .hint {
+                        "Read only drops the writing tools and runs the child in a read-only "
+                        "sandbox, so a write is refused twice rather than once."
+                    }
+                }
+                div .field {
+                    label for="roster_memory_scope" { "Scope directory" }
+                    input id="roster_memory_scope" type="text" name="memory_scope"
+                        value=(draft.memory_scope) autocomplete="off" spellcheck="false"
+                        autofocus[invalid("memory_scope")]
+                        aria-invalid=[invalid("memory_scope").then_some("true")];
+                    span .hint {
+                        "Optional, relative to the workspace root. The child's file tools are "
+                        "rooted here and the parent's root is not reachable from the child."
+                    }
+                }
+                div .field {
+                    label for="roster_model_role" { "Model role" }
+                    input id="roster_model_role" type="text" name="model_role"
+                        value=(draft.model_role) autocomplete="off" spellcheck="false";
+                    span .hint {
+                        "Optional. Stored now and resolved in a later build, so setting it "
+                        "changes nothing about which model answers yet."
+                    }
+                }
+                div .field {
+                    label for="roster_enabled" {
+                        input type="checkbox" id="roster_enabled" name="enabled" value="true"
+                            checked[draft.enabled];
+                        " Enabled"
+                    }
+                    span .hint {
+                        "A disabled row stays in the table and is refused at dispatch, which "
+                        "is different from deleting it."
+                    }
+                }
+                div .actions {
+                    button type="submit" {
+                        @if creating { "Add the agent" } @else { "Save the agent" }
+                    }
+                    @if !creating {
+                        a .button.secondary href=(crate::admin::ROUTE_ROSTER) { "Cancel" }
+                    }
+                }
+            }
+        }
+    };
+    shell("Roster", view.state, Some(Nav::Roster), body, &view.chrome)
+}
+
+/// Whether a stored policy string means "inherit".
+fn is_inherit(policy: &str) -> bool {
+    policy == crate::roster::ToolPolicy::Inherit.as_str()
+}
+
+/// Everything the triggers page needs.
+///
+/// The page's one hard rule is about the token: a minted token is shown once, in
+/// the response that minted it, and never again. So the view carries a `minted`
+/// value that is `Some` only on that one render, and every other render shows the
+/// stored prefix instead.
+#[derive(Debug, Clone)]
+pub struct TriggersView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every trigger, by name.
+    pub triggers: Vec<crate::trigger::Trigger>,
+    /// The most recent fires, for the rows that have any.
+    pub fires: Vec<crate::trigger::Fire>,
+    /// The trigger name whose fields are in the form, when one is being edited.
+    pub editing: Option<TriggerDraft>,
+    /// The name waiting for a second press before it is deleted.
+    pub confirming: Option<String>,
+    /// The token a mint or a rotate just produced. This is the only render that
+    /// carries it.
+    pub minted: Option<MintedToken>,
+    /// A success line.
+    pub notice: Option<String>,
+    /// A failure to show.
+    pub error: Option<FormError>,
+}
+
+/// A token, and the URL that fires it, shown exactly once.
+#[derive(Debug, Clone)]
+pub struct MintedToken {
+    /// The trigger it belongs to.
+    pub name: String,
+    /// The plaintext token.
+    pub token: String,
+    /// The full path, so the operator can select and copy it.
+    pub path: String,
+}
+
+/// One set of trigger field values.
+#[derive(Debug, Clone, Default)]
+pub struct TriggerDraft {
+    /// The operator's name for it.
+    pub name: String,
+    /// The prompt it fires with.
+    pub prompt: String,
+    /// Fires allowed in a trailing hour.
+    pub max_per_hour: i64,
+    /// Whether the row is enabled.
+    pub enabled: bool,
+}
+
+impl TriggersView {
+    /// An empty view over a ready daemon, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            triggers: Vec::new(),
+            fires: Vec::new(),
+            editing: None,
+            confirming: None,
+            minted: None,
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The triggers page.
+pub fn triggers_page(view: &TriggersView) -> Markup {
+    let error = view.error.as_ref();
+    let invalid = |field: &str| error.is_some_and(|error| error.field.as_deref() == Some(field));
+    let draft = view.editing.clone().unwrap_or_default();
+    let creating = draft.name.is_empty();
+    let body = html! {
+        h1 { "Triggers" }
+        p .lede {
+            "A saved prompt with a token. One POST to its URL starts one durable turn in a "
+            "conversation named after the trigger, through the same path a schedule uses. The "
+            "token is the only credential, so it is shown once when it is minted and rotating it "
+            "is how a leaked URL stops working."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        @if let Some(minted) = &view.minted {
+            section .card aria-labelledby="triggers-minted" {
+                h2 id="triggers-minted" { "Token for " code { (minted.name) } }
+                p {
+                    strong { "This is the only time this token is shown." } " It is stored "
+                    "hashed, so it cannot be recovered; if it is lost, rotate the trigger and "
+                    "use the new one."
+                }
+                div .field {
+                    label for="trigger_minted_url" { "The URL to POST" }
+                    input id="trigger_minted_url" type="text" readonly
+                        value=(minted.path) spellcheck="false";
+                    span .hint {
+                        "POST a JSON body of " code { r#"{"text":"..."}"# } " to add a line to "
+                        "the prompt, or POST nothing to fire the prompt as it stands."
+                    }
+                }
+            }
+        }
+        @if let Some(name) = &view.confirming {
+            section .card aria-labelledby="triggers-confirm" {
+                h2 id="triggers-confirm" { "Delete " code { (name) } "?" }
+                p {
+                    "This removes the trigger and its fire ledger. The URL stops working "
+                    "immediately and cannot be recovered: a trigger that is deleted has no token "
+                    "to rotate. Conversations its fires started stay where they are."
+                }
+                div .actions {
+                    form method="post" action=(crate::admin::ROUTE_TRIGGERS_DELETE) {
+                        input type="hidden" name="name" value=(name);
+                        input type="hidden" name="confirm" value="true";
+                        button .danger type="submit" { "Delete it" }
+                    }
+                    a .button.secondary href=(crate::admin::ROUTE_TRIGGERS) { "Keep it" }
+                }
+            }
+        }
+        section .card aria-labelledby="triggers-list" {
+            h2 id="triggers-list" { "Triggers" }
+            @if view.triggers.is_empty() {
+                p .empty {
+                    "No triggers yet. A schedule fires on a clock; a trigger fires when "
+                    "something POSTs to it."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th { "Name" } th { "Token" } th { "Fires" } th { "Limit" }
+                            th { "State" } th { "" }
+                        }
+                    }
+                    tbody {
+                        @for trigger in &view.triggers {
+                            tr {
+                                td {
+                                    strong { (trigger.name) }
+                                    p .small .muted {
+                                        @if let Some(last) = &trigger.last_fired_at {
+                                            "last fired " code .mono { (last) }
+                                        } @else {
+                                            "never fired"
+                                        }
+                                    }
+                                }
+                                td .mono .small { (trigger.token_prefix) "…" }
+                                td .small { (trigger.fire_count) }
+                                td .small { (trigger.max_per_hour) "/hour" }
+                                td .small {
+                                    @if trigger.enabled { "enabled" } @else { "disabled" }
+                                }
+                                td {
+                                    a .button.secondary
+                                        href=(format!("{}?edit={}", crate::admin::ROUTE_TRIGGERS, trigger.name)) {
+                                        "Edit"
+                                    }
+                                    form .inline-form method="post"
+                                        action=(crate::admin::ROUTE_TRIGGERS_TOGGLE) novalidate {
+                                        input type="hidden" name="name" value=(trigger.name);
+                                        input type="hidden" name="enabled"
+                                            value=(if trigger.enabled { "false" } else { "true" });
+                                        button type="submit" class="secondary" {
+                                            @if trigger.enabled { "Disable" } @else { "Enable" }
+                                        }
+                                    }
+                                    form .inline-form method="post"
+                                        action=(crate::admin::ROUTE_TRIGGERS_DELETE) novalidate {
+                                        input type="hidden" name="name" value=(trigger.name);
+                                        button type="submit" class="danger" { "Delete" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        @if !view.fires.is_empty() {
+            section .card aria-labelledby="triggers-fires" {
+                h2 id="triggers-fires" { "Recent fires" }
+                table {
+                    thead {
+                        tr { th { "When" } th { "State" } th { "Conversation" } th { "Note" } }
+                    }
+                    tbody {
+                        @for fire in &view.fires {
+                            tr {
+                                td .mono .small { (fire.fired_at) }
+                                td .small { (fire.status) }
+                                td .small {
+                                    @if let Some(conversation) = &fire.conversation {
+                                        a .mono href=(format!("{}/{}", crate::admin::ROUTE_CHAT, conversation)) {
+                                            (conversation)
+                                        }
+                                    } @else {
+                                        "none"
+                                    }
+                                }
+                                td .small {
+                                    @if let Some(note) = &fire.note { (note) } @else { "" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="trigger-form" {
+            h2 id="trigger-form" {
+                @if creating { "Add a trigger" } @else { "Edit " code { (draft.name) } }
+            }
+            @if !creating {
+                p .small {
+                    "Saving mints a new token and the old URL stops working. That is the rotate: "
+                    "there is no separate button, because the two writes are the same write."
+                }
+            }
+            form method="post" action=(crate::admin::ROUTE_TRIGGERS_SAVE) novalidate {
+                div id="trigger-form-status" role="status" aria-live="polite" {
+                    @if let Some(error) = error {
+                        @if error.field.is_some() {
+                            div .alert {
+                                strong { (error.code) } " " (error.message)
+                            }
+                        }
+                    }
+                }
+                div .field {
+                    label for="trigger_name" { "Name" }
+                    input id="trigger_name" type="text" name="name" value=(draft.name)
+                        autocomplete="off" spellcheck="false"
+                        autofocus[invalid("name")] aria-invalid=[invalid("name").then_some("true")];
+                    span .hint {
+                        "Lowercased on the way in. This is the conversation title a fire lands "
+                        "under, so a rename is a new trigger with a new token."
+                    }
+                }
+                div .field {
+                    label for="trigger_prompt" { "Prompt" }
+                    textarea id="trigger_prompt" name="prompt" rows="8" spellcheck="true"
+                        autofocus[invalid("prompt")]
+                        aria-invalid=[invalid("prompt").then_some("true")] {
+                        (draft.prompt)
+                    }
+                    span .hint {
+                        "The question the turn is asked, up to "
+                        (crate::trigger::MAX_PROMPT_CHARS) " characters. A fire may append one "
+                        "more paragraph to it; the two together are under the same ceiling."
+                    }
+                }
+                div .field {
+                    label for="trigger_max_per_hour" { "Fires per hour" }
+                    input id="trigger_max_per_hour" type="number" name="max_per_hour"
+                        min=(crate::trigger::MIN_PER_HOUR)
+                        max=(crate::trigger::MAX_PER_HOUR)
+                        value=(draft.max_per_hour)
+                        autofocus[invalid("max_per_hour")]
+                        aria-invalid=[invalid("max_per_hour").then_some("true")];
+                    span .hint {
+                        "Between " (crate::trigger::MIN_PER_HOUR) " and "
+                        (crate::trigger::MAX_PER_HOUR) ". A fire over the ceiling is refused "
+                        "with a 429 and recorded, so a hammering caller is visible."
+                    }
+                }
+                div .field {
+                    label for="trigger_enabled" {
+                        input type="checkbox" id="trigger_enabled" name="enabled" value="true"
+                            checked[draft.enabled];
+                        " Enabled"
+                    }
+                    span .hint {
+                        "A disabled trigger answers 404 to its own token, which is the same "
+                        "answer an unknown token gets."
+                    }
+                }
+                div .actions {
+                    button type="submit" {
+                        @if creating { "Add the trigger" } @else { "Save and rotate the token" }
+                    }
+                    @if !creating {
+                        a .button.secondary href=(crate::admin::ROUTE_TRIGGERS) { "Cancel" }
+                    }
+                }
+            }
+        }
+    };
+    shell(
+        "Triggers",
+        view.state,
+        Some(Nav::Triggers),
+        body,
+        &view.chrome,
+    )
 }
 
 /// Everything the backups page needs.

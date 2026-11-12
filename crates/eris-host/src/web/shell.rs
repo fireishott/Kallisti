@@ -463,6 +463,7 @@ fn the_settings_page_reaches_every_section_and_none_is_a_placeholder() {
         "device-bind-heading",
         "schedules-heading",
         "skills-heading",
+        "roster-heading",
         "mcp-heading",
         "workspace-heading",
         "permissions-heading",

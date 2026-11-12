@@ -1860,6 +1860,18 @@ impl TurnHub {
         let skills = skills_catalog
             .is_some()
             .then(|| crate::skills::Access::new(store.db().clone(), skills_dir.clone()));
+        // The standing roster, listed for a phone turn exactly as the browser
+        // is: names and roles, and the sentence that says how to dispatch. No
+        // roster, no block.
+        let roster_block = crate::roster::describe_for_prompt(store.db())
+            .ok()
+            .filter(|text| !text.is_empty())
+            .map(|text| {
+                format!(
+                    "## Standing agents\n\n{text}\n\nDispatch to one with `dispatch_agent` \
+                     and the `agent` field."
+                )
+            });
         // The state directory is the database file's own directory, which this
         // lane holds rather than the full paths struct.
         let state_dir = store
@@ -1880,6 +1892,17 @@ impl TurnHub {
             Some(catalog) => Some(match system {
                 Some(system) => format!("{system}\n\n{catalog}"),
                 None => catalog,
+            }),
+            None => system,
+        };
+        // The standing roster rides right behind the skill catalog: named
+        // agents the model may hand work to, as `name - role` lines with the one
+        // sentence that says how to dispatch to one. An empty roster adds no
+        // block at all.
+        let system = match roster_block {
+            Some(block) => Some(match system {
+                Some(system) => format!("{system}\n\n{block}"),
+                None => block,
             }),
             None => system,
         };
@@ -2309,6 +2332,12 @@ impl TurnHub {
         // task, so with a goal in the prompt the only instruction left is the
         // objective: "Sup" became a warehouse sweep, twice, and the gate is the fix.
         let goal = crate::goal::for_turn(store.db(), &prompt);
+        // The operator's soft token cap, read here for the same reason the goal is:
+        // the turn below runs in a closure that takes the store, and a setting read
+        // after that point would be a borrow of a value that has moved.
+        let soft_cap = crate::web::store::settings_get(store.db(), crate::budget::SETTING_SOFT_CAP)
+            .ok()
+            .flatten();
 
         // The pool this turn offers, read once before the worker thread is
         // spawned: the hub owns it behind a lock, and a turn must not take that
@@ -2388,6 +2417,9 @@ impl TurnHub {
                 // child never sees the tool.
                 agents: dispatch_target.is_some(),
                 context_budget,
+                // The ceiling the operator stored, read once here so the `budget`
+                // tool reports the same number the settings page shows.
+                soft_cap: soft_cap.clone(),
             };
             // What the turn has produced so far, for the conversation row. Once a
             // second, not once a token: a body write per fragment would put a
