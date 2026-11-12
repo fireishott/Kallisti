@@ -52,6 +52,26 @@ pub const DEFAULT_SSE_BUFFER: usize = 512;
 /// The environment variable that overrides [`DEFAULT_SSE_BUFFER`].
 pub const SSE_BUFFER_ENV: &str = "KALLISTI_SSE_BUFFER";
 
+/// How many reasoning frames one job keeps, separately from [`DEFAULT_SSE_BUFFER`].
+///
+/// Reasoning is the one frame kind that grows without bound relative to the
+/// answer and is worth almost nothing on a resume. A provider that streams a
+/// train of thought sends it in very small fragments: a measured turn on
+/// MiniMax-M3.1-Flash wrote 8,188 reasoning frames averaging 12.8 characters
+/// each - 105,209 characters of thinking against three frames of answer. When
+/// both kinds share one retention number, the thinking spends the whole window
+/// before the answer starts, and the frames a reconnecting phone actually needs
+/// (the deltas, the tool records, the round markers) are the first pruned away.
+///
+/// A separate, smaller budget is what stops that. This is a tail, not a
+/// transcript: enough for a client that attached late to show the current
+/// thought, and no pretence of being all of it. The whole of it is still summed
+/// onto the transcript row, which is what the operator reads after the turn.
+pub const DEFAULT_REASONING_BUFFER: usize = 256;
+
+/// The environment variable that overrides [`DEFAULT_REASONING_BUFFER`].
+pub const REASONING_BUFFER_ENV: &str = "KALLISTI_SSE_REASONING_BUFFER";
+
 /// Worker lease, in seconds. A claim that is not finished inside this window is
 /// expirable by a later sweeper; P8 never re-claims a live job.
 pub const LEASE_SECONDS: i64 = 60;
@@ -543,27 +563,49 @@ impl TurnPolicy {
 /// can prove the turn path without mutating the process environment.
 pub type KeyLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
-/// The turn store: one database handle, one retention number.
+/// The turn store: one database handle, one retention number per frame kind.
 #[derive(Clone)]
 pub struct TurnStore {
     db: Db,
     buffer: usize,
+    reasoning_buffer: usize,
 }
 
 impl TurnStore {
-    /// Wrap the state database. `buffer` is the per-job retention.
+    /// Wrap the state database. `buffer` is the per-job retention for the frames
+    /// a resume needs, and reasoning keeps [`DEFAULT_REASONING_BUFFER`] of its
+    /// own. [`Self::with_reasoning_buffer`] changes that second number.
     #[must_use]
     pub fn new(db: Db, buffer: usize) -> Self {
         Self {
             db,
             buffer: buffer.max(1),
+            reasoning_buffer: DEFAULT_REASONING_BUFFER.max(1),
         }
+    }
+
+    /// Set how many reasoning frames a job keeps.
+    ///
+    /// Reasoning is pruned on its own budget rather than the shared one so a
+    /// long train of thought cannot evict the answer. This is a builder because
+    /// almost every caller wants the default and only the env-driven
+    /// construction and the tests differ.
+    #[must_use]
+    pub fn with_reasoning_buffer(mut self, reasoning_buffer: usize) -> Self {
+        self.reasoning_buffer = reasoning_buffer.max(1);
+        self
     }
 
     /// The configured retention.
     #[must_use]
     pub fn buffer(&self) -> usize {
         self.buffer
+    }
+
+    /// The configured reasoning retention.
+    #[must_use]
+    pub fn reasoning_buffer(&self) -> usize {
+        self.reasoning_buffer
     }
 
     /// The database underneath.
@@ -580,6 +622,27 @@ impl TurnStore {
             .and_then(|value| value.trim().parse::<usize>().ok())
             .unwrap_or(DEFAULT_SSE_BUFFER)
             .max(1)
+    }
+
+    /// Reasoning retention from the environment, with the documented default.
+    #[must_use]
+    pub fn reasoning_buffer_from_env() -> usize {
+        std::env::var(REASONING_BUFFER_ENV)
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_REASONING_BUFFER)
+            .max(1)
+    }
+
+    /// Both retentions from the environment, in one call.
+    ///
+    /// The two numbers are read together because a store built from one and not
+    /// the other is a store whose reasoning budget silently reverts to the
+    /// default: the operator sets an env var and nothing happens.
+    #[must_use]
+    pub fn from_env(db: Db) -> Self {
+        Self::new(db, Self::buffer_from_env())
+            .with_reasoning_buffer(Self::reasoning_buffer_from_env())
     }
 
     /// Create one queued job.
@@ -787,6 +850,7 @@ impl TurnStore {
         }
         let payload = data.to_string();
         let buffer = i64::try_from(self.buffer).unwrap_or(i64::MAX);
+        let reasoning_buffer = i64::try_from(self.reasoning_buffer).unwrap_or(i64::MAX);
         self.db.with_conn(|conn| {
             let seq: Option<i64> = conn
                 .query_row(APPEND_SQL, params![job_id, kind.as_str(), payload], |row| {
@@ -794,7 +858,7 @@ impl TurnStore {
                 })
                 .optional()?;
             if let Some(seq) = seq {
-                prune(conn, job_id, seq, buffer)?;
+                prune(conn, job_id, seq, buffer, reasoning_buffer)?;
             }
             Ok(seq)
         })
@@ -812,8 +876,18 @@ impl TurnStore {
         };
         let payload = data.to_string();
         let buffer = i64::try_from(self.buffer).unwrap_or(i64::MAX);
-        self.db
-            .with_conn(|conn| finish_transaction(conn, job_id, kind, &payload, status, buffer))
+        let reasoning_buffer = i64::try_from(self.reasoning_buffer).unwrap_or(i64::MAX);
+        self.db.with_conn(|conn| {
+            finish_transaction(
+                conn,
+                job_id,
+                kind,
+                &payload,
+                status,
+                buffer,
+                reasoning_buffer,
+            )
+        })
     }
 
     /// The device's live session, or a new one. A device gets one session at a
@@ -1195,18 +1269,83 @@ SELECT ?1, COALESCE((SELECT MAX(seq) FROM job_events WHERE job_id = ?1), 0) + 1,
  WHERE EXISTS (SELECT 1 FROM jobs WHERE id = ?1 AND status IN ('queued', 'running'))
 RETURNING seq";
 
-/// Keep at most `buffer` rows per job, newest kept. `newest` is the seq that was
-/// just written, so `MAX(seq)` can never be pruned away and the counter survives.
-fn prune(conn: &Connection, job_id: &str, newest: i64, buffer: i64) -> rusqlite::Result<()> {
+/// Keep at most `buffer` rows per job, newest kept, with reasoning held to its
+/// own smaller `reasoning_buffer`. `newest` is the seq that was just written, so
+/// `MAX(seq)` can never be pruned away and the counter survives.
+///
+/// Two numbers, not one, because the two frame families do not compete for the
+/// same meaning. Deltas, tool records and round markers are the answer's history
+/// and a resume needs them. Reasoning is a tail: a turn can emit thousands of
+/// fragments of it, and when it shares one budget with the answer it spends that
+/// budget first, evicting the frames a reconnecting phone came back for.
+///
+/// The shared cap is applied on its own, so the total cannot grow without bound
+/// even if reasoning is set very high; the reasoning cap then trims the
+/// reasoning rows independently of where they sit in the sequence.
+fn prune(
+    conn: &Connection,
+    job_id: &str,
+    newest: i64,
+    buffer: i64,
+    reasoning_buffer: i64,
+) -> rusqlite::Result<()> {
+    // The shared window first, over every kind. `newest` is the row just written,
+    // so this can never remove the row whose seq the counter reads.
     let cutoff = newest.saturating_sub(buffer);
-    if cutoff < 1 {
-        return Ok(());
+    if cutoff >= 1 {
+        conn.execute(
+            "DELETE FROM job_events WHERE job_id = ?1 AND seq <= ?2",
+            params![job_id, cutoff],
+        )?;
     }
+    // Then the reasoning tail, which is usually the smaller number and is the
+    // reason a long train of thought cannot evict the answer. Positioned so the
+    // Nth-newest reasoning row is kept and everything older goes: the threshold
+    // is the seq of that row, and a job with fewer than `reasoning_buffer`
+    // reasoning rows yields no row at all, so nothing is deleted.
     conn.execute(
-        "DELETE FROM job_events WHERE job_id = ?1 AND seq <= ?2",
-        params![job_id, cutoff],
+        "DELETE FROM job_events
+          WHERE job_id = ?1 AND kind = ?2 AND seq < ?3",
+        params![
+            job_id,
+            FrameKind::Reasoning.as_str(),
+            reasoning_cutoff(conn, job_id, reasoning_buffer)?
+        ],
     )?;
     Ok(())
+}
+
+/// The seq at or below which reasoning rows are no longer worth keeping.
+///
+/// Returns the seq of the `reasoning_buffer`-th newest reasoning row, so every
+/// older one is pruned. A value of zero (no such row, or a budget of zero) makes
+/// the delete a no-op, which is what an empty job and a generous budget both
+/// want.
+fn reasoning_cutoff(
+    conn: &Connection,
+    job_id: &str,
+    reasoning_buffer: i64,
+) -> rusqlite::Result<i64> {
+    if reasoning_buffer < 1 {
+        return Ok(0);
+    }
+    let cutoff: Option<i64> = conn
+        .query_row(
+            "SELECT seq FROM job_events
+              WHERE job_id = ?1 AND kind = ?2
+              ORDER BY seq DESC
+              LIMIT 1 OFFSET ?3",
+            params![
+                job_id,
+                FrameKind::Reasoning.as_str(),
+                reasoning_buffer.saturating_sub(1)
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // The kept row is the boundary itself, so the delete removes strictly older
+    // rows (`< cutoff`) and the tail stays exactly `reasoning_buffer` long.
+    Ok(cutoff.unwrap_or(0))
 }
 
 /// Append the terminal frame and move the status together.
@@ -1217,6 +1356,7 @@ fn finish_transaction(
     payload: &str,
     status: &str,
     buffer: i64,
+    reasoning_buffer: i64,
 ) -> rusqlite::Result<Option<i64>> {
     let transaction = conn.transaction()?;
     let seq: Option<i64> = transaction
@@ -1228,7 +1368,7 @@ fn finish_transaction(
         // Already terminal: nothing was written and nothing may be.
         return Ok(None);
     };
-    prune(&transaction, job_id, seq, buffer)?;
+    prune(&transaction, job_id, seq, buffer, reasoning_buffer)?;
     let changed = transaction.execute(
         "UPDATE jobs SET status = ?2, finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
@@ -1256,7 +1396,7 @@ fn finish_transaction(
 /// would prune it. The `WHERE status IN ('queued', 'running')` guard in that
 /// statement means a job a concurrent canceller settled first is not clobbered.
 pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
-    let store = TurnStore::new(db.clone(), TurnStore::buffer_from_env());
+    let store = TurnStore::from_env(db.clone());
     let interrupted = db.with_conn(|conn| {
         let mut statement = conn.prepare(
             "SELECT id FROM jobs WHERE status IN ('queued', 'running') ORDER BY created_at, id",
@@ -1417,6 +1557,18 @@ impl TurnHub {
             mcp: Mutex::new(None),
             ask_keys: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Set how many reasoning frames one job keeps.
+    ///
+    /// Reasoning is pruned on its own budget so a long train of thought cannot
+    /// evict the answer from the replay window. Kept as a builder rather than a
+    /// fourth constructor argument because almost every caller wants the default
+    /// and only the env-driven construction and the tests differ.
+    #[must_use]
+    pub fn with_reasoning_buffer(mut self, reasoning_buffer: usize) -> Self {
+        self.store = self.store.clone().with_reasoning_buffer(reasoning_buffer);
+        self
     }
 
     /// Resolve one key reference: the injected environment for `env:`, the
@@ -2971,6 +3123,191 @@ mod tests {
         let clean = accounting_from(&usage, false, 3, 4_000);
         assert_eq!(clean.capped, Some(false));
         assert_eq!(clean.rounds, Some(3));
+    }
+
+    /// Reasoning keeps its own budget and cannot evict the answer.
+    ///
+    /// This is the measured failure it exists to prevent: a provider streamed
+    /// 8,188 reasoning frames of ~12.8 characters against three delta frames, and
+    /// because both kinds shared one retention number the reasoning spent the
+    /// window before the answer began. A phone reconnecting to that turn found
+    /// nothing to resume from.
+    #[test]
+    fn reasoning_cannot_evict_the_answer_from_the_replay_window() {
+        // A window wide enough to hold everything this test writes, so the only
+        // thing that can evict a reasoning frame is the reasoning budget. Making
+        // the shared window the binding constraint here would prove nothing about
+        // the two-tier prune.
+        let (base, device) = store(128);
+        let store = base.with_reasoning_buffer(4);
+        let (job, _) = queued(&store, &device);
+
+        // One round marker, then a long train of thought, then the answer.
+        store
+            .append(&job, FrameKind::Round, &serde_json::json!({ "round": 1 }))
+            .expect("append")
+            .expect("a live job accepts a round marker");
+        for index in 1..=40 {
+            let data = serde_json::json!({ "text": format!("thinking {index}") });
+            store
+                .append(&job, FrameKind::Reasoning, &data)
+                .expect("append")
+                .expect("a live job accepts reasoning");
+        }
+        for index in 1..=5 {
+            let data = serde_json::json!({ "text": format!("answer {index}") });
+            store
+                .append(&job, FrameKind::Delta, &data)
+                .expect("append")
+                .expect("a live job accepts a delta");
+        }
+
+        let frames = store.events_after(&job, 0).expect("events");
+        let reasoning = frames
+            .iter()
+            .filter(|frame| frame.kind == FrameKind::Reasoning)
+            .count();
+        let deltas = frames
+            .iter()
+            .filter(|frame| frame.kind == FrameKind::Delta)
+            .count();
+
+        assert_eq!(
+            reasoning, 4,
+            "reasoning is held to its own smaller budget, not the shared one"
+        );
+        assert_eq!(
+            deltas, 5,
+            "every delta survives: the answer is what a resume came back for"
+        );
+        assert!(
+            frames.iter().any(|frame| frame.kind == FrameKind::Round),
+            "the round marker survives too, so a client can show progress"
+        );
+    }
+
+    /// The reasoning budget is independent of the shared one in both directions.
+    #[test]
+    fn the_two_budgets_do_not_stand_in_for_each_other() {
+        // A generous reasoning budget still cannot exceed the shared window.
+        // Braced so the local `store` binding does not shadow the helper above.
+        {
+            let (base, device) = store(4);
+            let store = base.with_reasoning_buffer(1000);
+            let (job, _) = queued(&store, &device);
+            for index in 1..=20 {
+                let data = serde_json::json!({ "text": format!("delta {index}") });
+                store
+                    .append(&job, FrameKind::Delta, &data)
+                    .expect("append")
+                    .expect("a live job accepts a delta");
+            }
+            assert_eq!(
+                store.events_after(&job, 0).expect("events").len(),
+                4,
+                "the shared window is the outer bound whatever reasoning is set to"
+            );
+        }
+
+        // A reasoning budget of one keeps exactly one.
+        let (base, device) = store(64);
+        let store = base.with_reasoning_buffer(1);
+        let (job, _) = queued(&store, &device);
+        for index in 1..=10 {
+            let data = serde_json::json!({ "text": format!("thinking {index}") });
+            store
+                .append(&job, FrameKind::Reasoning, &data)
+                .expect("append")
+                .expect("a live job accepts reasoning");
+        }
+        let frames = store.events_after(&job, 0).expect("events");
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame.kind == FrameKind::Reasoning)
+                .count(),
+            1,
+            "the tail is as small as the budget says"
+        );
+    }
+
+    /// Pruning reasoning still leaves the sequence climbing and the counter sane.
+    ///
+    /// `seq` is derived from `MAX(seq)` on insert, so a prune that removed the
+    /// newest row would reissue a number a client has already seen. The reasoning
+    /// cutoff is a position in the sequence, not a trim of the newest rows, and
+    /// this pins that down.
+    #[test]
+    fn reasoning_pruning_keeps_the_sequence_and_the_min_seq_honest() {
+        let (base, device) = store(512);
+        let store = base.with_reasoning_buffer(2);
+        let (job, _) = queued(&store, &device);
+        for index in 1..=6 {
+            let data = serde_json::json!({ "text": format!("thinking {index}") });
+            let seq = store
+                .append(&job, FrameKind::Reasoning, &data)
+                .expect("append")
+                .expect("a live job accepts reasoning");
+            assert_eq!(seq, index, "seq is monotonic from 1 despite pruning");
+        }
+        let kept: Vec<i64> = store
+            .events_after(&job, 0)
+            .expect("events")
+            .iter()
+            .map(|frame| frame.seq)
+            .collect();
+        assert_eq!(kept, vec![5, 6], "the reasoning tail is the newest rows");
+        assert_eq!(
+            store.min_seq(&job).expect("min seq"),
+            Some(5i64),
+            "min_seq reports the oldest row a resume can ask for"
+        );
+
+        // The counter survives: the next append is 7, not 3.
+        let data = serde_json::json!({ "text": "next" });
+        assert_eq!(
+            store
+                .append(&job, FrameKind::Delta, &data)
+                .expect("append")
+                .expect("a live job accepts a delta"),
+            7
+        );
+    }
+
+    /// A terminal frame is written through `finish`, which prunes. It must not be
+    /// the row that a reasoning cutoff removes, or a finished job would replay
+    /// with no end.
+    #[test]
+    fn a_terminal_frame_survives_reasoning_pruning() {
+        let (base, device) = store(512);
+        let store = base.with_reasoning_buffer(1);
+        let (job, _) = queued(&store, &device);
+        for index in 1..=5 {
+            let data = serde_json::json!({ "text": format!("thinking {index}") });
+            store
+                .append(&job, FrameKind::Reasoning, &data)
+                .expect("append")
+                .expect("a live job accepts reasoning");
+        }
+        let done = store
+            .finish(&job, FrameKind::Done, &serde_json::json!({ "text": "ok" }))
+            .expect("finish");
+        assert!(done.is_some(), "the terminal frame was written");
+
+        let frames = store.events_after(&job, 0).expect("events");
+        assert_eq!(
+            frames.last().map(|frame| frame.kind),
+            Some(FrameKind::Done),
+            "the job still ends in its terminal frame"
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame.kind == FrameKind::Reasoning)
+                .count(),
+            1,
+            "reasoning is still trimmed to its own tail"
+        );
     }
 
     #[test]

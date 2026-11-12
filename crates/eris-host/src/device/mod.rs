@@ -65,7 +65,7 @@ use crate::error::assign_request_id;
 use crate::onboarding::SetupEngine;
 use crate::persona::PersonaConfig;
 
-use turns::TurnHub;
+use turns::{TurnHub, TurnStore};
 
 /// The device listener address. Loopback, literal, not configurable.
 pub const DEVICE_ADDR: &str = "127.0.0.1:7341";
@@ -768,7 +768,11 @@ impl DeviceService {
     #[must_use]
     pub fn new(engine: SetupEngine, buffer: usize) -> Self {
         let persona = PersonaConfig::at_path(engine.paths().persona_file());
-        let hub = Arc::new(TurnHub::new(engine.db().clone(), buffer).with_persona(persona));
+        let hub = Arc::new(
+            TurnHub::new(engine.db().clone(), buffer)
+                .with_reasoning_buffer(TurnStore::reasoning_buffer_from_env())
+                .with_persona(persona),
+        );
         let sensors = open_sensors(&engine);
         let inbox = open_inbox(&engine);
         let notes = open_notes(&engine);
@@ -901,7 +905,9 @@ impl DeviceService {
     pub fn with_key_lookup(engine: SetupEngine, buffer: usize, lookup: turns::KeyLookup) -> Self {
         let persona = PersonaConfig::at_path(engine.paths().persona_file());
         let hub = Arc::new(
-            TurnHub::with_key_lookup(engine.db().clone(), buffer, lookup).with_persona(persona),
+            TurnHub::with_key_lookup(engine.db().clone(), buffer, lookup)
+                .with_reasoning_buffer(TurnStore::reasoning_buffer_from_env())
+                .with_persona(persona),
         );
         let sensors = open_sensors(&engine);
         let inbox = open_inbox(&engine);
