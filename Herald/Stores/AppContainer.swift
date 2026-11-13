@@ -556,6 +556,23 @@ final class AppContainer {
         // Which backend this install is on, asked before anything pairs: a
         // daemon address that was ever remembered means the relay handshake
         // must not run, because no daemon serves `/v1/session`.
+        //
+        // The persisted pair is the second half of the answer, and it is what
+        // heals an install paired before the redeem started writing the
+        // remembered address: that device holds a good pairing in the Keychain
+        // and a persisted configuration naming its daemon, but no default. Back
+        // the default from the configuration so the next launch reads a daemon
+        // install instead of running the relay handshake at one.
+        //
+        // Skipped under the mocked pairing harness: that pairing is a fixture,
+        // and seeding the real default from it would tell a later real launch
+        // that this install had a daemon when it only ever had a stub.
+        if !usesMockPairingService,
+           ErisDaemonStore.hasRememberedAddress() == false,
+           let paired = persistence.loadPairedRelayConfiguration(),
+           let pairedURL = URL(string: paired.baseURLString) {
+            ErisDaemonStore.remember(address: pairedURL)
+        }
         sessionStore.isErisBackend = { ErisDaemonStore.hasRememberedAddress() }
 
         let runtimePairingStore = PairingStore(

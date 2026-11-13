@@ -38,6 +38,14 @@ final class ErisPairingService: PairingServiceProtocol {
         // `ErisClient.pair` stored the pair (base URL + tokens) in the keychain
         // before returning, so `ErisDaemonStore.start()` / `ErisHeraldClient
         // .connect()` restore it on the next connect without re-pairing.
+        //
+        // The remembered address is written here, beside the Keychain write, and
+        // not only by `ErisDaemonStore.start()`. The Keychain is the pair; this
+        // default is what launch reads to know a daemon is the backend at all, so
+        // a pair that skipped it left the app running the relay handshake at a
+        // daemon and reporting an unpaired build on a device the daemon had
+        // already accepted.
+        ErisDaemonStore.remember(address: baseURL)
         let host = baseURL.host ?? baseURL.absoluteString
         let deviceID = pair.deviceID.flatMap { UUID(uuidString: $0) }
 

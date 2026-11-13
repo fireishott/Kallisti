@@ -980,6 +980,47 @@ struct ErisLaunchPathTests {
         defaults.set("http://192.168.68.51:7341", forKey: "eris.daemon.baseURL")
         #expect(ErisDaemonStore.hasRememberedAddress(defaults))
     }
+
+    /// The pairing redeem wrote the Keychain and skipped this default, so a
+    /// freshly paired device looked unpaired to launch and ran the relay
+    /// handshake at a daemon. `remember(address:)` is the write that closes it,
+    /// and it has to record the address the Keychain pair actually carries.
+    @Test("recording a pair writes the address launch reads")
+    func rememberAddressIsWhatLaunchReads() {
+        let suite = "eris-daemon-remember-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        #expect(!ErisDaemonStore.hasRememberedAddress(defaults))
+
+        let daemon = URL(string: "https://fih-ai-host.tail4d497d.ts.net")!
+        ErisDaemonStore.remember(address: daemon, defaults)
+
+        #expect(ErisDaemonStore.hasRememberedAddress(defaults))
+        #expect(
+            defaults.string(forKey: "eris.daemon.baseURL") == daemon.absoluteString,
+            "launch reads the address the pair recorded"
+        )
+    }
+
+    /// The pair that broke was in place; only the default was missing. Clearing
+    /// must still take both, or an unpair leaves the residue that made a
+    /// disconnected device look paired.
+    @Test("clearing removes the address the pair recorded")
+    func clearAddressRemovesThePair() {
+        let suite = "eris-daemon-clear-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        ErisDaemonStore.remember(address: URL(string: "http://127.0.0.1:7341")!, defaults)
+        #expect(ErisDaemonStore.hasRememberedAddress(defaults))
+
+        ErisDaemonStore.clearRememberedAddress(defaults)
+
+        #expect(!ErisDaemonStore.hasRememberedAddress(defaults))
+    }
 }
 
 // MARK: - A silent stream is a drop, not a dead turn

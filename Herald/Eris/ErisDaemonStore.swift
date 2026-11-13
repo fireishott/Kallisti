@@ -236,6 +236,24 @@ final class ErisDaemonStore {
         defaults.removeObject(forKey: DefaultsKey.lastSession)
     }
 
+    /// Record the daemon address, from the side whose only job is the pairing.
+    ///
+    /// This is the write that must pair with `clearRememberedAddress`. The pair
+    /// itself lives in the Keychain, which `ErisPairingService` writes directly,
+    /// so a fresh pair used to leave the Keychain holding a good pairing and this
+    /// default holding nothing. Launch reads this default to decide whether the
+    /// install is daemon-backed (`AppContainer.initialize`), and with nothing to
+    /// read it ran the relay bootstrap against an Eris daemon: `GET /v1/session`
+    /// answered a 404 JSON body, and the launch screen rendered that body's `{`
+    /// as "This build is not paired to your Kallisti daemon". The device was
+    /// paired the whole time - the app just could not tell.
+    ///
+    /// Called from the pairing redeem, not only from `start()`: `start()` reads
+    /// the Keychain and so cannot help a pair that has not been discovered yet.
+    static func remember(address url: URL, _ defaults: UserDefaults = .standard) {
+        defaults.set(url.absoluteString, forKey: DefaultsKey.baseURL)
+    }
+
     /// One transport per daemon address, kept for the life of the store.
     ///
     /// `ErisClient` is an actor whose refresh is single-flight *within one
