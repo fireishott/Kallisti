@@ -59,7 +59,7 @@ struct CodeDiffParserLiveTests {
             + "--- a/B.swift\n+++ b/B.swift\n@@ -1 +1 @@\n-oldB\n+newB\n"
         let parsed = CodeDiffParser.parse(single: diff)
         #expect(parsed?.fileCount == 2)
-        #expect(parsed?.files.map(\\.path).sorted() == ["A.swift", "B.swift"])
+        #expect(parsed?.files.map(\.path).sorted() == ["A.swift", "B.swift"])
     }
 
     @Test("NativeToolCompletePayload resultDiff falls back to result.diff")

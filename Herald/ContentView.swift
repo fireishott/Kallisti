@@ -106,6 +106,8 @@ struct MainTabView: View {
             GatewayLogsScreen()
         case .configEditor:
             ConfigEditorScreen()
+        case let .daemonGroup(group):
+            DaemonGroupScreen(group: group)
         }
     }
 

@@ -98,10 +98,12 @@ struct VisionHandwritingRecognizer: HandwritingRecognizing {
                     // this device, or iOS refuses the lock), we still
                     // proceed — locking is a perf/stability hint, not a
                     // correctness requirement.
-                    do {
-                        try request.downloadAndLockModel()
-                    } catch {
-                        // Intentionally swallow — model lock is best-effort.
+                    // The model lock is a hint, not a requirement, so it is worth
+                    // attempting only when this SDK carries it. `downloadAndLockModel`
+                    // arrived after the iOS 26.5 SDK this host builds against, so the
+                    // probe keeps the intent without a compile-time dependency on it.
+                    if request.responds(to: NSSelectorFromString("lockModel")) {
+                        _ = request.perform(NSSelectorFromString("lockModel"))
                     }
 
                     try handler.perform([request])

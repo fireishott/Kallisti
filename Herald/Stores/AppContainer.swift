@@ -84,6 +84,10 @@ final class AppContainer {
     let profileStore: ProfileStore
     let skillsStore: SkillsStore
     let cronStore: CronStore
+    /// The daemon's capability record, its dirty set, and its commit. One store
+    /// for every group screen: the record is one read and a second store would be
+    /// a second copy of it.
+    let daemonSettingsStore: DaemonSettingsStore
     let canvasStore: HeraldCanvasStore
     let notesStore: NotesStore
     /// Notes sync engine. Option 1 architecture: every note is a gateway
@@ -134,6 +138,8 @@ final class AppContainer {
     private var pendingNotificationRoute: PendingNotificationRoute?
 
     private static let commandCatalogRefreshInterval: TimeInterval = 60
+
+
 
     init(
         sessionStore: AppSessionStore,
@@ -200,6 +206,16 @@ final class AppContainer {
         self.cronStore = cronStore ?? CronStore(
             apiClient: apiClient,
             accessTokenProvider: { await sessionStore.currentAccessToken() }
+        )
+        // The relay the phone is configured against, read through the closure so a
+        // host change applies without rebuilding the store.
+        self.daemonSettingsStore = DaemonSettingsStore(
+            baseURLProvider: { @MainActor [settingsStore] in
+                Self.resolveNativeGatewayHost(
+                    from: settingsStore.settings.relayConfiguration.activeBaseURLString
+                ).baseURL
+            },
+            tokenProvider: { await sessionStore.currentAccessToken() }
         )
         self.canvasStore = canvasStore ?? HeraldCanvasStore()
         self.notesStore = notesStore ?? NotesStore()
