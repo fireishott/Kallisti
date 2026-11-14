@@ -462,7 +462,7 @@ struct NativeKallistiClientTests {
 /// Answers every `/api/auth/ws-ticket` POST with a fixed ticket so
 /// `mintTicket()` succeeds without touching the network. Mirrors
 /// `MockTicketURLProtocol` in NativeAuthCoordinatorTests.swift.
-private final class StubTicketURLProtocol: URLProtocol {
+final class StubTicketURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.path.hasSuffix("/api/auth/ws-ticket") == true
     }
