@@ -84,4 +84,5 @@ pub mod subagents;
 pub mod tools;
 pub mod trigger;
 pub mod web;
+pub mod workboard;
 pub mod zone;

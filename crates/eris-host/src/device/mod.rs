@@ -157,6 +157,12 @@ pub const ROUTE_CANCEL: &str = "/v1/turns/{id}/cancel";
 /// this daemon's: a chat, not a device session.
 pub const ROUTE_SESSION: &str = "/v1/sessions/{id}";
 
+/// `GET /v1/workboard` - every task, filterable by status.
+pub const ROUTE_WORKBOARD: &str = "/v1/workboard";
+
+/// `PATCH /v1/workboard/{id}` - move, retitle or re-date one task.
+pub const ROUTE_WORKBOARD_ITEM: &str = "/v1/workboard/{id}";
+
 /// `GET /v1/version` - which daemon a client is talking to, without a token.
 ///
 /// A client that has just scanned a pairing code has no bearer yet, and the first
@@ -1225,6 +1231,14 @@ pub fn router(service: DeviceService) -> Router {
         )
         .route(ROUTE_SKILLS, get(control::skills_list))
         .route(ROUTE_SEARCH, get(control::search_transcript))
+        .route(
+            ROUTE_WORKBOARD,
+            get(control::workboard).post(control::create_work),
+        )
+        .route(
+            ROUTE_WORKBOARD_ITEM,
+            patch(control::patch_work).delete(control::delete_work),
+        )
         .route(
             ROUTE_SKILL_ITEM,
             get(control::skill_detail)

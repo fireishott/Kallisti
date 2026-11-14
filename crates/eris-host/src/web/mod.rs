@@ -24,6 +24,10 @@ pub mod templates;
 pub mod term;
 pub mod wallpaper;
 
+/// The workboard page, and the proof that a task outlives a session.
+#[cfg(test)]
+mod workboard_page;
+
 /// P11 acceptance for the sign-in route. Test-only: the handlers live with the
 /// other handlers in `routes`, and this module is the suite that pins the
 /// browser path to the dashboard.

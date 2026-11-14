@@ -1798,6 +1798,10 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
     ),
     (crate::process::SETTING_RECEIPT_DAYS, "jobs_receipt_days"),
     (crate::learning::SETTING_UNUSED_DAYS, "curator_archive_days"),
+    (
+        crate::workboard::SETTING_DEFAULT_PROJECT,
+        "workboard_default_project",
+    ),
     (crate::search::SETTING_SEARCH_LIMIT, "search_limit"),
     (
         crate::search::SETTING_SEARCH_SCOPE_DEFAULT,

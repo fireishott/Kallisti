@@ -400,6 +400,15 @@ pub const ROUTE_ENV_DELETE: &str = "/dashboard/env/delete";
 /// `GET /dashboard/activity` - the audit trail, newest first.
 pub const ROUTE_ACTIVITY: &str = "/dashboard/activity";
 
+/// The workboard: tasks that survive the session that named them.
+pub const ROUTE_WORKBOARD: &str = "/dashboard/workboard";
+
+/// Add one task from the page.
+pub const ROUTE_WORKBOARD_ADD: &str = "/dashboard/workboard/add";
+
+/// Move, retitle or drop one task from the page.
+pub const ROUTE_WORKBOARD_ITEM: &str = "/dashboard/workboard/item";
+
 /// `GET /dashboard/sessions` - every device session, newest first.
 pub const ROUTE_SESSIONS: &str = "/dashboard/sessions";
 
@@ -474,6 +483,7 @@ pub const ALL_GET_ROUTES: &[&str] = &[
     ROUTE_SETTINGS,
     ROUTE_SETTINGS_UPDATE_PROGRESS,
     ROUTE_ACTIVITY,
+    ROUTE_WORKBOARD,
     ROUTE_BACKUPS,
     ROUTE_ROSTER,
     ROUTE_TRIGGERS,
@@ -526,6 +536,8 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_UPDATE_APPLY,
     ROUTE_SETTINGS_UPDATE,
     ROUTE_SETTINGS_AUX,
+    ROUTE_WORKBOARD_ADD,
+    ROUTE_WORKBOARD_ITEM,
     ROUTE_SETTINGS_MCP,
     ROUTE_SETTINGS_GREETING,
     ROUTE_SETTINGS_SEARCH,

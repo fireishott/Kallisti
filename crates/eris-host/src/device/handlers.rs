@@ -271,7 +271,7 @@ fn hex_digit(byte: u8) -> Result<u8, DeviceError> {
 }
 
 /// One field, trimmed. Missing reads as empty, so validation owns the message.
-fn field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> &'a str {
+pub(crate) fn field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> &'a str {
     fields.get(name).map(String::as_str).unwrap_or("").trim()
 }
 
@@ -2542,6 +2542,10 @@ fn read_schedule_email_enabled(engine: &SetupEngine) -> Result<String, DeviceErr
     Ok(crate::delivery::email_enabled(engine.db()).to_string())
 }
 
+fn read_workboard_default_project(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::workboard::default_project(engine.db()).unwrap_or_default())
+}
+
 fn read_tool_index(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(tool_index_enabled(engine).to_string())
 }
@@ -2790,6 +2794,16 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::greeting::SETTING_GREETING_REFRESH,
         writable: true,
         read: read_greeting_refresh,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "workboard_default_project",
+        label: "Default project",
+        group: "assistant",
+        kind: SettingKind::Text,
+        row: crate::workboard::SETTING_DEFAULT_PROJECT,
+        writable: true,
+        read: read_workboard_default_project,
         normalize: None,
     },
     SettingSpec {

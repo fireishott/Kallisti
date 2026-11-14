@@ -47,8 +47,8 @@ use crate::admin::{
     ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE, ROUTE_SETTINGS_UPDATE_APPLY,
     ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS, ROUTE_SETTINGS_WORKSPACE,
     ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_RESTORE, ROUTE_SKILLS_SAVE,
-    ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE, ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION,
-    session_path,
+    ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE, ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE,
+    ROUTE_WORKBOARD, ROUTE_WORKBOARD_ADD, ROUTE_WORKBOARD_ITEM, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -68,9 +68,10 @@ use crate::web::templates::{
     DashboardView, DeviceRow, DevicesView, EnvRow, EnvView, FormError, IssuedCodeView,
     LearningView, MintedToken, RosterDraft, RosterView, SearchView, SessionDetailView,
     SessionsView, SettingsGroup, SettingsView, SetupView, SkillEditor, SkillsView, TriggerDraft,
-    TriggersView, UpdateCard, activity_page, backups_page, chat_page, dashboard_page, devices_page,
-    env_page, error_page, learning_page, login_page, roster_page, search_page, session_page,
-    sessions_page, settings_page, setup_page, skills_page, triggers_page, type_badge,
+    TriggersView, UpdateCard, WorkView, activity_page, backups_page, chat_page, dashboard_page,
+    devices_page, env_page, error_page, learning_page, login_page, roster_page, search_page,
+    session_page, sessions_page, settings_page, setup_page, skills_page, triggers_page, type_badge,
+    workboard_page,
 };
 use crate::web::wallpaper;
 
@@ -198,6 +199,9 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_ROSTER_TOGGLE, post(toggle_roster_agent))
         .route(ROUTE_ROSTER_DELETE, post(delete_roster_agent))
         .route(ROUTE_ACTIVITY, get(activity))
+        .route(ROUTE_WORKBOARD, get(workboard))
+        .route(ROUTE_WORKBOARD_ADD, post(add_work))
+        .route(ROUTE_WORKBOARD_ITEM, post(change_work))
         .route(ROUTE_SESSIONS, get(sessions))
         .route(ROUTE_SESSION, get(session_detail))
         .route(ROUTE_DEVICES, get(devices).post(mint_pairing_code))
@@ -1113,6 +1117,8 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     view.jobs_notify_on_complete = crate::process::notify_on_complete(engine.db());
     view.jobs_receipt_days = crate::process::receipt_days(engine.db()).to_string();
     view.search_limit = crate::search::stored_limit(engine.db()).to_string();
+    view.workboard_default_project =
+        crate::workboard::default_project(engine.db()).unwrap_or_default();
     view.search_scope_default = crate::search::stored_scope(engine.db());
     // The objective every turn carries until it is cleared. Read through
     // `crate::goal` so the page shows exactly what a turn would be given, rather
@@ -1720,6 +1726,158 @@ async fn search(
     }
     page(search_page(&view))
 }
+
+/// `GET /dashboard/workboard` - the board, filtered by the query.
+async fn workboard(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let mut view = match build_work_view(&state) {
+        Ok(view) => view,
+        Err(error) => return refusal(error),
+    };
+    let filter = query
+        .get("status")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| crate::workboard::STATUSES.contains(&value.as_str()));
+    if let Some(status) = &filter {
+        view.items.retain(|item| item.status == *status);
+        view.filter = Some(status.clone());
+    }
+    view.notice = match query.get("saved").map(String::as_str) {
+        Some("add") => Some("The task is on the board.".to_owned()),
+        Some("move") => Some("The task moved.".to_owned()),
+        Some("drop") => Some("The task is off the board.".to_owned()),
+        _ => None,
+    };
+    page(workboard_page(&view))
+}
+
+fn build_work_view(state: &AppState) -> Result<WorkView, FormError> {
+    let engine = &state.engine;
+    let mut view = WorkView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.chrome = state.chrome();
+    view.items =
+        crate::workboard::list(engine.db(), None, 200).map_err(|error| db_error(&error))?;
+    view.default_project = crate::workboard::default_project(engine.db()).unwrap_or_default();
+    Ok(view)
+}
+
+/// `POST /dashboard/workboard/add` - one new task.
+async fn add_work(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_work(&state, as_html, error),
+    };
+    let draft = crate::workboard::Draft {
+        title: field(&fields, "title").to_owned(),
+        project: Some(field(&fields, "project").to_owned()),
+        due: Some(field(&fields, "due").to_owned()),
+        owner_kind: Some("operator".to_owned()),
+        ..crate::workboard::Draft::default()
+    };
+    match crate::workboard::create(state.engine.db(), &draft) {
+        Ok(id) => {
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "workboard.changed",
+                Some(&format!("create id={id}")),
+            );
+            see_other(SAVED_WORK_ADD)
+        }
+        Err(error) => fail_work(
+            &state,
+            as_html,
+            FormError::new(Some("title"), "workboard_invalid", error),
+        ),
+    }
+}
+
+/// `POST /dashboard/workboard/item` - move or drop one task.
+async fn change_work(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_work(&state, as_html, error),
+    };
+    let id = field(&fields, "id").to_owned();
+    let detail = format!("{} id={id}", field(&fields, "action"));
+    let outcome = if field(&fields, "action") == "delete" {
+        crate::workboard::remove(state.engine.db(), &id)
+            .map(|found| (found, SAVED_WORK_DROP))
+            .map_err(|error| error.to_string())
+    } else {
+        let change = crate::workboard::Change {
+            title: None,
+            status: Some(field(&fields, "status").to_owned()),
+            project: None,
+            due: None,
+        };
+        crate::workboard::patch(state.engine.db(), &id, &change)
+            .map(|found| (found, SAVED_WORK_MOVE))
+    };
+    match outcome {
+        Ok((true, target)) => {
+            let _ = state
+                .engine
+                .auth()
+                .audit("loopback", "workboard.changed", Some(&detail));
+            see_other(target)
+        }
+        Ok((false, _)) => fail_work(
+            &state,
+            as_html,
+            FormError::new(None, "workboard_missing", "no such task on the board"),
+        ),
+        Err(error) => fail_work(
+            &state,
+            as_html,
+            FormError::new(None, "workboard_invalid", error),
+        ),
+    }
+}
+
+/// A workboard refusal, rendered on its own page.
+fn fail_work(state: &AppState, as_html: bool, error: FormError) -> Response {
+    let status = failure_status(&error.code);
+    if as_html {
+        match build_work_view(state) {
+            Ok(mut view) => {
+                view.error = Some(error);
+                page_with_status(workboard_page(&view), status)
+            }
+            Err(build_error) => refusal(build_error),
+        }
+    } else {
+        refusal(error)
+    }
+}
+
+const SAVED_WORK_ADD: &str = "/dashboard/workboard?saved=add";
+const SAVED_WORK_MOVE: &str = "/dashboard/workboard?saved=move";
+const SAVED_WORK_DROP: &str = "/dashboard/workboard?saved=drop";
 
 /// `POST /dashboard/processes/{id}/kill` - stop one background process.
 ///
@@ -7811,6 +7969,15 @@ async fn save_search(
         );
     }
 
+    if let Some(project) = fields.get("workboard_default_project")
+        && let Err(error) = store::settings_put(
+            state.engine.db(),
+            crate::workboard::SETTING_DEFAULT_PROJECT,
+            project.trim(),
+        )
+    {
+        return store_failure(&request_id.0, "the default board project", error);
+    }
     for (key, value) in [
         (crate::search::SETTING_SEARCH_LIMIT, limit.to_string()),
         (crate::search::SETTING_SEARCH_SCOPE_DEFAULT, scope.clone()),
