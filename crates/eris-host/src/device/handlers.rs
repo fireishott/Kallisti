@@ -3768,6 +3768,51 @@ fn apply_settings(service: &DeviceService, write: &SettingsWrite) -> Result<(), 
     Ok(())
 }
 
+/// Save the `steward_*` fields of a dashboard form through the table that
+/// `POST /v1/settings` uses, with the same kind, bound and enum checks.
+///
+/// Absent fields and unknown `steward_*` names are ignored, never zeroed. A
+/// checkbox is the one exception: a form that posts the `steward_form` marker
+/// means an unticked `steward_enabled` is off. Every field is checked before any
+/// row is written, so one bad value saves nothing. Returns the rows that changed,
+/// or the first refusal with the key it belongs to.
+pub fn save_steward_fields(
+    engine: &SetupEngine,
+    fields: &BTreeMap<String, String>,
+) -> Result<Vec<(&'static str, String)>, (&'static str, DeviceError)> {
+    let mut named: BTreeMap<&str, &str> = fields
+        .iter()
+        .filter(|(key, _)| key.starts_with("steward_"))
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    if fields.contains_key("steward_form") && !fields.contains_key("steward_enabled") {
+        named.insert("steward_enabled", "false");
+    }
+    let mut checked: Vec<(&'static SettingSpec, String)> = Vec::new();
+    for (key, raw) in named {
+        let Some(spec) = setting_spec(key) else {
+            continue;
+        };
+        if !spec.writable {
+            continue;
+        }
+        validate_setting(spec, raw).map_err(|error| (spec.key, error))?;
+        let value = canonical_value(spec, raw);
+        let current = (spec.read)(engine).map_err(|error| (spec.key, error))?;
+        if value != current {
+            checked.push((spec, value));
+        }
+    }
+    let mut saved = Vec::with_capacity(checked.len());
+    for (spec, value) in checked {
+        engine
+            .set_setting(spec.row, &value)
+            .map_err(|error| (spec.key, settings_unavailable(error)))?;
+        saved.push((spec.key, value));
+    }
+    Ok(saved)
+}
+
 /// Whether this process may select `full` sandbox mode.
 ///
 /// The dashboard combines the `--allow-full` flag with the stored switch; the

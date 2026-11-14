@@ -696,6 +696,12 @@ impl DeviceError {
     pub fn code(&self) -> &'static str {
         self.code
     }
+
+    /// The human-readable detail this error answers with.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl IntoResponse for DeviceError {

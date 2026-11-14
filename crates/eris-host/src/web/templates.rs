@@ -1985,11 +1985,13 @@ pub enum SettingsGroup {
     Accounts,
     /// The Software card: installing a staged or published build.
     Update,
+    /// The Steward card: its charter, watch cadence and notes.
+    Steward,
 }
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Provider,
         Self::Accounts,
         Self::Workspace,
@@ -2004,6 +2006,7 @@ impl SettingsGroup {
         Self::Schedules,
         Self::Skills,
         Self::Update,
+        Self::Steward,
     ];
 
     /// The anchor and error-region id for this group.
@@ -2024,6 +2027,7 @@ impl SettingsGroup {
             Self::Skills => "skills",
             Self::Accounts => "accounts",
             Self::Update => "update",
+            Self::Steward => "steward",
         }
     }
 
@@ -2078,6 +2082,7 @@ impl SettingsGroup {
             // field, so nothing can be filed next to one. A refusal from it lands
             // in the page-level region, which is where the card renders it.
             Self::Update => false,
+            Self::Steward => false,
         }
     }
 
@@ -2099,6 +2104,7 @@ impl SettingsGroup {
             Self::Skills => "skills saved",
             Self::Accounts => "account updated",
             Self::Update => "update requested",
+            Self::Steward => "steward settings saved",
         }
     }
 }
@@ -2742,6 +2748,8 @@ impl SettingsTab {
                 Self::Automation
             }
             SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
+            // The steward spans three tabs; its save names the tab of the field it changed.
+            SettingsGroup::Steward => Self::Assistant,
             SettingsGroup::Workspace | SettingsGroup::Permissions | SettingsGroup::Update => {
                 Self::System
             }
@@ -2820,6 +2828,12 @@ impl SettingsTab {
             | "goal_text"
             | "goal_action"
             | "soft_cap_tokens" => Self::Assistant,
+            "steward_charter" | "steward_call_urgency_default" | "steward_board_columns" => {
+                Self::Assistant
+            }
+            "steward_note_window" | "steward_field_note_days" => Self::Memory,
+            "steward_enabled" | "steward_watch_seconds" | "steward_max_rounds"
+            | "steward_delivery_default" => Self::Automation,
             "memory_backend" | "memory_vault" => Self::Memory,
             "device_listen" | "device_relay" | "notify_on_reply" | "notify_scope"
             | "notify_devices" => Self::Devices,
@@ -4666,6 +4680,8 @@ fn tab_assistant(view: &SettingsView) -> Markup {
 
         section .card aria-labelledby="steward-assistant-heading" {
             h2 id="steward-assistant-heading" { "Steward" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STEWARD) novalidate {
+                (alert_region(None, view.group_notice(SettingsGroup::Steward)))
             p .small {
                 "The charter is the standing instruction the steward works under, one line per "
                 "duty seed. The urgency and board columns are its defaults."
@@ -4690,6 +4706,10 @@ fn tab_assistant(view: &SettingsView) -> Markup {
                     option value="full" selected[view.steward_board_columns == "full"] { "Full" }
                 }
             }
+            div .actions {
+                button type="submit" { "Save steward" }
+            }
+            }
         }
     }
 }
@@ -4708,6 +4728,8 @@ fn tab_memory(view: &SettingsView) -> Markup {
 
         section .card aria-labelledby="steward-memory-heading" {
             h2 id="steward-memory-heading" { "Steward notes" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STEWARD) novalidate {
+                (alert_region(None, view.group_notice(SettingsGroup::Steward)))
             p .small {
                 "The steward's field notes are its scratch memory. The window is how many recent "
                 "notes a turn carries; the days are how long a note is kept."
@@ -4721,6 +4743,10 @@ fn tab_memory(view: &SettingsView) -> Markup {
                 label for="steward_field_note_days" { "Keep field notes for, days" }
                 input type="number" id="steward_field_note_days" name="steward_field_note_days"
                     min="1" max="365" value=(view.steward_field_note_days);
+            }
+            div .actions {
+                button type="submit" { "Save steward notes" }
+            }
             }
         }
     }
@@ -4994,6 +5020,11 @@ fn tab_automation(view: &SettingsView) -> Markup {
 
         section .card aria-labelledby="steward-automation-heading" {
             h2 id="steward-automation-heading" { "Steward" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STEWARD) novalidate {
+                (alert_region(None, view.group_notice(SettingsGroup::Steward)))
+            /* The marker says this form carries the switch: an unticked box is a
+               real "off", where a form without the marker simply leaves it alone. */
+            input type="hidden" name="steward_form" value="1";
             p .small {
                 "The steward watches the duties you hand it on a cadence, without being spoken to. "
                 "Off, no duty is watched."
@@ -5023,6 +5054,10 @@ fn tab_automation(view: &SettingsView) -> Markup {
                     option value="email" selected[view.steward_delivery_default == "email"] { "Email" }
                     option value="off" selected[view.steward_delivery_default == "off"] { "Off" }
                 }
+            }
+            div .actions {
+                button type="submit" { "Save steward" }
+            }
             }
         }
 

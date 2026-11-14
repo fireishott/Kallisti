@@ -188,6 +188,9 @@ pub const ROUTE_SECURITY: &str = "/dashboard/security";
 pub const ROUTE_SETTINGS_DEVICE: &str = "/dashboard/settings/device";
 /// Where the memory backend is chosen.
 pub const ROUTE_SETTINGS_MEMORY: &str = "/dashboard/settings/memory";
+/// Where the steward controls are saved. Their own form: the security form is
+/// a different action, and a field posted to the wrong route saves nothing.
+pub const ROUTE_SETTINGS_STEWARD: &str = "/dashboard/settings/steward";
 
 /// `POST /dashboard/settings/timezone` - the clock every stamp is shown in.
 pub const ROUTE_SETTINGS_TIMEZONE: &str = "/dashboard/settings/timezone";
@@ -526,6 +529,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_STREAMING,
     ROUTE_SETTINGS_QUOTA,
     ROUTE_SETTINGS_MEMORY,
+    ROUTE_SETTINGS_STEWARD,
     ROUTE_SECURITY,
     ROUTE_SETTINGS_DEVICE,
     ROUTE_SETTINGS_TIMEZONE,

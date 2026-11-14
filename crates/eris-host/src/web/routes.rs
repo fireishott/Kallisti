@@ -38,7 +38,7 @@ use crate::admin::{
     ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_DELIVERY, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS,
     ROUTE_SETTINGS_GOAL, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_JOBS, ROUTE_SETTINGS_LEARNING,
-    ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_STEWARD, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD,
     ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
     ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
@@ -148,6 +148,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_STREAMING, post(save_streaming))
         .route(ROUTE_SETTINGS_QUOTA, post(save_quota))
         .route(ROUTE_SETTINGS_MEMORY, post(save_memory))
+        .route(ROUTE_SETTINGS_STEWARD, post(save_steward))
         .route(ROUTE_SETTINGS_TIMEZONE, post(save_timezone))
         .route(ROUTE_SETTINGS_PUSH, post(save_push))
         .route(ROUTE_SIDEBAR, post(toggle_sidebar))
@@ -6097,6 +6098,68 @@ async fn save_memory(
     }
 
     see_other(SAVED_MEMORY)
+}
+
+/// `POST /dashboard/settings/steward` - the steward's charter, cadence and notes.
+///
+/// Its own form, so a submit here can never reach the security route. Each
+/// `steward_*` field goes through the device settings table's checks.
+async fn save_steward(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let saved = match crate::device::handlers::save_steward_fields(&state.engine, &fields) {
+        Ok(saved) => saved,
+        Err((key, error)) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(Some(key), error.code(), error.message()),
+            );
+        }
+    };
+    let detail = if saved.is_empty() {
+        "unchanged".to_owned()
+    } else {
+        saved
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.steward", Some(&detail))
+    {
+        return audit_failure(&request_id.0, "settings.steward", error);
+    }
+    // The tab that holds the first changed field stays open, so the notice is
+    // seen where the operator saved it.
+    match build_settings_view(&state) {
+        Ok(mut view) => {
+            view.tab = saved.first().map_or(
+                crate::web::templates::SettingsTab::Assistant,
+                |(key, _)| crate::web::templates::SettingsTab::for_field(Some(key)),
+            );
+            view.notice = Some((
+                SettingsGroup::Steward,
+                SettingsGroup::Steward.saved_notice().to_owned(),
+            ));
+            page(settings_page(&view))
+        }
+        Err(error) => refusal(error),
+    }
 }
 
 async fn save_timezone(
