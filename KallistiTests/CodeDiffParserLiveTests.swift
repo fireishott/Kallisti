@@ -39,7 +39,8 @@ struct CodeDiffParserLiveTests {
         #expect(parsed != nil, "raw unified diff should parse")
         #expect(parsed?.fileCount == 1)
         #expect(parsed?.files.first?.path == "F.swift")
-        #expect(parsed?.files.first?.additions == 1)
+        // The hunk adds "let a" and "let b" and removes one "let a": 2 / 1.
+        #expect(parsed?.files.first?.additions == 2)
         #expect(parsed?.files.first?.deletions == 1)
     }
 

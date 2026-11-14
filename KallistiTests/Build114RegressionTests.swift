@@ -72,8 +72,8 @@ struct Build114RegressionTests {
     func composerSizingContract() {
         #expect(PasteAwareComposerTextView.minimumHeight < PasteAwareComposerTextView.maximumHeight)
         let lineHeight = UIFont.systemFont(ofSize: 15).lineHeight
-        // Build 120: default is TWO rows (avoids the 1-row -> 5-row slab).
-        #expect(PasteAwareComposerTextView.minimumHeight == lineHeight * 2 + 8)
+        // Build 121: default is ONE row; it grows 1 -> 5 as text is typed.
+        #expect(PasteAwareComposerTextView.minimumHeight == lineHeight + 8)
         #expect(PasteAwareComposerTextView.maximumHeight == lineHeight * 5 + 8)
     }
 
@@ -86,10 +86,17 @@ struct Build114RegressionTests {
 
     @Test("Active stream is always the final transcript row")
     func activeStreamOwnsTranscriptTail() {
+        // transcriptRows orders by timestamp, then pins the live placeholder
+        // last. The placeholder carries the OLDEST timestamp of the turn's
+        // reply rows, so give the rows explicit, ordered timestamps.
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var prompt = message(UUID(), .user, "current prompt")
+        prompt.timestamp = start
         var streaming = message(UUID(), .herald, "current reply")
         streaming.isStreaming = true
-        let staleBoundary = message(UUID(), .herald, "persisted tool boundary")
-        let prompt = message(UUID(), .user, "current prompt")
+        streaming.timestamp = start.addingTimeInterval(1)
+        var staleBoundary = message(UUID(), .herald, "persisted tool boundary")
+        staleBoundary.timestamp = start.addingTimeInterval(2)
 
         let rows = ChatScreen.transcriptRows([prompt, streaming, staleBoundary])
         #expect(rows.map(\.id) == [prompt.id, staleBoundary.id, streaming.id])

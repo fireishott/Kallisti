@@ -46,7 +46,9 @@ actor NoteRecognitionCoordinator {
         debounceTask = task
         await task.value
 
-        guard !Task.isCancelled else { return nil }
+        // A newer scheduleRecognition call replaces debounceTask and cancels this
+        // one, so a superseded call must return nil instead of recognizing.
+        guard !Task.isCancelled, !task.isCancelled else { return nil }
         return await recognize(noteId: noteId, drawingRevision: drawingRevision, languages: languages)
     }
 

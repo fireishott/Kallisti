@@ -30,6 +30,17 @@ struct NativeKallistiClientTests {
         )
     }
 
+    /// Answer the first JSON-RPC request when it is actually sent. Queuing the
+    /// reply up front lets the receive loop deliver id 1 before the client has
+    /// registered the pending request, so the reply is dropped and the
+    /// verification probe times out.
+    @MainActor
+    private func answerFirstRequest(on transport: MockNativeGatewayTransport) {
+        transport.onSend = { [weak transport] _ in
+            transport?.queueIncoming(Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8))
+        }
+    }
+
     // MARK: - Verification-before-connected (the false-positive itself)
 
     @Test("connect() does not report .connected when the post-handshake verification fails")
@@ -68,7 +79,7 @@ struct NativeKallistiClientTests {
         let transport = MockNativeGatewayTransport()
         // First (and only) request the fresh client sends gets id 1 --
         // answer it so the verification round-trip succeeds.
-        transport.queueIncoming(Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8))
+        answerFirstRequest(on: transport)
 
         let sut = NativeKallistiClient(
             gatewayBaseURL: "http://10.0.0.1:9119",
@@ -93,7 +104,7 @@ struct NativeKallistiClientTests {
         let auth = await stubbedAuthCoordinator(secureStore: store)
 
         let transport = MockNativeGatewayTransport()
-        transport.queueIncoming(Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8))
+        answerFirstRequest(on: transport)
 
         let sut = NativeKallistiClient(
             gatewayBaseURL: "http://10.0.0.1:9119",
@@ -126,7 +137,7 @@ struct NativeKallistiClientTests {
         transport.sendError = URLError(.networkConnectionLost)
 
         let sut = NativeKallistiClient(
-            gatewayBaseURL: "http://10.0.0.1:9119",
+            gatewayBaseURL: "http://localhost:9119",
             authCoordinator: auth,
             transportFactory: { transport }
         )
@@ -147,7 +158,7 @@ struct NativeKallistiClientTests {
         let auth = await stubbedAuthCoordinator(secureStore: store)
 
         let transport = MockNativeGatewayTransport()
-        transport.queueIncoming(Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8))
+        answerFirstRequest(on: transport)
 
         let sut = NativeKallistiClient(
             gatewayBaseURL: "http://10.0.0.1:9119",
@@ -161,9 +172,17 @@ struct NativeKallistiClientTests {
 
         // A later reconnect attempt (e.g. an idle-reaped socket) fails --
         // this must NOT be treated the same as an unproven token.
+        // connect() itself is a no-op while already connected (Build 128.88),
+        // so drive the real recovery path: the liveness probe fails and
+        // reconnectIfNeeded() forces a fresh connect.
         transport.sendError = URLError(.networkConnectionLost)
-        await sut.connect()
+        await sut.reconnectIfNeeded()
 
+        // Build 97 defers the .reconnecting flip by a 3s grace window so a
+        // recovering socket never flashes the dot. Wait for it to fire.
+        for _ in 0..<80 where sut.connectionStatus != .reconnecting {
+            try await Task.sleep(for: .milliseconds(100))
+        }
         #expect(sut.connectionStatus == .reconnecting)
         #expect(sut.hasStoredLogin == true)
 
@@ -333,13 +352,13 @@ struct NativeKallistiClientTests {
     @Test("Build 50 connection labels are truthful and complete")
     func build50ConnectionStageLabels() {
         #expect(ConnectionStage.allCases.map(\.displayLabel) == [
-            "Preparing secure session", "Contacting gateway", "Authenticating",
-            "Opening secure channel", "Verifying session",
+            "Connecting...", "Contacting gateway", "Authenticating",
+            "Connecting...", "Verifying session",
             "Restoring conversations", "Connected",
         ])
     }
 
-    @Test("Build 50 reset is idempotent and preserves gateway credentials")
+    @Test("Build 83 reset is idempotent and purges gateway credentials")
     @MainActor
     func build50ResetPreservesCredentials() async throws {
         let store = MockSecureStore()
@@ -358,7 +377,8 @@ struct NativeKallistiClientTests {
         async let second: Void = sut.resetConnection()
         _ = await (first, second)
 
-        #expect(await store.retrieve(key: "nativeGatewayAccessToken") == "keep-me")
+        // Build 83: every Reset is a deliberate wipe back to onboarding.
+        #expect(await store.retrieve(key: "nativeGatewayAccessToken") == nil)
         await sut.disconnect()
     }
 
