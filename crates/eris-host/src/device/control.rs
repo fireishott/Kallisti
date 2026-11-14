@@ -821,7 +821,10 @@ pub async fn memory_files(State(service): State<DeviceService>, headers: HeaderM
         return error.into_response();
     }
     let engine = service.engine();
-    let access = crate::selfmemory::Access::new(&engine.paths().state_dir);
+    // The mirror is attached so the record carries each entry's provenance and the
+    // cap that is actually in force, not the compiled default.
+    let access =
+        crate::selfmemory::Access::new(&engine.paths().state_dir).with_db(engine.db().clone());
     axum::Json(serde_json::json!({
         "ok": true,
         "memory": access.snapshot(),

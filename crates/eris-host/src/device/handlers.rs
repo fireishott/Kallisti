@@ -2530,12 +2530,26 @@ fn read_skills_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
 
 /// The workspace a turn may write in. Read-only here: it is set by the wizard and
 /// moving it from a phone is a different decision with a different card.
+fn read_standing_orders(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::standing::enabled(engine.db()).to_string())
+}
+
 fn read_schedule_delivery_default(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::delivery::default_channel(engine.db()))
 }
 
 fn read_schedule_email_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::delivery::email_enabled(engine.db()).to_string())
+}
+
+fn read_memory_cap_chars(engine: &SetupEngine) -> Result<String, DeviceError> {
+    let stored = engine
+        .setting(crate::selfmemory::SETTING_CAP_CHARS)
+        .ok()
+        .flatten();
+    Ok(crate::selfmemory::Target::Memory
+        .cap_for(stored.as_deref())
+        .to_string())
 }
 
 fn read_jobs_notify_on_complete(engine: &SetupEngine) -> Result<String, DeviceError> {
@@ -2780,6 +2794,19 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         normalize: None,
     },
     SettingSpec {
+        key: "memory_cap_chars",
+        label: "Memory cap",
+        group: "memory",
+        kind: SettingKind::Int(
+            crate::selfmemory::MIN_CAP_CHARS,
+            crate::selfmemory::MAX_CAP_CHARS,
+        ),
+        row: crate::selfmemory::SETTING_CAP_CHARS,
+        writable: true,
+        read: read_memory_cap_chars,
+        normalize: None,
+    },
+    SettingSpec {
         key: "push_notify_on_reply",
         label: "Reply notifications",
         group: "devices",
@@ -2844,6 +2871,16 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::learning::SETTING_REVIEW_REPAIR,
         writable: true,
         read: read_learning_repair,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "standing_orders_enabled",
+        label: "Standing orders",
+        group: "automation",
+        kind: SettingKind::Bool,
+        row: crate::standing::SETTING_ENABLED,
+        writable: true,
+        read: read_standing_orders,
         normalize: None,
     },
     SettingSpec {

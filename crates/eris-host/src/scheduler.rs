@@ -1011,6 +1011,9 @@ pub async fn tick(state: crate::admin::AppState) {
     loop {
         interval.tick().await;
         let db = state.engine.db();
+        // Standing orders are not schedules and do not stop when schedules are
+        // switched off, so they are evaluated before that gate.
+        crate::standing::pass(&state, &now_utc()).await;
         let enabled = enabled(
             state
                 .engine

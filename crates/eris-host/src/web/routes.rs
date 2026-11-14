@@ -43,11 +43,12 @@ use crate::admin::{
     ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
     ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SEARCH, ROUTE_SETTINGS_SKILLS,
-    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
-    ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE,
-    ROUTE_SKILLS_RESTORE, ROUTE_SKILLS_SAVE, ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE,
-    ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION, session_path,
+    ROUTE_SETTINGS_STANDING, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE,
+    ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE, ROUTE_SETTINGS_UPDATE_APPLY,
+    ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS, ROUTE_SETTINGS_WORKSPACE,
+    ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_RESTORE, ROUTE_SKILLS_SAVE,
+    ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE, ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION,
+    session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -167,6 +168,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_LEARNING, post(save_learning_repair))
         .route(ROUTE_SETTINGS_JOBS, post(save_jobs))
         .route(ROUTE_SETTINGS_DELIVERY, post(save_delivery))
+        .route(ROUTE_SETTINGS_STANDING, post(save_standing))
         .route(ROUTE_ACCOUNTS_CONNECT, post(connect_account))
         .route(ROUTE_ACCOUNTS_VERIFY, post(verify_account))
         .route(ROUTE_ACCOUNTS_DISCONNECT, post(disconnect_account))
@@ -1102,6 +1104,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     // would use rather than a second copy of the same clamp.
     view.learning_repair = crate::learning::review_repair(engine.db());
     view.curator_archive_days = crate::learning::unused_days(engine.db()).to_string();
+    view.standing_orders_enabled = crate::standing::enabled(engine.db());
     view.schedule_delivery_default = crate::delivery::default_channel(engine.db());
     view.schedule_email_enabled = crate::delivery::email_enabled(engine.db());
     view.jobs_notify_on_complete = crate::process::notify_on_complete(engine.db());
@@ -1243,6 +1246,16 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .ok()
         .flatten()
         .unwrap_or_default();
+    view.memory_cap_chars = crate::selfmemory::Target::Memory
+        .cap_for(
+            state
+                .engine
+                .setting(crate::selfmemory::SETTING_CAP_CHARS)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+        .to_string();
     view.reply_state = chat::reply_state(
         state
             .engine
@@ -5807,6 +5820,37 @@ async fn save_memory(
         "off" => "off",
         _ => "gbrain",
     };
+    let cap = field(&fields, "memory_cap_chars").trim().to_owned();
+    let cap: u32 = match cap.parse::<u32>() {
+        Ok(number)
+            if (crate::selfmemory::MIN_CAP_CHARS..=crate::selfmemory::MAX_CAP_CHARS)
+                .contains(&number) =>
+        {
+            number
+        }
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("memory_cap_chars"),
+                    "memory_cap_invalid",
+                    format!(
+                        "a whole number from {} to {} characters",
+                        crate::selfmemory::MIN_CAP_CHARS,
+                        crate::selfmemory::MAX_CAP_CHARS
+                    ),
+                ),
+            );
+        }
+    };
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::selfmemory::SETTING_CAP_CHARS,
+        &cap.to_string(),
+    ) {
+        return store_failure(&request_id.0, "the memory cap", error);
+    }
     let vault = field(&fields, "memory_vault").trim().to_owned();
     // A path that does not exist is refused here rather than at recall time: a
     // backend that silently returns nothing looks exactly like a brain that is
@@ -7893,6 +7937,43 @@ async fn save_delivery(
         return audit_failure(&request_id.0, "settings.delivery", error);
     }
     see_other(SAVED_DELIVERY)
+}
+
+const SAVED_STANDING: &str = "/dashboard/settings?saved=standing";
+
+/// `POST /dashboard/settings/standing` - the proactive-cadence switch.
+async fn save_standing(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let on = matches!(
+        field(&fields, "standing_orders_enabled").trim(),
+        "true" | "on" | "1"
+    );
+    let stored = if on { "true" } else { "false" };
+    if let Err(error) =
+        store::settings_put(state.engine.db(), crate::standing::SETTING_ENABLED, stored)
+    {
+        return store_failure(&request_id.0, "the standing orders switch", error);
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.standing",
+        Some(&format!("enabled={stored}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.standing", error);
+    }
+    see_other(SAVED_STANDING)
 }
 
 /// `POST /dashboard/settings/mcp` - the configured MCP server list.
@@ -11041,7 +11122,8 @@ fn spawn_turn(
         // workspace, so a restore of the workspace cannot lose them.
         memory = std::sync::Arc::new(
             crate::selfmemory::Access::new(&state.engine.paths().state_dir)
-                .with_db(state.engine.db().clone()),
+                .with_db(state.engine.db().clone())
+                .with_turn(Some(&answer_id)),
         );
         crate::tools::Sandbox::new(workspace, mode)
             .with_processes(desk)

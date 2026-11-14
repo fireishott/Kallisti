@@ -1970,6 +1970,8 @@ pub enum SettingsGroup {
     Jobs,
     /// Schedule delivery: the default channel and the mail gate.
     Delivery,
+    /// Standing orders: the proactive-cadence switch.
+    Standing,
     /// Cron schedules and their run history.
     Schedules,
     /// The operator's skill library and its per-skill switches.
@@ -1982,7 +1984,7 @@ pub enum SettingsGroup {
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Provider,
         Self::Accounts,
         Self::Workspace,
@@ -1993,6 +1995,7 @@ impl SettingsGroup {
         Self::Search,
         Self::Jobs,
         Self::Delivery,
+        Self::Standing,
         Self::Schedules,
         Self::Skills,
         Self::Update,
@@ -2011,6 +2014,7 @@ impl SettingsGroup {
             Self::Search => "search",
             Self::Jobs => "jobs",
             Self::Delivery => "delivery",
+            Self::Standing => "standing",
             Self::Schedules => "schedules",
             Self::Skills => "skills",
             Self::Accounts => "accounts",
@@ -2048,6 +2052,7 @@ impl SettingsGroup {
                 field,
                 "schedule_delivery_default" | "schedule_email_enabled"
             ),
+            Self::Standing => matches!(field, "standing_orders_enabled"),
             Self::Schedules => matches!(
                 field,
                 "schedule_name"
@@ -2084,6 +2089,7 @@ impl SettingsGroup {
             Self::Search => "search defaults saved",
             Self::Jobs => "job settings saved",
             Self::Delivery => "delivery settings saved",
+            Self::Standing => "standing orders saved",
             Self::Schedules => "schedules saved",
             Self::Skills => "skills saved",
             Self::Accounts => "account updated",
@@ -2386,6 +2392,10 @@ pub struct SettingsView {
     pub learning_repair: bool,
     /// How long a skill nothing has ever read may stay in the catalog.
     pub curator_archive_days: String,
+    /// The character cap on each self-memory file.
+    pub memory_cap_chars: String,
+    /// Whether interval intents fire on their own cadence.
+    pub standing_orders_enabled: bool,
     /// Where a schedule's output goes by default.
     pub schedule_delivery_default: String,
     /// Whether mail may leave the daemon at all.
@@ -2502,6 +2512,8 @@ impl SettingsView {
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
             learning_repair: true,
             curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
+            memory_cap_chars: crate::selfmemory::MEMORY_LIMIT.to_string(),
+            standing_orders_enabled: true,
             schedule_delivery_default: crate::delivery::DEFAULT_CHANNEL.to_owned(),
             schedule_email_enabled: true,
             jobs_notify_on_complete: true,
@@ -2676,7 +2688,9 @@ impl SettingsTab {
             | SettingsGroup::Goal
             | SettingsGroup::Greeting
             | SettingsGroup::Search => Self::Assistant,
-            SettingsGroup::Jobs | SettingsGroup::Delivery => Self::Automation,
+            SettingsGroup::Jobs | SettingsGroup::Delivery | SettingsGroup::Standing => {
+                Self::Automation
+            }
             SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
             SettingsGroup::Workspace | SettingsGroup::Permissions | SettingsGroup::Update => {
                 Self::System
@@ -3253,6 +3267,19 @@ fn memory_group(view: &SettingsView) -> Markup {
                     "Before a turn answers, the daemon asks this backend what it already knows and "
                     "adds what it finds to the prompt. gbrain is the default because it is already "
                     "the long-term brain here."
+                }
+            }
+            div .field {
+                label for="memory_cap_chars" { "Note cap" }
+                input type="number" id="memory_cap_chars" name="memory_cap_chars"
+                    min=(crate::selfmemory::MIN_CAP_CHARS)
+                    max=(crate::selfmemory::MAX_CAP_CHARS) value=(view.memory_cap_chars);
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("memory_cap_chars")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Characters per note file, 2000 to 200000. An overflow is a hard error that "
+                    "names the cap and the entries in the way; nothing is ever quietly dropped."
                 }
             }
             div .field {
@@ -4688,6 +4715,35 @@ fn tab_automation(view: &SettingsView) -> Markup {
                 "a conversation named after the schedule."
             }
             (schedules_group(view))
+        }
+
+        section .card aria-labelledby="standing-heading" {
+            h2 id="standing-heading" { "Standing orders" }
+            p .small {
+                "Proactive turns on a cadence rather than only when spoken to. An order is a prompt "
+                "and a cooldown; it fires on the daemon's own tick, and its answer lands on the "
+                "default delivery channel above. The budget on each order is the anti-spam guard."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STANDING) novalidate {
+                div .field {
+                    label for="standing_orders_enabled" {
+                        input type="checkbox" id="standing_orders_enabled"
+                            name="standing_orders_enabled" value="true"
+                            checked[view.standing_orders_enabled];
+                        " Let standing orders fire"
+                    }
+                    span .hint {
+                        "Off, nothing fires and the existing orders stay as they are. A held-back "
+                        "evaluation is recorded too, so its cadence waits instead of asking again."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save standing orders" }
+                    a .button href=(format!("{}#mem-intents", crate::admin::ROUTE_SETTINGS)) {
+                        "See the orders"
+                    }
+                }
+            }
         }
 
         section .card aria-labelledby="delivery-heading" {
