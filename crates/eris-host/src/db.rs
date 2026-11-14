@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 33;
+pub const SCHEMA_VERSION: i64 = 35;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -44,7 +44,7 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// and no table at all; 0024 adds the three learning tables; 0029 adds the four
 /// memory-tier tables. 0030 adds the standing roster. 0031 adds the webhook
 /// triggers and the fires they record.
-pub const TABLES: [&str; 30] = [
+pub const TABLES: [&str; 32] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
@@ -72,6 +72,8 @@ pub const TABLES: [&str; 30] = [
     "sessions",
     "settings",
     "skill_usage",
+    "steward_duties",
+    "steward_field_notes",
     "subagents",
     "trigger_fires",
     "triggers",
@@ -250,6 +252,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 33,
         name: "0033_workboard",
         sql: MIGRATION_0033,
+    },
+    Migration {
+        version: 34,
+        name: "0034_steward",
+        sql: MIGRATION_0034,
+    },
+    Migration {
+        version: 35,
+        name: "0035_steward_watch_rounds",
+        sql: MIGRATION_0035,
     },
 ];
 
@@ -1169,6 +1181,45 @@ CREATE INDEX IF NOT EXISTS idx_workboard_status ON workboard_items (status, upda
 CREATE INDEX IF NOT EXISTS idx_workboard_project ON workboard_items (project);
 ";
 
+/// Migration 0034: the Steward duty and field-note tables.
+///
+/// A duty outlives the session that named it, so it lives here rather than in a
+/// transcript. `revision` is the compare-and-set token every mutation checks.
+/// Field notes are append-only: nothing in the daemon rewrites one.
+const MIGRATION_0034: &str = r"
+CREATE TABLE IF NOT EXISTS steward_duties (
+    id                  TEXT PRIMARY KEY NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    revision            INTEGER NOT NULL DEFAULT 1,
+    statement           TEXT NOT NULL,
+    phase               TEXT NOT NULL DEFAULT 'watching',
+    every_seconds       INTEGER,
+    next_wake_at        TEXT,
+    blocker_code        TEXT,
+    blocker_detail      TEXT,
+    closed_outcome      TEXT,
+    source_conversation TEXT
+);
+
+CREATE TABLE IF NOT EXISTS steward_field_notes (
+    id      TEXT PRIMARY KEY NOT NULL,
+    duty_id TEXT,
+    at      TEXT NOT NULL,
+    text    TEXT NOT NULL,
+    tags    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_steward_duties_wake ON steward_duties (next_wake_at);
+CREATE INDEX IF NOT EXISTS idx_steward_notes_duty ON steward_field_notes (duty_id, at);
+";
+
+/// Consecutive autonomous watch rounds a duty has taken. The watch loop counts
+/// them and pauses the duty at `steward_max_rounds`.
+const MIGRATION_0035: &str = r"
+ALTER TABLE steward_duties ADD COLUMN watch_rounds INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 /// `setup` until onboarding completes, `ready` after.
@@ -1592,7 +1643,7 @@ mod tests {
         );
         assert_eq!(
             db.applied_migration_count().expect("count"),
-            33,
+            35,
             "one row per migration, and the new one is the last"
         );
 
@@ -1605,8 +1656,8 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, 33, "one row per migration, on a fresh file");
-        assert_eq!(first.schema_version().expect("version"), 33);
+        assert_eq!(applied, 35, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 35);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");
         assert_eq!(
@@ -1660,8 +1711,8 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 33);
-        assert_eq!(TABLES.len(), 30, "the list and the schema agree on arity");
+        assert_eq!(db.schema_version().expect("version"), 35);
+        assert_eq!(TABLES.len(), 32, "the list and the schema agree on arity");
     }
 
     /// Migration 0031 adds the trigger tables, and `TABLES` names both.
@@ -1676,7 +1727,7 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 33);
-        assert_eq!(TABLES.len(), 30, "the list and the schema agree on arity");
+        assert_eq!(db.schema_version().expect("version"), 35);
+        assert_eq!(TABLES.len(), 32, "the list and the schema agree on arity");
     }
 }

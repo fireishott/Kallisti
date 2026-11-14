@@ -3926,6 +3926,14 @@ pub fn run_turn_with_key(
         // caller named, so the number a turn acts on is the number an operator can
         // check. It is answered here rather than in the sandbox because the sandbox
         // has no database; both turn surfaces reach this one branch.
+        if crate::steward_tools::is_steward_tool(&call.name) {
+            let Some(db) = settings.db.as_ref() else {
+                return crate::tools::ToolResult::refused(
+                    "this turn was given no database, so the steward cannot be reached and nothing was changed",
+                );
+            };
+            return crate::steward_tools::execute(db, &call.name, &call.arguments);
+        }
         if call.name == crate::budget::TOOL {
             let Some(db) = settings.db.as_ref() else {
                 return crate::tools::ToolResult::refused(
@@ -4174,6 +4182,11 @@ pub fn run_turn_with_key(
                     // round trip to learn the queue does not exist.
                     if queue.is_some() {
                         offered.push(crate::queue::spec());
+                    }
+                    // The steward's six tools, offered only while it is switched on and this
+                    // turn has a database to write its duties into.
+                    if settings.db.as_ref().is_some_and(crate::steward::enabled) {
+                        offered.extend(crate::steward_tools::specs());
                     }
                     // Offered only when a surface can answer it: a turn with no
                     // registry has no way to hear back, and the tool refuses

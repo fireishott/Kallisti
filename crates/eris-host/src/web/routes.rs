@@ -43,12 +43,13 @@ use crate::admin::{
     ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
     ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SEARCH, ROUTE_SETTINGS_SKILLS,
-    ROUTE_SETTINGS_STANDING, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE,
-    ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE, ROUTE_SETTINGS_UPDATE_APPLY,
-    ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS, ROUTE_SETTINGS_WORKSPACE,
-    ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_RESTORE, ROUTE_SKILLS_SAVE,
-    ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE, ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE,
-    ROUTE_WORKBOARD, ROUTE_WORKBOARD_ADD, ROUTE_WORKBOARD_ITEM, VERSION, session_path,
+    ROUTE_SETTINGS_STANDING, ROUTE_SETTINGS_STEWARD, ROUTE_SETTINGS_STREAMING,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
+    ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE,
+    ROUTE_SKILLS_RESTORE, ROUTE_SKILLS_SAVE, ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE,
+    ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, ROUTE_WORKBOARD, ROUTE_WORKBOARD_ADD,
+    ROUTE_WORKBOARD_ITEM, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -148,6 +149,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_STREAMING, post(save_streaming))
         .route(ROUTE_SETTINGS_QUOTA, post(save_quota))
         .route(ROUTE_SETTINGS_MEMORY, post(save_memory))
+        .route(ROUTE_SETTINGS_STEWARD, post(save_steward))
         .route(ROUTE_SETTINGS_TIMEZONE, post(save_timezone))
         .route(ROUTE_SETTINGS_PUSH, post(save_push))
         .route(ROUTE_SIDEBAR, post(toggle_sidebar))
@@ -202,6 +204,10 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_WORKBOARD, get(workboard))
         .route(ROUTE_WORKBOARD_ADD, post(add_work))
         .route(ROUTE_WORKBOARD_ITEM, post(change_work))
+        .route(crate::admin::ROUTE_STEWARD, get(steward_page_get))
+        .route(crate::admin::ROUTE_STEWARD_DUTY_ADD, post(steward_duty_add))
+        .route(crate::admin::ROUTE_STEWARD_DUTY, post(steward_duty_change))
+        .route(crate::admin::ROUTE_STEWARD_SEED, post(steward_seed_charter))
         .route(ROUTE_SESSIONS, get(sessions))
         .route(ROUTE_SESSION, get(session_detail))
         .route(ROUTE_DEVICES, get(devices).post(mint_pairing_code))
@@ -1118,6 +1124,16 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     view.schedule_email_enabled = crate::delivery::email_enabled(engine.db());
     view.jobs_notify_on_complete = crate::process::notify_on_complete(engine.db());
     view.jobs_receipt_days = crate::process::receipt_days(engine.db()).to_string();
+    view.steward_enabled = crate::steward::enabled(engine.db());
+    view.steward_watch_seconds = crate::steward::watch_seconds(engine.db()).to_string();
+    view.steward_max_rounds = crate::steward::max_rounds(engine.db()).to_string();
+    view.steward_note_window = crate::steward::note_window(engine.db()).to_string();
+    view.steward_field_note_days = crate::steward::field_note_days(engine.db()).to_string();
+    view.steward_delivery_default = crate::steward::delivery_default(engine.db());
+    view.steward_mail_recipients = crate::steward::mail_recipients(engine.db()).join(", ");
+    view.steward_call_urgency_default = crate::steward::call_urgency_default(engine.db());
+    view.steward_charter = crate::steward::charter(engine.db());
+    view.steward_board_columns = crate::steward::board_columns(engine.db());
     view.search_limit = crate::search::stored_limit(engine.db()).to_string();
     view.workboard_default_project =
         crate::workboard::default_project(engine.db()).unwrap_or_default();
@@ -6088,6 +6104,69 @@ async fn save_memory(
     }
 
     see_other(SAVED_MEMORY)
+}
+
+/// `POST /dashboard/settings/steward` - the steward's charter, cadence and notes.
+///
+/// Its own form, so a submit here can never reach the security route. Each
+/// `steward_*` field goes through the device settings table's checks.
+async fn save_steward(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let saved = match crate::device::handlers::save_steward_fields(&state.engine, &fields) {
+        Ok(saved) => saved,
+        Err((key, error)) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(Some(key), error.code(), error.message()),
+            );
+        }
+    };
+    let detail = if saved.is_empty() {
+        "unchanged".to_owned()
+    } else {
+        saved
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.steward", Some(&detail))
+    {
+        return audit_failure(&request_id.0, "settings.steward", error);
+    }
+    // The tab that holds the first changed field stays open, so the notice is
+    // seen where the operator saved it.
+    match build_settings_view(&state) {
+        Ok(mut view) => {
+            view.tab = saved
+                .first()
+                .map_or(crate::web::templates::SettingsTab::Assistant, |(key, _)| {
+                    crate::web::templates::SettingsTab::for_field(Some(key))
+                });
+            view.notice = Some((
+                SettingsGroup::Steward,
+                SettingsGroup::Steward.saved_notice().to_owned(),
+            ));
+            page(settings_page(&view))
+        }
+        Err(error) => refusal(error),
+    }
 }
 
 async fn save_timezone(
@@ -13243,6 +13322,263 @@ async fn disconnect_account(
                     .into_response()
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The Steward page
+// ---------------------------------------------------------------------------
+
+/// The page's view of one store refusal: the code the form renders and the
+/// sentence that says what to do next.
+fn steward_form_error(error: crate::steward::DutyError) -> FormError {
+    use crate::steward::DutyError;
+    let code = match &error {
+        DutyError::NotFound(_) => "steward_not_found",
+        DutyError::Closed(_) => "steward_closed",
+        DutyError::StaleRevision { .. } => "steward_stale_revision",
+        DutyError::NeedsYouRequiresCall | DutyError::CloseRequiresCloseDuty => {
+            "steward_phase_refused"
+        }
+        DutyError::InvalidPhase(_) | DutyError::Invalid(_) => "steward_invalid",
+        DutyError::Corrupt(_) | DutyError::Db(_) | DutyError::Sqlite(_) => "steward_store",
+    };
+    let message = match &error {
+        crate::steward::DutyError::StaleRevision { current } => format!(
+            "The duty changed since this page was drawn. It is at revision {current}: reload, \
+             check it, and retry."
+        ),
+        other => other.to_string(),
+    };
+    FormError::new(None, code, message)
+}
+
+fn build_steward_view(
+    state: &AppState,
+) -> Result<crate::web::steward_page::StewardView, FormError> {
+    let engine = &state.engine;
+    let db = engine.db();
+    let mut view = crate::web::steward_page::StewardView::new(
+        engine.state().map_err(|error| form_error(&error))?,
+    );
+    view.chrome = state.chrome();
+    view.duties = crate::steward::list_duties(db, None).map_err(steward_form_error)?;
+    view.notes = crate::steward::list_notes(db, 20, None).map_err(steward_form_error)?;
+    view.watch_seconds = crate::steward::watch_seconds(db);
+    view.charter_lines = crate::steward::charter_lines(&crate::steward::charter(db)).len();
+    Ok(view)
+}
+
+fn fail_steward(state: &AppState, as_html: bool, error: FormError) -> Response {
+    let status = failure_status(&error.code);
+    if as_html {
+        match build_steward_view(state) {
+            Ok(mut view) => {
+                view.error = Some(error);
+                page_with_status(crate::web::steward_page::steward_page(&view), status)
+            }
+            Err(build_error) => refusal(build_error),
+        }
+    } else {
+        refusal(error)
+    }
+}
+
+/// `GET /dashboard/steward` - the duty board.
+async fn steward_page_get(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let mut view = match build_steward_view(&state) {
+        Ok(view) => view,
+        Err(error) => return refusal(error),
+    };
+    view.notice = match query.get("saved").map(String::as_str) {
+        Some("add") => Some("The duty is on the board.".to_owned()),
+        Some("change") => Some("The duty changed.".to_owned()),
+        Some("close") => Some("The duty is closed.".to_owned()),
+        Some("answer") => Some("The call is answered, and the duty is watching again.".to_owned()),
+        Some("seed") => Some(format!(
+            "Seeded {} duty(ies); {} already on the board.",
+            query.get("created").map_or("0", String::as_str),
+            query.get("skipped").map_or("0", String::as_str),
+        )),
+        _ => None,
+    };
+    page(crate::web::steward_page::steward_page(&view))
+}
+
+/// `POST /dashboard/steward/duties` - one new duty, through the same store call the
+/// device route and the tool use.
+async fn steward_duty_add(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_steward(&state, as_html, error),
+    };
+    let every = match field(&fields, "every_seconds").trim() {
+        "" => None,
+        raw => match raw.parse::<i64>() {
+            Ok(seconds) => Some(seconds),
+            Err(_) => {
+                return fail_steward(
+                    &state,
+                    as_html,
+                    FormError::new(
+                        Some("every_seconds"),
+                        "steward_invalid",
+                        "every_seconds is a whole number",
+                    ),
+                );
+            }
+        },
+    };
+    match crate::steward::create_duty(state.engine.db(), field(&fields, "statement"), every) {
+        Ok(duty) => {
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "steward.duty",
+                Some(&format!("duty={} kind=create (dashboard)", duty.id)),
+            );
+            see_other_owned(format!("{}?saved=add", crate::admin::ROUTE_STEWARD))
+        }
+        Err(error) => fail_steward(&state, as_html, steward_form_error(error)),
+    }
+}
+
+/// `POST /dashboard/steward/duty` - one change from a row: phase, cadence, close
+/// or answer. The form names the revision the row was drawn at.
+async fn steward_duty_change(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_steward(&state, as_html, error),
+    };
+    let id = field(&fields, "id").trim().to_owned();
+    let Ok(revision) = field(&fields, "revision").trim().parse::<i64>() else {
+        return fail_steward(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "steward_revision_required",
+                "the form lost the revision it was drawn at; reload and retry",
+            ),
+        );
+    };
+    let db = state.engine.db();
+    let outcome: Result<&'static str, crate::steward::DutyError> =
+        match field(&fields, "action").trim() {
+            "phase" => field(&fields, "phase")
+                .trim()
+                .parse::<crate::steward::Phase>()
+                .and_then(|phase| {
+                    crate::steward::update_duty(
+                        db,
+                        &id,
+                        revision,
+                        &crate::steward::DutyPatch {
+                            phase: Some(phase),
+                            ..crate::steward::DutyPatch::default()
+                        },
+                    )
+                })
+                .map(|_| "change"),
+            "cadence" => crate::steward::get_duty(db, &id).and_then(|duty| {
+                let base = duty
+                    .every_seconds
+                    .unwrap_or(i64::from(crate::steward::watch_seconds(db)));
+                let next = match field(&fields, "delta").trim() {
+                    "default" => None,
+                    raw => Some((base + raw.parse::<i64>().unwrap_or(0)).clamp(
+                        i64::from(crate::steward::MIN_WATCH_SECONDS),
+                        i64::from(crate::steward::MAX_WATCH_SECONDS),
+                    )),
+                };
+                crate::steward::update_duty(
+                    db,
+                    &id,
+                    revision,
+                    &crate::steward::DutyPatch {
+                        every_seconds: Some(next),
+                        ..crate::steward::DutyPatch::default()
+                    },
+                )
+                .map(|_| "change")
+            }),
+            "close" => crate::steward::close_duty(db, &id, revision, field(&fields, "outcome"))
+                .map(|_| "close"),
+            "answer" => crate::steward::answer_call(db, &id, revision).map(|_| "answer"),
+            other => Err(crate::steward::DutyError::Invalid(format!(
+                "`{other}` is not a steward action"
+            ))),
+        };
+    match outcome {
+        Ok(saved) => {
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "steward.duty",
+                Some(&format!("duty={id} kind={saved} (dashboard)")),
+            );
+            see_other_owned(format!("{}?saved={saved}", crate::admin::ROUTE_STEWARD))
+        }
+        Err(error) => fail_steward(&state, as_html, steward_form_error(error)),
+    }
+}
+
+/// `POST /dashboard/steward/seed` - one duty per charter line, then back to the board
+/// with the counts.
+async fn steward_seed_charter(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let db = state.engine.db();
+    let charter = crate::steward::charter(db);
+    match crate::steward::seed_from_text(db, &charter) {
+        Ok(seeded) => {
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "steward.duty",
+                Some(&format!(
+                    "kind=seed created={} skipped={} (dashboard)",
+                    seeded.created.len(),
+                    seeded.skipped.len()
+                )),
+            );
+            see_other_owned(format!(
+                "{}?saved=seed&created={}&skipped={}",
+                crate::admin::ROUTE_STEWARD,
+                seeded.created.len(),
+                seeded.skipped.len()
+            ))
+        }
+        Err(error) => fail_steward(&state, as_html, steward_form_error(error)),
     }
 }
 

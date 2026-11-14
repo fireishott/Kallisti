@@ -1965,6 +1965,77 @@ fn a_settings_view_defaults_to_the_kallisti_backdrop() {
 }
 
 #[test]
+fn steward_settings_post_saves_through_its_own_route() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    // A form that carries the marker and names the interval saves it.
+    let saved = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_STEWARD,
+            "steward_watch_seconds=90&steward_form=1",
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    assert_eq!(
+        engine
+            .setting(crate::steward::SETTING_WATCH_SECONDS)
+            .unwrap(),
+        Some("90".to_owned())
+    );
+    // The marker makes an unticked box a real off.
+    assert_eq!(
+        engine.setting(crate::steward::SETTING_ENABLED).unwrap(),
+        Some("false".to_owned())
+    );
+
+    // The same interval out of bounds is refused by name, and nothing is written.
+    let refused = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_STEWARD,
+            "steward_watch_seconds=1&steward_form=1",
+        )
+        .cookie(cookie),
+    ));
+    assert!(refused.status.is_client_error(), "{}", refused.body);
+    assert!(
+        refused.body.contains("steward_watch_seconds"),
+        "the refusal names the field: {}",
+        refused.body
+    );
+    assert_eq!(
+        engine
+            .setting(crate::steward::SETTING_WATCH_SECONDS)
+            .unwrap(),
+        Some("90".to_owned())
+    );
+
+    // A field the table does not know is ignored, and an absent field is left alone.
+    let ignored = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_STEWARD,
+            "steward_no_such_field=7&steward_max_rounds=12",
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(ignored.status, StatusCode::OK, "{}", ignored.body);
+    assert_eq!(
+        engine
+            .setting(crate::steward::SETTING_WATCH_SECONDS)
+            .unwrap(),
+        Some("90".to_owned())
+    );
+    assert_eq!(
+        engine.setting(crate::steward::SETTING_MAX_ROUNDS).unwrap(),
+        Some("12".to_owned())
+    );
+}
+
+#[test]
 fn tool_settings_round_trip_and_a_bad_budget_is_refused_by_field() {
     let (_dir, engine, app, cookie) = ready_app();
     let cookie = Some(cookie.as_str());

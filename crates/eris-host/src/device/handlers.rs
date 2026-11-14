@@ -2578,6 +2578,46 @@ fn read_metrics_window_hours(engine: &SetupEngine) -> Result<String, DeviceError
     Ok(crate::metrics::window_hours(engine.db()).to_string())
 }
 
+fn read_steward_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::enabled(engine.db()).to_string())
+}
+
+fn read_steward_watch_seconds(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::watch_seconds(engine.db()).to_string())
+}
+
+fn read_steward_max_rounds(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::max_rounds(engine.db()).to_string())
+}
+
+fn read_steward_note_window(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::note_window(engine.db()).to_string())
+}
+
+fn read_steward_field_note_days(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::field_note_days(engine.db()).to_string())
+}
+
+fn read_steward_delivery_default(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::delivery_default(engine.db()))
+}
+
+fn read_steward_mail_recipients(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::mail_recipients(engine.db()).join(", "))
+}
+
+fn read_steward_call_urgency_default(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::call_urgency_default(engine.db()))
+}
+
+fn read_steward_charter(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::charter(engine.db()))
+}
+
+fn read_steward_board_columns(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::board_columns(engine.db()))
+}
+
 fn read_memory_cap_chars(engine: &SetupEngine) -> Result<String, DeviceError> {
     let stored = engine
         .setting(crate::selfmemory::SETTING_CAP_CHARS)
@@ -2641,6 +2681,10 @@ const CONVERSATION_SORT_VALUES: &[&str] = &["updated", "created", "title", "day"
 const SEARCH_SCOPE_VALUES: &[&str] = crate::search::SCOPE_VALUES;
 /// The values `schedule.delivery_default` accepts.
 const DELIVERY_VALUES: &[&str] = crate::delivery::DEFAULT_VALUES;
+
+const STEWARD_CALL_URGENCY_VALUES: &[&str] = &["normal", "high"];
+
+const STEWARD_BOARD_COLUMN_VALUES: &[&str] = &["compact", "full"];
 
 /// Every operator-facing setting the daemon serves, described once.
 ///
@@ -2840,6 +2884,36 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         normalize: None,
     },
     SettingSpec {
+        key: "steward_call_urgency_default",
+        label: "Steward call urgency",
+        group: "assistant",
+        kind: SettingKind::Enum(STEWARD_CALL_URGENCY_VALUES),
+        row: crate::steward::SETTING_CALL_URGENCY_DEFAULT,
+        writable: true,
+        read: read_steward_call_urgency_default,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "steward_charter",
+        label: "Steward charter",
+        group: "assistant",
+        kind: SettingKind::Text,
+        row: crate::steward::SETTING_CHARTER,
+        writable: true,
+        read: read_steward_charter,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "steward_board_columns",
+        label: "Steward board",
+        group: "assistant",
+        kind: SettingKind::Enum(STEWARD_BOARD_COLUMN_VALUES),
+        row: crate::steward::SETTING_BOARD_COLUMNS,
+        writable: true,
+        read: read_steward_board_columns,
+        normalize: None,
+    },
+    SettingSpec {
         key: "memory",
         label: "Memory",
         group: "memory",
@@ -2870,6 +2944,32 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::selfmemory::SETTING_CAP_CHARS,
         writable: true,
         read: read_memory_cap_chars,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "steward_note_window",
+        label: "Steward note window",
+        group: "memory",
+        kind: SettingKind::Int(
+            crate::steward::MIN_NOTE_WINDOW,
+            crate::steward::MAX_NOTE_WINDOW,
+        ),
+        row: crate::steward::SETTING_NOTE_WINDOW,
+        writable: true,
+        read: read_steward_note_window,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "steward_field_note_days",
+        label: "Steward field notes",
+        group: "memory",
+        kind: SettingKind::Int(
+            crate::steward::MIN_FIELD_NOTE_DAYS,
+            crate::steward::MAX_FIELD_NOTE_DAYS,
+        ),
+        row: crate::steward::SETTING_FIELD_NOTE_DAYS,
+        writable: true,
+        read: read_steward_field_note_days,
         normalize: None,
     },
     SettingSpec {
@@ -3020,6 +3120,62 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::skills::SETTING_ENABLED,
         writable: true,
         read: read_skills_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "steward_enabled",
+        label: "Steward",
+        group: "automation",
+        kind: SettingKind::Bool,
+        row: crate::steward::SETTING_ENABLED,
+        writable: true,
+        read: read_steward_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "steward_watch_seconds",
+        label: "Steward watch interval",
+        group: "automation",
+        kind: SettingKind::Int(
+            crate::steward::MIN_WATCH_SECONDS,
+            crate::steward::MAX_WATCH_SECONDS,
+        ),
+        row: crate::steward::SETTING_WATCH_SECONDS,
+        writable: true,
+        read: read_steward_watch_seconds,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "steward_max_rounds",
+        label: "Steward round cap",
+        group: "automation",
+        kind: SettingKind::Int(
+            crate::steward::MIN_MAX_ROUNDS,
+            crate::steward::MAX_MAX_ROUNDS,
+        ),
+        row: crate::steward::SETTING_MAX_ROUNDS,
+        writable: true,
+        read: read_steward_max_rounds,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "steward_delivery_default",
+        label: "Steward delivery",
+        group: "automation",
+        kind: SettingKind::Enum(DELIVERY_VALUES),
+        row: crate::steward::SETTING_DELIVERY_DEFAULT,
+        writable: true,
+        read: read_steward_delivery_default,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "steward_mail_recipients",
+        label: "Steward mail allowlist",
+        group: "automation",
+        kind: SettingKind::Text,
+        row: crate::steward::SETTING_MAIL_RECIPIENTS,
+        writable: true,
+        read: read_steward_mail_recipients,
         normalize: None,
     },
     SettingSpec {
@@ -3624,6 +3780,51 @@ fn apply_settings(service: &DeviceService, write: &SettingsWrite) -> Result<(), 
             .map_err(settings_unavailable)?;
     }
     Ok(())
+}
+
+/// Save the `steward_*` fields of a dashboard form through the table that
+/// `POST /v1/settings` uses, with the same kind, bound and enum checks.
+///
+/// Absent fields and unknown `steward_*` names are ignored, never zeroed. A
+/// checkbox is the one exception: a form that posts the `steward_form` marker
+/// means an unticked `steward_enabled` is off. Every field is checked before any
+/// row is written, so one bad value saves nothing. Returns the rows that changed,
+/// or the first refusal with the key it belongs to.
+pub fn save_steward_fields(
+    engine: &SetupEngine,
+    fields: &BTreeMap<String, String>,
+) -> Result<Vec<(&'static str, String)>, (&'static str, DeviceError)> {
+    let mut named: BTreeMap<&str, &str> = fields
+        .iter()
+        .filter(|(key, _)| key.starts_with("steward_"))
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    if fields.contains_key("steward_form") && !fields.contains_key("steward_enabled") {
+        named.insert("steward_enabled", "false");
+    }
+    let mut checked: Vec<(&'static SettingSpec, String)> = Vec::new();
+    for (key, raw) in named {
+        let Some(spec) = setting_spec(key) else {
+            continue;
+        };
+        if !spec.writable {
+            continue;
+        }
+        validate_setting(spec, raw).map_err(|error| (spec.key, error))?;
+        let value = canonical_value(spec, raw);
+        let current = (spec.read)(engine).map_err(|error| (spec.key, error))?;
+        if value != current {
+            checked.push((spec, value));
+        }
+    }
+    let mut saved = Vec::with_capacity(checked.len());
+    for (spec, value) in checked {
+        engine
+            .set_setting(spec.row, &value)
+            .map_err(|error| (spec.key, settings_unavailable(error)))?;
+        saved.push((spec.key, value));
+    }
+    Ok(saved)
 }
 
 /// Whether this process may select `full` sandbox mode.
@@ -7594,6 +7795,44 @@ mod tests {
             );
         }
         assert!(setting_spec("setup.passphrase_hash").is_none());
+    }
+
+    /// The record's groups are exactly the six tabs, in the order both clients
+    /// draw. A group outside them renders nowhere while looking present.
+    #[test]
+    fn every_record_group_is_one_of_the_six() {
+        let fx = fixture();
+        let entries = record(&fx);
+        let mut seen: Vec<String> = Vec::new();
+        for entry in &entries {
+            let group = entry["group"].as_str().expect("a group").to_owned();
+            assert!(
+                SETTING_GROUPS.contains(&group.as_str()),
+                "`{group}` is a group neither client has a surface for"
+            );
+            if seen.last() != Some(&group) {
+                assert!(!seen.contains(&group), "`{group}` is not contiguous");
+                seen.push(group);
+            }
+        }
+        let expected: Vec<String> = SETTING_GROUPS.iter().map(|g| (*g).to_owned()).collect();
+        assert_eq!(seen, expected, "the record is the group order, all six");
+    }
+
+    /// A phone row is narrow, and a label nobody can read is a field nobody
+    /// finds. Forty characters is the budget.
+    #[test]
+    fn every_label_is_short_enough_for_a_phone_row() {
+        for spec in SETTING_SPECS {
+            assert!(!spec.label.trim().is_empty(), "`{}` has no label", spec.key);
+            assert!(
+                spec.label.chars().count() <= 40,
+                "`{}`'s label is {} characters: {}",
+                spec.key,
+                spec.label.chars().count(),
+                spec.label
+            );
+        }
     }
 
     #[tokio::test]

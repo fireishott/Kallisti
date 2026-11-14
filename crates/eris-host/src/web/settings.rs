@@ -1820,6 +1820,34 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
     (crate::push::SETTING_NOTIFY_DEVICES, "notify_devices"),
     (crate::scheduler::SETTING_ENABLED, "schedules_enabled"),
     (crate::skills::SETTING_ENABLED, "skills_enabled"),
+    (crate::steward::SETTING_ENABLED, "steward_enabled"),
+    (
+        crate::steward::SETTING_WATCH_SECONDS,
+        "steward_watch_seconds",
+    ),
+    (crate::steward::SETTING_MAX_ROUNDS, "steward_max_rounds"),
+    (
+        crate::steward::SETTING_DELIVERY_DEFAULT,
+        "steward_delivery_default",
+    ),
+    (
+        crate::steward::SETTING_MAIL_RECIPIENTS,
+        "steward_mail_recipients",
+    ),
+    (crate::steward::SETTING_NOTE_WINDOW, "steward_note_window"),
+    (
+        crate::steward::SETTING_FIELD_NOTE_DAYS,
+        "steward_field_note_days",
+    ),
+    (
+        crate::steward::SETTING_CALL_URGENCY_DEFAULT,
+        "steward_call_urgency_default",
+    ),
+    (crate::steward::SETTING_CHARTER, "steward_charter"),
+    (
+        crate::steward::SETTING_BOARD_COLUMNS,
+        "steward_board_columns",
+    ),
     (crate::onboarding::SETTING_SANDBOX_MODE, "sandbox_mode"),
     (
         crate::onboarding::SETTING_APPROVAL_POLICY,

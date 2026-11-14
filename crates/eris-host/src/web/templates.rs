@@ -920,6 +920,8 @@ pub enum Nav {
     Activity,
     /// Tasks that survive the session that named them.
     Workboard,
+    /// Duties the steward keeps between conversations.
+    Steward,
     /// The archive list, the create button, and the restore form.
     Backups,
     /// The environment file the daemon reads at start, and the form that writes it.
@@ -929,7 +931,7 @@ pub enum Nav {
 impl Nav {
     /// Every entry, in display order. Every one of them is a page: the nav has
     /// no placeholder in it.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Chat,
         Self::Dashboard,
         Self::Sessions,
@@ -942,6 +944,7 @@ impl Nav {
         Self::Triggers,
         Self::Activity,
         Self::Workboard,
+        Self::Steward,
         Self::Backups,
         Self::Environment,
     ];
@@ -962,6 +965,7 @@ impl Nav {
             Self::Triggers => crate::admin::ROUTE_TRIGGERS,
             Self::Activity => crate::admin::ROUTE_ACTIVITY,
             Self::Workboard => crate::admin::ROUTE_WORKBOARD,
+            Self::Steward => crate::admin::ROUTE_STEWARD,
             Self::Backups => crate::admin::ROUTE_BACKUPS,
             Self::Environment => crate::admin::ROUTE_ENV,
         }
@@ -983,6 +987,7 @@ impl Nav {
             Self::Triggers => "Triggers",
             Self::Activity => "Activity",
             Self::Workboard => "Workboard",
+            Self::Steward => "Steward",
             Self::Backups => "Backups",
             Self::Environment => "Environment",
         }
@@ -1088,7 +1093,7 @@ fn rail(wizard: &Wizard) -> Markup {
 
 /// The validation region. `role="status"` plus `aria-live` is the whole
 /// announcement mechanism: no script is involved.
-fn alert_region(error: Option<&FormError>, notice: Option<&str>) -> Markup {
+pub(crate) fn alert_region(error: Option<&FormError>, notice: Option<&str>) -> Markup {
     html! {
         div id="form-error" role="status" aria-live="polite" {
             @if let Some(error) = error {
@@ -1985,11 +1990,13 @@ pub enum SettingsGroup {
     Accounts,
     /// The Software card: installing a staged or published build.
     Update,
+    /// The Steward card: its charter, watch cadence and notes.
+    Steward,
 }
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Provider,
         Self::Accounts,
         Self::Workspace,
@@ -2004,6 +2011,7 @@ impl SettingsGroup {
         Self::Schedules,
         Self::Skills,
         Self::Update,
+        Self::Steward,
     ];
 
     /// The anchor and error-region id for this group.
@@ -2024,6 +2032,7 @@ impl SettingsGroup {
             Self::Skills => "skills",
             Self::Accounts => "accounts",
             Self::Update => "update",
+            Self::Steward => "steward",
         }
     }
 
@@ -2078,6 +2087,7 @@ impl SettingsGroup {
             // field, so nothing can be filed next to one. A refusal from it lands
             // in the page-level region, which is where the card renders it.
             Self::Update => false,
+            Self::Steward => false,
         }
     }
 
@@ -2099,6 +2109,7 @@ impl SettingsGroup {
             Self::Skills => "skills saved",
             Self::Accounts => "account updated",
             Self::Update => "update requested",
+            Self::Steward => "steward settings saved",
         }
     }
 }
@@ -2419,6 +2430,26 @@ pub struct SettingsView {
     pub jobs_notify_on_complete: bool,
     /// How many days a finished job's receipt is kept.
     pub jobs_receipt_days: String,
+    /// Whether the steward watch loop is armed.
+    pub steward_enabled: bool,
+    /// Seconds between steward watch rounds.
+    pub steward_watch_seconds: String,
+    /// Most watch rounds one steward duty may take.
+    pub steward_max_rounds: String,
+    /// How many recent field notes a turn carries.
+    pub steward_note_window: String,
+    /// How many days a steward field note is kept.
+    pub steward_field_note_days: String,
+    /// Where a steward message goes by default.
+    pub steward_delivery_default: String,
+    /// The operator's mail allowlist for steward messages, comma-separated.
+    pub steward_mail_recipients: String,
+    /// The urgency a steward call is placed at by default.
+    pub steward_call_urgency_default: String,
+    /// The operator's charter for the steward.
+    pub steward_charter: String,
+    /// The steward board's column set.
+    pub steward_board_columns: String,
     /// The project a new board row starts on.
     pub workboard_default_project: String,
     /// How many hits a search returns when the caller does not say.
@@ -2540,6 +2571,16 @@ impl SettingsView {
             schedule_email_enabled: true,
             jobs_notify_on_complete: true,
             jobs_receipt_days: "7".to_owned(),
+            steward_enabled: true,
+            steward_watch_seconds: "300".to_owned(),
+            steward_max_rounds: "24".to_owned(),
+            steward_note_window: "8".to_owned(),
+            steward_field_note_days: "30".to_owned(),
+            steward_delivery_default: "push".to_owned(),
+            steward_mail_recipients: String::new(),
+            steward_call_urgency_default: "normal".to_owned(),
+            steward_charter: String::new(),
+            steward_board_columns: "compact".to_owned(),
             workboard_default_project: String::new(),
             search_limit: crate::search::DEFAULT_LIMIT.to_string(),
             search_scope_default: "all".to_owned(),
@@ -2715,6 +2756,8 @@ impl SettingsTab {
                 Self::Automation
             }
             SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
+            // The steward spans three tabs; its save names the tab of the field it changed.
+            SettingsGroup::Steward => Self::Assistant,
             SettingsGroup::Workspace | SettingsGroup::Permissions | SettingsGroup::Update => {
                 Self::System
             }
@@ -2793,6 +2836,15 @@ impl SettingsTab {
             | "goal_text"
             | "goal_action"
             | "soft_cap_tokens" => Self::Assistant,
+            "steward_charter" | "steward_call_urgency_default" | "steward_board_columns" => {
+                Self::Assistant
+            }
+            "steward_note_window" | "steward_field_note_days" => Self::Memory,
+            "steward_enabled"
+            | "steward_watch_seconds"
+            | "steward_max_rounds"
+            | "steward_delivery_default"
+            | "steward_mail_recipients" => Self::Automation,
             "memory_backend" | "memory_vault" => Self::Memory,
             "device_listen" | "device_relay" | "notify_on_reply" | "notify_scope"
             | "notify_devices" => Self::Devices,
@@ -4636,6 +4688,40 @@ fn tab_assistant(view: &SettingsView) -> Markup {
             }
             (greeting_group(view))
         }
+
+        section .card aria-labelledby="steward-assistant-heading" {
+            h2 id="steward-assistant-heading" { "Steward" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STEWARD) novalidate {
+                (alert_region(None, view.group_notice(SettingsGroup::Steward)))
+            p .small {
+                "The charter is the standing instruction the steward works under, one line per "
+                "duty seed. The urgency and board columns are its defaults."
+            }
+            div .field {
+                label for="steward_charter" { "Charter" }
+                textarea id="steward_charter" name="steward_charter" rows="8" spellcheck="false" {
+                    (view.steward_charter)
+                }
+            }
+            div .field {
+                label for="steward_call_urgency_default" { "Call urgency" }
+                select id="steward_call_urgency_default" name="steward_call_urgency_default" {
+                    option value="normal" selected[view.steward_call_urgency_default == "normal"] { "Normal" }
+                    option value="high" selected[view.steward_call_urgency_default == "high"] { "High" }
+                }
+            }
+            div .field {
+                label for="steward_board_columns" { "Board columns" }
+                select id="steward_board_columns" name="steward_board_columns" {
+                    option value="compact" selected[view.steward_board_columns == "compact"] { "Compact" }
+                    option value="full" selected[view.steward_board_columns == "full"] { "Full" }
+                }
+            }
+            div .actions {
+                button type="submit" { "Save steward" }
+            }
+            }
+        }
     }
 }
 
@@ -4649,6 +4735,30 @@ fn tab_memory(view: &SettingsView) -> Markup {
                 "date. A backend that cannot answer is recorded and the turn goes on without it."
             }
             (memory_group(view))
+        }
+
+        section .card aria-labelledby="steward-memory-heading" {
+            h2 id="steward-memory-heading" { "Steward notes" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STEWARD) novalidate {
+                (alert_region(None, view.group_notice(SettingsGroup::Steward)))
+            p .small {
+                "The steward's field notes are its scratch memory. The window is how many recent "
+                "notes a turn carries; the days are how long a note is kept."
+            }
+            div .field {
+                label for="steward_note_window" { "Notes per turn" }
+                input type="number" id="steward_note_window" name="steward_note_window"
+                    min="1" max="64" value=(view.steward_note_window);
+            }
+            div .field {
+                label for="steward_field_note_days" { "Keep field notes for, days" }
+                input type="number" id="steward_field_note_days" name="steward_field_note_days"
+                    min="1" max="365" value=(view.steward_field_note_days);
+            }
+            div .actions {
+                button type="submit" { "Save steward notes" }
+            }
+            }
         }
     }
 }
@@ -4916,6 +5026,58 @@ fn tab_automation(view: &SettingsView) -> Markup {
                     button type="submit" { "Save jobs" }
                     a .button href=(crate::admin::ROUTE_ACTIVITY) { "Open activity" }
                 }
+            }
+        }
+
+        section .card aria-labelledby="steward-automation-heading" {
+            h2 id="steward-automation-heading" { "Steward" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STEWARD) novalidate {
+                (alert_region(None, view.group_notice(SettingsGroup::Steward)))
+            /* The marker says this form carries the switch: an unticked box is a
+               real "off", where a form without the marker simply leaves it alone. */
+            input type="hidden" name="steward_form" value="1";
+            p .small {
+                "The steward watches the duties you hand it on a cadence, without being spoken to. "
+                "Off, no duty is watched."
+            }
+            div .field {
+                label for="steward_enabled" {
+                    input type="checkbox" id="steward_enabled" name="steward_enabled"
+                        value="true" checked[view.steward_enabled];
+                    " Let the steward watch duties"
+                }
+            }
+            div .field {
+                label for="steward_watch_seconds" { "Watch interval, seconds" }
+                input type="number" id="steward_watch_seconds" name="steward_watch_seconds"
+                    min="30" max="3600" value=(view.steward_watch_seconds);
+            }
+            div .field {
+                label for="steward_max_rounds" { "Round cap per duty" }
+                input type="number" id="steward_max_rounds" name="steward_max_rounds"
+                    min="1" max="200" value=(view.steward_max_rounds);
+            }
+            div .field {
+                label for="steward_delivery_default" { "Steward delivery" }
+                select id="steward_delivery_default" name="steward_delivery_default" {
+                    option value="push" selected[view.steward_delivery_default == "push"] { "Push" }
+                    option value="inbox" selected[view.steward_delivery_default == "inbox"] { "Inbox" }
+                    option value="email" selected[view.steward_delivery_default == "email"] { "Email" }
+                    option value="off" selected[view.steward_delivery_default == "off"] { "Off" }
+                }
+            }
+            div .field {
+                label for="steward_mail_recipients" { "Steward mail allowlist" }
+                input type="text" id="steward_mail_recipients" name="steward_mail_recipients"
+                    value=(view.steward_mail_recipients);
+                span .hint {
+                    "Addresses the steward may mail, comma-separated. Empty sends no mail: the "
+                    "steward's messages go to the inbox. Copies and reply-all are never used."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save steward" }
+            }
             }
         }
 
