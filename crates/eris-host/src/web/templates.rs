@@ -2832,7 +2832,9 @@ impl SettingsTab {
                 Self::Assistant
             }
             "steward_note_window" | "steward_field_note_days" => Self::Memory,
-            "steward_enabled" | "steward_watch_seconds" | "steward_max_rounds"
+            "steward_enabled"
+            | "steward_watch_seconds"
+            | "steward_max_rounds"
             | "steward_delivery_default" => Self::Automation,
             "memory_backend" | "memory_vault" => Self::Memory,
             "device_listen" | "device_relay" | "notify_on_reply" | "notify_scope"

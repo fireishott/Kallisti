@@ -1980,7 +1980,9 @@ fn steward_settings_post_saves_through_its_own_route() {
     ));
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
     assert_eq!(
-        engine.setting(crate::steward::SETTING_WATCH_SECONDS).unwrap(),
+        engine
+            .setting(crate::steward::SETTING_WATCH_SECONDS)
+            .unwrap(),
         Some("90".to_owned())
     );
     // The marker makes an unticked box a real off.
@@ -2005,7 +2007,9 @@ fn steward_settings_post_saves_through_its_own_route() {
         refused.body
     );
     assert_eq!(
-        engine.setting(crate::steward::SETTING_WATCH_SECONDS).unwrap(),
+        engine
+            .setting(crate::steward::SETTING_WATCH_SECONDS)
+            .unwrap(),
         Some("90".to_owned())
     );
 
@@ -2020,7 +2024,9 @@ fn steward_settings_post_saves_through_its_own_route() {
     ));
     assert_eq!(ignored.status, StatusCode::OK, "{}", ignored.body);
     assert_eq!(
-        engine.setting(crate::steward::SETTING_WATCH_SECONDS).unwrap(),
+        engine
+            .setting(crate::steward::SETTING_WATCH_SECONDS)
+            .unwrap(),
         Some("90".to_owned())
     );
     assert_eq!(
