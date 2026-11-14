@@ -1,0 +1,52 @@
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from starlette.testclient import TestClient
+
+from kallisti_connector.http_facade import app
+
+
+def test_native_media_serves_generated_image_and_blocks_arbitrary_file(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    generated = hermes_home / "profiles" / "ignyte" / "cache" / "images" / "funny.png"
+    generated.parent.mkdir(parents=True)
+    generated.write_bytes(b"\x89PNG\r\n\x1a\nimage-bytes")
+    blocked = tmp_path / "secret.png"
+    blocked.write_bytes(b"not-for-mobile")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with patch(
+        "kallisti_connector.http_facade.require_native_or_paired_auth",
+        new=AsyncMock(return_value="token"),
+    ):
+        with TestClient(app) as client:
+            response = client.get("/v1/native/media", params={"path": str(generated)})
+            assert response.status_code == 200
+            assert response.content == generated.read_bytes()
+            assert response.headers["content-type"] == "image/png"
+
+            denied = client.get("/v1/native/media", params={"path": str(blocked)})
+            assert denied.status_code == 403
+
+
+def test_native_auth_forwards_gateway_session_cookie():
+    from kallisti_connector.http_facade import require_native_or_paired_auth
+
+    request = SimpleNamespace(
+        headers={"cookie": "hermes_session=session-value"},
+    )
+    response = SimpleNamespace(status_code=200)
+    mock_client = AsyncMock()
+    mock_client.get.return_value = response
+    mock_context = AsyncMock()
+    mock_context.__aenter__.return_value = mock_client
+
+    with patch("httpx.AsyncClient", return_value=mock_context):
+        token = __import__("asyncio").run(require_native_or_paired_auth(request))
+
+    assert token == "gateway-cookie-session"
+    mock_client.get.assert_awaited_once_with(
+        "http://127.0.0.1:9119/api/auth/me",
+        headers={"Cookie": "hermes_session=session-value"},
+    )

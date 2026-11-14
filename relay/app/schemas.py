@@ -183,8 +183,16 @@ class MessageCreateRequest(BaseModel):
     conversationId: UUID | None = None
     text: str = Field(default="")
     clientMessageId: UUID | None = None
-    attachments: list[AttachmentPayload] | None = Field(default=None, max_length=4)
+    # 10, not 4: the composer (PendingAttachment.maxAttachmentsPerMessage) and
+    # the connector's inbound staging both allow 10. A lower cap here rejects the
+    # WHOLE message with a 422 - no job, no stored attachment - so an 8-photo send
+    # from the iPad died before the connector ever saw it, and the client then
+    # rendered its own "attachment too large" copy off that validation string.
+    attachments: list[AttachmentPayload] | None = Field(default=None, max_length=10)
     reasoningEffort: str | None = None
+    # Note enrichment: pin the model that runs this turn. nil keeps the
+    # gateway's default model (chat never sets it).
+    model: str | None = Field(default=None, max_length=128)
 
     @field_validator("reasoningEffort")
     @classmethod
@@ -256,6 +264,19 @@ class ProfileSetRequest(BaseModel):
 
 class CreateSessionBody(BaseModel):
     title: str = "New Chat"
+
+
+class ConversationEnsureRequest(BaseModel):
+    """Body for POST /v1/conversations/ensure.
+
+    The iOS client calls this before every send to guarantee a server-backed
+    conversation exists. ``conversationId`` is the client-minted UUID it then
+    uses as the conversation id on subsequent requests.
+    """
+    conversationId: str = Field(min_length=1, max_length=36)
+    # "note" marks a Kallisti note's own enrichment session so it stays out of
+    # the chat session list. Omitted / "chat" for real chats.
+    kind: str | None = Field(default=None, max_length=16)
 
 
 class RenameSessionBody(BaseModel):

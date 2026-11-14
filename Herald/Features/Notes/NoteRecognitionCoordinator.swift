@@ -1,4 +1,6 @@
 import Foundation
+import CoreImage
+import UIKit
 import os
 
 /// Actor that manages recognition for a single open note.
@@ -74,11 +76,40 @@ actor NoteRecognitionCoordinator {
                 return nil
             }
 
-            let image = drawing.image(from: drawing.bounds, scale: 2.0)
-            guard let imageData = image.pngData() else {
+            let image = drawing.image(from: drawing.bounds, scale: 4.0)
+            // PKDrawing is vector — 4x gives Vision more pixel resolution on
+            // thin cursive strokes at negligible cost (vector upscale).
+            guard let baseImageData = image.pngData() else {
                 logger.error("Failed to render drawing to PNG")
                 return nil
             }
+
+            // Preprocess: grayscale + contrast stretch via CoreImage. This
+            // tightens the ink-on-paper signal and helps Vision separate
+            // strokes from background. If anything in the CoreImage chain
+            // fails, we silently fall back to the raw PNG so recognition
+            // still produces output.
+            let imageData: Data = {
+                guard let ciImage = CIImage(image: image) else { return baseImageData }
+                let context = CIContext(options: [.useSoftwareRenderer: false])
+                guard
+                    let controls = CIFilter(name: "CIColorControls")
+                else {
+                    return baseImageData
+                }
+                controls.setValue(ciImage, forKey: kCIInputImageKey)
+                controls.setValue(0.0, forKey: kCIInputSaturationKey)   // grayscale
+                controls.setValue(1.4, forKey: kCIInputContrastKey)     // +40% contrast
+                controls.setValue(0.0, forKey: kCIInputBrightnessKey)
+                guard
+                    let output = controls.outputImage,
+                    let cgImage = context.createCGImage(output, from: output.extent)
+                else {
+                    return baseImageData
+                }
+                let processed = UIImage(cgImage: cgImage)
+                return processed.pngData() ?? baseImageData
+            }()
 
             // Run recognition
             do {

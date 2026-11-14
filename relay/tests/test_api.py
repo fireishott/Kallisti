@@ -42,6 +42,21 @@ def register_device(client: TestClient):
     return response.json()["data"]
 
 
+def test_relay_terminal_sessions_falls_back_without_a_host(tmp_path):
+    """Relay-mode TUI probes must not produce a retried 404 storm."""
+    with build_client(tmp_path) as client:
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+
+        response = client.get(
+            "/v1/terminal/sessions?limit=5",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"] == {"sessions": []}
+
+
 def test_device_register_session_and_refresh(tmp_path):
     with build_client(tmp_path) as client:
         register_data = register_device(client)
@@ -613,9 +628,20 @@ def test_push_send_routes_to_correct_apns_environment(tmp_path):
         assert stub_apns.sends[0]["environment"] == "development"
 
 
-def test_per_device_foreground_suppression(tmp_path):
-    """Push notifications must skip foreground devices but still deliver to
-    background devices for the same user."""
+def test_push_targets_owning_device_and_skips_it_when_foreground(tmp_path):
+    """A turn pushes to the conversation's OWN device, never its siblings.
+
+    Regression (2026-10-10): this test previously asserted that a message sent
+    from a foreground iPad pushed to the background iPhone for the same user.
+    That fan-out was the reported defect - "if we are working on iPad you will
+    send push to iPhone" - because a single turn was broadcast to every active
+    registration on the account (14 on the live relay, most long dead).
+
+    Two properties are checked, in order:
+      1. With both devices backgrounded, only the SENDING device is pushed.
+      2. With the sending device foregrounded, nothing is pushed at all - a
+         foreground sibling must not absorb the notification.
+    """
     class StubAPNsClient:
         def __init__(self) -> None:
             self.sends = []
@@ -673,30 +699,39 @@ def test_per_device_foreground_suppression(tmp_path):
                 },
             )
 
-        # Set device 1 to foreground (should be skipped for push)
+        # Both devices backgrounded: the message is sent from device 1, so only
+        # device 1 may be pushed. Device 2 is a sibling, not a recipient.
+        for access_token in (access_token1, access_token2):
+            client.post(
+                "/v1/device/app-state",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json={"state": "background"},
+            )
+
+        stub_apns.sends.clear()
+        client.post(
+            "/v1/messages",
+            headers={"Authorization": f"Bearer {access_token1}"},
+            json={"text": "hello from device one"},
+        )
+        assert len(stub_apns.sends) == 1, stub_apns.sends
+        assert stub_apns.sends[0]["token"] == "token-device1"
+
+        # Now the sending device is foreground: it must be suppressed, and the
+        # backgrounded sibling must NOT be handed its notification instead.
         client.post(
             "/v1/device/app-state",
             headers={"Authorization": f"Bearer {access_token1}"},
             json={"state": "foreground"},
         )
 
-        # Set device 2 to background (should receive push)
-        client.post(
-            "/v1/device/app-state",
-            headers={"Authorization": f"Bearer {access_token2}"},
-            json={"state": "background"},
-        )
-
-        # Send a message from device 1 to trigger push
+        stub_apns.sends.clear()
         client.post(
             "/v1/messages",
             headers={"Authorization": f"Bearer {access_token1}"},
-            json={"text": "hello from foreground device"},
+            json={"text": "hello again from the foreground device"},
         )
-
-        # Only the background device should receive the push
-        assert len(stub_apns.sends) == 1
-        assert stub_apns.sends[0]["token"] == "token-device2"
+        assert stub_apns.sends == []
 
 
 def test_message_uses_explicit_conversation_id_not_arbitrary_current(tmp_path):

@@ -48,6 +48,11 @@ from .restart_operations import (
     get_restart_store,
 )
 from . import __version__, HERALD_PROTOCOL
+from .background_processes import (
+    BackgroundProcessRegistry,
+    get_registry as get_process_registry,
+    tracked_subprocess_exec,
+)
 from .pairing_code_store import PairingCodeStore
 from .terminal_bridge import handle_terminal_websocket
 
@@ -254,72 +259,6 @@ def _coerce_uuid(value: Any) -> str | None:
         return str(uuid.UUID(str(value)))
     except (ValueError, TypeError, AttributeError):
         return None
-
-
-
-def _now_iso() -> str:
-    """UTC ISO-8601 timestamp matching the RelayMessage wire field."""
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-
-def _relay_attachments(attachments: list | None) -> list | None:
-    """Preserve attachment bytes under both legacy and iOS decoder keys."""
-    if not attachments:
-        return None
-    shaped: list[dict] = []
-    for attachment in attachments:
-        if not isinstance(attachment, dict):
-            continue
-        payload = attachment.get("data") or attachment.get("thumbnailData")
-        if not payload:
-            continue
-        shaped.append({
-            "type": attachment.get("type", "file"),
-            "filename": attachment.get("filename", attachment.get("fileName", "attachment")),
-            "mimeType": attachment.get("mimeType", "application/octet-stream"),
-            "thumbnailData": payload,
-            "data": payload,
-        })
-    return shaped or None
-
-
-def _relay_message(
-    role: str,
-    text: str,
-    *,
-    client_message_id: Any = None,
-    job_id: Any = None,
-    attachments: list | None = None,
-    delivery_status: str = "delivered",
-    message_id: str | None = None,
-    app_conversation_id: Any = None,
-    strict_canonical: bool = False,
-) -> dict:
-    """Compatibility RelayMessage projection used by media and wire-contract tests.
-
-    The production event pipeline owns authoritative sequence/revision updates.
-    This boundary never invents a nonzero cursor when no ledger row is supplied.
-    """
-    del strict_canonical
-    identifier = message_id or str(uuid.uuid4())
-    conversation_id = _coerce_uuid(app_conversation_id)
-    return {
-        "id": identifier,
-        "canonicalMessageId": identifier,
-        "clientMessageId": _coerce_uuid(client_message_id),
-        "role": role,
-        "text": text,
-        "timestamp": _now_iso(),
-        "deliveryStatus": delivery_status,
-        "jobId": _coerce_uuid(job_id),
-        "attachments": _relay_attachments(attachments),
-        "conversationId": conversation_id,
-        "sequence": 0,
-        "revision": 0,
-        "conversationRevision": None,
-        "displayContent": text,
-        "deleted": False,
-    }
 
 
 
@@ -1052,21 +991,13 @@ def _pid_uptime_seconds(pid: int | None) -> int | None:
         return None
 
 
-# Strict version regex: 'v0.19.1', '0.19.1', '0.19.1.post1', '0.19.1-rc.1', etc.
-# Anything that does NOT match (e.g. argparse usage like 'usage: hermes ...') is
-# rejected so we never leak CLI help text into the Kallisti Settings UI.
-_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+(?:[.-][\w.]+)?)")
-
-
 def _read_hermes_installed_version() -> str | None:
     """Read the installed Hermes Agent version.
 
     Tries (in order):
       1. ``~/.hermes/.update_check`` (ver field, last ``hermes update --check``).
       2. The Hermes CLI: ``hermes --version`` (subprocess, 5 s timeout).
-    Never raises. NEVER returns argparse usage / stderr / help text — only a
-    string that matches the strict version regex above. If nothing matches,
-    returns None so the UI can show 'unknown' instead of garbage.
+    Never raises.
     """
     candidates = [
         Path(os.path.expanduser("~/.hermes")) / ".update_check",
@@ -1078,9 +1009,8 @@ def _read_hermes_installed_version() -> str | None:
             if path.is_file():
                 data = json.loads(path.read_text())
                 ver = data.get("ver")
-                m = _VERSION_RE.search(str(ver)) if ver else None
-                if m:
-                    return m.group(1)
+                if ver:
+                    return str(ver)
         except (OSError, ValueError):
             continue
     # CLI fallback
@@ -1097,18 +1027,14 @@ def _read_hermes_installed_version() -> str | None:
                 [str(bin_path), "--version"],
                 capture_output=True, text=True, timeout=5,
             )
-            # Only accept output on a clean exit AND a stdout match. NEVER
-            # inspect stderr — argparse writes the 'usage: hermes ...' banner
-            # there when --version is rejected, and that has leaked into the
-            # Kallisti Settings 'Hermes Agent' field before.
-            if result.returncode != 0:
-                continue
-            stdout = (result.stdout or "").strip()
-            if not stdout:
-                continue
-            m = _VERSION_RE.search(stdout)
-            if m:
-                return m.group(1)
+            if result.returncode == 0 and result.stdout.strip():
+                # "Hermes Agent v0.19.1 (2026.7.30) ..." or similar
+                out = result.stdout.strip()
+                m = re.search(r"v?(\d+\.\d+\.\d+(?:[.-][\w.]+)?)", out)
+                if m:
+                    return m.group(1)
+                # Fall back to the entire first line trimmed
+                return out.split("\n", 1)[0][:80]
         except Exception:
             continue
     return None
@@ -1181,13 +1107,8 @@ def _read_hermes_commits() -> list[dict]:
 
     Each entry: {sha (7 chars), summary, author, at (unix ts)}. Mirrors the
     Hermes dashboard's `_recent_upstream_commits` so the iOS Software Update
-    sheet can group by conventional-commit type (feat -> Added, fix -> Fixed)
+    sheet can group by conventional-commit type (feat → Added, fix → Fixed)
     instead of dumping raw oneline text.
-
-    Build 135.38: uses %B (full commit body) instead of %s (subject only)
-    so the changelog sheet shows the complete release notes, not one line
-    per commit. Records are delimited by \\x1e (record separator) and
-    fields by \\x1f (unit separator) so multi-line bodies survive parsing.
     """
     repo = Path(os.path.expanduser("~/.hermes")) / "hermes-agent"
     try:
@@ -1196,26 +1117,19 @@ def _read_hermes_commits() -> list[dict]:
         result = _run_subprocess(
             [
                 "git", "-C", str(repo), "log",
-                "--format=%H%x1f%B%x1f%an%x1f%ct%x1e",
+                "--format=%H%x1f%s%x1f%an%x1f%ct",
                 "HEAD..origin/main", "-n20",
             ],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode != 0:
             return []
-        raw = result.stdout.strip("\x1e\n")
-        if not raw:
-            return []
         commits: list[dict] = []
-        for record in raw.split("\x1e"):
-            record = record.strip()
-            if not record:
+        for line in result.stdout.splitlines():
+            if not line.strip():
                 continue
-            parts = (record.split("\x1f") + ["", "", "", "0"])[:4]
+            parts = (line.split("\x1f") + ["", "", "", "0"])[:4]
             sha, summary, author, at = parts
-            summary = summary.strip()
-            if not summary:
-                continue
             commits.append(
                 {"sha": sha[:7], "summary": summary, "author": author, "at": int(at or 0)}
             )
@@ -2305,7 +2219,6 @@ async def push_register(request: Request) -> JSONResponse:
     # device's real alert token. tokenKind defaults to "device" so already
     # -shipped clients that never send it keep today's behavior exactly.
     token_kind = str(body.get("tokenKind") or "device").strip().lower()
-    response_ready_alerts_enabled = bool(body.get("responseReadyAlertsEnabled", True))
     if token_kind not in {"device", "liveActivity".lower()}:
         raise HTTPException(status_code=400, detail="tokenKind must be device or liveActivity")
 
@@ -2315,7 +2228,6 @@ async def push_register(request: Request) -> JSONResponse:
     result = await ctx.push_register({
         "token": token, "environment": environment, "tokenKind": token_kind,
         "installationId": installation_id,
-        "responseReadyAlertsEnabled": response_ready_alerts_enabled,
     })
     if result.get("registered") is not True:
         raise HTTPException(status_code=503, detail="Push registration was not accepted")
@@ -3218,14 +3130,10 @@ async def gateway_logs(request: Request) -> JSONResponse:
     priority = _JOURNAL_PRIORITY.get(level, "6")
     source = (request.query_params.get("source") or "connector").lower()
 
-    # Build 107: validate source to prevent traversal and only allow known units.
-    # 'hermes-gateway' resolves through _hermes_unit() so it honors the
-    # HERMES_AGENT_UNIT env var (e.g. 'hermes-gateway.service') instead of
-    # synthesizing a per-profile name like 'hermes-gateway-.hermes.service'
-    # which does not exist and causes the SSE live-tail to die silently.
+    # Build 107: validate source to prevent traversal and only allow known units
     _ALLOWED_LOG_SOURCES = {
         "connector": _JOURNAL_UNIT,
-        "hermes-gateway": _hermes_unit(),
+        "hermes-gateway": f"hermes-gateway-{_hermes_profile()}.service",
         "hermes-agent": f"hermes-agent-{_hermes_profile()}.service",
     }
     if source not in _ALLOWED_LOG_SOURCES:
@@ -3266,14 +3174,10 @@ async def gateway_logs_stream(request: Request) -> StreamingResponse:
     priority = _JOURNAL_PRIORITY.get(level, "6")
     source = (request.query_params.get("source") or "connector").lower()
 
-    # Build 107: validate source to prevent traversal and only allow known units.
-    # 'hermes-gateway' resolves through _hermes_unit() so it honors the
-    # HERMES_AGENT_UNIT env var (e.g. 'hermes-gateway.service') instead of
-    # synthesizing a per-profile name like 'hermes-gateway-.hermes.service'
-    # which does not exist and causes the SSE live-tail to die silently.
+    # Build 107: validate source to prevent traversal and only allow known units
     _ALLOWED_LOG_SOURCES = {
         "connector": _JOURNAL_UNIT,
-        "hermes-gateway": _hermes_unit(),
+        "hermes-gateway": f"hermes-gateway-{_hermes_profile()}.service",
         "hermes-agent": f"hermes-agent-{_hermes_profile()}.service",
     }
     if source not in _ALLOWED_LOG_SOURCES:
@@ -3284,10 +3188,17 @@ async def gateway_logs_stream(request: Request) -> StreamingResponse:
     journal_unit = _ALLOWED_LOG_SOURCES[source]
 
     async def stream() -> AsyncIterator[str]:
-        proc = await asyncio.create_subprocess_exec(
-            "journalctl", "--user", "-u", journal_unit,
-            "-f", "-n", "0", "-p", priority, "-o", "json", "--no-pager",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        # Build 135.17: route the journal tail through the background-
+        # process registry so the Live tab can show the journalctl
+        # stdout alongside any other long-running commands.
+        proc, _record = await tracked_subprocess_exec(
+            name=f"journalctl: {source}",
+            args=[
+                "journalctl", "--user", "-u", journal_unit,
+                "-f", "-n", "0", "-p", priority, "-o", "json", "--no-pager",
+            ],
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
         try:
             while True:
@@ -3723,118 +3634,46 @@ async def stub_skills(request: Request) -> JSONResponse:
     return JSONResponse({"skills": []})
 
 
-def _cron_home() -> Path:
-    return Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+async def stub_cron_list(request: Request) -> JSONResponse:
+    """GET /v1/cron — real scheduled jobs from the Hermes cron store.
 
+    Reads ~/.hermes/cron/jobs.json (the same store `hermes cron list` renders)
+    and maps each job to the shape the iOS CronStore decodes:
+    {id, name, schedule, prompt, enabled, lastRun, nextRun, lastResult}.
+    """
+    await require_auth(request)
+    hermes_home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
 
-def _cron_binary() -> str | None:
-    configured = os.getenv("HERALD_COMMAND", "hermes")
-    return shutil.which(configured) or (configured if Path(configured).is_file() else None)
-
-
-def _cron_job_payload(raw: dict[str, Any]) -> dict[str, Any]:
-    schedule = raw.get("schedule") or {}
-    return {
-        "id": raw.get("id", ""),
-        "name": raw.get("name") or raw.get("id", "Untitled job"),
-        "schedule": raw.get("schedule_display") or schedule.get("display", ""),
-        "prompt": raw.get("prompt", ""),
-        "enabled": bool(raw.get("enabled", True)),
-        "lastRun": raw.get("last_run_at"),
-        "nextRun": raw.get("next_run_at"),
-        "lastResult": raw.get("last_status") or raw.get("last_error"),
-    }
-
-
-def _read_cron_jobs() -> list[dict[str, Any]]:
-    jobs_path = _cron_home() / "cron" / "jobs.json"
-    if not jobs_path.is_file():
-        return []
-    data = json.loads(jobs_path.read_text(encoding="utf-8"))
-    raw_jobs = data.get("jobs", []) if isinstance(data, dict) else []
-    return [_cron_job_payload(job) for job in raw_jobs if isinstance(job, dict)]
-
-
-async def _run_cron_cli(*args: str) -> None:
-    binary = _cron_binary()
-    if not binary:
-        raise HTTPException(status_code=503, detail="Hermes CLI is unavailable")
-    env = dict(os.environ)
-    env["HERMES_HOME"] = str(_cron_home())
+    jobs_path = hermes_home / "cron" / "jobs.json"
+    jobs: list[dict] = []
     try:
-        proc = await asyncio.create_subprocess_exec(
-            binary, "cron", *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
+        if jobs_path.is_file():
+            data = json.loads(jobs_path.read_text(encoding="utf-8"))
+            raw_jobs = data.get("jobs", []) if isinstance(data, dict) else []
+            for j in raw_jobs:
+                if not isinstance(j, dict):
+                    continue
+                jobs.append({
+                    "id": j.get("id", ""),
+                    "name": j.get("name", "Untitled job"),
+                    "schedule": j.get("schedule_display") or (j.get("schedule") or {}).get("display", ""),
+                    "prompt": j.get("prompt", ""),
+                    "enabled": bool(j.get("enabled", True)),
+                    "lastRun": j.get("last_run_at"),
+                    "nextRun": j.get("next_run_at"),
+                    "lastResult": j.get("last_status") or j.get("last_error"),
+                })
+    except Exception as e:  # pragma: no cover - defensive
+        logging.getLogger("herald.http_facade").warning(
+            "cron store read failed: %s", e
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Hermes cron command timed out")
-    if proc.returncode != 0:
-        detail = (stderr or stdout).decode("utf-8", "replace").strip()
-        logger.warning("cron command failed (%s): %s", proc.returncode, detail[:400])
-        raise HTTPException(status_code=502, detail="Hermes cron command failed")
+    return JSONResponse({"jobs": jobs})
 
 
-async def cron_list(request: Request) -> JSONResponse:
-    """GET /v1/cron - the real Hermes cron store, usable by native clients."""
-    await require_native_or_paired_auth(request)
-    try:
-        return JSONResponse({"jobs": _read_cron_jobs()})
-    except Exception as exc:
-        logger.warning("cron store read failed: %s", exc)
-        raise HTTPException(status_code=503, detail="Cron store is unavailable")
-
-
-async def cron_create(request: Request) -> JSONResponse:
-    """POST /v1/cron - create a Hermes scheduled job through its CLI."""
-    await require_native_or_paired_auth(request)
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Request body must be JSON")
-    name = str(body.get("name") or "").strip()
-    schedule = str(body.get("schedule") or "").strip()
-    prompt = str(body.get("prompt") or "").strip()
-    if not name or not schedule or not prompt:
-        raise HTTPException(status_code=400, detail="name, schedule, and prompt are required")
-    await _run_cron_cli("create", schedule, prompt, "--name", name, "--deliver", "local")
-    jobs = _read_cron_jobs()
-    created = next((job for job in reversed(jobs) if job["name"] == name), None)
-    if not created:
-        raise HTTPException(status_code=502, detail="Cron job was created but could not be read back")
-    return JSONResponse({"job": created}, status_code=201)
-
-
-async def cron_update(request: Request) -> JSONResponse:
-    """PATCH /v1/cron/{id} - pause or resume the selected job."""
-    await require_native_or_paired_auth(request)
-    job_id = request.path_params.get("id", "")
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Request body must be JSON")
-    enabled = body.get("enabled")
-    if not job_id or not isinstance(enabled, bool):
-        raise HTTPException(status_code=400, detail="enabled must be a boolean")
-    await _run_cron_cli("resume" if enabled else "pause", job_id)
-    job = next((item for item in _read_cron_jobs() if item["id"] == job_id), None)
-    if not job:
-        raise HTTPException(status_code=404, detail="Cron job not found after update")
-    return JSONResponse({"job": job})
-
-
-async def cron_delete(request: Request) -> JSONResponse:
-    """DELETE /v1/cron/{id} - remove the selected job through Hermes CLI."""
-    await require_native_or_paired_auth(request)
-    job_id = request.path_params.get("id", "")
-    if not job_id:
-        raise HTTPException(status_code=400, detail="job id is required")
-    await _run_cron_cli("remove", job_id)
-    if any(item["id"] == job_id for item in _read_cron_jobs()):
-        raise HTTPException(status_code=502, detail="Cron job still exists after delete")
-    return JSONResponse({})
+async def stub_cron_detail(request: Request) -> JSONResponse:
+    """GET/DELETE /v1/cron/{id} — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
 
 
 async def stub_notes_list(request: Request) -> JSONResponse:
@@ -4699,6 +4538,106 @@ async def config_put(request: Request) -> JSONResponse:
     })
 
 
+# ── Canvas Live tab: background process stream (build 135.17) ──────────
+#
+# The iOS Canvas "Live" tab subscribes to /v1/canvas/processes/stream
+# to render any long-running commands the connector spawns on its
+# behalf (journal tails, restart scripts, hermes update applies, etc).
+# Other code paths in the connector can register arbitrary processes
+# with ``tracked_subprocess_exec`` and they will appear here
+# automatically — no per-feature plumbing required.
+
+
+async def canvas_processes_list(request: Request) -> JSONResponse:
+    """GET /v1/canvas/processes — current snapshot of tracked processes."""
+    await require_auth(request)
+    registry = get_process_registry()
+    rows = registry.list_snapshots()
+    return JSONResponse({"data": {"processes": rows}})
+
+
+async def canvas_processes_register(request: Request) -> JSONResponse:
+    """POST /v1/canvas/processes — register a process to track.
+
+    Body (JSON):
+        {
+            "command": ["argv0", "argv1", ...],
+            "name": "friendly label"
+        }
+
+    Spawns the process, registers it with the global registry, and
+    returns the new id + initial snapshot.  The registry's tail
+    loop streams stdout/stderr to every subscriber of
+    /v1/canvas/processes/stream.
+    """
+    await require_auth(request)
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    cmd = body.get("command")
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(s, str) for s in cmd):
+        raise HTTPException(
+            status_code=400,
+            detail="`command` must be a non-empty list of strings",
+        )
+    name = body.get("name") or cmd[0] or "process"
+    proc, record = await tracked_subprocess_exec(
+        name=name,
+        args=cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    return JSONResponse({"data": {"process": record.snapshot()}})
+
+
+async def canvas_processes_kill(request: Request) -> JSONResponse:
+    """POST /v1/canvas/processes/{id}/kill — terminate a tracked process."""
+    await require_auth(request)
+    process_id = request.path_params.get("id", "")
+    ok = await get_process_registry().kill(process_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Process not found")
+    record = get_process_registry().get(process_id)
+    return JSONResponse(
+        {"data": {"process": record.snapshot() if record else {"id": process_id}}}
+    )
+
+
+async def canvas_processes_stream(request: Request) -> StreamingResponse:
+    """GET /v1/canvas/processes/stream — SSE feed of process events.
+
+    Each event is a JSON object with the same shape as
+    ``BackgroundProcessRegistry.TrackedProcess.snapshot()``.  A
+    ``{"event": "keepalive"}`` sentinel is emitted every ~15s to
+    keep the SSE connection alive through buffering proxies.
+    """
+    await require_auth(request)
+
+    async def stream() -> AsyncIterator[str]:
+        registry = get_process_registry()
+        try:
+            async for event in registry.stream():
+                if await request.is_disconnected():
+                    return
+                if event.get("event") == "keepalive":
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"event: process\ndata: {json.dumps(event)}\n\n"
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ── Application ─────────────────────────────────────────────────────────
 
 
@@ -4779,10 +4718,8 @@ routes = [
     # P0-4: chat critical path
     # B34 P2-1: Unimplemented-route stubs — decodable payloads, no 404s
     Route("/v1/skills", stub_skills, methods=["GET"]),
-    Route("/v1/cron", cron_list, methods=["GET"]),
-    Route("/v1/cron", cron_create, methods=["POST"]),
-    Route("/v1/cron/{id}", cron_update, methods=["PATCH"]),
-    Route("/v1/cron/{id}", cron_delete, methods=["DELETE"]),
+    Route("/v1/cron", stub_cron_list, methods=["GET"]),
+    Route("/v1/cron/{id}", stub_cron_detail, methods=["GET", "DELETE"]),
     Route("/v1/notes", stub_notes_list, methods=["GET"]),
     Route("/v1/notes/{id}", stub_notes_detail, methods=["GET"]),
     Route("/v1/notes/{id}/recognitions", stub_notes_recognitions, methods=["GET"]),
@@ -4821,6 +4758,21 @@ routes = [
     Route("/gw/update/progress", gateway_update_progress, methods=["GET"]),
     Route("/gw/hermes/logs", hermes_logs_proxy, methods=["GET"]),  # Build 31
     Route("/v1/relay/identity", stub_relay_identity, methods=["GET"]),
+    # Build 135.17: Canvas "Live" tab background process feed.
+    # The iOS app subscribes to /v1/canvas/processes/stream (SSE) and
+    # reads the snapshot via GET /v1/canvas/processes.
+    Route("/v1/canvas/processes", canvas_processes_list, methods=["GET"]),
+    Route("/v1/canvas/processes", canvas_processes_register, methods=["POST"]),
+    Route(
+        "/v1/canvas/processes/{id}/kill",
+        canvas_processes_kill,
+        methods=["POST"],
+    ),
+    Route(
+        "/v1/canvas/processes/stream",
+        canvas_processes_stream,
+        methods=["GET"],
+    ),
     # Native-completion to push bridge (Task 12)
     Route("/v1/native/watch", native_watch_route, methods=["POST"]),
     Route("/v1/native/media", native_media_route, methods=["GET"]),
@@ -4841,10 +4793,31 @@ routes = [
     ),
 ]
 
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _facade_lifespan(_app):
+    """Start the background-process registry for this app.
+
+    Starlette 1.0 removed the ``on_startup``/``on_shutdown`` constructor
+    arguments (and the pinned lockfile is starlette 1.0.0), so the registry
+    hook rides the lifespan instead. Without this the module raised
+    ``TypeError: Starlette.__init__() got an unexpected keyword argument
+    'on_startup'`` at import time and the connector could not start at all.
+    """
+    await get_process_registry().start()
+    try:
+        yield
+    finally:
+        await get_process_registry().stop()
+
+
 app = Starlette(
     debug=False,
     routes=routes,
     exception_handlers={HTTPException: http_exception_handler},
+    lifespan=_facade_lifespan,
 )
 
 

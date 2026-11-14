@@ -242,17 +242,29 @@ final class NotesSyncEngine {
         // Build the session title from the note's current title.
         let sessionTitle = note.title.isEmpty ? "Untitled Note" : note.title
 
-        // Build 128.73: the sync turn carries an explicit instruction so
-        // Hermes knows this is an automatic background note sync from the
-        // Kallisti app, NOT a chat message - read the handwriting, summarize,
-        // execute directives, reply briefly. Without this the gateway treats
-        // it as a random user message and the reply is unhelpful.
+        // The sync turn carries an explicit instruction so Hermes knows this
+        // is an automatic background note sync from the Kallisti app, NOT a
+        // chat message. The inline handwriting drawing is the AUTHORITATIVE
+        // source of truth for the note's content - the agent's vision-capable
+        // model reads it directly from the attached image, with the noisy
+        // on-device recognized-text fallback only used when vision is not
+        // available. Without these instructions the gateway treats the turn
+        // as a random user message, the model burns turns searching for a
+        // vision tool that does not exist, or it defers to garbled on-device
+        // OCR (e.g. "Qwen Models" becomes "Quen Movels") and writes an
+        // unhelpful guess. The isolation rule prevents cross-note context
+        // contamination from injected memory/Honcho/session_search.
         var messageText = "[Note sync from Kallisti - automatic, not a chat message]\n"
         messageText += "Note title: \(sessionTitle)\n"
         if attachments.isEmpty {
             messageText += "No drawing attached - this note has no drawable content. Reply briefly.\n"
         } else {
-            messageText += "A handwritten drawing is attached - read it (OCR the handwriting) and summarize the note's content.\n"
+            messageText += "A handwritten drawing is attached inline as an image in this conversation.\n"
+            messageText += "The drawing is the AUTHORITATIVE SOURCE OF TRUTH for the note's content. If you can see the attached image, read the handwriting directly from it - do NOT rely on any separate \"Recognized text\" block or on-device OCR, which is noisy and often misreads cursive.\n"
+            messageText += "Do NOT call vision_analyze, image_understand, or any vision/image tool - none of these tools exist in your toolset. Do NOT search for vision tools with tool_search/list_tools.\n"
+            messageText += "If you genuinely cannot see the attached image (you are a non-vision model), fall back to the recognized OCR text provided elsewhere in the conversation.\n"
+            messageText += "ISOLATION: work ONLY from this note's content and this session's own history. Ignore any injected memory, USER PROFILE, Honcho summaries, or context about other notes. Do NOT call session_search, memory recall, honcho, or gbrain unless this note's own text names another note.\n"
+            messageText += "Summarize the note's content from the handwriting.\n"
         }
         messageText += "Execute any directives you find in the note (e.g. #research, #talkingpoints, #summary) without asking follow-up questions. Keep your reply concise."
 

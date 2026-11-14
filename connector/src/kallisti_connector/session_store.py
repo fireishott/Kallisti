@@ -791,7 +791,7 @@ def _resolve_directive_path(raw_path: str) -> Path | None:
     """Resolve a directive path to a readable file, or None.
 
     Desktop emits three shapes, all seen live in state.db:
-      * absolute  — ``/home/fihadmin/.hermes/images/upload_x.jpg``
+      * absolute  — ``/home/agent/.hermes/images/upload_x.jpg``
       * HERMES_HOME-relative — ``.hermes/attachments/IMG_4129.png``
       * home-relative — ``~/...``
 

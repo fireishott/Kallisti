@@ -3,11 +3,11 @@ from __future__ import annotations
 import logging
 import time as _time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy import delete, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .config import Settings
@@ -841,11 +841,57 @@ def active_push_registrations_for_user(
     *,
     user_id: str,
 ) -> list[tuple[Device, PushRegistration]]:
+    """Every active push target for a user, across all of their devices.
+
+    This is the BROADCAST set. It is only correct for genuinely account-wide
+    notifications. Per-conversation traffic must resolve its owning device
+    first (see ``push_registrations_for_device``) - fanning a single turn out
+    to every paired device is what put iPad activity on the iPhone.
+    """
     rows = db.execute(
         select(Device, PushRegistration)
         .join(PushRegistration, PushRegistration.device_id == Device.id)
         .where(
             Device.user_id == user_id,
+            Device.is_active.is_(True),
+            PushRegistration.is_active.is_(True),
+        )
+    ).all()
+    return [(device, registration) for device, registration in rows]
+
+
+def device_id_for_conversation(db: Session, *, conversation_id: str) -> str | None:
+    """The device that owns a conversation, or None when it is unbound.
+
+    ``conversations.device_id`` is set at creation from the authenticated
+    device, so it is the authoritative "which phone asked for this" record.
+    """
+    if not conversation_id:
+        return None
+    return db.scalar(
+        select(Conversation.device_id).where(Conversation.id == conversation_id)
+    )
+
+
+def push_registrations_for_device(
+    db: Session,
+    *,
+    device_id: str,
+) -> list[tuple[Device, PushRegistration]]:
+    """Active push targets for ONE device.
+
+    The per-device counterpart to ``active_push_registrations_for_user``.
+    Returns an empty list rather than falling back to the broadcast set: a
+    device with no registration should mean "no push", never "push
+    everywhere", which is the defect this exists to prevent.
+    """
+    if not device_id:
+        return []
+    rows = db.execute(
+        select(Device, PushRegistration)
+        .join(PushRegistration, PushRegistration.device_id == Device.id)
+        .where(
+            Device.id == device_id,
             Device.is_active.is_(True),
             PushRegistration.is_active.is_(True),
         )
@@ -1117,6 +1163,7 @@ def create_message_job(
     user_message_id: str,
     session_id_snapshot: str | None,
     reasoning_effort: str | None = None,
+    model: str | None = None,
 ) -> MessageJob:
     job = MessageJob(
         user_id=user_id,
@@ -1126,6 +1173,7 @@ def create_message_job(
         status="queued",
         retryable=True,
         reasoning_effort=reasoning_effort,
+        model=model,
     )
     db.add(job)
     db.commit()
@@ -1435,7 +1483,7 @@ def fail_message_job(
         db,
         job=job,
         role="system",
-        text=f"Hermes could not process this message: {error_text}",
+        text=f"Agent could not process this message: {error_text}",
         delivery_status="delivered",
     )
     user_message.delivery_status = "failed"
@@ -1529,12 +1577,29 @@ def list_message_jobs_for_conversation(db: Session, *, conversation_id: str) -> 
     )
 
 
+def _iso_utc(value) -> str | None:
+    """Serialize a datetime as ISO-8601 with a `T` separator and UTC offset.
+
+    A raw datetime handed to FastAPI's jsonable_encoder renders as ISO `T`,
+    but the SSE path stringifies payloads with json default=str, which calls
+    str(datetime) and produces a SPACE separator. The iOS client's date
+    decoder only accepts the `T` form, so the SSE `done` event failed to
+    decode and the phone showed \"The data couldn't be read because it is
+    missing.\" Emitting one canonical format here fixes both paths.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.isoformat(timespec="microseconds") + "Z"
+    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def serialize_message(message: Message, *, job: MessageJob | None = None) -> dict:
     payload = {
         "id": message.id,
         "role": message.role,
         "text": message.text,
-        "timestamp": message.created_at,
+        "timestamp": _iso_utc(message.created_at),
         "deliveryStatus": default_message_delivery_status(message),
     }
     if message.client_message_id:
@@ -1576,7 +1641,7 @@ def serialize_conversation(conversation: Conversation, messages: list[Message], 
     result = {
         "id": conversation.id,
         "title": conversation.title,
-        "updatedAt": conversation.updated_at,
+        "updatedAt": _iso_utc(conversation.updated_at),
         "source": conversation.source,
         "isPinned": conversation.is_pinned,
         "isArchived": conversation.is_archived,
@@ -1725,6 +1790,18 @@ def cleanup_old_job_events(db: Session, retention_hours: int = 24) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _exclude_note_sessions(statement):
+    """Keep Kallisti note sessions out of the chat session browser.
+
+    A note's enrichment runs inside a durable conversation of its own (that is
+    what carries the note's thread and its smart title), but that conversation
+    is NOT a chat: listing it puts the raw enrichment prompt in the user's chat
+    list and lets them open it as a conversation. Legacy rows have a NULL kind
+    and are chats.
+    """
+    return statement.where(or_(Conversation.kind.is_(None), Conversation.kind != "note"))
+
+
 def list_sessions(
     db: Session,
     *,
@@ -1747,6 +1824,7 @@ def list_sessions(
     )
     if device_id is not None:
         base = base.where(Conversation.device_id == device_id)
+    base = _exclude_note_sessions(base)
 
     # Count total matching sessions
     count_stmt = select(sqlfunc.count()).select_from(base.subquery())
@@ -1781,6 +1859,7 @@ def search_sessions(db: Session, *, user_id: str, query: str, device_id: str | N
     )
     if device_id is not None:
         base = base.where(Conversation.device_id == device_id)
+    base = _exclude_note_sessions(base)
     return list(
         db.scalars(
             base.order_by(Conversation.last_message_at.desc().nullslast()).limit(20)
@@ -1980,6 +2059,24 @@ def claim_next_note_run(
     return db.get(NoteRun, run.id)
 
 
+def renew_note_run_lease(db: Session, *, run_id: str) -> NoteRun | None:
+    """Extend a claimed note run's lease.
+
+    Enrichment is one long turn (drawing read + optional web research), so any
+    progress/heartbeat from the host renews the lease; only silence past the
+    lease makes the run eligible for requeue.
+    """
+    run = db.get(NoteRun, run_id)
+    if run is None or run.status in ("completed", "failed", "cancelled"):
+        return None
+
+    now = utcnow()
+    run.lease_expires_at = now + timedelta(seconds=_NOTE_RUN_LEASE_SECONDS)
+    run.updated_at = now
+    db.commit()
+    return run
+
+
 def complete_note_run(
     db: Session,
     *,
@@ -1987,11 +2084,18 @@ def complete_note_run(
     result: dict,
     source_drawing_revision: int,
     source_text_revision: int,
-) -> EnrichedNoteRevision:
-    """Complete a note run and apply the revision fence."""
+) -> EnrichedNoteRevision | None:
+    """Complete a note run and apply the revision fence.
+
+    Returns None when the run already reached a terminal state (cancelled or
+    failed) — a late result must never resurrect a run the user stopped.
+    """
     run = db.get(NoteRun, run_id)
     if run is None:
         raise RuntimeError(f"Note run {run_id} not found")
+
+    if run.status in ("cancelled", "failed"):
+        return None
 
     now = utcnow()
     run.status = "completed"
@@ -2051,15 +2155,23 @@ def append_note_run_event(
     attempt: int,
     source_seq: int | None = None,
 ) -> NoteRunEvent | None:
-    """Append an event to the note run event log."""
+    """Append an event to the note run event log.
+
+    Terminal types are exempt from the status guard so the journal always ends
+    with the reason the run stopped.
+    """
     run = db.get(NoteRun, run_id)
     if run is None:
         return None
 
-    if run.status in ("completed", "failed", "cancelled"):
+    if run.status in ("completed", "failed", "cancelled") and event_type not in (
+        "completed",
+        "failed",
+        "cancelled",
+    ):
         return None
 
-    if run.attempt != attempt:
+    if attempt is not None and run.attempt != attempt:
         return None
 
     # Get next seq

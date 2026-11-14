@@ -55,6 +55,13 @@ class Database:
             except Exception:
                 pass
 
+        # NOTE: the message_jobs.model / .provider adds live in the sqlite
+        # migration block below (single code path). Do not add a second
+        # `ALTER TABLE message_jobs ADD COLUMN model` anywhere in this
+        # function: the Inspector caches get_columns() per table name, so a
+        # duplicate add reads the pre-ALTER column list and raises
+        # "duplicate column name", which aborts startup entirely.
+
         # Herald rebrand migration: rename hermes_hosts table and columns
         if "hermes_hosts" in table_names and "herald_hosts" not in table_names:
             _exec_safe("ALTER TABLE hermes_hosts RENAME TO herald_hosts")
@@ -126,7 +133,7 @@ class Database:
                 connection.execute(text("ALTER TABLE devices ADD COLUMN app_state TEXT"))
             if "app_state_updated_at" not in device_columns:
                 if str(self.engine.url).startswith("sqlite"):
-                    connection.execute(text("ALTER TABLE devices ADD COLUMN app_state_updated_at DATETIME"))
+                    connection.execute(text("ALTER TABLE devices ADD COLUMN app_state_updated_at TIMESTAMPTZ"))
                 else:
                     connection.execute(text("ALTER TABLE devices ADD COLUMN app_state_updated_at TIMESTAMP WITH TIME ZONE"))
 
@@ -151,10 +158,25 @@ class Database:
             conversation_columns = {column["name"] for column in inspector.get_columns("conversations")}
             if "herald_session_id" not in conversation_columns:
                 connection.execute(text("ALTER TABLE conversations ADD COLUMN herald_session_id TEXT"))
+            # --- conversations.kind: note sessions vs chat sessions ---
+            # Existing rows predate the column and are chats by default; the
+            # note path re-ensures its own session with kind="note" on the next
+            # sync, so no backfill is required.
+            if "kind" not in conversation_columns:
+                connection.execute(text("ALTER TABLE conversations ADD COLUMN kind TEXT"))
 
             message_columns = {column["name"] for column in inspector.get_columns("messages")}
             if "delivery_status" not in message_columns:
                 connection.execute(text("ALTER TABLE messages ADD COLUMN delivery_status TEXT"))
+
+            # --- message_jobs.model / .provider: per-turn model override ---
+            # Existing rows predate the columns and are NULL = host default,
+            # which is exactly the behaviour before the columns existed.
+            message_job_columns = {column["name"] for column in inspector.get_columns("message_jobs")}
+            if "model" not in message_job_columns:
+                connection.execute(text("ALTER TABLE message_jobs ADD COLUMN model TEXT"))
+            if "provider" not in message_job_columns:
+                connection.execute(text("ALTER TABLE message_jobs ADD COLUMN provider TEXT"))
             connection.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_messages_user_client_message_id "
@@ -234,7 +256,7 @@ class Database:
                     source_seq    BIGINT NOT NULL,
                     type          TEXT NOT NULL,
                     payload_json  TEXT NOT NULL,
-                    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             _exec_safe("CREATE UNIQUE INDEX IF NOT EXISTS ux_job_events_job_seq ON job_events(job_id, seq)")
@@ -245,6 +267,32 @@ class Database:
 
             if "reasoning_effort" not in job_columns:
                 _exec_safe("ALTER TABLE message_jobs ADD COLUMN reasoning_effort TEXT")
+
+            # --- note_runs: enrichment execution input (Phase 3 completion) ---
+            # The tables shipped with the contract but the run row only carried
+            # directives, so the connector had nothing to execute against.
+            if "note_runs" in table_names:
+                note_run_columns = {c["name"] for c in inspect(self.engine).get_columns("note_runs")}
+                if "recognized_text" not in note_run_columns:
+                    _exec_safe("ALTER TABLE note_runs ADD COLUMN recognized_text TEXT")
+                if "request_payload" not in note_run_columns:
+                    _exec_safe("ALTER TABLE note_runs ADD COLUMN request_payload JSON")
+                if "updated_at" not in note_run_columns:
+                    _exec_safe("ALTER TABLE note_runs ADD COLUMN updated_at TIMESTAMPTZ")
+                if "host_id" not in note_run_columns:
+                    _exec_safe("ALTER TABLE note_runs ADD COLUMN host_id TEXT")
+                _exec_safe(
+                    "CREATE INDEX IF NOT EXISTS ix_note_runs_user_status "
+                    "ON note_runs (user_id, status, created_at)"
+                )
+                _exec_safe(
+                    "CREATE INDEX IF NOT EXISTS ix_note_runs_lease "
+                    "ON note_runs (status, lease_expires_at)"
+                )
+                _exec_safe(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_note_run_events_run_seq "
+                    "ON note_run_events (run_id, seq)"
+                )
 
     @contextmanager
     def session(self) -> Iterator[Session]:

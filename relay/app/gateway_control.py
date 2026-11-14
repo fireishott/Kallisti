@@ -26,7 +26,7 @@ RESTART_ESTIMATED_SECONDS = 15
 
 
 class GatewayController:
-    """Controls the Herald relay, connector, and Hermes agent processes."""
+    """Controls the Herald relay, connector, and Agent processes."""
 
     def __init__(
         self,
@@ -120,7 +120,7 @@ class GatewayController:
             return {"restarting": False, "target": "connector", "error": str(exc)}
 
     async def _restart_hermes(self) -> dict:
-        """Restart the Hermes agent via connector RPC."""
+        """Restart the Agent via connector RPC."""
         if not self._connector_rpc:
             return {
                 "restarting": False,

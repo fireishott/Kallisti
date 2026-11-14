@@ -236,6 +236,12 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False, default="Herald")
     herald_session_id: Mapped[str | None] = mapped_column(Text)
     source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What this conversation IS. NULL / "chat" = a real chat the user opened;
+    # "note" = a Kallisti note's own enrichment session. Note sessions are
+    # durable on purpose (the note's thread and smart title live here) but they
+    # must never be listed as chats: the enrichment turn's raw prompt and reply
+    # are not chat messages and the session browser must not offer them.
+    kind: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     preview_text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -283,6 +289,13 @@ class MessageJob(Base):
     diff_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Note enrichment / per-turn model override: the model the app pinned for
+    # this turn (nil = the gateway's default model). `provider` is the app's
+    # provider id when it picked one, so the relay can hand the connector a
+    # fully-qualified "provider/model" id. Carried through to the connector's
+    # job envelope so the enrichment model setting is not decoration.
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -436,12 +449,19 @@ class NoteRun(Base):
     source_drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     source_text_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     requested_directives: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Immutable execution input: the OCR text the run was submitted against,
+    # the enrichment model/provider the app asked for, locale/timezone, and
+    # the staged attachment metadata (never the bytes).
+    recognized_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    host_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (

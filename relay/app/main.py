@@ -30,7 +30,17 @@ from .app_attest_trust import AppAttestTrustAnchorError, load_bundled_app_attest
 from .config import Settings
 from .database import Database
 from .herald_adapter import build_herald_adapter
-from .models import Conversation, HeraldHost, Message, PushRegistration, utcnow
+from .models import (
+    AuthSession,
+    Conversation,
+    Device,
+    HeraldHost,
+    Message,
+    NoteRun,
+    PushRegistration,
+    User,
+    utcnow,
+)
 from .pairing import HostSetupCodePayload, format_phone_pairing_code, build_host_setup_code
 from .push_broker import create_push_broker_challenge, serialize_push_broker_challenge
 from .push_broker import (
@@ -44,6 +54,7 @@ from .rate_limit import PhonePairingRateLimiter
 from .relay_identity import _b64url_decode, ensure_relay_identity, serialize_relay_identity, sign_relay_payload
 from .schemas import (
     ConnectorSetupRequest,
+    ConversationEnsureRequest,
     CreateSessionBody,
     CronCreateRequest,
     CronUpdateRequest,
@@ -67,18 +78,32 @@ from .schemas import (
     RefreshRequest,
     VoiceTurnCreateRequest,
 )
-from .security import AuthContext, get_auth_context, get_db, get_settings, normalize_datetime, require_internal_key
+from .security import (
+    AuthContext,
+    get_auth_context,
+    get_db,
+    get_settings,
+    hash_token,
+    normalize_datetime,
+    require_internal_key,
+)
 from .streaming import EventFanout
 from .services import (
     activate_herald_host_connection,
     append_job_event,
     append_message,
+    append_note_run_event,
     archive_current_conversation,
     archive_session,
     authenticate_herald_host,
     build_connector_websocket_url,
     claim_next_message_job,
+    claim_next_note_run,
     complete_message_job,
+    complete_note_run,
+    fail_note_run,
+    requeue_expired_note_runs,
+    renew_note_run_lease,
     conversation_history_before_message,
     create_phone_pairing_code,
     create_session,
@@ -90,7 +115,9 @@ from .services import (
     active_push_registrations_for_user,
     deactivate_herald_host_connection,
     delete_session,
+    device_id_for_conversation,
     device_is_foreground,
+    push_registrations_for_device,
     end_voice_session,
     ensure_default_user,
     fail_message_job,
@@ -171,13 +198,46 @@ def parse_bearer_token(authorization_header: str | None) -> str | None:
     return authorization_header[len(prefix) :].strip() or None
 
 
+_PROGRESS_EVENT_NAMES = {
+    "text_delta": "text.delta",
+    "reasoning_delta": "reasoning.delta",
+    "tool_activity": "tool.progress",
+    "tool_started": "tool.started",
+    "tool.completed": "tool.completed",
+    "tool_output": "tool.output",
+    "commentary": "commentary",
+}
+
+
+def wire_event_name(raw_type: str) -> str:
+    """Map a stored/connector event type onto the SSE name the client parses.
+
+    The iOS ``JobStreamCoordinator`` switches on DOTTED names
+    ("text.delta", "reasoning.delta", "tool.started", ...) while the connector
+    and the job_events table use underscores ("text_delta", ...). Only the
+    live publish path originally mapped them, so the replay/DB-poll fallback
+    emitted raw underscore names — every delta was silently dropped by the
+    client's default branch after a reconnect, which is why a turn could start
+    streaming and then appear to stall.
+    """
+    return _PROGRESS_EVENT_NAMES.get(raw_type, raw_type)
+
+
 def reply_state_for_job(job_status: str) -> str:
+    """Map a job status onto the wire replyState values the client decodes.
+
+    The iOS ``ReplyState`` enum is exactly {pending, complete, duplicate,
+    conflict, error}. It has NO ``delivered`` case, so emitting one made
+    ``decode(ReplyState.self)`` fail and the client fall back to ``.complete``
+    — which short-circuits the streaming path, so no text_delta /
+    reasoning_delta events were ever consumed and the UI showed no streaming
+    text and no thinking bubble. A terminal-but-unstreamed result maps to
+    ``complete``.
+    """
     if job_status == "completed":
-        return "delivered"
-    if job_status == "failed":
-        return "failed"
-    if job_status == "cancelled":
-        return "failed"
+        return "complete"
+    if job_status in ("failed", "cancelled"):
+        return "error"
     return "pending"
 
 
@@ -194,6 +254,24 @@ def decode_b64url_field(value: str, *, field_name: str) -> bytes:
         return _b64url_decode(value)
     except Exception as error:  # noqa: BLE001 - any decode failure is a bad client payload
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid base64url field: {field_name}.") from error
+
+
+def _summarize_validation_errors(exc: RequestValidationError) -> str:
+    """Field, type and reason only - never the rejected input.
+
+    Pydantic echoes the offending ``input`` for every error it reports, and
+    ``/v1/messages`` carries base64 attachment payloads, so the raw
+    ``str(exc.errors())`` shipped ~1.6 MB of image data back to the client.
+    The iOS client then substring-matched that blob for "413" and rendered
+    "The attachment was too large for Herald to process." for what was really
+    an attachment-count rejection. Keep this summary small and input-free.
+    """
+    parts: list[str] = []
+    for error in exc.errors()[:8]:
+        location = ".".join(str(part) for part in (error.get("loc") or ())) or "body"
+        reason = error.get("msg") or error.get("type") or "invalid"
+        parts.append(f"{location}: {reason}")
+    return "; ".join(parts) or "Request validation failed."
 
 
 @dataclass
@@ -286,10 +364,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def _log_validation_errors(request: Request, exc: RequestValidationError) -> JSONResponse:
         request_id = getattr(request.state, "request_id", None)
+        summary = _summarize_validation_errors(exc)
         logging.getLogger("herald.relay").warning(
-            "422 validation error on %s %s: %s", request.method, request.url.path, exc.errors()
+            "422 validation error on %s %s: %s", request.method, request.url.path, summary
         )
-        return _error_response(422, "VALIDATION_ERROR", str(exc.errors()), request_id)
+        return _error_response(422, "VALIDATION_ERROR", summary, request_id)
 
     @app.exception_handler(HTTPException)
     async def _structured_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
@@ -457,9 +536,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             source_seq = event.get("sourceSeq")
             if source_seq is None:
                 logger.warning("Legacy unsequenced event for job %s: %s", job_id, event_type)
-            # Sanitize payload for JSONB: datetime → ISO strings
+            # Sanitize payload for JSONB: datetime → ISO strings.
+            # NOTE: `default=str` renders a datetime with a SPACE separator
+            # ("2026-09-20 17:45:59.056982"), while FastAPI's jsonable_encoder
+            # renders the same field with a `T`. The iOS date decoder only
+            # accepts the `T` form, so mixing them broke the SSE `done` event
+            # with "The data couldn't be read because it is missing."
+            # Emit the canonical ISO form here so both paths agree.
+            def _json_default(value):
+                if isinstance(value, datetime):
+                    if value.tzinfo is None:
+                        return value.isoformat(timespec="microseconds") + "Z"
+                    return value.astimezone(timezone.utc).isoformat(
+                        timespec="microseconds"
+                    ).replace("+00:00", "Z")
+                return str(value)
+
             try:
-                safe_payload = json.loads(json.dumps(payload, default=str)) if isinstance(payload, dict) else {}
+                safe_payload = json.loads(json.dumps(payload, default=_json_default)) if isinstance(payload, dict) else {}
             except Exception:
                 safe_payload = payload if isinstance(payload, dict) else {}
 
@@ -508,7 +602,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing connector credential.")
         return authenticate_herald_host(db, connector_token=connector_token)
 
-    async def wait_for_job_completion(job_id: str, timeout_seconds: int) -> object | None:
+    async def wait_for_job_completion(job_id: str, timeout_seconds: float) -> object | None:
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         while asyncio.get_running_loop().time() < deadline:
             with database.session() as db:
@@ -593,6 +687,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job_id: str | None = None,
         category: str | None = None,
         force: bool = False,
+        device_id: str | None = None,
     ) -> None:
         apns_client = app.state.apns_client
         if apns_client is None:
@@ -603,7 +698,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return
         preview = preview[:160]
 
-        for device, registration in active_push_registrations_for_user(db, user_id=user_id):
+        # Per-device targeting: a turn belongs to the conversation's owning
+        # device, so only that device is a candidate. This used to iterate
+        # every active registration for the user, which pushed iPad turns to
+        # the iPhone (and to every stale token still marked active). Resolve
+        # the owner before falling back to the account-wide set, and only when
+        # the conversation genuinely has no device bound.
+        targets: list[tuple[Device, PushRegistration]]
+        if device_id is None:
+            device_id = device_id_for_conversation(db, conversation_id=conversation_id)
+        if device_id:
+            targets = push_registrations_for_device(db, device_id=device_id)
+        else:
+            logger.info(
+                "Push for conversation %s has no owning device — using account-wide set",
+                conversation_id,
+            )
+            targets = active_push_registrations_for_user(db, user_id=user_id)
+
+        for device, registration in targets:
             if not force and device_is_foreground(device, stale_seconds=settings.app_presence_stale_seconds):
                 logger.info("Skipping push for device %s (foreground)", device.id)
                 continue
@@ -673,12 +786,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job_id: str,
         result_text: str | None,
         error_text: str | None,
+        conversation_id: str | None = None,
+        device_id: str | None = None,
     ) -> None:
         """Send a push notification when a job completes (Herald 2.3.0).
 
-        If the user's device is in the background, sends an APNs push
-        with a response preview. The NotificationService extension
-        formats it based on the pushType field.
+        If the OWNING device is in the background, sends an APNs push with a
+        response preview. The NotificationService extension formats it based
+        on the pushType field.
+
+        Scoped to the conversation's owning device. It used to fan out to
+        every active registration for the user, so an iPad turn woke the
+        iPhone, and the foreground device still got one whenever its
+        app-state had aged past ``app_presence_stale_seconds``.
         """
         apns_client = app.state.apns_client
         if apns_client is None:
@@ -689,7 +809,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         body_text = error_text if is_error else (result_text or "")
         preview = " ".join((body_text or "").split()).strip()[:200]
 
-        for device, registration in active_push_registrations_for_user(db, user_id=user_id):
+        targets: list[tuple[Device, PushRegistration]]
+        if device_id is None and conversation_id:
+            device_id = device_id_for_conversation(db, conversation_id=conversation_id)
+        if device_id:
+            targets = push_registrations_for_device(db, device_id=device_id)
+        else:
+            logger.info(
+                "Completion push for job %s has no owning device — using account-wide set",
+                job_id,
+            )
+            targets = active_push_registrations_for_user(db, user_id=user_id)
+
+        for device, registration in targets:
             if device_is_foreground(device, stale_seconds=settings.app_presence_stale_seconds):
                 continue
 
@@ -697,6 +829,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "jobId": job_id,
                 "pushType": push_type,
             }
+            # The conversation id is what the app's `willPresent` nav-aware
+            # suppression matches on. Without it a completion push for the
+            # conversation already on screen falls through and banners the
+            # user with their own reply.
+            if conversation_id:
+                user_info["conversationId"] = conversation_id
             if not is_error and result_text:
                 user_info["response"] = result_text
             if is_error and error_text:
@@ -709,6 +847,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         title="Herald Response" if not is_error else "Herald Error",
                         body=preview,
                         job_id=job_id,
+                        conversation_id=conversation_id,
                         category=push_type,
                     )
                 except Exception:
@@ -766,7 +905,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         session = connector_session_for_user(user_id)
         if session is None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hermes host is offline.")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent host is offline.")
 
         request_id = str(uuid.uuid4())
         waiter: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
@@ -785,13 +924,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as error:
             clear_connector_session(user_id, session.connection_nonce)
             app.state.connector_rpc_waiters.pop(request_id, None)
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hermes host is unavailable.") from error
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent host is unavailable.") from error
 
         try:
             return await asyncio.wait_for(waiter, timeout_seconds or settings.connector_rpc_timeout_seconds)
         except asyncio.TimeoutError as error:
             app.state.connector_rpc_waiters.pop(request_id, None)
-            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Hermes host did not respond in time.") from error
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Agent host did not respond in time.") from error
 
     async def forward_sensor_payload(
         *,
@@ -931,6 +1070,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         if job.reasoning_effort:
             job_data["reasoningEffort"] = job.reasoning_effort
+        # Note enrichment: a pinned model rides the job envelope so the
+        # connector requests that model from the gateway api_server instead of
+        # its default. Absent = the gateway default (unchanged chat behavior).
+        if getattr(job, "model", None):
+            job_data["model"] = job.model
         # Build 22: select streaming mode when the connector advertises support.
         # When streaming is unavailable, fall back to complete mode truthfully.
         connector_session = connector_session_for_user(user_id) if user_id else None
@@ -944,6 +1088,72 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "type": "job.execute",
             "version": 1,
             "job": job_data,
+        }
+
+    def build_note_run_execute_payload(db: Session, *, run_id: str) -> dict:
+        """Build the note.run.execute envelope handed to the connector.
+
+        Attachment bytes ride the socket (base64) rather than the row, so the
+        connector can stage them to disk itself exactly like message
+        attachments; the relay keeps only the staged file metadata.
+        """
+        run = db.get(NoteRun, run_id)
+        if run is None:
+            raise RuntimeError("Note run not found.")
+
+        request_payload = run.request_payload or {}
+        attachments: list[dict] = []
+        for staged in request_payload.get("attachments") or []:
+            path = staged.get("path")
+            if not path:
+                continue
+            try:
+                with open(path, "rb") as handle:
+                    data = handle.read()
+            except OSError:
+                # A pruned staging file must not silently drop the drawing from
+                # the prompt: the connector gets the entry without bytes so the
+                # enrichment can still report what was missing.
+                logger.warning("Note run %s: staged attachment missing at %s", run.id, path)
+                attachments.append({
+                    "filename": staged.get("filename"),
+                    "mimeType": staged.get("mimeType"),
+                    "missing": True,
+                })
+                continue
+            attachments.append({
+                "filename": staged.get("filename"),
+                "mimeType": staged.get("mimeType"),
+                "data": base64.b64encode(data).decode("ascii"),
+            })
+
+        connector_session = connector_session_for_user(run.user_id) if run.user_id else None
+        supports_streaming = connector_session is not None and connector_session.supports_streaming
+
+        run_data: dict = {
+            "id": run.id,
+            "attempt": run.attempt,
+            "noteId": run.note_id,
+            "clientRunId": run.client_run_id,
+            "title": request_payload.get("title") or "",
+            "recognizedText": run.recognized_text or "",
+            "directives": run.requested_directives or [],
+            "attachments": attachments,
+            "sourceDrawingRevision": run.source_drawing_revision,
+            "sourceTextRevision": run.source_text_revision,
+            "locale": request_payload.get("locale") or "en-US",
+            "timezone": request_payload.get("timezone") or "America/Los_Angeles",
+            "timeoutSeconds": settings.max_note_run_duration_seconds,
+            "responseMode": "streaming" if supports_streaming else "complete",
+        }
+        if request_payload.get("model"):
+            run_data["enrichmentModel"] = request_payload["model"]
+        if request_payload.get("provider"):
+            run_data["enrichmentProvider"] = request_payload["provider"]
+        return {
+            "type": "note.run.execute",
+            "version": 1,
+            "run": run_data,
         }
 
     @app.get("/v1/health")
@@ -1235,14 +1445,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         async def event_stream():
             yield "event: connected\ndata: {}\n\n"
+
+            # Report health from the durable host row, not the in-memory
+            # WebSocket session registry. A brief socket cycle (connector
+            # restart, idle reap, or the send loop stalling during a long
+            # turn) empties connector_session_for_user() for a moment, and
+            # the old code reported that as "offline" — which the iOS app
+            # renders as the "Agent host offline" banner even though
+            # herald_host_is_online() (last_seen_at + active job) was true
+            # the whole time. Read the same authoritative predicate the rest
+            # of the relay uses.
             while True:
                 try:
-                    await _asyncio.sleep(30)
-                    session = connector_session_for_user(auth.user.id)
-                    if session is not None:
-                        yield "event: health_check\ndata: {\"status\": \"online\"}\n\n"
-                    else:
-                        yield "event: health_check\ndata: {\"status\": \"offline\"}\n\n"
+                    await _asyncio.sleep(15)
+                    with database.session() as db:
+                        host = current_herald_host_for_user(db, user_id=auth.user.id)
+                        online = herald_host_is_online(
+                            db, host=host, settings=settings
+                        )
+                    status = "online" if online else "offline"
+                    yield f"event: health_check\ndata: {{\"status\": \"{status}\"}}\n\n"
                 except Exception:
                     break
 
@@ -1544,6 +1766,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Host offline — return empty catalog, iOS falls back to built-in list
             return success({"commands": [], "skills": []})
 
+    @app.get("/v1/aux")
+    async def auxiliary_models(
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Relay-mode auxiliary routing config for Settings.
+
+        Kallisti's relay client requests GET /v1/aux. The connector exposes
+        the same capability through its RPC registry as auxiliary.list.
+        Missing this route was the literal source of the Settings `Not Found`
+        card on the phone.
+        """
+        try:
+            result = await send_connector_rpc(
+                auth.user.id, method="auxiliary.list", timeout_seconds=15.0,
+            )
+            # Connector tasks use `task` as their canonical key. Kallisti's
+            # AuxTask contract requires BOTH `key` and `task`; without the
+            # alias the whole decode fails and Settings still renders `Not
+            # Found` even though the relay now returns HTTP 200.
+            if isinstance(result, dict):
+                rows = result.get("tasks")
+                if isinstance(rows, list):
+                    result = dict(result)
+                    result["tasks"] = [
+                        ({**row, "key": row.get("key") or row.get("task")}
+                         if isinstance(row, dict) else row)
+                        for row in rows
+                    ]
+            return success(result or {"tasks": []})
+        except HTTPException:
+            return success({"tasks": []})
+        except Exception:
+            return success({"tasks": []})
+
+    @app.post("/v1/aux")
+    async def set_auxiliary_model(
+        body: dict = Body(...),
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        try:
+            result = await send_connector_rpc(
+                auth.user.id,
+                method="auxiliary.set",
+                params=body,
+                timeout_seconds=20.0,
+            )
+            return success(result or {"ok": False})
+        except HTTPException as exc:
+            raise exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+
     @app.get("/v1/models")
     async def model_catalog(
         auth: AuthContext = Depends(get_auth_context),
@@ -1727,6 +2001,157 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             return success({"memories": []})
 
+    @app.get("/v1/config")
+    async def config_get_proxy(
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Proxy config.yaml reads to the connected Hermes host.
+
+        Relay-mode clients (the Config Editor) call GET /v1/config, but the
+        live config file belongs to the user's host. Forward over the
+        connector RPC channel that already carries models/skills/cron so the
+        editor works without a native gateway session.
+        """
+        try:
+            result = await send_connector_rpc(
+                auth.user.id, method="config.get", timeout_seconds=15.0,
+            )
+            return success(result)
+        except HTTPException as exc:
+            raise exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+
+    @app.put("/v1/config")
+    async def config_put_proxy(
+        request: Request,
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Proxy config.yaml writes to the connected Hermes host.
+
+        The connector validates YAML, backs up the live file, and writes
+        atomically. A validation failure surfaces as 422 so the Config
+        Editor shows the YAML error instead of a generic transport failure.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Request body must be JSON")
+        content = body.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise HTTPException(status_code=400, detail="content is required")
+        try:
+            result = await send_connector_rpc(
+                auth.user.id,
+                method="config.set",
+                params={"content": content},
+                timeout_seconds=20.0,
+            )
+            return success(result)
+        except HTTPException as exc:
+            raise exc
+        except Exception as exc:
+            message = str(exc)
+            if "invalid YAML" in message:
+                raise HTTPException(status_code=422, detail=message)
+            raise HTTPException(status_code=502, detail=message)
+
+    @app.post("/v1/config/validate")
+    async def config_validate_proxy(
+        request: Request,
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Validate YAML without writing it (Config Editor validate button)."""
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Request body must be JSON")
+        content = body.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise HTTPException(status_code=400, detail="content is required")
+        try:
+            result = await send_connector_rpc(
+                auth.user.id,
+                method="config.validate",
+                params={"content": content},
+                timeout_seconds=15.0,
+            )
+            return success(result)
+        except HTTPException as exc:
+            raise exc
+        except Exception as exc:
+            message = str(exc)
+            if "invalid YAML" in message:
+                raise HTTPException(status_code=422, detail=message)
+            raise HTTPException(status_code=502, detail=message)
+
+    @app.get("/v1/canvas/processes")
+    async def canvas_processes(
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Proxy the tracked-process snapshot to the connected Agent host."""
+        try:
+            result = await send_connector_rpc(
+                auth.user.id, method="canvas.processes", timeout_seconds=10.0,
+            )
+            return success(result)
+        except HTTPException:
+            return success({"processes": []})
+        except Exception:
+            return success({"processes": []})
+
+    @app.get("/v1/canvas/processes/stream")
+    async def canvas_processes_stream(
+        auth: AuthContext = Depends(get_auth_context),
+    ):
+        """SSE feed of tracked background processes.
+
+        The iOS Canvas "Live" tab subscribes here. This route was MISSING from
+        the relay, so the app got a 404 on every attempt and its retry loop
+        fired continuously (1,546 hits observed in one session) — constant
+        connection churn that also disrupted in-flight turn state.
+
+        The connector owns the real registry, so poll it over RPC and relay
+        each snapshot; emit a comment keepalive so buffering proxies hold the
+        connection open.
+        """
+        async def stream():
+            last_payload: str | None = None
+            while True:
+                try:
+                    await asyncio.sleep(5)
+                    try:
+                        snapshot = await send_connector_rpc(
+                            auth.user.id,
+                            method="canvas.processes",
+                            timeout_seconds=8.0,
+                        )
+                    except Exception:
+                        snapshot = {"processes": []}
+                    payload = json.dumps(snapshot, default=str)
+                    if payload != last_payload:
+                        last_payload = payload
+                        for row in (snapshot or {}).get("processes") or []:
+                            yield f"event: process\ndata: {json.dumps(row, default=str)}\n\n"
+                        if not (snapshot or {}).get("processes"):
+                            yield ": keepalive\n\n"
+                    else:
+                        yield ": keepalive\n\n"
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    yield ": keepalive\n\n"
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @app.get("/v1/tools")
     async def tool_list(
         auth: AuthContext = Depends(get_auth_context),
@@ -1772,7 +2197,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "ready": False,
                     "hostOnline": False,
                     "configured": False,
-                    "blockedReason": "Connect a Hermes host before starting talk mode.",
+                    "blockedReason": "Connect an Agent host before starting talk mode.",
                     "host": host_data,
                 }
             )
@@ -1782,7 +2207,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "ready": False,
                     "hostOnline": False,
                     "configured": False,
-                    "blockedReason": "Your Hermes host is offline.",
+                    "blockedReason": "Your Agent host is offline.",
                     "host": host_data,
                 }
             )
@@ -1811,7 +2236,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> JSONResponse:
         host = current_herald_host_for_user(db, user_id=auth.user.id)
         if host is None or not herald_host_is_online(db, host=host, settings=request_settings):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Your Hermes host must be online to start talk mode.")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Your Agent host must be online to start talk mode.")
 
         voice_session, relay_tool_token = create_voice_session(
             db,
@@ -2278,7 +2703,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Session = Depends(get_db),
         _internal: None = Depends(require_internal_key),
     ) -> dict:
-        """Send a push notification to all active devices for a user.
+        """Send a push notification to a user's device(s).
 
         Called by the connector (via internal API key) when the agent has
         a proactive message or wants to wake the iOS app.
@@ -2286,10 +2711,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Body:
             user_id: str — target user ID
             type: "silent" | "alert" (default: silent)
+            device_id: str (optional) — restrict delivery to this device
+            conversation_id: str (optional) — resolve the owning device and
+                restrict delivery to it (takes precedence over device_id)
             title: str (for alert type)
             body: str (for alert type)
             category: str (optional, for alert type — notification category ID)
             userInfo: dict (optional, for alert type — extra payload keys like conversationId)
+
+        Omitting both device_id and conversation_id keeps the original
+        account-wide fan-out, which is only appropriate for notifications
+        that really are account-wide.
         """
         apns_client = request.app.state.apns_client
         if apns_client is None:
@@ -2305,11 +2737,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         push_type = payload.get("type", "silent")
 
         from .models import Device
-        device_ids = [
-            d.id for d in db.scalars(
-                select(Device).where(Device.user_id == user_id)
-            ).all()
-        ]
+        scoped_device_id = payload.get("conversation_id") and device_id_for_conversation(
+            db, conversation_id=payload["conversation_id"]
+        )
+        if not scoped_device_id:
+            scoped_device_id = payload.get("device_id")
+        if scoped_device_id:
+            device_ids = [scoped_device_id]
+        else:
+            device_ids = [
+                d.id for d in db.scalars(
+                    select(Device).where(Device.user_id == user_id)
+                ).all()
+            ]
 
         registrations = db.scalars(
             select(PushRegistration).where(
@@ -2383,6 +2823,94 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         jobs = list_message_jobs_for_conversation(db, conversation_id=conversation.id)
         return success({"conversation": serialize_conversation(conversation, messages, jobs=jobs)})
 
+    @app.post("/v1/conversations/ensure")
+    def ensure_conversation(
+        body: ConversationEnsureRequest,
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        """Guarantee a durable conversation exists for this client id.
+
+        iOS calls this BEFORE every send (LiveHeraldClient.ensureConversation)
+        and refuses to submit the message when it fails with "Could not reach
+        the Kallisti host to start a conversation." The relay previously only
+        exposed GET /v1/conversations/current, so every send 404'd here and no
+        message ever reached /v1/messages.
+
+        Contracts:
+        - If the id exists and belongs to the caller, adopt it as current.
+        - If the id is unknown, create it with that exact id (the client
+          already minted it and will keep using it).
+        - If it belongs to ANOTHER user, refuse rather than hijack it.
+
+        ``kind`` marks what the conversation is. "note" = a Kallisti note's own
+        enrichment session: durable like any conversation (it holds the note's
+        thread and its generated title) but excluded from the chat session
+        list, because its prompt/reply are enrichment I/O, not chat. The note
+        path re-ensures with kind="note" on every sync, which also heals rows
+        created before the column existed.
+        """
+        requested_id = body.conversationId.strip()
+        conversation = db.get(Conversation, requested_id)
+        requested_kind = (body.kind or "").strip().lower() or None
+
+        if conversation is not None and conversation.user_id != auth.user.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="That conversation belongs to another account.",
+            )
+
+        created = False
+        if conversation is None:
+            conversation = Conversation(
+                id=requested_id,
+                user_id=auth.user.id,
+                device_id=auth.device.id,
+                title="New Chat",
+                source="ios",
+                kind=requested_kind,
+            )
+            db.add(conversation)
+            db.commit()
+            db.refresh(conversation)
+            created = True
+        else:
+            # Re-adopt this conversation as the device's current one so a
+            # later POST /v1/messages without conversationId lands here.
+            if conversation.is_archived:
+                conversation.is_archived = False
+            if conversation.device_id is None:
+                conversation.device_id = auth.device.id
+            # Never downgrade a note session to a chat: the note path always
+            # declares kind="note" and the chat path never declares anything,
+            # so an omitted kind must leave an existing marker alone.
+            if requested_kind is not None and conversation.kind != requested_kind:
+                conversation.kind = requested_kind
+            db.commit()
+            db.refresh(conversation)
+
+        record_audit(
+            db,
+            actor_type="user",
+            actor_id=auth.user.id,
+            action="chat.conversation.ensure",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            payload={"created": created, "kind": conversation.kind},
+        )
+        db.commit()
+
+        # The client treats a non-nil sessionId as "bound and ready". When the
+        # connector has already run a turn it has a hermes session id; before
+        # the first turn the conversation id is the durable binding.
+        session_id = conversation.herald_session_id or conversation.id
+        return success({
+            "conversationId": conversation.id,
+            "sessionId": session_id,
+            "created": created,
+            "hermesSessionState": "ready",
+        })
+
     @app.post("/v1/conversations/current/clear")
     def clear_current_conversation(
         auth: AuthContext = Depends(get_auth_context),
@@ -2403,6 +2931,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return success({"conversation": serialize_conversation(conversation, messages)})
 
     # ── Session Management ──────────────────────────────────────────
+
+    @app.get("/v1/terminal/sessions")
+    async def terminal_resumable_sessions_relay(
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Relay-mode counterpart of the connector's terminal-session probe.
+
+        A terminal PTY is a long-lived, interactive host resource. The relay
+        host WebSocket is deliberately a multiplexed job/RPC channel, not a
+        byte-stream tunnel, so it cannot safely proxy connector /v1/terminal.
+        Return an empty capability list instead of 404 so relay clients take
+        their supported rich-chat path without retrying this endpoint forever.
+        """
+        return success({"sessions": []})
 
     @app.get("/v1/sessions")
     def list_user_sessions(
@@ -2682,12 +3224,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user_message_id=user_message.id,
             session_id_snapshot=conversation.herald_session_id,
             reasoning_effort=payload.reasoningEffort,
+            model=payload.model,
         )
 
         if request_settings.herald_adapter == "connector":
             host = current_herald_host_for_user(db, user_id=auth.user.id)
             if host is not None and herald_host_is_online(db, host=host, settings=request_settings):
-                await wait_for_job_completion(job.id, request_settings.connector_sync_wait_seconds)
+                # Wait only long enough to catch an instantly-terminal job
+                # (rejection/context-exceeded), NOT the whole turn.
+                #
+                # Blocking here for the full sync window is what broke
+                # streaming: the warm api_server path answers simple turns in
+                # ~2s, so a 5s wait returned an ALREADY-COMPLETED job. The
+                # client then opened /jobs/{id}/events on a terminal job, and
+                # the relay replayed every delta at +0.01s and closed — the
+                # attempt loop read that burst-then-close as an abnormal end
+                # and showed RETRY, with the polling fallback surfacing the
+                # reply afterwards. Returning fast keeps the turn genuinely
+                # in flight while the client streams it.
+                await wait_for_job_completion(job.id, 0.25)
         else:
             process_message_job_with_adapter(
                 db,
@@ -2724,10 +3279,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         db.expire_all()
         payload_data, status_code = build_message_response_payload(db, conversation_id=conversation.id, job_id=job.id)
-        # Build 28: for connector-backed jobs, return the actual result when
-        # the job completed synchronously. Only force "pending" when the job
-        # is still queued/running and the client should poll for completion.
-        if request_settings.herald_adapter == "connector" and payload_data["replyState"] not in ("delivered", "failed"):
+        # connector mode ALWAYS acknowledges with `pending` (HTTP 202) so the
+        # client takes the SSE path: it opens /v1/jobs/{id}/events and renders
+        # text_delta / reasoning_delta as they arrive, which is what drives the
+        # streaming text and the thinking bubble.
+        #
+        # Returning a terminal `complete` here makes the client call
+        # handleCompleteReply() and return immediately — no stream is ever
+        # opened, so a turn that finished inside the relay's sync window
+        # silently skipped streaming and surfaced out-of-band as
+        # "retry, then it completes".
+        if request_settings.herald_adapter == "connector":
             payload_data["replyState"] = "pending"
             strip_current_job_result_from_pending_payload(payload_data, job_id=job.id)
             status_code = status.HTTP_202_ACCEPTED
@@ -2862,8 +3424,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job_id: str,
         request: Request,
         after: int = 0,
-        auth: AuthContext = Depends(get_auth_context),
-        db: Session = Depends(get_db),
+        # Do not retain request/auth sessions for the life of the SSE response.
+        # Generator dependencies default to request scope, and every open
+        # /events stream was therefore pinning TWO SQLite connections (one from
+        # authentication and one from this route) until the phone disconnected.
+        # A handful of long-lived streams exhausted the 5+10 connection pool and
+        # killed active event delivery with QueuePool timeouts.
+        auth: AuthContext = Depends(get_auth_context, scope="function"),
+        db: Session = Depends(get_db, scope="function"),
     ):
         from .models import MessageJob
 
@@ -2886,7 +3454,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             def emit_db_event(evt: dict) -> str:
                 """Format a DB event dict as an SSE frame with id: line."""
                 nonlocal last_seq
-                event_type = evt.get("type", "progress")
+                event_type = wire_event_name(evt.get("type", "progress"))
                 seq = evt.get("seq", 0)
                 last_seq = seq
                 payload = evt.get("payload", {})
@@ -2999,7 +3567,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                     if isinstance(item, dict):
                         # ── Direct push: format and yield immediately ──
-                        evt_type = str(item.get("type", "progress"))
+                        evt_type = wire_event_name(str(item.get("type", "progress")))
                         seq = int(item.get("seq", 0))
                         last_seq = seq
                         evt_payload = item.get("payload", {})
@@ -3023,17 +3591,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     yield emit_db_event(evt)
                                 return
 
-                    # Check if job became terminal (safety net for direct-push path)
-                    with database.session() as check_db:
-                        current_job = get_message_job(check_db, job_id=job_id)
-                        if current_job is not None and current_job.status in ("completed", "failed", "cancelled"):
-                            # Drain any remaining events from DB, then emit terminal frame
-                            with database.session() as drain_db:
-                                remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
-                            for evt in remaining:
-                                yield emit_db_event(evt)
-                            yield build_terminal_event(current_job.status, current_job)
-                            return
+                    # A direct push includes the terminal `done` event, which
+                    # returns above. Polling job state after a nonterminal direct
+                    # event races the connector: it can synthesize `done` here
+                    # while the real terminal event is still queued, delivering
+                    # duplicate terminal frames to iOS. Only the legacy DB-wake
+                    # route needs this safety-net reconciliation.
+                    if not isinstance(item, dict):
+                        with database.session() as check_db:
+                            current_job = get_message_job(check_db, job_id=job_id)
+                            if current_job is not None and current_job.status in ("completed", "failed", "cancelled"):
+                                # Drain any remaining events from DB, then emit terminal frame
+                                with database.session() as drain_db:
+                                    remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
+                                for evt in remaining:
+                                    yield emit_db_event(evt)
+                                yield build_terminal_event(current_job.status, current_job)
+                                return
             finally:
                 await unsubscribe_job_events(job_id, wake_queue)
 
@@ -3254,7 +3828,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     current_job.lease_expires_at
                                     and utcnow() >= normalize_datetime(current_job.lease_expires_at)
                                 ):
-                                    fail_stuck_job("Hermes host stopped responding.")
+                                    fail_stuck_job("Agent host stopped responding.")
                                     await websocket.close(code=1011)
                                     return
 
@@ -3304,7 +3878,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                                 "Job %s exceeded absolute deadline (%ds old, max %ds) — failing",
                                                 claimed_job.id, int(job_age), settings.max_job_duration_seconds,
                                             )
-                                            fail_message_job(db, job_id=claimed_job.id, error="Job exceeded maximum duration.")
+                                            # Signature is
+                                            # fail_message_job(db, *, job_id,
+                                            # connection_nonce, error_text,
+                                            # retryable). An earlier call passed
+                                            # `error=` without the two required
+                                            # kwargs, so the timeout handler
+                                            # itself raised TypeError and the job
+                                            # stayed "running" forever instead of
+                                            # failing — the client polled to
+                                            # timeout with no error surfaced.
+                                            fail_message_job(
+                                                db,
+                                                job_id=claimed_job.id,
+                                                connection_nonce=connection_nonce,
+                                                error_text="Job exceeded maximum duration.",
+                                                retryable=False,
+                                            )
                                             db.commit()
                                             # Emit terminal failed event to SSE subscribers
                                             publish_job_event(claimed_job.id, {
@@ -3350,13 +3940,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             if message_type == "job.progress" and incoming.get("jobId") == claimed_job.id:
                                 with database.session() as db:
                                     renew_message_job_lease(db, job_id=claimed_job.id, connection_nonce=connection_nonce, settings=settings)
+                                # The connector emits underscore kinds
+                                # ("text_delta", "reasoning_delta", ...) but the
+                                # iOS JobStreamCoordinator switches on DOTTED
+                                # SSE event names ("text.delta",
+                                # "reasoning.delta", "tool.started", ...).
+                                # Passing the raw kind through meant every
+                                # delta hit the parser's default branch and was
+                                # silently discarded — no streaming text, no
+                                # reasoning/thinking bubble, even though the
+                                # events arrived intact.
+                                _PROGRESS_EVENT_NAMES = {
+                                    "text_delta": "text.delta",
+                                    "reasoning_delta": "reasoning.delta",
+                                    "tool_activity": "tool.progress",
+                                    "tool_started": "tool.started",
+                                    "tool.completed": "tool.completed",
+                                    "tool_output": "tool.output",
+                                    "commentary": "commentary",
+                                }
+                                raw_kind = incoming.get("kind") or "progress"
                                 progress_event: dict = {
-                                    "event": incoming.get("kind", "progress"),
+                                    "event": _PROGRESS_EVENT_NAMES.get(raw_kind, raw_kind),
                                     "data": {
                                         "jobId": claimed_job.id,
-                                        "kind": incoming.get("kind"),
+                                        "kind": raw_kind,
                                         "delta": incoming.get("delta"),
                                         "label": incoming.get("label"),
+                                        # Dotted tool keys the client reads.
+                                        "tool_call_id": incoming.get("toolCallId") or incoming.get("tool_call_id"),
+                                        "name": incoming.get("name"),
+                                        "args": incoming.get("args"),
+                                        "emoji": incoming.get("emoji"),
+                                        "output": incoming.get("output"),
+                                        "is_error": incoming.get("isError"),
+                                        "duration_ms": incoming.get("durationMs"),
                                     },
                                 }
                                 if "sourceSeq" in incoming:
@@ -3402,7 +4020,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                                 expires_at=None,
                                             )
                                             db.commit()
-                                            job_duration = (utcnow() - completed.created_at).total_seconds() if completed.created_at else 0
+                                            # SQLite returns naive datetimes; comparing them
+                                            # against an aware utcnow() raised
+                                            # "can't subtract offset-naive and offset-aware
+                                            # datetimes" INSIDE the connector WebSocket
+                                            # handler — it fired on every completed job and
+                                            # tore down the host socket mid-response, so the
+                                            # phone saw messages fail and the model list stall.
+                                            job_duration = (
+                                                (utcnow() - normalize_datetime(completed.created_at)).total_seconds()
+                                                if completed.created_at else 0
+                                            )
                                             await maybe_send_message_push(
                                                 db=db,
                                                 user_id=completed.user_id,
@@ -3420,6 +4048,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                                 job_id=claimed_job.id,
                                                 result_text=completed_message.text,
                                                 error_text=None,
+                                                conversation_id=completed.conversation_id,
                                             )
                                 done_event_data: dict = {
                                     "jobId": claimed_job.id,
@@ -3444,7 +4073,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                         db,
                                         job_id=claimed_job.id,
                                         connection_nonce=connection_nonce,
-                                        error_text=incoming.get("error", "Hermes connector failed."),
+                                        error_text=incoming.get("error", "Agent connector failed."),
                                         retryable=bool(incoming.get("retryable", False)),
                                     )
                                     if failed is None:
@@ -3463,6 +4092,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                         job_id=claimed_job.id,
                                         result_text=None,
                                         error_text=failed.error_text,
+                                        conversation_id=failed.conversation_id,
                                     )
                                 if failed.status != "queued":
                                     publish_job_event(claimed_job.id, {
@@ -3477,8 +4107,215 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                 in_flight_job_id = None
                                 break
 
-                            await websocket.close(code=4400)
-                            return
+                            # Unrecognised frame while a job is claimed is NOT
+                            # fatal. The connector multiplexes RPC responses,
+                            # sensor acks and note-run events onto this socket,
+                            # and stale job.* traffic for a previous job lands
+                            # here routinely. Closing 4400 killed the host
+                            # socket mid-turn: the relay published
+                            # `reconnecting`, the phone showed "Stream stalled",
+                            # the connector reconnected in 1.0s without owning
+                            # the job and the reply was never delivered.
+                            logger.warning(
+                                "host WS: ignoring unrecognised %s while job %s is claimed",
+                                message_type,
+                                in_flight_job_id,
+                            )
+                            continue
+                    finally:
+                        session = connector_session_for_user(user_id)
+                        if session is not None and session.connection_nonce == connection_nonce:
+                            session.busy = False
+
+                    continue
+
+                # ── Notes enrichment runs ──────────────────────────────
+                # Chat always wins the socket: a note run is claimed only when
+                # no message job is queued, so a long enrichment can never sit
+                # in front of a reply. The run's durable event journal is what
+                # the app polls; nothing here is fire-and-forget.
+                claimed_run = None
+                note_payload = None
+                if job_payload is None:
+                    with database.session() as db:
+                        requeue_expired_note_runs(db)
+                        claimed_run = claim_next_note_run(db, user_id=user_id, host_id=host_id)
+                        if claimed_run is not None:
+                            note_payload = build_note_run_execute_payload(db, run_id=claimed_run.id)
+
+                if note_payload is not None:
+                    run_id = claimed_run.id
+                    run_attempt = claimed_run.attempt
+
+                    def _terminal_note_run(reason: str, event_type: str) -> None:
+                        with database.session() as db:
+                            if event_type == "failed":
+                                fail_note_run(db, run_id=run_id, error_text=reason)
+                            append_note_run_event(
+                                db,
+                                run_id=run_id,
+                                event_type=event_type,
+                                payload={
+                                    "runId": run_id,
+                                    "status": event_type,
+                                    "error": reason if event_type == "failed" else None,
+                                },
+                                attempt=run_attempt,
+                            )
+
+                    try:
+                        await websocket.send_json(note_payload)
+
+                        while True:
+                            with database.session() as db:
+                                current_run = db.get(NoteRun, run_id)
+                                if current_run is None or current_run.status in (
+                                    "completed",
+                                    "failed",
+                                    "cancelled",
+                                ):
+                                    break
+                                if current_run.created_at and (
+                                    utcnow() - normalize_datetime(current_run.created_at)
+                                ).total_seconds() > settings.max_note_run_duration_seconds:
+                                    logger.warning(
+                                        "Note run %s exceeded maximum duration — failing", run_id
+                                    )
+                                    _terminal_note_run(
+                                        "Note enrichment exceeded maximum duration.", "failed"
+                                    )
+                                    break
+                                if (
+                                    current_run.lease_expires_at
+                                    and utcnow() >= normalize_datetime(current_run.lease_expires_at)
+                                ):
+                                    _terminal_note_run("Agent host stopped responding.", "failed")
+                                    break
+
+                            try:
+                                incoming = await asyncio.wait_for(
+                                    websocket.receive_json(),
+                                    timeout=settings.connector_heartbeat_timeout_seconds,
+                                )
+                            except asyncio.TimeoutError:
+                                continue
+
+                            message_type = incoming.get("type")
+
+                            # The socket carries chat jobs, RPC responses and
+                            # sensor traffic too — handle those here as well so a
+                            # note run never starves them.
+                            if message_type == "heartbeat":
+                                with database.session() as db:
+                                    touched = touch_herald_host_connection(
+                                        db, host_id=host_id, connection_nonce=connection_nonce
+                                    )
+                                if touched is None:
+                                    await websocket.close(code=4401)
+                                    return
+                                continue
+
+                            if message_type == "sensor.ack":
+                                resolve_sensor_delivery(
+                                    incoming.get("deliveryId"),
+                                    delivered=incoming.get("deliveryState", "delivered") == "delivered",
+                                )
+                                continue
+
+                            if message_type == "rpc.response":
+                                resolve_connector_rpc_response(
+                                    incoming.get("requestId"),
+                                    success=bool(incoming.get("success", False)),
+                                    result=incoming.get("result"),
+                                    error=incoming.get("error"),
+                                )
+                                continue
+
+                            incoming_run_id = incoming.get("runId") or (
+                                incoming.get("run") or {}
+                            ).get("id")
+                            if incoming_run_id != run_id:
+                                # Not ours (stale attempt or unrelated traffic):
+                                # never act on another run's event.
+                                continue
+
+                            if message_type == "note.run.started":
+                                with database.session() as db:
+                                    renew_note_run_lease(db, run_id=run_id)
+                                    append_note_run_event(
+                                        db,
+                                        run_id=run_id,
+                                        event_type="started",
+                                        payload={
+                                            "runId": run_id,
+                                            "phase": incoming.get("phase", "starting"),
+                                        },
+                                        attempt=run_attempt,
+                                        source_seq=incoming.get("sourceSeq"),
+                                    )
+                                continue
+
+                            if message_type == "note.run.progress":
+                                kind = incoming.get("kind") or "progress"
+                                with database.session() as db:
+                                    renew_note_run_lease(db, run_id=run_id)
+                                    append_note_run_event(
+                                        db,
+                                        run_id=run_id,
+                                        event_type=kind,
+                                        payload={
+                                            "runId": run_id,
+                                            "kind": kind,
+                                            "delta": incoming.get("delta"),
+                                            "label": incoming.get("label"),
+                                            "tool_call_id": incoming.get("toolCallId")
+                                            or incoming.get("tool_call_id"),
+                                            "name": incoming.get("name"),
+                                            "args": incoming.get("args"),
+                                            "output": incoming.get("output"),
+                                            "is_error": incoming.get("isError"),
+                                            "duration_ms": incoming.get("durationMs"),
+                                        },
+                                        attempt=run_attempt,
+                                        source_seq=incoming.get("sourceSeq"),
+                                    )
+                                continue
+
+                            if message_type == "note.run.result":
+                                result_payload = incoming.get("result")
+                                if not isinstance(result_payload, dict):
+                                    result_payload = {}
+                                with database.session() as db:
+                                    revision = complete_note_run(
+                                        db,
+                                        run_id=run_id,
+                                        result=result_payload,
+                                        source_drawing_revision=claimed_run.source_drawing_revision,
+                                        source_text_revision=claimed_run.source_text_revision,
+                                    )
+                                    append_note_run_event(
+                                        db,
+                                        run_id=run_id,
+                                        event_type="completed",
+                                        payload={
+                                            "runId": run_id,
+                                            "status": "completed",
+                                            "isStale": bool(getattr(revision, "is_stale", False)),
+                                            "title": result_payload.get("title", ""),
+                                            "durationMs": incoming.get("durationMs"),
+                                        },
+                                        attempt=run_attempt,
+                                    )
+                                break
+
+                            if message_type == "note.run.failed":
+                                error_text = incoming.get("error") or "Note enrichment failed."
+                                _terminal_note_run(error_text, "failed")
+                                break
+
+                            # Unknown note-run traffic for this run: ignore it
+                            # rather than tearing down the host socket.
+                            continue
                     finally:
                         session = connector_session_for_user(user_id)
                         if session is not None and session.connection_nonce == connection_nonce:
@@ -3528,8 +4365,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         return
                     continue
 
-                await websocket.close(code=4400)
-                return
+                # Same rule while idle. An unrecognised frame (a new event type
+                # from a newer connector, or a stray job frame) must not cost
+                # the socket: reconnecting drops the host and every in-flight
+                # turn with it.
+                logger.warning(
+                    "host WS: ignoring unrecognised idle message type %r",
+                    incoming.get("type"),
+                )
+                continue
         except HTTPException:
             await websocket.close(code=4401)
             return
@@ -3639,6 +4483,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         # ── Logs ───────────────────────────────────────────────────────
 
+        @app.get("/v1/gw/status")
+        async def gw_status_relay_alias(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Paired-host status for relay-mode Settings.
+
+            Relay telemetry describes the relay process, not the paired Hermes
+            host. Route through the connector so the app sees the same source
+            of truth as it does in direct mode.
+            """
+            result = await send_connector_rpc(
+                auth.user.id, method="gateway.status", timeout_seconds=15.0,
+            )
+            return success(result)
+
+        @app.get("/v1/gw/logs")
+        async def gw_logs_relay_alias(
+            lines: int = 200,
+            level: str = "all",
+            source: str = "hermes-gateway",
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Proxy paired-host logs for relay-mode Settings."""
+            result = await send_connector_rpc(
+                auth.user.id,
+                method="gateway.logs",
+                params={
+                    "lines": max(1, min(lines, 2000)),
+                    "level": level,
+                    "source": source,
+                },
+                timeout_seconds=20.0,
+            )
+            return success(result)
+
         @app.get("/gw/logs")
         async def gw_logs(
             tail: int = 200,
@@ -3717,7 +4596,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async def gw_restart_hermes(
             auth: AuthContext = Depends(get_auth_context),
         ) -> dict:
-            """Restart Hermes agent only."""
+            """Restart Agent only."""
             result = await app.state.gateway_controller.restart(target="hermes")
             return success(result)
 
@@ -3729,6 +4608,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ) -> dict:
             """Request Docker image pull + restart."""
             result = await app.state.gateway_controller.update()
+            return success(result)
+
+        @app.post("/v1/gw/update/check")
+        async def gw_update_check_relay_alias(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Check the paired Agent host for updates in relay mode."""
+            result = await send_connector_rpc(
+                auth.user.id, method="gateway.update_check", timeout_seconds=120.0,
+            )
             return success(result)
 
         @app.post("/gw/update/check")

@@ -190,6 +190,55 @@ def test_sse_completed_job_fast_path_returns_done_with_usage_and_message(tmp_pat
 
 
 # --------------------------------------------------------------------------
+# Test: a note's pinned enrichment model rides the job envelope
+# --------------------------------------------------------------------------
+
+def test_pinned_model_rides_the_job_envelope(tmp_path):
+    """A note sync pins the app's enrichment model; the connector must receive it
+    on the claimed job envelope so it can ask the gateway for that model rather
+    than the default. Chat (no pinned model) must not grow a `model` key."""
+    with build_client(tmp_path) as client:
+        credential, access_token = setup_environment(
+            client, installation_id="aaaa1111-bbbb-cccc-dddd-eeeeeeee0009"
+        )
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {credential}"},
+        ) as websocket:
+            websocket.send_json(HELLO_PAYLOAD)
+            assert websocket.receive_json()["type"] == "ready"
+
+            def post_message(payload):
+                holder: dict = {}
+
+                def run():
+                    holder["r"] = client.post(
+                        "/v1/messages",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        json=payload,
+                    )
+
+                thread = Thread(target=run)
+                thread.start()
+                job = websocket.receive_json()["job"]
+                websocket.send_json({
+                    "type": "job.result",
+                    "jobId": job["id"],
+                    "text": "ack",
+                    "sessionId": f"sess-{job['id'][:8]}",
+                })
+                thread.join(timeout=5)
+                return job
+
+            pinned = post_message({"text": "note sync with pinned model", "model": "cx/gpt-5.6-terra"})
+            assert pinned.get("model") == "cx/gpt-5.6-terra"
+
+            plain = post_message({"text": "plain chat send"})
+            assert "model" not in plain
+
+
+# --------------------------------------------------------------------------
 # Test: Failed-job fast-path
 # --------------------------------------------------------------------------
 
@@ -326,17 +375,20 @@ def test_live_streaming_progress_events_flow_through_event_bus(tmp_path):
         events = parse_sse_events(sse_holder["r"].text)
         event_types = [e[0] for e in events]
 
-        assert "tool_activity" in event_types
-        assert "text_delta" in event_types
+        # The iOS client switches on dotted SSE names. Durable connector
+        # events keep underscore kinds, while the relay maps only at the wire
+        # boundary. This test must assert the client-facing contract.
+        assert "tool.progress" in event_types
+        assert "text.delta" in event_types
         assert "done" in event_types
 
-        # Verify tool_activity payload
-        tool_events = [(t, d) for t, d in events if t == "tool_activity"]
+        # Verify tool progress payload
+        tool_events = [(t, d) for t, d in events if t == "tool.progress"]
         assert len(tool_events) == 1
         assert tool_events[0][1]["label"] == "Searching files..."
 
         # Verify text_delta payloads (no coalescing — each delta is a separate event)
-        text_events = [(t, d) for t, d in events if t == "text_delta"]
+        text_events = [(t, d) for t, d in events if t == "text.delta"]
         assert len(text_events) == 2
         combined_delta = "".join(d["delta"] for _, d in text_events)
         assert combined_delta == "Here is the answer."

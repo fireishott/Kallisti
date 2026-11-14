@@ -43,11 +43,47 @@ struct VisionHandwritingRecognizer: HandwritingRecognizing {
         self.level = level
     }
 
+    /// Custom vocabulary used to bias Vision recognition toward terms that
+    /// appear in this user's notes. These are proper nouns, product names,
+    /// and frequent nouns/verbs that Vision's language model otherwise
+    /// degrades on for cursive handwriting.
+    /// Static so it is shared across instances and Sendable-safe.
+    static let customWords: [String] = [
+        // Products / apps
+        "Kallisti", "Hermes", "Herald", "MiniMe", "Breakthru",
+        // People
+        "Curtis", "Kristie", "Hailey", "Cam",
+        // Models / LLMs
+        "Qwen", "Claude", "GPT", "Gemini", "Llama",
+        // Sportsbooks / sports
+        "BetMGM", "DraftKings", "FanDuel", "NFL", "MLB", "NBA",
+        "NHL", "hockey", "soccer", "tennis", "golf",
+        // Betting vocab
+        "unders", "over", "parlay", "parlays", "spread", "moneyline",
+        "props", "teaser", "future", "futures",
+        // Note-taking workflow
+        "research", "summary", "talkingpoints", "talking", "points",
+        "review", "followup", "follow", "ups",
+        // Common cursive-misfit words
+        "the", "and", "with", "from", "this", "that", "have", "been",
+        "into", "than", "them", "then", "what", "when", "your",
+        "writing", "sports", "books", "lines", "pick", "picks",
+        // Frequently used proper nouns in this user's notes
+        "iPhone", "iPad", "Mac", "Vision", "PencilKit"
+    ]
+
     func recognizeText(from imageData: Data, languages: [String]) async throws -> [RecognizedTextCandidate] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = level.vnLevel
         request.recognitionLanguages = languages.isEmpty ? ["en-US"] : languages
+        // Keep language correction enabled — for cursive handwriting it
+        // smooths out common mental spelling errors and joins split words.
         request.usesLanguageCorrection = true
+        // Bias recognition toward vocabulary that appears in this user's notes.
+        request.customWords = Self.customWords
+        // Lower the minimum text height so Vision picks up small / thin
+        // cursive strokes. Vision's default is 0.01; 0.005 ~ halves that.
+        request.minimumTextHeight = 0.005
 
         // Create a handler from the image data
         let handler = VNImageRequestHandler(data: imageData, options: [:])
@@ -56,6 +92,18 @@ struct VisionHandwritingRecognizer: HandwritingRecognizing {
             // Vision requests must run on a background thread
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
+                    // Best-effort: lock the language model so the OS
+                    // doesn't swap the model out under us mid-recognition.
+                    // If locking fails (e.g. model not yet downloaded on
+                    // this device, or iOS refuses the lock), we still
+                    // proceed — locking is a perf/stability hint, not a
+                    // correctness requirement.
+                    do {
+                        try request.downloadAndLockModel()
+                    } catch {
+                        // Intentionally swallow — model lock is best-effort.
+                    }
+
                     try handler.perform([request])
 
                     guard let observations = request.results else {
