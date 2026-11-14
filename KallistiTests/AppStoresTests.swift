@@ -851,6 +851,7 @@ struct AppStoresTests {
                 event: done
                 data: {"jobId":"\(jobID.uuidString.lowercased())","status":"completed"}
 
+
                 """.data(using: .utf8)!
                 return (response, data)
 
