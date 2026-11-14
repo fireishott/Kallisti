@@ -68,7 +68,7 @@ targets:
     type: application
     platform: iOS
     entitlements:
-      path: Kallisti/Kallisti.entitlements
+      path: Herald/Kallisti.entitlements
       properties:
         com.apple.developer.siri: true
         com.apple.developer.healthkit: true
@@ -80,7 +80,7 @@ targets:
         keychain-access-groups:
           - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     sources:
-      - path: Kallisti
+      - path: Herald
         excludes:
           - "**/.DS_Store"
           # Build 108: exclude Watch WIP files until Task 10 finishes them.
@@ -93,7 +93,7 @@ targets:
       - path: KallistiWidgets/KallistiActivityAttributes.swift
       - path: Herald/Services/Protocols/NotificationCategories.swift
     resources:
-      - path: Kallisti/Resources
+      - path: Herald/Resources
         optional: true
     dependencies:
       - target: KallistiSupport
@@ -112,7 +112,7 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Kallisti
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     info:
-      path: Kallisti/Resources/Info.plist
+      path: Herald/Resources/Info.plist
       properties:
         CFBundleDisplayName: Kallisti
         CFBundleShortVersionString: "$(MARKETING_VERSION)"

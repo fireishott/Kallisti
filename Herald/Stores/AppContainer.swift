@@ -84,6 +84,10 @@ final class AppContainer {
     let profileStore: ProfileStore
     let skillsStore: SkillsStore
     let cronStore: CronStore
+    /// The daemon's capability record, its dirty set, and its commit. One store
+    /// for every group screen: the record is one read and a second store would be
+    /// a second copy of it.
+    let daemonSettingsStore: DaemonSettingsStore
     let canvasStore: HeraldCanvasStore
     let notesStore: NotesStore
     /// Notes sync engine. Option 1 architecture: every note is a gateway
@@ -200,6 +204,15 @@ final class AppContainer {
         self.cronStore = cronStore ?? CronStore(
             apiClient: apiClient,
             accessTokenProvider: { await sessionStore.currentAccessToken() }
+        )
+        self.daemonSettingsStore = DaemonSettingsStore(
+            baseURLProvider: { @MainActor [settingsStore, activePairingStore] in
+                Self.resolveNativeGatewayHost(
+                    from: activePairingStore?.pairedRelayConfiguration?.baseURLString
+                    ?? settingsStore.settings.relayConfiguration.activeBaseURLString
+                ).baseURL
+            },
+            tokenProvider: { await sessionStore.currentAccessToken() }
         )
         self.canvasStore = canvasStore ?? HeraldCanvasStore()
         self.notesStore = notesStore ?? NotesStore()
