@@ -83,6 +83,8 @@ targets:
       - path: Herald
         excludes:
           - "**/.DS_Store"
+          # Editor backups that regeneration must never pick up as sources.
+          - "**/*.bak*"
           # Build 108: exclude Watch WIP files until Task 10 finishes them.
           # These reference types defined in the Watch target that are not
           # yet integrated into the iOS build.
