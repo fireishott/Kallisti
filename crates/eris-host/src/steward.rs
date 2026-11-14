@@ -339,8 +339,8 @@ pub fn escalate_needs_you(db: &Db, id: &str, expected_revision: i64) -> Result<D
         }
         let changed = tx.execute(
             "UPDATE steward_duties
-             SET phase = 'needs_you', blocker_code = NULL, blocker_detail = NULL,
-                 updated_at = ?3, revision = revision + 1
+             SET phase = 'needs_you', next_wake_at = NULL, blocker_code = NULL,
+                 blocker_detail = NULL, updated_at = ?3, revision = revision + 1
              WHERE id = ?1 AND revision = ?2",
             params![id, expected_revision, now()],
         )?;
@@ -350,6 +350,142 @@ pub fn escalate_needs_you(db: &Db, id: &str, expected_revision: i64) -> Result<D
         Ok(())
     })?;
     get_duty(db, id)
+}
+
+/// The only addresses a steward may mail, exactly as the standing rule names them.
+pub const MAIL_RECIPIENTS: [&str; 2] = ["curtis.freeman@wewin.com", "freemancurtisd@gmail.com"];
+
+/// Whether `deliver.email_to` is one of the two permitted recipients.
+#[must_use]
+pub fn mail_permitted(db: &Db) -> bool {
+    crate::delivery::allowed_recipient(db).is_some_and(|to| {
+        MAIL_RECIPIENTS
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(to.trim()))
+    })
+}
+
+/// The channel a steward message goes to. Mail falls back to the inbox unless the
+/// configured recipient is one of the two permitted addresses.
+#[must_use]
+pub fn channel_for(db: &Db, configured: &str) -> String {
+    if configured == "email" && !mail_permitted(db) {
+        "inbox".to_owned()
+    } else {
+        configured.to_owned()
+    }
+}
+
+/// Raise one call: the duty moves to `needs_you` through the same compare-and-set
+/// as [`escalate_needs_you`], and the question, its choices and its urgency are
+/// kept as a field note tagged `call`. The watch loop delivers it from there.
+pub fn raise_call(
+    db: &Db,
+    id: &str,
+    expected_revision: i64,
+    question: &str,
+    choices: &[String],
+    urgency: &str,
+) -> Result<Duty, DutyError> {
+    let question = question.trim();
+    if question.is_empty() {
+        return Err(DutyError::Invalid("a call needs a question".to_owned()));
+    }
+    if !URGENCY_VALUES.contains(&urgency) {
+        return Err(DutyError::Invalid(format!(
+            "urgency is normal or high; got `{urgency}`"
+        )));
+    }
+    if choices.len() > 5 || choices.iter().any(|choice| choice.chars().count() > 120) {
+        return Err(DutyError::Invalid(
+            "a call takes at most five choices of 120 characters each".to_owned(),
+        ));
+    }
+    let current = get_duty(db, id)?;
+    if current.phase == Phase::NeedsYou {
+        return Err(DutyError::Invalid(
+            "a call is already open on this duty; a person answers it first".to_owned(),
+        ));
+    }
+    let raised = escalate_needs_you(db, id, expected_revision)?;
+    let mut text = question.to_owned();
+    if !choices.is_empty() {
+        text.push_str(" Choices: ");
+        text.push_str(&choices.join(" / "));
+    }
+    append_note(
+        db,
+        Some(id),
+        &text,
+        &["call".to_owned(), urgency.to_owned()],
+    )?;
+    Ok(raised)
+}
+
+/// The human-sourced answer: a duty leaves `needs_you` for `watching`, starts its
+/// round count again and is armed for its next wake. Only a person's request may
+/// call this; the model's tools never do.
+pub fn answer_call(db: &Db, id: &str, expected_revision: i64) -> Result<Duty, DutyError> {
+    let default_every = i64::from(watch_seconds(db));
+    let updated_at = now();
+    transact(db, |tx| {
+        let current = load(tx, id)?.ok_or_else(|| DutyError::NotFound(id.to_owned()))?;
+        if current.phase == Phase::Closed {
+            return Err(DutyError::Closed(id.to_owned()));
+        }
+        if current.revision != expected_revision {
+            return Err(DutyError::StaleRevision {
+                current: current.revision,
+            });
+        }
+        if current.phase != Phase::NeedsYou {
+            return Err(DutyError::Invalid(
+                "no call is open on this duty".to_owned(),
+            ));
+        }
+        let every = current.every_seconds.unwrap_or(default_every);
+        let next_wake = wake_after(every);
+        let changed = tx.execute(
+            "UPDATE steward_duties
+             SET phase = 'watching', next_wake_at = ?3, watch_rounds = 0,
+                 updated_at = ?4, revision = revision + 1
+             WHERE id = ?1 AND revision = ?2",
+            params![id, expected_revision, next_wake, updated_at],
+        )?;
+        if changed != 1 {
+            return Err(stale_or_missing(tx, id)?);
+        }
+        Ok(())
+    })?;
+    get_duty(db, id)
+}
+
+/// A call not yet delivered: the duty and the call note that carries it.
+#[derive(Debug, Clone)]
+pub struct PendingCall {
+    pub duty: Duty,
+    pub note: FieldNote,
+}
+
+/// Every open call the watch loop has not delivered. A call is delivered when a
+/// `delivered` note follows it, so the same call is never sent twice.
+pub fn pending_calls(db: &Db) -> Result<Vec<PendingCall>, DutyError> {
+    let mut pending = Vec::new();
+    for duty in list_duties(db, Some(Phase::NeedsYou))? {
+        for note in list_notes(db, 200, Some(&duty.id))? {
+            if note.tags.iter().any(|tag| tag == "delivered") {
+                break;
+            }
+            if note.tags.iter().any(|tag| tag == "call") {
+                pending.push(PendingCall {
+                    duty: duty.clone(),
+                    note,
+                });
+                break;
+            }
+        }
+    }
+    Ok(pending)
 }
 
 /// Close a duty with an outcome. Closing is terminal.
@@ -685,6 +821,8 @@ pub const DEFAULT_NOTE_WINDOW: u32 = 8;
 pub const DEFAULT_FIELD_NOTE_DAYS: u32 = 30;
 pub const DEFAULT_DELIVERY: &str = "push";
 pub const DEFAULT_CALL_URGENCY: &str = "normal";
+/// The urgencies a call may carry.
+pub const URGENCY_VALUES: [&str; 2] = ["normal", "high"];
 pub const DEFAULT_BOARD_COLUMNS: &str = "compact";
 
 /// The stored value for one steward row, or `None` when it has none.
@@ -958,6 +1096,56 @@ pub fn plan_watch_pass(db: &Db, now: OffsetDateTime) -> Result<Vec<WatchWake>, D
     Ok(wakes)
 }
 
+/// Deliver every open call once, through `delivery.rs`, and record that it went.
+async fn deliver_pending_calls(state: &crate::admin::AppState, db: &Db) {
+    let calls = match pending_calls(db) {
+        Ok(calls) => calls,
+        Err(error) => {
+            tracing::error!(%error, "steward: cannot read open calls");
+            return;
+        }
+    };
+    for call in calls {
+        let configured = if call.note.tags.iter().any(|tag| tag == "high") {
+            "push".to_owned()
+        } else {
+            delivery_default(db)
+        };
+        let schedule = crate::scheduler::Schedule {
+            id: call.duty.id.clone(),
+            name: "Steward call".to_owned(),
+            cron: String::new(),
+            prompt: String::new(),
+            enabled: true,
+            next_fire_at: None,
+            last_fired_at: None,
+            last_status: None,
+            last_error: None,
+            fired_count: 0,
+            deliver: channel_for(db, &configured),
+        };
+        let text = format!(
+            "Steward call on \"{}\": {}",
+            call.duty.statement, call.note.text
+        );
+        let (delivered, note) =
+            crate::delivery::deliver(state, &schedule, &call.duty.id, "", Some(&text)).await;
+        let detail = if note.is_empty() {
+            delivered
+        } else {
+            format!("{delivered}: {note}")
+        };
+        if let Err(error) = append_note(
+            db,
+            Some(&call.duty.id),
+            &format!("call delivered: {detail}"),
+            &["delivered".to_owned()],
+        ) {
+            tracing::error!(%error, duty = %call.duty.id, "steward: cannot mark the call delivered");
+        }
+    }
+}
+
 /// Append one steward audit row. A failed write is logged, not fatal: the
 /// bookkeeping it describes has already landed.
 fn audit_steward(db: &Db, action: &str, duty_id: &str, detail: &str) {
@@ -973,6 +1161,7 @@ fn audit_steward(db: &Db, action: &str, duty_id: &str, detail: &str) {
 /// time. Turns are awaited inline, as scheduled runs are.
 pub(crate) async fn watch_pass(state: &crate::admin::AppState, now: OffsetDateTime) {
     let db = state.engine.db().clone();
+    deliver_pending_calls(state, &db).await;
     let wakes = match plan_watch_pass(&db, now) {
         Ok(wakes) => wakes,
         Err(error) => {
@@ -992,7 +1181,7 @@ pub(crate) async fn watch_pass(state: &crate::admin::AppState, now: OffsetDateTi
             last_status: None,
             last_error: None,
             fired_count: 0,
-            deliver: delivery_default(&db),
+            deliver: channel_for(&db, &delivery_default(&db)),
         };
         let (delivered, note) = crate::delivery::deliver(
             state,
@@ -1477,5 +1666,59 @@ mod watch_tests {
         assert_eq!(reconcile_watch_on_boot(&db, fake(T0)).expect("boot"), 1);
         let armed = get_duty(&db, &duty.id).expect("duty");
         assert_eq!(armed.next_wake_at.as_deref(), Some("2026-10-22T00:02:00Z"));
+    }
+}
+
+#[cfg(test)]
+mod call_tests {
+    use super::*;
+
+    fn db() -> Db {
+        Db::open_in_memory().expect("an in-memory database")
+    }
+
+    #[test]
+    fn an_open_call_is_pending_until_delivered_and_answering_clears_it() {
+        let db = db();
+        let duty = create_duty(&db, "renew the lease", Some(60)).expect("create");
+        let raised = raise_call(&db, &duty.id, 1, "Sign the renewal?", &["yes".to_owned(), "no".to_owned()], "normal")
+            .expect("call");
+        assert_eq!(raised.phase, Phase::NeedsYou);
+        assert_eq!(raised.next_wake_at, None, "an open call does not wake");
+        let pending = pending_calls(&db).expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].note.text.contains("Choices: yes / no"));
+        let again = raise_call(&db, &duty.id, raised.revision, "Again?", &[], "normal").expect_err("second call");
+        assert!(again.to_string().contains("already open"), "{again}");
+        append_note(&db, Some(&duty.id), "call delivered: push", &["delivered".to_owned()]).expect("mark");
+        assert!(pending_calls(&db).expect("pending").is_empty(), "delivered calls are not sent twice");
+        let answered = answer_call(&db, &duty.id, raised.revision).expect("answer");
+        assert_eq!(answered.phase, Phase::Watching);
+        assert!(answered.next_wake_at.is_some(), "an answered duty is armed again");
+        assert_eq!(answered.watch_rounds, 0);
+    }
+
+    #[test]
+    fn a_stale_call_is_refused_and_an_unopened_call_cannot_be_answered() {
+        let db = db();
+        let duty = create_duty(&db, "watch the vendor", None).expect("create");
+        let stale = raise_call(&db, &duty.id, 9, "Q?", &[], "normal").expect_err("stale");
+        assert!(matches!(stale, DutyError::StaleRevision { current: 1 }), "{stale:?}");
+        let no_call = answer_call(&db, &duty.id, 1).expect_err("nothing to answer");
+        assert!(no_call.to_string().contains("no call is open"), "{no_call}");
+        assert!(raise_call(&db, &duty.id, 1, "Q?", &[], "loud").is_err(), "urgency is closed");
+    }
+
+    #[test]
+    fn mail_goes_only_to_the_two_permitted_addresses() {
+        let db = db();
+        assert_eq!(channel_for(&db, "email"), "inbox", "no recipient configured");
+        crate::web::store::settings_put(&db, crate::delivery::SETTING_EMAIL_TO, "stranger@example.test")
+            .expect("store");
+        assert_eq!(channel_for(&db, "email"), "inbox");
+        crate::web::store::settings_put(&db, crate::delivery::SETTING_EMAIL_TO, "CURTIS.FREEMAN@wewin.com")
+            .expect("store");
+        assert_eq!(channel_for(&db, "email"), "email");
+        assert_eq!(channel_for(&db, "push"), "push", "other channels are untouched");
     }
 }
