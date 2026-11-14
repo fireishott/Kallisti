@@ -82,6 +82,7 @@ pub mod skills;
 pub mod speech;
 pub mod standing;
 pub mod steward;
+pub mod steward_tools;
 pub mod steward_prompt;
 pub mod subagents;
 pub mod tools;

@@ -112,6 +112,27 @@ pub struct DutyPatch {
     pub watch_rounds: Option<i64>,
 }
 
+impl Duty {
+    /// The wire shape, one serializer for the page, the route and the tools.
+    #[must_use]
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "revision": self.revision,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "statement": self.statement,
+            "phase": self.phase.as_str(),
+            "every_seconds": self.every_seconds,
+            "next_wake_at": self.next_wake_at,
+            "blocker": self.blocker.as_ref().map(|b| serde_json::json!({"code": b.code, "detail": b.detail})),
+            "closed_outcome": self.closed_outcome,
+            "source_conversation": self.source_conversation,
+            "watch_rounds": self.watch_rounds,
+        })
+    }
+}
+
 /// One field note. Notes are never rewritten.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldNote {
@@ -120,6 +141,20 @@ pub struct FieldNote {
     pub at: String,
     pub text: String,
     pub tags: Vec<String>,
+}
+
+impl FieldNote {
+    /// The wire shape.
+    #[must_use]
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "duty_id": self.duty_id,
+            "at": self.at,
+            "text": self.text,
+            "tags": self.tags,
+        })
+    }
 }
 
 /// Everything the duty and note store can refuse or fail with.
@@ -352,6 +387,9 @@ pub fn escalate_needs_you(db: &Db, id: &str, expected_revision: i64) -> Result<D
     get_duty(db, id)
 }
 
+/// The most duties one charter seeds.
+pub const MAX_CHARTER_DUTIES: usize = 40;
+
 /// The only addresses a steward may mail, exactly as the standing rule names them.
 pub const MAIL_RECIPIENTS: [&str; 2] = ["curtis.freeman@wewin.com", "freemancurtisd@gmail.com"];
 
@@ -486,6 +524,52 @@ pub fn pending_calls(db: &Db) -> Result<Vec<PendingCall>, DutyError> {
         }
     }
     Ok(pending)
+}
+
+/// Seed duties from charter text: one per non-empty line. A line that names an
+/// open duty already on the board is skipped, so seeding twice does not double it.
+#[derive(Debug, Clone, Default)]
+pub struct Seeded {
+    /// The duties created.
+    pub created: Vec<Duty>,
+    /// Lines already on the board as open duties.
+    pub skipped: Vec<String>,
+    /// Lines refused, with the reason.
+    pub refused: Vec<String>,
+}
+
+/// The non-empty lines of a charter, at most [`MAX_CHARTER_DUTIES`].
+#[must_use]
+pub fn charter_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .take(MAX_CHARTER_DUTIES)
+        .collect()
+}
+
+/// Seed one duty per charter line.
+pub fn seed_from_text(db: &Db, text: &str) -> Result<Seeded, DutyError> {
+    let mut open: Vec<String> = list_duties(db, None)?
+        .into_iter()
+        .filter(|duty| duty.phase != Phase::Closed)
+        .map(|duty| duty.statement)
+        .collect();
+    let mut seeded = Seeded::default();
+    for line in charter_lines(text) {
+        if open.contains(&line) {
+            seeded.skipped.push(line);
+            continue;
+        }
+        match create_duty(db, &line, None) {
+            Ok(duty) => {
+                open.push(duty.statement.clone());
+                seeded.created.push(duty);
+            }
+            Err(error) => seeded.refused.push(format!("{line}: {error}")),
+        }
+    }
+    Ok(seeded)
 }
 
 /// Close a duty with an outcome. Closing is terminal.
