@@ -7596,6 +7596,44 @@ mod tests {
         assert!(setting_spec("setup.passphrase_hash").is_none());
     }
 
+    /// The record's groups are exactly the six tabs, in the order both clients
+    /// draw. A group outside them renders nowhere while looking present.
+    #[test]
+    fn every_record_group_is_one_of_the_six() {
+        let fx = fixture();
+        let entries = record(&fx);
+        let mut seen: Vec<String> = Vec::new();
+        for entry in &entries {
+            let group = entry["group"].as_str().expect("a group").to_owned();
+            assert!(
+                SETTING_GROUPS.contains(&group.as_str()),
+                "`{group}` is a group neither client has a surface for"
+            );
+            if seen.last() != Some(&group) {
+                assert!(!seen.contains(&group), "`{group}` is not contiguous");
+                seen.push(group);
+            }
+        }
+        let expected: Vec<String> = SETTING_GROUPS.iter().map(|g| (*g).to_owned()).collect();
+        assert_eq!(seen, expected, "the record is the group order, all six");
+    }
+
+    /// A phone row is narrow, and a label nobody can read is a field nobody
+    /// finds. Forty characters is the budget.
+    #[test]
+    fn every_label_is_short_enough_for_a_phone_row() {
+        for spec in SETTING_SPECS {
+            assert!(!spec.label.trim().is_empty(), "`{}` has no label", spec.key);
+            assert!(
+                spec.label.chars().count() <= 40,
+                "`{}`'s label is {} characters: {}",
+                spec.key,
+                spec.label.chars().count(),
+                spec.label
+            );
+        }
+    }
+
     #[tokio::test]
     async fn the_record_and_the_write_path_are_one_table_read_twice() {
         let fx = fixture();
