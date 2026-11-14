@@ -79,6 +79,7 @@ pub mod search;
 pub mod selfmemory;
 pub mod sensors;
 pub mod skills;
+pub mod speech;
 pub mod standing;
 pub mod subagents;
 pub mod tools;

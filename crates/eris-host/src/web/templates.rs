@@ -2395,6 +2395,10 @@ pub struct SettingsView {
     pub greeting_refresh: String,
     /// Whether the compressed tool list is on.
     pub tool_index_enabled: bool,
+    /// Whether the phone speaks an answer.
+    pub tts_enabled: bool,
+    /// The voice it speaks with.
+    pub tts_voice: String,
     /// Whether an over-long review is repaired instead of dropped.
     pub learning_repair: bool,
     /// How long a skill nothing has ever read may stay in the catalog.
@@ -2524,6 +2528,8 @@ impl SettingsView {
             greeting_model: crate::greeting::INHERIT.to_owned(),
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
             tool_index_enabled: true,
+            tts_enabled: false,
+            tts_voice: crate::speech::DEFAULT_VOICE.to_owned(),
             learning_repair: true,
             curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
             consolidate_nightly: false,
@@ -4682,6 +4688,30 @@ fn tab_devices(view: &SettingsView) -> Markup {
                     }
                     @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("notify_on_reply")) {
                         span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    label for="tts_enabled" {
+                        input type="checkbox" id="tts_enabled" name="tts_enabled" value="true"
+                            checked[view.tts_enabled];
+                        " Speak the answer on the phone"
+                    }
+                    span .hint {
+                        "The phone asks the daemon for audio and plays it. Synthesis goes to the "
+                        "configured provider's speech endpoint; with none, the phone is told "
+                        "`tts_not_configured` rather than going quiet."
+                    }
+                }
+                div .field {
+                    label for="tts_voice" { "Voice" }
+                    select id="tts_voice" name="tts_voice" {
+                        @for (key, label) in crate::speech::VOICES {
+                            option value=(key) selected[view.tts_voice == key] { (label) }
+                        }
+                    }
+                    span .hint {
+                        "The list is the daemon's, not the client's, and `GET /v1/voices` "
+                        "publishes it with the current choice."
                     }
                 }
                 div .field {

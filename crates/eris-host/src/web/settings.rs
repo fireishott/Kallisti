@@ -1813,6 +1813,8 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         crate::memconsolidate::SETTING_NIGHTLY,
         "consolidate_nightly",
     ),
+    (crate::speech::SETTING_ENABLED, "tts_enabled"),
+    (crate::speech::SETTING_VOICE, "tts_voice"),
     (crate::push::SETTING_NOTIFY_ON_REPLY, "notify_on_reply"),
     (crate::push::SETTING_NOTIFY_SCOPE, "notify_scope"),
     (crate::push::SETTING_NOTIFY_DEVICES, "notify_devices"),

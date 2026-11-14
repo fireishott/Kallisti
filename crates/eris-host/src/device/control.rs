@@ -815,6 +815,88 @@ pub async fn search_transcript(
     }
 }
 
+/// `GET /v1/voices` - the voice list, from the daemon rather than the client.
+///
+/// Published even with speech off: a phone draws its picker before it knows
+/// whether speaking works, and an empty list would look like a missing feature
+/// rather than a switch.
+pub async fn voices(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let db = service.engine().db();
+    let voices: Vec<serde_json::Value> = crate::speech::VOICES
+        .iter()
+        .map(|(key, label)| serde_json::json!({"id": key, "label": label}))
+        .collect();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "enabled": crate::speech::enabled(db),
+        "voice": crate::speech::voice(db),
+        "voices": voices,
+    }))
+    .into_response()
+}
+
+/// `POST /v1/speak` - synthesize one answer, as audio bytes.
+///
+/// The same aux path vision takes: the base URL, key and model come from the
+/// configured provider, so nothing new is stored and no second client exists.
+pub async fn speak(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let text = field(&fields, "text").to_owned();
+    let config = crate::web::chat::turn_config(service.engine())
+        .ok()
+        .flatten();
+    match crate::speech::speak(service.engine().db(), config.as_ref(), &text).await {
+        Ok((bytes, voice)) => {
+            let _ = audit(
+                &service,
+                token.device_id(),
+                "tts.spoken",
+                &format!("voice={voice} bytes={}", bytes.len()),
+            );
+            let mut out = axum::http::HeaderMap::new();
+            out.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("audio/mpeg"),
+            );
+            if let Ok(value) = axum::http::HeaderValue::from_str(&voice) {
+                out.insert(
+                    axum::http::header::HeaderName::from_static("x-tts-voice"),
+                    value,
+                );
+            }
+            (out, bytes).into_response()
+        }
+        Err((status, code)) => DeviceError::new(
+            axum::http::StatusCode::from_u16(status)
+                .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+            code,
+            match code {
+                "tts_disabled" => "speech is switched off on the daemon",
+                "tts_empty" => "there is nothing to say",
+                "tts_not_configured" => {
+                    "no provider is configured with a speech endpoint, so nothing was spoken"
+                }
+                _ => "the provider refused the speech request",
+            },
+        )
+        .into_response(),
+    }
+}
+
 /// What the workboard list accepts.
 #[derive(Debug, serde::Deserialize)]
 pub struct WorkQuery {

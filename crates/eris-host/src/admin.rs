@@ -403,6 +403,12 @@ pub const ROUTE_ACTIVITY: &str = "/dashboard/activity";
 /// The workboard: tasks that survive the session that named them.
 pub const ROUTE_WORKBOARD: &str = "/dashboard/workboard";
 
+/// The voice list, for a client that draws a picker.
+pub const ROUTE_VOICES: &str = "/v1/voices";
+
+/// Synthesize one answer. Not a page: the body is audio.
+pub const ROUTE_SPEAK: &str = "/v1/speak";
+
 /// Add one task from the page.
 pub const ROUTE_WORKBOARD_ADD: &str = "/dashboard/workboard/add";
 

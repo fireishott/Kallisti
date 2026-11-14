@@ -1045,6 +1045,8 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .map_err(|error| form_error(&error))?
             .as_deref(),
     );
+    view.tts_enabled = crate::speech::enabled(state.engine.db());
+    view.tts_voice = crate::speech::voice(state.engine.db());
     view.notify_scope = crate::push::notify_scope(
         engine
             .setting(crate::push::SETTING_NOTIFY_SCOPE)
@@ -6292,6 +6294,38 @@ async fn save_push(
             ),
         );
     };
+
+    // Speech rides this form: it is the same "what a phone does with an answer"
+    // question, and only read when present so an older page keeps working.
+    if let Some(raw) = fields.get("tts_voice") {
+        let chosen = raw.trim().to_ascii_lowercase();
+        if !crate::speech::valid_voice(&chosen) {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("tts_voice"),
+                    "tts_voice_invalid",
+                    format!("`{}` is not a voice this daemon knows", chosen),
+                ),
+            );
+        }
+        if let Err(error) =
+            store::settings_put(state.engine.db(), crate::speech::SETTING_VOICE, &chosen)
+        {
+            return store_failure(&request_id.0, "the speech voice", error);
+        }
+    }
+    if let Some(raw) = fields.get("tts_enabled") {
+        let on = matches!(raw.trim(), "true" | "on" | "1");
+        if let Err(error) = store::settings_put(
+            state.engine.db(),
+            crate::speech::SETTING_ENABLED,
+            if on { "true" } else { "false" },
+        ) {
+            return store_failure(&request_id.0, "the speech switch", error);
+        }
+    }
 
     // The ticked boxes, in the order the form posted them, tidied by the same
     // reader the router uses so what is stored is what will be read.

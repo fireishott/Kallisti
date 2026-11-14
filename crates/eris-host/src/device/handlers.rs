@@ -2542,6 +2542,14 @@ fn read_schedule_email_enabled(engine: &SetupEngine) -> Result<String, DeviceErr
     Ok(crate::delivery::email_enabled(engine.db()).to_string())
 }
 
+fn read_tts_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::speech::enabled(engine.db()).to_string())
+}
+
+fn read_tts_voice(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::speech::voice(engine.db()))
+}
+
 fn read_workboard_default_project(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::workboard::default_project(engine.db()).unwrap_or_default())
 }
@@ -2862,6 +2870,26 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::selfmemory::SETTING_CAP_CHARS,
         writable: true,
         read: read_memory_cap_chars,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "tts_enabled",
+        label: "Speak answers",
+        group: "devices",
+        kind: SettingKind::Bool,
+        row: crate::speech::SETTING_ENABLED,
+        writable: true,
+        read: read_tts_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "tts_voice",
+        label: "Voice",
+        group: "devices",
+        kind: SettingKind::Text,
+        row: crate::speech::SETTING_VOICE,
+        writable: true,
+        read: read_tts_voice,
         normalize: None,
     },
     SettingSpec {
