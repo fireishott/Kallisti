@@ -1830,6 +1830,10 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         crate::steward::SETTING_DELIVERY_DEFAULT,
         "steward_delivery_default",
     ),
+    (
+        crate::steward::SETTING_MAIL_RECIPIENTS,
+        "steward_mail_recipients",
+    ),
     (crate::steward::SETTING_NOTE_WINDOW, "steward_note_window"),
     (
         crate::steward::SETTING_FIELD_NOTE_DAYS,

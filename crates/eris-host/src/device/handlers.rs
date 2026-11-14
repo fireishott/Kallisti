@@ -2602,6 +2602,10 @@ fn read_steward_delivery_default(engine: &SetupEngine) -> Result<String, DeviceE
     Ok(crate::steward::delivery_default(engine.db()))
 }
 
+fn read_steward_mail_recipients(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::steward::mail_recipients(engine.db()).join(", "))
+}
+
 fn read_steward_call_urgency_default(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::steward::call_urgency_default(engine.db()))
 }
@@ -3162,6 +3166,16 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::steward::SETTING_DELIVERY_DEFAULT,
         writable: true,
         read: read_steward_delivery_default,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "steward_mail_recipients",
+        label: "Steward mail allowlist",
+        group: "automation",
+        kind: SettingKind::Text,
+        row: crate::steward::SETTING_MAIL_RECIPIENTS,
+        writable: true,
+        read: read_steward_mail_recipients,
         normalize: None,
     },
     SettingSpec {

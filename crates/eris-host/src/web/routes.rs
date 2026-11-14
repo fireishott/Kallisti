@@ -1126,6 +1126,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     view.steward_note_window = crate::steward::note_window(engine.db()).to_string();
     view.steward_field_note_days = crate::steward::field_note_days(engine.db()).to_string();
     view.steward_delivery_default = crate::steward::delivery_default(engine.db());
+    view.steward_mail_recipients = crate::steward::mail_recipients(engine.db()).join(", ");
     view.steward_call_urgency_default = crate::steward::call_urgency_default(engine.db());
     view.steward_charter = crate::steward::charter(engine.db());
     view.steward_board_columns = crate::steward::board_columns(engine.db());

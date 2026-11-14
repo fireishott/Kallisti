@@ -390,16 +390,29 @@ pub fn escalate_needs_you(db: &Db, id: &str, expected_revision: i64) -> Result<D
 /// The most duties one charter seeds.
 pub const MAX_CHARTER_DUTIES: usize = 40;
 
-/// The only addresses a steward may mail, exactly as the standing rule names them.
-pub const MAIL_RECIPIENTS: [&str; 2] = ["curtis.freeman@wewin.com", "freemancurtisd@gmail.com"];
+/// The operator's allowlist of mail recipients, comma-separated, set on the
+/// Automation tab. It lives in the settings table, not in the tree: the tree is
+/// public, and the permitted addresses are the operator's own.
+pub const SETTING_MAIL_RECIPIENTS: &str = "steward.mail_recipients";
 
-/// Whether `deliver.email_to` is one of the two permitted recipients.
+/// The allowlist as stored, lower-cased, one address per entry. Empty until the
+/// operator sets one, and an empty list permits no mail.
+#[must_use]
+pub fn mail_recipients(db: &Db) -> Vec<String> {
+    stored_setting(db, SETTING_MAIL_RECIPIENTS)
+        .unwrap_or_default()
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(|entry| entry.trim().to_ascii_lowercase())
+        .filter(|entry| !entry.is_empty())
+        .collect()
+}
+
+/// Whether `deliver.email_to` is on the operator's allowlist.
 #[must_use]
 pub fn mail_permitted(db: &Db) -> bool {
     crate::delivery::allowed_recipient(db).is_some_and(|to| {
-        MAIL_RECIPIENTS
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(to.trim()))
+        let to = to.trim().to_ascii_lowercase();
+        mail_recipients(db).iter().any(|allowed| *allowed == to)
     })
 }
 
@@ -1820,27 +1833,37 @@ mod call_tests {
     }
 
     #[test]
-    fn mail_goes_only_to_the_two_permitted_addresses() {
+    fn mail_goes_only_to_the_operators_allowlist() {
         let db = db();
-        assert_eq!(
-            channel_for(&db, "email"),
-            "inbox",
-            "no recipient configured"
-        );
+        assert_eq!(channel_for(&db, "email"), "inbox", "no allowlist set");
+        crate::web::store::settings_put(
+            &db,
+            SETTING_MAIL_RECIPIENTS,
+            "ops@example.test, Boss@Example.test",
+        )
+        .expect("store");
         crate::web::store::settings_put(
             &db,
             crate::delivery::SETTING_EMAIL_TO,
             "stranger@example.test",
         )
         .expect("store");
-        assert_eq!(channel_for(&db, "email"), "inbox");
+        assert_eq!(
+            channel_for(&db, "email"),
+            "inbox",
+            "an address off the list is refused"
+        );
         crate::web::store::settings_put(
             &db,
             crate::delivery::SETTING_EMAIL_TO,
-            "CURTIS.FREEMAN@wewin.com",
+            "BOSS@example.test",
         )
         .expect("store");
-        assert_eq!(channel_for(&db, "email"), "email");
+        assert_eq!(
+            channel_for(&db, "email"),
+            "email",
+            "a listed address, any case, is allowed"
+        );
         assert_eq!(
             channel_for(&db, "push"),
             "push",

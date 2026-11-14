@@ -2437,6 +2437,8 @@ pub struct SettingsView {
     pub steward_field_note_days: String,
     /// Where a steward message goes by default.
     pub steward_delivery_default: String,
+    /// The operator's mail allowlist for steward messages, comma-separated.
+    pub steward_mail_recipients: String,
     /// The urgency a steward call is placed at by default.
     pub steward_call_urgency_default: String,
     /// The operator's charter for the steward.
@@ -2570,6 +2572,7 @@ impl SettingsView {
             steward_note_window: "8".to_owned(),
             steward_field_note_days: "30".to_owned(),
             steward_delivery_default: "push".to_owned(),
+            steward_mail_recipients: String::new(),
             steward_call_urgency_default: "normal".to_owned(),
             steward_charter: String::new(),
             steward_board_columns: "compact".to_owned(),
@@ -2835,7 +2838,8 @@ impl SettingsTab {
             "steward_enabled"
             | "steward_watch_seconds"
             | "steward_max_rounds"
-            | "steward_delivery_default" => Self::Automation,
+            | "steward_delivery_default"
+            | "steward_mail_recipients" => Self::Automation,
             "memory_backend" | "memory_vault" => Self::Memory,
             "device_listen" | "device_relay" | "notify_on_reply" | "notify_scope"
             | "notify_devices" => Self::Devices,
@@ -5055,6 +5059,15 @@ fn tab_automation(view: &SettingsView) -> Markup {
                     option value="inbox" selected[view.steward_delivery_default == "inbox"] { "Inbox" }
                     option value="email" selected[view.steward_delivery_default == "email"] { "Email" }
                     option value="off" selected[view.steward_delivery_default == "off"] { "Off" }
+                }
+            }
+            div .field {
+                label for="steward_mail_recipients" { "Steward mail allowlist" }
+                input type="text" id="steward_mail_recipients" name="steward_mail_recipients"
+                    value=(view.steward_mail_recipients);
+                span .hint {
+                    "Addresses the steward may mail, comma-separated. Empty sends no mail: the "
+                    "steward's messages go to the inbox. Copies and reply-all are never used."
                 }
             }
             div .actions {
