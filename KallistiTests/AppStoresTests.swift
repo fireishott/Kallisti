@@ -860,7 +860,7 @@ struct AppStoresTests {
                 let data = #"{"data":{"jobId":"\#(jobID.uuidString.lowercased())","status":"completed","conversationId":"\#(conversationID.uuidString)","attempt":0,"lastSeq":0}}"#.data(using: .utf8)!
                 return (response, data)
 
-            case "https://relay.example.com/v1/conversations/current":
+            case "https://relay.example.com/v1/sessions/\(conversationID.uuidString.lowercased())/conversation":
                 let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 let data = #"""
                 {"data":{
