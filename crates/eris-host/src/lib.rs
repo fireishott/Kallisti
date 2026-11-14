@@ -81,6 +81,7 @@ pub mod sensors;
 pub mod skills;
 pub mod speech;
 pub mod standing;
+pub mod steward;
 pub mod subagents;
 pub mod tools;
 pub mod trigger;
