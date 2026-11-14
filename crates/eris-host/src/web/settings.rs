@@ -1801,6 +1801,10 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
     ),
     (crate::memory::SETTING_BACKEND, "memory_backend"),
     (crate::selfmemory::SETTING_CAP_CHARS, "memory_cap_chars"),
+    (
+        crate::memconsolidate::SETTING_NIGHTLY,
+        "consolidate_nightly",
+    ),
     (crate::push::SETTING_NOTIFY_ON_REPLY, "notify_on_reply"),
     (crate::push::SETTING_NOTIFY_SCOPE, "notify_scope"),
     (crate::push::SETTING_NOTIFY_DEVICES, "notify_devices"),

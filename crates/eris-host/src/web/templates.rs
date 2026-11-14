@@ -2392,6 +2392,8 @@ pub struct SettingsView {
     pub learning_repair: bool,
     /// How long a skill nothing has ever read may stay in the catalog.
     pub curator_archive_days: String,
+    /// Whether the consolidation sweep may act unattended.
+    pub consolidate_nightly: bool,
     /// How many hours the cost and latency panel looks back.
     pub metrics_window_hours: String,
     /// The character cap on each self-memory file.
@@ -2514,6 +2516,7 @@ impl SettingsView {
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
             learning_repair: true,
             curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
+            consolidate_nightly: false,
             metrics_window_hours: "24".to_owned(),
             memory_cap_chars: crate::selfmemory::MEMORY_LIMIT.to_string(),
             standing_orders_enabled: true,
@@ -3295,6 +3298,18 @@ fn memory_group(view: &SettingsView) -> Markup {
                 span .hint {
                     "Only read by the vault backend. A path that does not exist is refused rather "
                     "than left to return nothing."
+                }
+            }
+            div .field {
+                label for="consolidate_nightly" {
+                    input type="checkbox" id="consolidate_nightly" name="consolidate_nightly"
+                        value="true" checked[view.consolidate_nightly];
+                    " Merge duplicates unattended"
+                }
+                span .hint {
+                    "A sweep retires contradictory duplicates and proposes merged text; it never "
+                    "writes the files. It refuses rather than lose more than a quarter of the live "
+                    "characters. Off, only the preview line is logged."
                 }
             }
             div .actions {

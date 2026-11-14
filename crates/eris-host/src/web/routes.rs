@@ -1024,6 +1024,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     .as_str();
     // The clock shape and the time zone are one question to the operator - what
     // time is it - so they are read together and answered on one form.
+    view.consolidate_nightly = crate::memconsolidate::nightly(state.engine.db());
     view.metrics_window_hours = crate::metrics::window_hours(state.engine.db()).to_string();
     view.clock_format = crate::zone::ClockFormat::parse(
         engine
@@ -5825,6 +5826,17 @@ async fn save_memory(
         "off" => "off",
         _ => "gbrain",
     };
+    let nightly = matches!(
+        field(&fields, "consolidate_nightly").trim(),
+        "true" | "on" | "1"
+    );
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::memconsolidate::SETTING_NIGHTLY,
+        if nightly { "true" } else { "false" },
+    ) {
+        return store_failure(&request_id.0, "the consolidation switch", error);
+    }
     let cap = field(&fields, "memory_cap_chars").trim().to_owned();
     let cap: u32 = match cap.parse::<u32>() {
         Ok(number)

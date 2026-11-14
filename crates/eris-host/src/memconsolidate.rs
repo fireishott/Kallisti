@@ -96,6 +96,65 @@ pub enum SweepOutcome {
     },
 }
 
+/// The `settings` row that lets the sweep act on its own.
+pub const SETTING_NIGHTLY: &str = "memory.consolidate_nightly";
+
+/// Whether the sweep may run unattended.
+///
+/// Off by default, and deliberately: a consolidation that retires a fact is worse
+/// than a duplicate, so the shape is "look first, then switch it on". A preview
+/// runs either way, which is what the log line is for.
+#[must_use]
+pub fn nightly(db: &Db) -> bool {
+    matches!(
+        crate::web::store::settings_get(db, SETTING_NIGHTLY)
+            .ok()
+            .flatten()
+            .as_deref()
+            .map(str::trim),
+        Some("true")
+    )
+}
+
+/// What a sweep would do right now, without claiming or writing anything.
+///
+/// This is the dry run. It reads the live set exactly as [`sweep`] would and
+/// returns the counts the report would carry, so the answer before switching the
+/// feature on is a measurement rather than a hope.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn preview(db: &Db) -> Result<Preview, DbError> {
+    let mut live: Vec<Entry> = Vec::new();
+    for target in [Target::Memory, Target::User] {
+        live.extend(mem::live_entries(db, target.label(), true, 10_000)?);
+    }
+    let live_chars: u128 = live
+        .iter()
+        .map(|entry| entry.entry.chars().count() as u128)
+        .sum();
+    let plan = plan(&live);
+    let refused = live_chars > 0
+        && plan.retired_chars * 100 > live_chars * u128::from(LOSS_BOUND_PERCENT as u64);
+    Ok(Preview {
+        retired: plan.retire.len() as i64,
+        proposed: plan.proposals.len() as i64,
+        refused,
+    })
+}
+
+/// One dry run's answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Preview {
+    /// Rows a real sweep would retire.
+    pub retired: i64,
+    /// Proposals it would write.
+    pub proposed: i64,
+    /// Whether it would refuse on the loss bound instead of acting.
+    pub refused: bool,
+}
+
 /// Run one consolidation sweep.
 ///
 /// # Errors
@@ -887,5 +946,68 @@ mod tests {
                 || production.contains("crate::selfmemory::Access::write"),
             "the module doc must name the one writer"
         );
+    }
+}
+
+/// The switch and the dry run, in the existing test module.
+#[cfg(test)]
+mod dry_run_tests {
+    use super::*;
+
+    fn scratch() -> Db {
+        Db::open_in_memory().expect("in-memory database")
+    }
+
+    fn put(db: &Db, text: &str) {
+        mem::insert_entry(
+            db,
+            &mem::NewEntry {
+                tier: mem::Tier::Curated,
+                target: "memory",
+                entry: text,
+                origin: mem::Origin::Operator,
+                source_ref: None,
+            },
+        )
+        .expect("entry");
+    }
+
+    #[test]
+    fn the_switch_is_off_until_it_is_stored_on() {
+        let db = scratch();
+        assert!(
+            !nightly(&db),
+            "off by default: a bad merge beats a duplicate"
+        );
+        crate::web::store::settings_put(&db, SETTING_NIGHTLY, "true").expect("store");
+        assert!(nightly(&db));
+    }
+
+    #[test]
+    fn a_preview_counts_what_a_sweep_would_retire_and_writes_nothing() {
+        let db = scratch();
+        put(&db, "the deploy waits for the guard");
+        put(&db, "the  deploy   waits for the guard");
+        put(&db, "the cache lives in /var");
+        put(&db, "the lane health check runs at eight");
+        put(&db, "the guard baseline lives in src");
+
+        let before = mem::live_entries(&db, "memory", false, 100)
+            .expect("live")
+            .len();
+        let preview = preview(&db).expect("preview");
+        assert_eq!(preview.retired, 1, "one duplicate pair");
+        assert!(!preview.refused);
+        let after = mem::live_entries(&db, "memory", false, 100)
+            .expect("live")
+            .len();
+        assert_eq!(before, after, "a preview retires nothing");
+
+        match sweep(&db, &crate::learning::now()).expect("sweep") {
+            SweepOutcome::Completed { retired, .. } => {
+                assert_eq!(retired, preview.retired, "the sweep does what it said");
+            }
+            other => panic!("expected a completed sweep, got {other:?}"),
+        }
     }
 }

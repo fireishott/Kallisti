@@ -2542,6 +2542,10 @@ fn read_schedule_email_enabled(engine: &SetupEngine) -> Result<String, DeviceErr
     Ok(crate::delivery::email_enabled(engine.db()).to_string())
 }
 
+fn read_consolidate_nightly(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::memconsolidate::nightly(engine.db()).to_string())
+}
+
 fn read_metrics_window_hours(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::metrics::window_hours(engine.db()).to_string())
 }
@@ -2795,6 +2799,16 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::memory::SETTING_BACKEND,
         writable: true,
         read: read_memory,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "consolidate_nightly",
+        label: "Nightly merge",
+        group: "memory",
+        kind: SettingKind::Bool,
+        row: crate::memconsolidate::SETTING_NIGHTLY,
+        writable: true,
+        read: read_consolidate_nightly,
         normalize: None,
     },
     SettingSpec {
