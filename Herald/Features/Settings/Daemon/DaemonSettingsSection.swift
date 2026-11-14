@@ -11,6 +11,21 @@ struct DaemonSettingsSection: View {
 
     var body: some View {
         SettingsSectionView(title: "Daemon") {
+            let stewardCount = DaemonSetting.stewardKeys
+                .filter { key in store.settings.contains { $0.key == key } }
+                .count
+            if stewardCount > 0 {
+                NavigationLink(value: Route.daemonSteward) {
+                    DaemonGroupLabel(
+                        group: .automation,
+                        count: stewardCount,
+                        title: "Steward",
+                        symbol: "person.text.rectangle"
+                    )
+                }
+                .buttonStyle(.plain)
+                Divider().opacity(0.35)
+            }
             ForEach(DaemonGroup.allCases) { group in
                 NavigationLink(value: Route.daemonGroup(group)) {
                     DaemonGroupLabel(group: group, count: store.count(in: group))
@@ -31,14 +46,16 @@ struct DaemonSettingsSection: View {
 struct DaemonGroupLabel: View {
     let group: DaemonGroup
     let count: Int
+    var title: String?
+    var symbol: String?
 
     var body: some View {
         HStack(spacing: Design.Spacing.sm) {
-            Image(systemName: group.symbol)
+            Image(systemName: symbol ?? group.symbol)
                 .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(Design.Colors.accent)
                 .frame(width: 24)
-            Text(group.title)
+            Text(title ?? group.title)
                 .font(Design.Typography.body)
                 .foregroundStyle(Design.Colors.foreground)
             Spacer(minLength: Design.Spacing.xs)

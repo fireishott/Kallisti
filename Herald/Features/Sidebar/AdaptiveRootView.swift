@@ -185,6 +185,8 @@ struct AdaptiveRootView: View {
             ConfigEditorScreen()
         case let .daemonGroup(group):
             DaemonGroupScreen(group: group)
+        case .daemonSteward:
+            DaemonGroupScreen(group: .automation, keys: DaemonSetting.stewardKeys)
         }
     }
 

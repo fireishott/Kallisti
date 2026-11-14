@@ -7,6 +7,9 @@ import SwiftUI
 /// here with no client change.
 struct DaemonGroupScreen: View {
     let group: DaemonGroup
+    /// When set, only these keys are shown — the Steward screen crosses the
+    /// daemon's form groups so one feature's settings sit together.
+    var keys: Set<String> = []
     @Environment(DaemonSettingsStore.self) private var store
     @State private var drafts: [String: String] = [:]
     @State private var filter = ""
@@ -15,7 +18,8 @@ struct DaemonGroupScreen: View {
     @Namespace private var namespace
 
     private var fields: [DaemonSetting] {
-        let all = store.fields(in: group)
+        var all = store.fields(in: group)
+        if !keys.isEmpty { all = all.filter { keys.contains($0.key) } }
         guard !filter.isEmpty else { return all }
         return all.filter { $0.label.localizedCaseInsensitiveContains(filter) }
     }
@@ -32,7 +36,7 @@ struct DaemonGroupScreen: View {
                 .padding(.vertical, Design.Spacing.sm)
             }
         }
-        .navigationTitle(group.title)
+        .navigationTitle(titleText)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $filter, prompt: "Filter these settings")
         .navigationTransitionIfAvailable(namespace, source: group.rawValue)
@@ -63,6 +67,22 @@ struct DaemonGroupScreen: View {
         .onChange(of: store.settings) { _, _ in seedDrafts() }
     }
 
+    // MARK: - Titles
+
+    private var titleText: String {
+        keys.isEmpty ? group.title : "Steward"
+    }
+
+    private var titleSymbol: String {
+        keys.isEmpty ? group.symbol : "person.text.rectangle"
+    }
+
+    private var titleBlurb: String {
+        keys.isEmpty
+            ? group.blurb
+            : "What the steward watches, how often, and how it reaches you. The charter is the standing instruction it works under."
+    }
+
     // MARK: - Pieces
 
     private var background: some View {
@@ -81,16 +101,16 @@ struct DaemonGroupScreen: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xs) {
             HStack(spacing: Design.Spacing.sm) {
-                Image(systemName: group.symbol)
+                Image(systemName: titleSymbol)
                     .font(.system(size: 20, weight: .regular))
                     .foregroundStyle(Design.Colors.accent)
                 Text("Daemon")
                     .brandEyebrow()
             }
-            Text(group.title)
+            Text(titleText)
                 .font(Design.Typography.screenTitle)
                 .foregroundStyle(Design.Colors.foreground)
-            Text(group.blurb)
+            Text(titleBlurb)
                 .font(Design.Typography.footnote)
                 .foregroundStyle(Design.Colors.secondaryForeground)
                 .fixedSize(horizontal: false, vertical: true)

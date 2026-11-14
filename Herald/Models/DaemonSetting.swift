@@ -15,6 +15,24 @@ import Foundation
 ///
 /// The titles are the daemon's group labels, title-cased, and the symbols are the
 /// only client-side constants in this feature.
+extension DaemonSetting {
+    /// The steward's ten keys, in the order the daemon form presents them. The
+    /// Steward card gathers them across the assistant, memory and automation
+    /// groups so a feature is edited in one place.
+    static let stewardKeys: Set<String> = [
+        "steward_enabled",
+        "steward_watch_seconds",
+        "steward_max_rounds",
+        "steward_delivery_default",
+        "steward_mail_recipients",
+        "steward_note_window",
+        "steward_field_note_days",
+        "steward_call_urgency_default",
+        "steward_charter",
+        "steward_board_columns",
+    ]
+}
+
 enum DaemonGroup: String, CaseIterable, Identifiable, Hashable {
     case models
     case assistant

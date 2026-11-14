@@ -1,6 +1,21 @@
 import Testing
 import Foundation
+import Speech
 @testable import Kallisti
+
+/// One-shot gate for the two racers below.
+private final class Once: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !done else { return false }
+        done = true
+        return true
+    }
+}
 
 @Suite("Speech Authorization Bridge")
 struct SpeechAuthorizationBridgeTests {
@@ -11,12 +26,30 @@ struct SpeechAuthorizationBridgeTests {
         // We cannot assert the TCC dialog response (pure unit tests cannot
         // present system dialogs), but if this compiles and runs, the MainActor
         // inheritance that caused the build 30 crash is gone.
-        let status = await SpeechAuthorizationBridge.requestAuthorization()
+        // No TCC answer is guaranteed on a simulator: requestAuthorization can
+        // stay pending forever when the prompt is never answered, which hung the
+        // whole serial suite until the external watchdog killed it. A task group
+        // is not enough — it joins its children at scope exit, and the cancelled
+        // authorization call is not cancellation-aware — so the wait is bounded
+        // by a continuation that settles once, on whichever side arrives first.
+        let settled = Once()
+        let status: SFSpeechRecognizerAuthorizationStatus? = await withCheckedContinuation { continuation in
+            Task {
+                let resolved = await SpeechAuthorizationBridge.requestAuthorization()
+                if settled.claim() { continuation.resume(returning: resolved) }
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(15))
+                if settled.claim() { continuation.resume(returning: nil) }
+            }
+        }
         // status is .notDetermined, .authorized, .denied, or .restricted —
-        // all valid. We just need to prove we got here.
-        let valid = (status == .notDetermined || status == .authorized
-                     || status == .denied || status == .restricted)
-        #expect(valid, "Speech authorization returned a valid enum case")
+        // all valid, and nil means the prompt never settled.
+        if let status {
+            let valid = (status == .notDetermined || status == .authorized
+                         || status == .denied || status == .restricted)
+            #expect(valid, "Speech authorization returned a valid enum case")
+        }
     }
 }
 
