@@ -1,4 +1,4 @@
-name: Kallisti
+name: Herald
 options:
   # Public-safe defaults. Replace locally if you regenerate the project
   # for a private deployment with your own signing/bundle identifiers.
