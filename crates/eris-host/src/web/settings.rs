@@ -1778,6 +1778,7 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         crate::greeting::SETTING_GREETING_REFRESH,
         "greeting_refresh",
     ),
+    (crate::learning::SETTING_REVIEW_REPAIR, "learning_repair"),
     (crate::search::SETTING_SEARCH_LIMIT, "search_limit"),
     (
         crate::search::SETTING_SEARCH_SCOPE_DEFAULT,

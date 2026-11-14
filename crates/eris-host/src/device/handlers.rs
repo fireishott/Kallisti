@@ -2530,6 +2530,10 @@ fn read_skills_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
 
 /// The workspace a turn may write in. Read-only here: it is set by the wizard and
 /// moving it from a phone is a different decision with a different card.
+fn read_learning_repair(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::learning::review_repair(engine.db()).to_string())
+}
+
 fn read_search_limit(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::search::stored_limit(engine.db()).to_string())
 }
@@ -2791,6 +2795,18 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::scheduler::SETTING_ENABLED,
         writable: true,
         read: read_schedules_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "learning_repair_enabled",
+        label: "Repair reviews",
+        group: "automation",
+        kind: SettingKind::Bool,
+        // The row the worker already reads, so the record and the loop cannot
+        // disagree about whether a bad review is repaired.
+        row: crate::learning::SETTING_REVIEW_REPAIR,
+        writable: true,
+        read: read_learning_repair,
         normalize: None,
     },
     SettingSpec {

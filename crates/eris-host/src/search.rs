@@ -1047,9 +1047,7 @@ fn browse(
                     message_id: row.get(2)?,
                     ts: row.get(3)?,
                     role: row.get(4)?,
-                    snippet: raw
-                        .as_deref()
-                        .map_or_else(|| markup(&clip(&body)), markup),
+                    snippet: raw.as_deref().map_or_else(|| markup(&clip(&body)), markup),
                     score: row.get(6)?,
                 })
             },

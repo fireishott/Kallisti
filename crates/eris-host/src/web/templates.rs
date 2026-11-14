@@ -2367,6 +2367,8 @@ pub struct SettingsView {
     pub greeting_model: String,
     /// `hour`, `day` or `week`: how old the stored line may get.
     pub greeting_refresh: String,
+    /// Whether an over-long review is repaired instead of dropped.
+    pub learning_repair: bool,
     /// How many hits a search returns when the caller does not say.
     pub search_limit: String,
     /// `all` or `conversation`: the scope a search starts on.
@@ -2473,6 +2475,7 @@ impl SettingsView {
             greeting_enabled: false,
             greeting_model: crate::greeting::INHERIT.to_owned(),
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
+            learning_repair: true,
             search_limit: crate::search::DEFAULT_LIMIT.to_string(),
             search_scope_default: "all".to_owned(),
             chat_hint: crate::greeting::DEFAULT_HINT.to_owned(),
@@ -4640,6 +4643,33 @@ fn tab_automation(view: &SettingsView) -> Markup {
             (schedules_group(view))
         }
 
+        section .card aria-labelledby="learning-heading" {
+            h2 id="learning-heading" { "Learning" }
+            p .small {
+                "The loop reads a finished turn and writes down what it taught. A review is one "
+                "JSON object, and a reply that breaks the loop's own rules used to be thrown away "
+                "with the lesson still inside it."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_LEARNING) novalidate {
+                div .field {
+                    label for="learning_repair" {
+                        input type="checkbox" id="learning_repair" name="learning_repair"
+                            value="true" checked[view.learning_repair];
+                        " Repair an over-long review"
+                    }
+                    span .hint {
+                        "Collapse the whitespace, cut at a word boundary, add the full stop, then "
+                        "re-read it. One re-ask follows if that fails; off, both are skipped and the "
+                        "run fails on the first refusal."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save learning" }
+                    a .button href=(crate::admin::ROUTE_LEARNING) { "Open the loop" }
+                }
+            }
+        }
+
         section .card aria-labelledby="skills-heading" {
             h2 id="skills-heading" { "Skills" }
             p .small {
@@ -5246,6 +5276,8 @@ pub fn learning_page(view: &LearningView) -> Markup {
                 (view.totals.active) " learned skill(s) active, "
                 (view.totals.stale) " stale, "
                 (view.totals.archived) " archived, "
+                (view.totals.repaired) " review(s) repaired, "
+                (view.totals.dropped) " dropped, "
                 (view.totals.pending) " review(s) queued. "
                 (operator) " operator-owned skill(s) are in the library and off limits to the loop."
             }

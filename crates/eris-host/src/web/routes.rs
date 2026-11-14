@@ -37,13 +37,13 @@ use crate::admin::{
     ROUTE_ROSTER, ROUTE_ROSTER_DELETE, ROUTE_ROSTER_SAVE, ROUTE_ROSTER_TOGGLE, ROUTE_SEARCH,
     ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL,
-    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
-    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
-    ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT,
-    ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA,
-    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
-    ROUTE_SETTINGS_SEARCH, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
-    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
+    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_LEARNING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
+    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
+    ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE,
+    ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH,
+    ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
+    ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SEARCH, ROUTE_SETTINGS_SKILLS,
+    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
     ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS,
     ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE,
     ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE, ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION,
@@ -164,6 +164,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
         .route(ROUTE_SETTINGS_GREETING, post(save_greeting))
         .route(ROUTE_SETTINGS_SEARCH, post(save_search))
+        .route(ROUTE_SETTINGS_LEARNING, post(save_learning_repair))
         .route(ROUTE_ACCOUNTS_CONNECT, post(connect_account))
         .route(ROUTE_ACCOUNTS_VERIFY, post(verify_account))
         .route(ROUTE_ACCOUNTS_DISCONNECT, post(disconnect_account))
@@ -1096,6 +1097,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     );
     // Read through `crate::search` so the form shows exactly what a search
     // would use rather than a second copy of the same clamp.
+    view.learning_repair = crate::learning::review_repair(engine.db());
     view.search_limit = crate::search::stored_limit(engine.db()).to_string();
     view.search_scope_default = crate::search::stored_scope(engine.db());
     // The objective every turn carries until it is cleared. Read through
@@ -7605,6 +7607,48 @@ async fn save_search(
         return audit_failure(&request_id.0, "settings.search", error);
     }
     see_other(SAVED_SEARCH)
+}
+
+const SAVED_LEARNING_REPAIR: &str = "/dashboard/settings?saved=learning";
+
+/// `POST /dashboard/settings/learning` - repair a refused review, or drop it.
+///
+/// Writes the same row the worker reads, so the switch and the behaviour cannot
+/// drift apart.
+async fn save_learning_repair(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let on = matches!(
+        field(&fields, "learning_repair").trim(),
+        "true" | "on" | "1"
+    );
+    let stored = if on { "true" } else { "false" };
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::learning::SETTING_REVIEW_REPAIR,
+        stored,
+    ) {
+        return store_failure(&request_id.0, "the learning repair switch", error);
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.learning",
+        Some(&format!("repair={stored}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.learning", error);
+    }
+    see_other(SAVED_LEARNING_REPAIR)
 }
 
 /// `POST /dashboard/settings/mcp` - the configured MCP server list.

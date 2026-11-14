@@ -268,6 +268,8 @@ pub const ROUTE_SETTINGS_MCP: &str = "/dashboard/settings/mcp";
 pub const ROUTE_SETTINGS_GREETING: &str = "/dashboard/settings/greeting";
 /// The search defaults form (Assistant tab): hits per search, starting scope.
 pub const ROUTE_SETTINGS_SEARCH: &str = "/dashboard/settings/search";
+/// The learning card (Automation tab): repair a refused review, or drop it.
+pub const ROUTE_SETTINGS_LEARNING: &str = "/dashboard/settings/learning";
 /// `POST /dashboard/settings/accounts/connect` - start a browser login for one
 /// account. The form names which, and the answer is a redirect to the provider.
 pub const ROUTE_ACCOUNTS_CONNECT: &str = "/dashboard/settings/accounts/connect";
@@ -516,6 +518,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_MCP,
     ROUTE_SETTINGS_GREETING,
     ROUTE_SETTINGS_SEARCH,
+    ROUTE_SETTINGS_LEARNING,
     ROUTE_ACCOUNTS_CONNECT,
     ROUTE_ACCOUNTS_VERIFY,
     ROUTE_ACCOUNTS_DISCONNECT,

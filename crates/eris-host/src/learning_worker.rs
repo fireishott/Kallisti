@@ -382,6 +382,17 @@ impl LearningWorker {
                                 review
                             }
                             Err(again) => {
+                                // The raw reply is kept with the failure: a run
+                                // dropped on a formatting rule has to be readable
+                                // afterwards, or the rule cannot be argued with.
+                                let stored: String = second.text.chars().take(4000).collect();
+                                let _ = db.with_conn(|conn| {
+                                    conn.execute(
+                                        "UPDATE learning_runs SET error_text = ?2 WHERE id = ?1",
+                                        params![claimed.id, stored],
+                                    )?;
+                                    Ok(())
+                                });
                                 return self.fail(
                                     db,
                                     claimed,
@@ -406,9 +417,18 @@ impl LearningWorker {
         } else {
             "done"
         };
+        // A lesson that changed no skill still has a home. Without this it ended
+        // as a sentence in a row nobody scrolls back to.
+        let kept =
+            applied.action == "none" && learning::remember_lesson(db, &review, Some(&claimed.id));
+        let base_note = if kept {
+            format!("{}; kept as a memory entry", applied.note)
+        } else {
+            applied.note.clone()
+        };
         let note = match &repair_note {
-            Some(repair) => format!("{} ({repair})", applied.note),
-            None => applied.note.clone(),
+            Some(repair) => format!("{base_note} ({repair})"),
+            None => base_note,
         };
         self.settle(
             db,
