@@ -525,6 +525,33 @@ pub async fn patch_cron(
         ) {
             return error.into_response();
         }
+    } else if let Some(channel) = fields
+        .get("deliver")
+        .map(|value| value.trim().to_lowercase())
+    {
+        // The delivery picker on the cron page and on the phone sends one field:
+        // where the answer goes. It is a closed set and refused by name.
+        if !crate::delivery::valid(&channel) {
+            return DeviceError::bad_request(
+                "schedule_patch_invalid",
+                format!(
+                    "`{channel}` is not a delivery channel; the daemon has {}",
+                    crate::delivery::DEFAULT_VALUES.join(", ")
+                ),
+            )
+            .into_response();
+        }
+        if let Err(error) = scheduler::set_deliver(engine.db(), &id, &channel) {
+            return schedule_failure(error, "deliver").into_response();
+        }
+        if let Err(error) = audit(
+            &service,
+            token.device_id(),
+            AUDIT_SCHEDULES,
+            &format!("deliver id={id} channel={channel}"),
+        ) {
+            return error.into_response();
+        }
     } else if fields.contains_key("name")
         || fields.contains_key("schedule")
         || fields.contains_key("prompt")

@@ -35,14 +35,33 @@ pub const SETTING_EMAIL_TO: &str = "deliver.email_to";
 /// The stored setting holding the envelope sender.
 pub const SETTING_EMAIL_FROM: &str = "deliver.email_from";
 
+/// The stored setting holding a relay to hand the message to, `host:port`.
+///
+/// Absent, the message is only written to the outbox: composing a message is this
+/// daemon's job and putting it on the wire needs a relay the operator names.
+pub const SETTING_SMTP_HOST: &str = "deliver.smtp_host";
+
 /// The default envelope sender. It is not a real mailbox and does not claim to be.
 pub const DEFAULT_EMAIL_FROM: &str = "eris@kallisti.local";
+
+/// The `settings` row holding the channel a new schedule starts on.
+pub const SETTING_DELIVERY_DEFAULT: &str = "schedule.delivery_default";
+
+/// The `settings` row that allows mail at all.
+pub const SETTING_EMAIL_ENABLED: &str = "schedule.email_enabled";
 
 /// The channel a schedule uses when the operator does not say.
 pub const DEFAULT_CHANNEL: &str = "push";
 
 /// Every channel a schedule may name.
-pub const CHANNELS: [&str; 4] = ["none", "push", "email", "both"];
+///
+/// `none` and `both` are the pre-1.8 spellings and stay accepted: a schedule row
+/// written before this list grew must keep working, and `both` is exactly
+/// `push`+`email`.
+pub const CHANNELS: [&str; 6] = ["off", "none", "push", "inbox", "email", "both"];
+
+/// The values the delivery setting offers.
+pub const DEFAULT_VALUES: &[&str] = &["push", "inbox", "email", "off"];
 
 /// Whether a value names a channel.
 #[must_use]
@@ -50,24 +69,68 @@ pub fn valid(value: &str) -> bool {
     CHANNELS.contains(&value.trim().to_ascii_lowercase().as_str())
 }
 
-/// A stored channel, normalised, or the default when it is missing or nonsense.
+/// A stored channel, normalised, or the stored default when it is missing or
+/// nonsense.
 #[must_use]
-pub fn normalise(stored: Option<&str>) -> String {
+pub fn normalise(db: &Db, stored: Option<&str>) -> String {
     match stored {
         Some(value) if valid(value) => value.trim().to_ascii_lowercase(),
-        _ => DEFAULT_CHANNEL.to_owned(),
+        _ => default_channel(db),
     }
 }
 
-/// Whether a channel means push, and whether it means email.
+/// The channel a schedule starts on, from the operator's setting.
 #[must_use]
-pub fn channels(value: &str) -> (bool, bool) {
-    let value = normalise(Some(value));
-    match value.as_str() {
-        "push" => (true, false),
-        "email" => (false, true),
-        "both" => (true, true),
-        _ => (false, false),
+pub fn default_channel(db: &Db) -> String {
+    crate::web::store::settings_get(db, SETTING_DELIVERY_DEFAULT)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| DEFAULT_VALUES.contains(&value.as_str()))
+        .unwrap_or_else(|| DEFAULT_CHANNEL.to_owned())
+}
+
+/// Whether mail may leave this daemon at all.
+#[must_use]
+pub fn email_enabled(db: &Db) -> bool {
+    !matches!(
+        crate::web::store::settings_get(db, SETTING_EMAIL_ENABLED)
+            .ok()
+            .flatten()
+            .as_deref()
+            .map(str::trim),
+        Some("false")
+    )
+}
+
+/// The status a run's `delivered` column adds up to.
+///
+/// The column holds what landed, which is the useful thing to read and not a
+/// word a page can sort on. This is the one mapping from it to a status, so the
+/// page and any later reader agree.
+#[must_use]
+pub fn status_of(delivered: Option<&str>) -> &'static str {
+    let value = delivered.unwrap_or_default().trim();
+    if value.is_empty() {
+        "pending"
+    } else if value == "off" || value == "none" {
+        "off"
+    } else if value.contains('+') {
+        "partial"
+    } else {
+        "delivered"
+    }
+}
+
+/// Whether a channel means push, inbox, or email.
+#[must_use]
+pub fn channels(db: &Db, value: &str) -> (bool, bool, bool) {
+    match normalise(db, Some(value)).as_str() {
+        "push" => (true, false, false),
+        "inbox" => (false, true, false),
+        "email" => (false, false, true),
+        "both" => (true, false, true),
+        _ => (false, false, false),
     }
 }
 
@@ -159,10 +222,10 @@ pub async fn deliver(
     conversation: &str,
     text: Option<&str>,
 ) -> (String, String) {
-    let (push, email) = channels(&schedule.deliver);
-    if !push && !email {
+    let (push, inbox, email) = channels(state.engine.db(), &schedule.deliver);
+    if !push && !inbox && !email {
         return (
-            "none".to_owned(),
+            "off".to_owned(),
             "delivery is off for this schedule".to_owned(),
         );
     }
@@ -171,12 +234,30 @@ pub async fn deliver(
     let mut landed: Vec<String> = Vec::new();
 
     if push {
-        match push_alert(state, schedule, run_id, conversation, &body).await {
+        match twice(|| push_alert(state, schedule, run_id, conversation, &body)).await {
             Ok(note) => {
                 landed.push("push".to_owned());
                 notes.push(note);
             }
             Err(note) => notes.push(format!("push did not send: {note}")),
+        }
+    }
+    // A schedule that asked for mail on a daemon with mail switched off still has
+    // somewhere to go, and the run row says that is what happened rather than
+    // reporting a failure the operator cannot act on.
+    let (inbox, email) = if email && !email_enabled(state.engine.db()) {
+        notes.push("mail is off, so it went to the inbox instead".to_owned());
+        (true, false)
+    } else {
+        (inbox, email)
+    };
+    if inbox {
+        match inbox_item(state, schedule, run_id, conversation, &body) {
+            Ok(note) => {
+                landed.push("inbox".to_owned());
+                notes.push(note);
+            }
+            Err(note) => notes.push(format!("the inbox did not take it: {note}")),
         }
     }
     if email {
@@ -192,6 +273,77 @@ pub async fn deliver(
         return ("none".to_owned(), notes.join("; "));
     }
     (landed.join("+"), notes.join("; "))
+}
+
+/// How long the single retry waits. Short: the run has already been written and
+/// the next fire does not wait on this.
+const RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Run one attempt, and once more after a second, if it failed.
+async fn twice<F, Fut>(attempt: F) -> Result<String, String>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    match attempt().await {
+        Ok(note) => Ok(note),
+        Err(first) => {
+            tokio::time::sleep(RETRY_BACKOFF).await;
+            attempt()
+                .await
+                .map_err(|again| format!("{first}; a second try: {again}"))
+        }
+    }
+}
+
+/// Put one item in every paired device's inbox.
+fn inbox_item(
+    state: &crate::admin::AppState,
+    schedule: &Schedule,
+    run_id: &str,
+    conversation: &str,
+    text: &str,
+) -> Result<String, String> {
+    let store = crate::push::PushStore::open(state.engine.paths().state_dir.join("push.db"))
+        .map_err(|error| error.to_string())?;
+    let targets = store.all_active().map_err(|error| error.to_string())?;
+    let devices: Vec<String> = targets
+        .into_iter()
+        .map(|(device, _token, _environment, _bundle)| device)
+        .collect();
+    if devices.is_empty() {
+        return Err("no device is registered".to_owned());
+    }
+    let inbox = crate::inbox::InboxStore::open(state.engine.paths().state_dir.join("inbox.db"))
+        .map_err(|error| error.to_string())?;
+    let payload = serde_json::json!({
+        "conversation": conversation,
+        "run": run_id,
+        "schedule": schedule.id,
+    });
+    let mut written = 0usize;
+    for device in &devices {
+        let title = format!("{}: run finished", schedule.name);
+        let body: String = text.chars().take(400).collect();
+        if inbox
+            .create(
+                device,
+                "schedule",
+                &title,
+                &body,
+                "normal",
+                Some(&payload),
+                None,
+            )
+            .is_ok()
+        {
+            written += 1;
+        }
+    }
+    if written == 0 {
+        return Err("the inbox refused every item".to_owned());
+    }
+    Ok(format!("inbox: {written} device(s)"))
 }
 
 async fn push_alert(
@@ -260,12 +412,102 @@ fn email_message(
     let dir = state.engine.paths().state_dir.join("outbox");
     let subject = format!("Kallisti: {}", schedule.name);
     let path = write_email(&dir, &from, &to, &subject, text)?;
-    Ok(format!("wrote {} for {to}", path.display()))
+    let Some(relay) = crate::web::store::settings_get(db, SETTING_SMTP_HOST)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(format!("wrote {} for {to} (no relay set)", path.display()));
+    };
+    let message = std::fs::read_to_string(&path).unwrap_or_default();
+    match smtp_send(&relay, &from, &to, &message) {
+        Ok(()) => {
+            tracing::info!(%relay, to = %to, "smtp: handed the message to the relay");
+            Ok(format!("smtp {relay}: {to}"))
+        }
+        Err(error) => Err(format!(
+            "the message is at {} but the relay `{relay}` refused it: {error}",
+            path.display()
+        )),
+    }
+}
+
+/// Hand one message to a relay, plain SMTP over one TCP connection.
+///
+/// No TLS: a relay on loopback or the LAN is the case this exists for, and a
+/// STARTTLS handshake without a TLS crate would be a promise this cannot keep.
+/// The envelope is fixed to one sender and one recipient, which is the same rule
+/// the guard enforces a level up.
+fn smtp_send(relay: &str, from: &str, to: &str, message: &str) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, Write};
+    let stream = std::net::TcpStream::connect(relay)
+        .map_err(|error| format!("cannot reach `{relay}`: {error}"))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(15)))
+        .ok();
+    let mut reader = BufReader::new(stream.try_clone().map_err(|error| error.to_string())?);
+    let mut writer = stream;
+
+    let mut greet = String::new();
+    reader
+        .read_line(&mut greet)
+        .map_err(|error| error.to_string())?;
+    if !greet.starts_with("220") {
+        return Err(format!("the relay opened with `{}`", greet.trim()));
+    }
+    for line in [
+        "EHLO kallisti.local".to_owned(),
+        format!("MAIL FROM:<{from}>"),
+        format!("RCPT TO:<{to}>"),
+        "DATA".to_owned(),
+    ] {
+        writer
+            .write_all(format!("{line}\r\n").as_bytes())
+            .map_err(|error| error.to_string())?;
+        let mut reply = String::new();
+        reader
+            .read_line(&mut reply)
+            .map_err(|error| error.to_string())?;
+        let wanted = if line == "DATA" { "354" } else { "2" };
+        if !reply.starts_with(wanted) {
+            let verb = line.split(' ').next().unwrap_or_default().to_owned();
+            return Err(format!("`{verb}` answered `{}`", reply.trim()));
+        }
+    }
+    // Dot-stuffing is the protocol's own rule: a line that is one dot would end
+    // the body early.
+    for line in message.lines() {
+        let stuffed = if line.starts_with('.') {
+            format!(".{line}")
+        } else {
+            line.to_owned()
+        };
+        writer
+            .write_all(format!("{stuffed}\r\n").as_bytes())
+            .map_err(|error| error.to_string())?;
+    }
+    writer
+        .write_all(b".\r\n")
+        .map_err(|error| error.to_string())?;
+    let mut reply = String::new();
+    reader
+        .read_line(&mut reply)
+        .map_err(|error| error.to_string())?;
+    if !reply.starts_with('2') {
+        return Err(format!("the relay answered `{}`", reply.trim()));
+    }
+    let _ = writer.write_all(b"QUIT\r\n");
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn db() -> Db {
+        Db::open_in_memory().expect("an in-memory database")
+    }
 
     #[test]
     fn the_channel_set_is_closed_and_defaults_to_push() {
@@ -273,17 +515,50 @@ mod tests {
             assert!(valid(value), "{value}");
         }
         assert!(!valid("telegram"), "no channel bridges, here or anywhere");
-        assert_eq!(normalise(None), DEFAULT_CHANNEL);
-        assert_eq!(normalise(Some("EMAIL")), "email");
-        assert_eq!(normalise(Some("nonsense")), DEFAULT_CHANNEL);
+        assert_eq!(default_channel(&db()), DEFAULT_CHANNEL);
+        let db = db();
+        assert_eq!(normalise(&db, Some("EMAIL")), "email");
+        assert_eq!(normalise(&db, Some("nonsense")), DEFAULT_CHANNEL);
     }
 
     #[test]
-    fn a_channel_plans_its_two_halves() {
-        assert_eq!(channels("push"), (true, false));
-        assert_eq!(channels("email"), (false, true));
-        assert_eq!(channels("both"), (true, true));
-        assert_eq!(channels("none"), (false, false));
+    fn the_delivery_default_is_a_setting_and_an_unknown_one_falls_back() {
+        let db = db();
+        crate::web::store::settings_put(&db, SETTING_DELIVERY_DEFAULT, "inbox").expect("store");
+        assert_eq!(default_channel(&db), "inbox");
+        assert_eq!(normalise(&db, None), "inbox");
+        // A schedule row that names its own channel still wins.
+        assert_eq!(normalise(&db, Some("off")), "off");
+        crate::web::store::settings_put(&db, SETTING_DELIVERY_DEFAULT, "pigeon").expect("store");
+        assert_eq!(default_channel(&db), DEFAULT_CHANNEL);
+    }
+
+    #[test]
+    fn mail_switched_off_is_a_fact_the_channel_plan_can_read() {
+        let db = db();
+        assert!(email_enabled(&db), "mail is on until it is turned off");
+        crate::web::store::settings_put(&db, SETTING_EMAIL_ENABLED, "false").expect("store");
+        assert!(!email_enabled(&db));
+    }
+
+    #[test]
+    fn a_run_status_reads_the_delivery_column() {
+        assert_eq!(status_of(None), "pending");
+        assert_eq!(status_of(Some("")), "pending");
+        assert_eq!(status_of(Some("off")), "off");
+        assert_eq!(status_of(Some("none")), "off");
+        assert_eq!(status_of(Some("push")), "delivered");
+        assert_eq!(status_of(Some("push+inbox")), "partial");
+    }
+
+    #[test]
+    fn a_channel_plans_its_halves() {
+        let db = db();
+        assert_eq!(channels(&db, "push"), (true, false, false));
+        assert_eq!(channels(&db, "inbox"), (false, true, false));
+        assert_eq!(channels(&db, "email"), (false, false, true));
+        assert_eq!(channels(&db, "both"), (true, false, true));
+        assert_eq!(channels(&db, "none"), (false, false, false));
     }
 
     #[test]

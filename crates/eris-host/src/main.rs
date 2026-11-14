@@ -873,6 +873,22 @@ fn run_serve(
         Err(error) => eprintln!("eris serve: could not settle interrupted scheduled runs: {error}"),
     }
 
+    // Three schedules on a host that has none, so the page is not a form above an
+    // empty list. Seeded once: deleting one does not bring it back.
+    {
+        let zone = eris_host::zone::Zone::parse(
+            eris_host::web::store::settings_get(&db, eris_host::zone::SETTING_TIMEZONE)
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        let offset = eris_host::scheduler::local_offset(&db, &zone.modifier());
+        let seeded = eris_host::scheduler::seed_defaults(&db, offset);
+        if seeded > 0 {
+            eprintln!("eris serve: seeded {seeded} default schedule(s)");
+        }
+    }
+
     // Background processes are `jobs` rows of kind `tool`. Nothing in this
     // process holds their children at boot, so a row still `running` is a job
     // whose pid either survived the restart or did not. A dead pid is settled as

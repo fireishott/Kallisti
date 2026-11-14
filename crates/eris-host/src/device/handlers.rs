@@ -2530,6 +2530,14 @@ fn read_skills_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
 
 /// The workspace a turn may write in. Read-only here: it is set by the wizard and
 /// moving it from a phone is a different decision with a different card.
+fn read_schedule_delivery_default(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::delivery::default_channel(engine.db()))
+}
+
+fn read_schedule_email_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::delivery::email_enabled(engine.db()).to_string())
+}
+
 fn read_jobs_notify_on_complete(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::process::notify_on_complete(engine.db()).to_string())
 }
@@ -2581,6 +2589,8 @@ const CLOCK_FORMAT_VALUES: &[&str] = &["12h", "24h"];
 const CONVERSATION_SORT_VALUES: &[&str] = &["updated", "created", "title", "day"];
 /// The values `search.scope_default` accepts, from [`crate::search`] itself.
 const SEARCH_SCOPE_VALUES: &[&str] = crate::search::SCOPE_VALUES;
+/// The values `schedule.delivery_default` accepts.
+const DELIVERY_VALUES: &[&str] = crate::delivery::DEFAULT_VALUES;
 
 /// Every operator-facing setting the daemon serves, described once.
 ///
@@ -2834,6 +2844,26 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::learning::SETTING_REVIEW_REPAIR,
         writable: true,
         read: read_learning_repair,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "schedule_delivery_default",
+        label: "Delivery",
+        group: "automation",
+        kind: SettingKind::Enum(DELIVERY_VALUES),
+        row: crate::delivery::SETTING_DELIVERY_DEFAULT,
+        writable: true,
+        read: read_schedule_delivery_default,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "schedule_email_enabled",
+        label: "Mail delivery",
+        group: "automation",
+        kind: SettingKind::Bool,
+        row: crate::delivery::SETTING_EMAIL_ENABLED,
+        writable: true,
+        read: read_schedule_email_enabled,
         normalize: None,
     },
     SettingSpec {

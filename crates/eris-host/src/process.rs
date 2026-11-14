@@ -709,9 +709,11 @@ fn settle_receipt(db: &Db, dir: &Path, id: &str, status: ExitStatus, tail: Strin
     // poll or wait noticed first. The row is settled conditionally, so only the
     // caller whose update actually changed the row writes the receipt - one job
     // is one receipt.
-    if settle_row_if_live(db, id, status) {
-        write_receipt(db, dir, id, status, &tail);
-    }
+    // Written unconditionally: the file is named after the job, so a second
+    // observer overwrites the same receipt instead of adding one, and there is no
+    // window where a waiter can return before the receipt exists.
+    write_receipt(db, dir, id, status, &tail);
+    settle_row_if_live(db, id, status);
     let _ = std::fs::remove_file(dir.join(format!("{id}.pid")));
 }
 
@@ -758,11 +760,7 @@ fn write_receipt(db: &Db, dir: &Path, id: &str, status: ExitStatus, tail: &str) 
         "finished_at": crate::learning::now(),
         "output": tail,
     });
-    let stamp = crate::learning::now().replace([':', '.'], "-");
-    let _ = std::fs::write(
-        receipts.join(format!("{stamp}-{id}.json")),
-        body.to_string(),
-    );
+    let _ = std::fs::write(receipts.join(format!("{id}.json")), body.to_string());
     prune_receipts(db, &receipts);
 }
 
@@ -787,17 +785,22 @@ fn prune_receipts(db: &Db, receipts: &Path) {
     let Ok(entries) = std::fs::read_dir(receipts) else {
         return;
     };
-    // The name starts with a sortable stamp, so newest-last after a sort.
-    let mut names: Vec<String> = entries
+    // Newest last, by modification time: a receipt's name is its job id, which
+    // says nothing about when it happened.
+    let mut names: Vec<(std::time::SystemTime, String)> = entries
         .flatten()
-        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
-        .filter(|name| name.ends_with(".json"))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str().map(str::to_owned)?;
+            let when = entry.metadata().ok()?.modified().ok()?;
+            Some((when, name))
+        })
+        .filter(|(_, name)| name.ends_with(".json"))
         .collect();
     names.sort();
     let keep_from = names.len().saturating_sub(MAX_RECEIPTS);
     let cutoff =
         time::OffsetDateTime::now_utc() - time::Duration::days(i64::from(receipt_days(db)));
-    for (index, name) in names.iter().enumerate() {
+    for (index, (_when, name)) in names.iter().enumerate() {
         let path = receipts.join(name);
         let stale = std::fs::metadata(&path)
             .and_then(|meta| meta.modified())
@@ -825,17 +828,21 @@ pub fn receipts(dir: &Path, limit: usize) -> Vec<serde_json::Value> {
     let Ok(entries) = std::fs::read_dir(&receipts) else {
         return Vec::new();
     };
-    let mut names: Vec<String> = entries
+    let mut names: Vec<(std::time::SystemTime, String)> = entries
         .flatten()
-        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
-        .filter(|name| name.ends_with(".json"))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str().map(str::to_owned)?;
+            let when = entry.metadata().ok()?.modified().ok()?;
+            Some((when, name))
+        })
+        .filter(|(_, name)| name.ends_with(".json"))
         .collect();
     names.sort();
     names.reverse();
     names
         .into_iter()
         .take(limit)
-        .filter_map(|name| std::fs::read_to_string(receipts.join(name)).ok())
+        .filter_map(|(_when, name)| std::fs::read_to_string(receipts.join(name)).ok())
         .filter_map(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .collect()
 }
@@ -1069,11 +1076,18 @@ mod tests {
         let receipts_dir = dir.path().join(".processes").join(RECEIPT_DIR);
         std::fs::create_dir_all(&receipts_dir).expect("dir");
         for index in 0..MAX_RECEIPTS + 5 {
-            std::fs::write(
-                receipts_dir.join(format!("2026-01-01T00-00-00-000Z-{index:03}.json")),
-                "{}",
+            std::fs::write(receipts_dir.join(format!("job-{index:03}.json")), "{}").expect("file");
+            // mtime is the order, and a loop this fast can land several files in
+            // the same granularity, so each one is nudged forward.
+            let when = std::fs::File::options()
+                .write(true)
+                .open(receipts_dir.join(format!("job-{index:03}.json")))
+                .expect("open");
+            // Inside the retention window, one second apart, oldest first.
+            when.set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(1_000 - index as u64),
             )
-            .expect("file");
+            .expect("mtime");
         }
         prune_receipts(&desk.db, &receipts_dir);
         let left = std::fs::read_dir(&receipts_dir).expect("dir").count();

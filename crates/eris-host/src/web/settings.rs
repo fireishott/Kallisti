@@ -1780,6 +1780,14 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
     ),
     (crate::learning::SETTING_REVIEW_REPAIR, "learning_repair"),
     (
+        crate::delivery::SETTING_DELIVERY_DEFAULT,
+        "schedule_delivery_default",
+    ),
+    (
+        crate::delivery::SETTING_EMAIL_ENABLED,
+        "schedule_email_enabled",
+    ),
+    (
         crate::process::SETTING_NOTIFY_ON_COMPLETE,
         "jobs_notify_on_complete",
     ),

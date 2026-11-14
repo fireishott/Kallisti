@@ -36,9 +36,9 @@ use crate::admin::{
     ROUTE_LEARNING_SKILL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN,
     ROUTE_ROSTER, ROUTE_ROSTER_DELETE, ROUTE_ROSTER_SAVE, ROUTE_ROSTER_TOGGLE, ROUTE_SEARCH,
     ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
-    ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL,
-    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_JOBS, ROUTE_SETTINGS_LEARNING, ROUTE_SETTINGS_MCP,
-    ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_DELIVERY, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS,
+    ROUTE_SETTINGS_GOAL, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_JOBS, ROUTE_SETTINGS_LEARNING,
+    ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD,
     ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
     ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
@@ -166,6 +166,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_SEARCH, post(save_search))
         .route(ROUTE_SETTINGS_LEARNING, post(save_learning_repair))
         .route(ROUTE_SETTINGS_JOBS, post(save_jobs))
+        .route(ROUTE_SETTINGS_DELIVERY, post(save_delivery))
         .route(ROUTE_ACCOUNTS_CONNECT, post(connect_account))
         .route(ROUTE_ACCOUNTS_VERIFY, post(verify_account))
         .route(ROUTE_ACCOUNTS_DISCONNECT, post(disconnect_account))
@@ -1101,6 +1102,8 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     // would use rather than a second copy of the same clamp.
     view.learning_repair = crate::learning::review_repair(engine.db());
     view.curator_archive_days = crate::learning::unused_days(engine.db()).to_string();
+    view.schedule_delivery_default = crate::delivery::default_channel(engine.db());
+    view.schedule_email_enabled = crate::delivery::email_enabled(engine.db());
     view.jobs_notify_on_complete = crate::process::notify_on_complete(engine.db());
     view.jobs_receipt_days = crate::process::receipt_days(engine.db()).to_string();
     view.search_limit = crate::search::stored_limit(engine.db()).to_string();
@@ -7836,6 +7839,62 @@ async fn save_jobs(
     see_other(SAVED_JOBS)
 }
 
+const SAVED_DELIVERY: &str = "/dashboard/settings?saved=delivery";
+
+/// `POST /dashboard/settings/delivery` - the default channel and the mail gate.
+async fn save_delivery(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let channel = field(&fields, "schedule_delivery_default")
+        .trim()
+        .to_ascii_lowercase();
+    if !crate::delivery::DEFAULT_VALUES.contains(&channel.as_str()) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("schedule_delivery_default"),
+                "delivery_channel_invalid",
+                format!("one of: {}", crate::delivery::DEFAULT_VALUES.join(", ")),
+            ),
+        );
+    }
+    let mail = matches!(
+        field(&fields, "schedule_email_enabled").trim(),
+        "true" | "on" | "1"
+    );
+    for (key, value) in [
+        (crate::delivery::SETTING_DELIVERY_DEFAULT, channel.clone()),
+        (
+            crate::delivery::SETTING_EMAIL_ENABLED,
+            if mail { "true" } else { "false" }.to_owned(),
+        ),
+    ] {
+        if let Err(error) = store::settings_put(state.engine.db(), key, &value) {
+            return store_failure(&request_id.0, "a delivery setting", error);
+        }
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.delivery",
+        Some(&format!("default={channel}; mail_enabled={mail}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.delivery", error);
+    }
+    see_other(SAVED_DELIVERY)
+}
+
 /// `POST /dashboard/settings/mcp` - the configured MCP server list.
 async fn save_mcp(
     State(state): State<AppState>,
@@ -12322,6 +12381,45 @@ async fn save_schedules(
                 "loopback",
                 "settings.schedules",
                 Some(&format!("toggle id={id} on={on}")),
+            );
+        }
+        "retry" => {
+            let id = field(&fields, "schedule_id").trim().to_owned();
+            let Some(schedule) = crate::scheduler::get(db, &id).ok().flatten() else {
+                return fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(Some("schedule_id"), "schedule_invalid", "no such schedule"),
+                );
+            };
+            let Some((run_id, conversation, summary)) =
+                crate::scheduler::last_finished_run(db, &id).ok().flatten()
+            else {
+                return fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(
+                        Some("schedule_id"),
+                        "schedule_invalid",
+                        "that schedule has no finished run to deliver",
+                    ),
+                );
+            };
+            // The answer is already written and paid for; only the delivery is
+            // retried, against the same run row, so the page shows the new outcome.
+            let (delivered, note) = crate::delivery::deliver(
+                &state,
+                &schedule,
+                &run_id,
+                conversation.as_deref().unwrap_or_default(),
+                summary.as_deref(),
+            )
+            .await;
+            let _ = crate::scheduler::record_delivery(db, &run_id, &delivered, &note);
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "settings.schedules",
+                Some(&format!("retry id={id} run={run_id} delivered={delivered}")),
             );
         }
         "delete" => {

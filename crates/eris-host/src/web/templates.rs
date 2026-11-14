@@ -1968,6 +1968,8 @@ pub enum SettingsGroup {
     Search,
     /// Background jobs: the finish notice and the receipt window.
     Jobs,
+    /// Schedule delivery: the default channel and the mail gate.
+    Delivery,
     /// Cron schedules and their run history.
     Schedules,
     /// The operator's skill library and its per-skill switches.
@@ -1980,7 +1982,7 @@ pub enum SettingsGroup {
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Provider,
         Self::Accounts,
         Self::Workspace,
@@ -1990,6 +1992,7 @@ impl SettingsGroup {
         Self::Greeting,
         Self::Search,
         Self::Jobs,
+        Self::Delivery,
         Self::Schedules,
         Self::Skills,
         Self::Update,
@@ -2007,6 +2010,7 @@ impl SettingsGroup {
             Self::Greeting => "greeting",
             Self::Search => "search",
             Self::Jobs => "jobs",
+            Self::Delivery => "delivery",
             Self::Schedules => "schedules",
             Self::Skills => "skills",
             Self::Accounts => "accounts",
@@ -2040,6 +2044,10 @@ impl SettingsGroup {
             ),
             Self::Search => matches!(field, "search_limit" | "search_scope_default"),
             Self::Jobs => matches!(field, "jobs_notify_on_complete" | "jobs_receipt_days"),
+            Self::Delivery => matches!(
+                field,
+                "schedule_delivery_default" | "schedule_email_enabled"
+            ),
             Self::Schedules => matches!(
                 field,
                 "schedule_name"
@@ -2075,6 +2083,7 @@ impl SettingsGroup {
             Self::Greeting => "greeting saved",
             Self::Search => "search defaults saved",
             Self::Jobs => "job settings saved",
+            Self::Delivery => "delivery settings saved",
             Self::Schedules => "schedules saved",
             Self::Skills => "skills saved",
             Self::Accounts => "account updated",
@@ -2377,6 +2386,10 @@ pub struct SettingsView {
     pub learning_repair: bool,
     /// How long a skill nothing has ever read may stay in the catalog.
     pub curator_archive_days: String,
+    /// Where a schedule's output goes by default.
+    pub schedule_delivery_default: String,
+    /// Whether mail may leave the daemon at all.
+    pub schedule_email_enabled: bool,
     /// Whether a finished background job announces itself.
     pub jobs_notify_on_complete: bool,
     /// How many days a finished job's receipt is kept.
@@ -2489,6 +2502,8 @@ impl SettingsView {
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
             learning_repair: true,
             curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
+            schedule_delivery_default: crate::delivery::DEFAULT_CHANNEL.to_owned(),
+            schedule_email_enabled: true,
             jobs_notify_on_complete: true,
             jobs_receipt_days: "7".to_owned(),
             search_limit: crate::search::DEFAULT_LIMIT.to_string(),
@@ -2661,7 +2676,7 @@ impl SettingsTab {
             | SettingsGroup::Goal
             | SettingsGroup::Greeting
             | SettingsGroup::Search => Self::Assistant,
-            SettingsGroup::Jobs => Self::Automation,
+            SettingsGroup::Jobs | SettingsGroup::Delivery => Self::Automation,
             SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
             SettingsGroup::Workspace | SettingsGroup::Permissions | SettingsGroup::Update => {
                 Self::System
@@ -3452,6 +3467,16 @@ fn search_group(view: &SettingsView) -> Markup {
     }
 }
 
+/// The words a delivery channel is offered under.
+fn delivery_label(value: &str) -> &'static str {
+    match value {
+        "inbox" => "Inbox row",
+        "email" => "Mail",
+        "off" => "Nothing",
+        _ => "Push to devices",
+    }
+}
+
 /// The words a scope is offered under.
 fn search_scope_label(value: &str) -> &'static str {
     match value {
@@ -4148,15 +4173,16 @@ fn schedules_group(view: &SettingsView) -> Markup {
             div .field {
                 label for="schedule_deliver" { "Delivery" }
                 select id="schedule_deliver" name="schedule_deliver" {
-                    @for channel in crate::delivery::CHANNELS {
-                        option value=(channel) selected[channel == crate::delivery::DEFAULT_CHANNEL] {
-                            (channel)
+                    @for channel in crate::delivery::DEFAULT_VALUES {
+                        option value=(channel)
+                            selected[*channel == view.schedule_delivery_default] {
+                            (delivery_label(channel))
                         }
                     }
                 }
                 span .hint {
-                    "Where the answer goes. `push` alerts the paired devices, `email` writes "
-                    "to the one permitted address, `both` does both, and `none` only writes "
+                    "Where the answer goes. Push alerts the paired devices, an inbox row waits in "
+                    "the tray, mail writes to the one permitted address, and nothing leaves it in "
                     "the conversation. The address rule is not configurable here."
                 }
             }
@@ -4182,6 +4208,7 @@ fn schedules_group(view: &SettingsView) -> Markup {
                     @if let Some(status) = &schedule.last_status {
                         " last " (status)
                     }
+                    " · delivery " (delivery_label(&schedule.deliver))
                 }
                 form method="post" action=(crate::admin::ROUTE_SETTINGS_SCHEDULES) novalidate {
                     input type="hidden" name="schedule_id" value=(schedule.id.as_str());
@@ -4190,6 +4217,10 @@ fn schedules_group(view: &SettingsView) -> Markup {
                         value=@if schedule.enabled { "true" } @else { "false" };
                     button type="submit" {
                         @if schedule.enabled { "Disable" } @else { "Enable" }
+                    }
+                    " "
+                    button type="submit" name="schedules_action" value="retry" {
+                        "Send again"
                     }
                     " "
                     button type="submit" class="danger" name="schedules_action" value="delete" {
@@ -4657,6 +4688,47 @@ fn tab_automation(view: &SettingsView) -> Markup {
                 "a conversation named after the schedule."
             }
             (schedules_group(view))
+        }
+
+        section .card aria-labelledby="delivery-heading" {
+            h2 id="delivery-heading" { "Schedule delivery" }
+            p .small {
+                "Where a schedule's answer lands. A schedule may choose its own; this is what a new "
+                "one starts on, and it is the switch that lets mail out of this daemon at all. The "
+                "recipient is fixed: one address, no CC, no aliases."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_DELIVERY) novalidate {
+                div .field {
+                    label for="schedule_delivery_default" { "Default channel" }
+                    select id="schedule_delivery_default" name="schedule_delivery_default" {
+                        @for value in crate::delivery::DEFAULT_VALUES {
+                            option value=(value) selected[view.schedule_delivery_default == *value] {
+                                (delivery_label(value))
+                            }
+                        }
+                    }
+                    span .hint {
+                        "Push to every paired device, an inbox row, mail, or nothing but the "
+                        "conversation. Every run records which of them landed."
+                    }
+                }
+                div .field {
+                    label for="schedule_email_enabled" {
+                        input type="checkbox" id="schedule_email_enabled" name="schedule_email_enabled"
+                            value="true" checked[view.schedule_email_enabled];
+                        " Allow mail"
+                    }
+                    span .hint {
+                        "Off, a run that asked for mail falls back to the inbox and its row says so. "
+                        "Mail needs a relay at " code { "deliver.smtp_host" } "; without one the "
+                        "message is written to the outbox and nothing claims it was sent."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save delivery" }
+                    a .button href=(crate::admin::ROUTE_TRIGGERS) { "Open schedules" }
+                }
+            }
         }
 
         section .card aria-labelledby="jobs-heading" {
