@@ -139,6 +139,8 @@ final class AppContainer {
 
     private static let commandCatalogRefreshInterval: TimeInterval = 60
 
+
+
     init(
         sessionStore: AppSessionStore,
         pairingStore: PairingStore,
@@ -205,11 +207,12 @@ final class AppContainer {
             apiClient: apiClient,
             accessTokenProvider: { await sessionStore.currentAccessToken() }
         )
+        // The relay the phone is configured against, read through the closure so a
+        // host change applies without rebuilding the store.
         self.daemonSettingsStore = DaemonSettingsStore(
-            baseURLProvider: { @MainActor [settingsStore, activePairingStore] in
+            baseURLProvider: { @MainActor [settingsStore] in
                 Self.resolveNativeGatewayHost(
-                    from: activePairingStore?.pairedRelayConfiguration?.baseURLString
-                    ?? settingsStore.settings.relayConfiguration.activeBaseURLString
+                    from: settingsStore.settings.relayConfiguration.activeBaseURLString
                 ).baseURL
             },
             tokenProvider: { await sessionStore.currentAccessToken() }

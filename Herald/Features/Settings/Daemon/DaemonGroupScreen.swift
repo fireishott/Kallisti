@@ -11,6 +11,8 @@ struct DaemonGroupScreen: View {
     @State private var drafts: [String: String] = [:]
     @State private var filter = ""
     @State private var savedTick = 0
+    /// The push transition's source namespace.
+    @Namespace private var namespace
 
     private var fields: [DaemonSetting] {
         let all = store.fields(in: group)
@@ -33,7 +35,7 @@ struct DaemonGroupScreen: View {
         .navigationTitle(group.title)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $filter, prompt: "Filter these settings")
-        .navigationTransitionIfAvailable()
+        .navigationTransitionIfAvailable(namespace, source: group.rawValue)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if !store.dirty.isEmpty {
@@ -194,9 +196,9 @@ extension View {
     }
 
     @ViewBuilder
-    func navigationTransitionIfAvailable() -> some View {
+    func navigationTransitionIfAvailable(_ namespace: Namespace.ID, source: String) -> some View {
         if #available(iOS 18.0, *) {
-            self.navigationTransition(.zoom)
+            self.navigationTransition(.zoom(sourceID: source, in: namespace))
         } else {
             self
         }
