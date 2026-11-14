@@ -2062,7 +2062,7 @@ pub async fn steward_duty_patch(
     let code = field(&fields, "blocker_code").trim().to_owned();
     let detail = field(&fields, "blocker_detail").trim().to_owned();
     let blocker = (!code.is_empty() || !detail.is_empty())
-        .then(|| Some(crate::steward::Blocker { code, detail }));
+        .then_some(Some(crate::steward::Blocker { code, detail }));
     let statement = fields
         .get("statement")
         .map(|value| value.trim().to_owned())
