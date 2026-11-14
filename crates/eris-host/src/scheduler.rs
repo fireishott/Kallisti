@@ -1028,12 +1028,22 @@ pub async fn tick(state: crate::admin::AppState) {
     // dropped: a dropped handle detaches the work, so the loop would never learn
     // whether it failed and would start a second one behind it.
     let mut sweeping: Option<tokio::task::JoinHandle<Option<Result<SweepOutcome, DbError>>>> = None;
+    // Steward boot reconciliation: an open duty with a cadence and no wake is
+    // armed again before the first watch pass looks at the due set.
+    if let Err(error) =
+        crate::steward::reconcile_watch_on_boot(state.engine.db(), time::OffsetDateTime::now_utc())
+    {
+        tracing::error!(%error, "steward: boot reconciliation failed");
+    }
     loop {
         interval.tick().await;
         let db = state.engine.db();
         // Standing orders are not schedules and do not stop when schedules are
         // switched off, so they are evaluated before that gate.
         crate::standing::pass(&state, &now_utc()).await;
+        // Steward watch rounds ride this tick. The pass checks steward_enabled
+        // itself, so it is independent of the schedule gate below.
+        crate::steward::watch_pass(&state, time::OffsetDateTime::now_utc()).await;
         let enabled = enabled(
             state
                 .engine

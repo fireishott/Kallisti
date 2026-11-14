@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 34;
+pub const SCHEMA_VERSION: i64 = 35;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -257,6 +257,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 34,
         name: "0034_steward",
         sql: MIGRATION_0034,
+    },
+    Migration {
+        version: 35,
+        name: "0035_steward_watch_rounds",
+        sql: MIGRATION_0035,
     },
 ];
 
@@ -1209,6 +1214,12 @@ CREATE INDEX IF NOT EXISTS idx_steward_duties_wake ON steward_duties (next_wake_
 CREATE INDEX IF NOT EXISTS idx_steward_notes_duty ON steward_field_notes (duty_id, at);
 ";
 
+/// Consecutive autonomous watch rounds a duty has taken. The watch loop counts
+/// them and pauses the duty at `steward_max_rounds`.
+const MIGRATION_0035: &str = r"
+ALTER TABLE steward_duties ADD COLUMN watch_rounds INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 /// `setup` until onboarding completes, `ready` after.
@@ -1632,7 +1643,7 @@ mod tests {
         );
         assert_eq!(
             db.applied_migration_count().expect("count"),
-            34,
+            35,
             "one row per migration, and the new one is the last"
         );
 
@@ -1645,8 +1656,8 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, 34, "one row per migration, on a fresh file");
-        assert_eq!(first.schema_version().expect("version"), 34);
+        assert_eq!(applied, 35, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 35);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");
         assert_eq!(
@@ -1700,7 +1711,7 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 34);
+        assert_eq!(db.schema_version().expect("version"), 35);
         assert_eq!(TABLES.len(), 32, "the list and the schema agree on arity");
     }
 
@@ -1716,7 +1727,7 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 34);
+        assert_eq!(db.schema_version().expect("version"), 35);
         assert_eq!(TABLES.len(), 32, "the list and the schema agree on arity");
     }
 }

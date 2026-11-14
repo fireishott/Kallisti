@@ -96,6 +96,8 @@ pub struct Duty {
     pub blocker: Option<Blocker>,
     pub closed_outcome: Option<String>,
     pub source_conversation: Option<String>,
+    /// Consecutive autonomous watch rounds since the duty was last resumed.
+    pub watch_rounds: i64,
 }
 
 /// A partial update. `None` leaves a field alone; `Some(None)` clears it.
@@ -106,6 +108,8 @@ pub struct DutyPatch {
     pub every_seconds: Option<Option<i64>>,
     pub next_wake_at: Option<Option<String>>,
     pub blocker: Option<Option<Blocker>>,
+    /// Watch rounds taken. Only the watch loop sets it.
+    pub watch_rounds: Option<i64>,
 }
 
 /// One field note. Notes are never rewritten.
@@ -191,7 +195,7 @@ pub fn list_duties(db: &Db, phase: Option<Phase>) -> Result<Vec<Duty>, DutyError
         let mut statement = conn.prepare(
             "SELECT id, revision, created_at, updated_at, statement, phase,
                     every_seconds, next_wake_at, blocker_code, blocker_detail,
-                    closed_outcome, source_conversation
+                    closed_outcome, source_conversation, watch_rounds
              FROM steward_duties
              WHERE ?1 IS NULL OR phase = ?1
              ORDER BY rowid ASC",
@@ -284,11 +288,18 @@ pub fn update_duty(
             Some(b) => (Some(b.code), Some(b.detail)),
             None => (None, None),
         };
+        // A duty taken out of paused starts its round count again, unless the
+        // caller names one. Every other write keeps the count.
+        let watch_rounds = match patch.watch_rounds {
+            Some(rounds) => rounds,
+            None if current.phase == Phase::Paused && phase != Phase::Paused => 0,
+            None => current.watch_rounds,
+        };
         let changed = tx.execute(
             "UPDATE steward_duties
              SET statement = ?3, phase = ?4, every_seconds = ?5, next_wake_at = ?6,
                  blocker_code = ?7, blocker_detail = ?8, updated_at = ?9,
-                 revision = revision + 1
+                 watch_rounds = ?10, revision = revision + 1
              WHERE id = ?1 AND revision = ?2",
             params![
                 id,
@@ -300,6 +311,7 @@ pub fn update_duty(
                 blocker_code,
                 blocker_detail,
                 updated_at,
+                watch_rounds,
             ],
         )?;
         if changed != 1 {
@@ -479,6 +491,7 @@ struct DutyRow {
     blocker_detail: Option<String>,
     closed_outcome: Option<String>,
     source_conversation: Option<String>,
+    watch_rounds: i64,
 }
 
 impl DutyRow {
@@ -496,6 +509,7 @@ impl DutyRow {
             blocker_detail: row.get(9)?,
             closed_outcome: row.get(10)?,
             source_conversation: row.get(11)?,
+            watch_rounds: row.get(12)?,
         })
     }
 
@@ -524,6 +538,7 @@ impl DutyRow {
             blocker,
             closed_outcome: self.closed_outcome,
             source_conversation: self.source_conversation,
+            watch_rounds: self.watch_rounds,
         })
     }
 }
@@ -533,7 +548,7 @@ fn load(conn: &Connection, id: &str) -> Result<Option<Duty>, DutyError> {
         .query_row(
             "SELECT id, revision, created_at, updated_at, statement, phase,
                     every_seconds, next_wake_at, blocker_code, blocker_detail,
-                    closed_outcome, source_conversation
+                    closed_outcome, source_conversation, watch_rounds
              FROM steward_duties WHERE id = ?1",
             params![id],
             DutyRow::from_row,
@@ -791,6 +806,218 @@ pub fn board_columns(db: &Db) -> String {
         &["compact", "full"],
         DEFAULT_BOARD_COLUMNS,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Watch loop
+// ---------------------------------------------------------------------------
+
+/// One wake the planner decided on. The bookkeeping is already written when a
+/// value of this type exists; the caller only delivers and admits the turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchWake {
+    pub duty_id: String,
+    pub statement: String,
+    pub round: i64,
+    pub max_rounds: u32,
+    /// The short line the operator is told about.
+    pub wake_message: String,
+    /// The `<watch_round>` prompt the resume turn starts with.
+    pub prompt: String,
+}
+
+/// Phases the watch loop wakes. `needs_you`, `paused` and `closed` never are.
+fn is_watched(phase: Phase) -> bool {
+    matches!(phase, Phase::Watching | Phase::Working | Phase::Waiting)
+}
+
+/// An instant as the whole-second RFC 3339 UTC text the wake column holds.
+/// Whole seconds keep the stored text in one shape.
+fn instant_text(at: OffsetDateTime) -> String {
+    at.replace_nanosecond(0)
+        .unwrap_or(at)
+        .format(&Rfc3339)
+        .map(|text| text.replace("+00:00", "Z"))
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
+}
+
+/// Parse a stored wake time. An unreadable one is not due.
+fn parse_instant(text: &str) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(text, &Rfc3339).ok()
+}
+
+/// Boot reconciliation. Phases have no in-flight marker: a round writes its
+/// next wake before its turn starts, so a crash leaves `next_wake_at` as the
+/// only truth. The one repair left is an open duty with a cadence and no wake.
+pub fn reconcile_watch_on_boot(db: &Db, now: OffsetDateTime) -> Result<usize, DutyError> {
+    let mut armed = 0;
+    for duty in list_duties(db, None)? {
+        if !is_watched(duty.phase) || duty.next_wake_at.is_some() {
+            continue;
+        }
+        let Some(every) = duty.every_seconds else {
+            continue;
+        };
+        let patch = DutyPatch {
+            next_wake_at: Some(Some(instant_text(now + Duration::seconds(every)))),
+            ..DutyPatch::default()
+        };
+        match update_duty(db, &duty.id, duty.revision, &patch) {
+            Ok(_) => armed += 1,
+            Err(error) => {
+                tracing::warn!(%error, duty = %duty.id, "steward: boot could not arm a wake")
+            }
+        }
+    }
+    Ok(armed)
+}
+
+/// Plan one watch tick at `now`: every open duty whose wake is due, earliest
+/// first. Each returned wake has already moved the duty's next wake forward,
+/// counted its round and written its `steward.wake` audit row. A duty at the
+/// round cap is paused instead and returns nothing. Nothing is read or written
+/// when `steward_enabled` is off.
+pub fn plan_watch_pass(db: &Db, now: OffsetDateTime) -> Result<Vec<WatchWake>, DutyError> {
+    if !enabled(db) {
+        return Ok(Vec::new());
+    }
+    let max = max_rounds(db);
+    let default_every = i64::from(watch_seconds(db));
+    let window = note_window(db) as usize;
+
+    let mut due: Vec<(OffsetDateTime, Duty)> = list_duties(db, None)?
+        .into_iter()
+        .filter(|duty| is_watched(duty.phase))
+        .filter_map(|duty| {
+            let at = parse_instant(duty.next_wake_at.as_deref()?)?;
+            (at <= now).then_some((at, duty))
+        })
+        .collect();
+    due.sort_by_key(|(at, _)| *at);
+
+    let mut wakes = Vec::new();
+    for (_, duty) in due {
+        if duty.watch_rounds >= i64::from(max) {
+            let patch = DutyPatch {
+                phase: Some(Phase::Paused),
+                blocker: Some(Some(Blocker {
+                    code: "round_cap".to_owned(),
+                    detail: format!("{} watch rounds taken; the cap is {max}", duty.watch_rounds),
+                })),
+                ..DutyPatch::default()
+            };
+            match update_duty(db, &duty.id, duty.revision, &patch) {
+                Ok(_) => {
+                    audit_steward(db, "steward.round_cap", &duty.id, &format!("cap {max}"));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, duty = %duty.id, "steward: could not pause at the round cap");
+                }
+            }
+            continue;
+        }
+
+        let round = duty.watch_rounds + 1;
+        let every = duty
+            .every_seconds
+            .unwrap_or(default_every)
+            .clamp(i64::from(MIN_WATCH_SECONDS), i64::from(MAX_WATCH_SECONDS));
+        let patch = DutyPatch {
+            next_wake_at: Some(Some(instant_text(now + Duration::seconds(every)))),
+            watch_rounds: Some(round),
+            ..DutyPatch::default()
+        };
+        // Compare-and-set on the revision the duty was read at. A stale write
+        // is logged and this wake skipped; it is not retried in a loop.
+        let updated = match update_duty(db, &duty.id, duty.revision, &patch) {
+            Ok(updated) => updated,
+            Err(error) => {
+                tracing::warn!(%error, duty = %duty.id, "steward: wake skipped");
+                continue;
+            }
+        };
+        audit_steward(
+            db,
+            "steward.wake",
+            &duty.id,
+            &format!("round {round}/{max}"),
+        );
+        let notes = list_notes(db, window, Some(&duty.id))?;
+        wakes.push(WatchWake {
+            duty_id: duty.id.clone(),
+            statement: duty.statement.clone(),
+            round,
+            max_rounds: max,
+            wake_message: format!(
+                "Steward: {} - round {round}/{max} is running.",
+                duty.statement
+            ),
+            prompt: crate::steward_prompt::watch_round(&updated, round, max, &notes),
+        });
+    }
+    Ok(wakes)
+}
+
+/// Append one steward audit row. A failed write is logged, not fatal: the
+/// bookkeeping it describes has already landed.
+fn audit_steward(db: &Db, action: &str, duty_id: &str, detail: &str) {
+    let text = format!("{duty_id} {detail}");
+    if let Err(error) = crate::web::store::audit_write(db, "steward", action, Some(&text)) {
+        tracing::error!(%error, action, "steward: cannot write the audit row");
+    }
+}
+
+/// The hook the scheduler tick calls. It plans the pass on the tick's clock,
+/// then delivers each wake through `delivery.rs` and admits its resume turn on
+/// the existing turn path. Delivery reads `steward.delivery_default` at send
+/// time. Turns are awaited inline, as scheduled runs are.
+pub(crate) async fn watch_pass(state: &crate::admin::AppState, now: OffsetDateTime) {
+    let db = state.engine.db().clone();
+    let wakes = match plan_watch_pass(&db, now) {
+        Ok(wakes) => wakes,
+        Err(error) => {
+            tracing::error!(%error, "steward: cannot plan the watch pass");
+            return;
+        }
+    };
+    for wake in wakes {
+        let schedule = crate::scheduler::Schedule {
+            id: wake.duty_id.clone(),
+            name: "Steward".to_owned(),
+            cron: String::new(),
+            prompt: wake.prompt.clone(),
+            enabled: true,
+            next_fire_at: None,
+            last_fired_at: None,
+            last_status: None,
+            last_error: None,
+            fired_count: 0,
+            deliver: delivery_default(&db),
+        };
+        let (delivered, note) = crate::delivery::deliver(
+            state,
+            &schedule,
+            &wake.duty_id,
+            "",
+            Some(&wake.wake_message),
+        )
+        .await;
+        tracing::info!(duty = %wake.duty_id, %delivered, %note, "steward: wake delivered");
+        match crate::web::routes::run_one_turn(
+            state,
+            &wake.prompt,
+            &format!("Steward: {}", wake.statement),
+        )
+        .await
+        {
+            crate::web::routes::TurnOutcome::NoProvider => {
+                tracing::warn!(duty = %wake.duty_id, "steward: no provider, resume turn not started");
+            }
+            crate::web::routes::TurnOutcome::Conversation { status, .. } => {
+                tracing::info!(duty = %wake.duty_id, status, "steward: resume turn settled");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1060,5 +1287,195 @@ mod tests {
         let notes = list_notes(&db, 5, Some(&duty_id)).expect("notes after reopen");
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].id, note_id);
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+
+    fn fake(text: &str) -> OffsetDateTime {
+        OffsetDateTime::parse(text, &Rfc3339).expect("a fixed instant")
+    }
+
+    /// A duty whose first wake is set by hand, so the clock is the test's.
+    fn duty_due_at(db: &Db, every: i64, first: OffsetDateTime) -> Duty {
+        let duty = create_duty(db, "Watch the backup job", Some(every)).expect("create");
+        let patch = DutyPatch {
+            next_wake_at: Some(Some(instant_text(first))),
+            ..DutyPatch::default()
+        };
+        update_duty(db, &duty.id, duty.revision, &patch).expect("set the first wake")
+    }
+
+    fn wake_rows(db: &Db) -> usize {
+        crate::web::store::audit_recent(db, 500)
+            .expect("audit")
+            .iter()
+            .filter(|row| row.action == "steward.wake")
+            .count()
+    }
+
+    const T0: &str = "2026-10-22T00:00:00Z";
+
+    #[test]
+    fn exactly_one_wake_per_due_duty_across_three_intervals() {
+        let db = Db::open_in_memory().expect("db");
+        let duty = duty_due_at(&db, 60, fake(T0));
+        let mut wakes = 0;
+        // Before the first due time: nothing.
+        wakes += plan_watch_pass(&db, fake(T0)).expect("pass").len().min(1);
+        assert_eq!(wakes, 1, "due at T0 is one wake");
+        // Mid-interval: not due yet.
+        assert!(
+            plan_watch_pass(&db, fake("2026-10-22T00:00:30Z"))
+                .expect("pass")
+                .is_empty()
+        );
+        // Second and third intervals.
+        assert_eq!(
+            plan_watch_pass(&db, fake("2026-10-22T00:01:00Z"))
+                .expect("pass")
+                .len(),
+            1
+        );
+        assert_eq!(
+            plan_watch_pass(&db, fake("2026-10-22T00:02:00Z"))
+                .expect("pass")
+                .len(),
+            1
+        );
+        // Re-running the same instant is not a second wake.
+        assert!(
+            plan_watch_pass(&db, fake("2026-10-22T00:02:00Z"))
+                .expect("pass")
+                .is_empty()
+        );
+
+        let after = get_duty(&db, &duty.id).expect("duty");
+        assert_eq!(after.watch_rounds, 3);
+        assert_eq!(after.next_wake_at.as_deref(), Some("2026-10-22T00:03:00Z"));
+        assert_eq!(wake_rows(&db), 3, "one steward.wake row per wake");
+    }
+
+    #[test]
+    fn a_call_that_is_open_wakes_nothing_and_touches_nothing() {
+        let db = Db::open_in_memory().expect("db");
+        let duty = duty_due_at(&db, 60, fake(T0));
+        let escalated = escalate_needs_you(&db, &duty.id, duty.revision).expect("call");
+        let wakes = plan_watch_pass(&db, fake("2026-10-23T00:00:00Z")).expect("pass");
+        assert!(wakes.is_empty(), "a call is open, so no model call");
+        let after = get_duty(&db, &duty.id).expect("duty");
+        assert_eq!(after.revision, escalated.revision, "no row touched");
+        assert_eq!(wake_rows(&db), 0);
+    }
+
+    #[test]
+    fn steward_disabled_wakes_nothing_and_touches_no_rows() {
+        let db = Db::open_in_memory().expect("db");
+        let duty = duty_due_at(&db, 60, fake(T0));
+        crate::web::store::settings_put(&db, SETTING_ENABLED, "false").expect("disable");
+        let wakes = plan_watch_pass(&db, fake("2026-10-23T00:00:00Z")).expect("pass");
+        assert!(wakes.is_empty());
+        let after = get_duty(&db, &duty.id).expect("duty");
+        assert_eq!(after, duty, "the row is byte-for-byte the same");
+        assert_eq!(wake_rows(&db), 0);
+    }
+
+    #[test]
+    fn the_round_cap_pauses_the_duty_with_round_cap() {
+        let db = Db::open_in_memory().expect("db");
+        crate::web::store::settings_put(&db, SETTING_MAX_ROUNDS, "2").expect("cap");
+        let duty = duty_due_at(&db, 30, fake(T0));
+        assert_eq!(plan_watch_pass(&db, fake(T0)).expect("pass").len(), 1);
+        assert_eq!(
+            plan_watch_pass(&db, fake("2026-10-22T00:00:30Z"))
+                .expect("pass")
+                .len(),
+            1
+        );
+        // The third due wake is at the cap: paused, no round, no turn.
+        let at_cap = plan_watch_pass(&db, fake("2026-10-22T00:01:00Z")).expect("pass");
+        assert!(at_cap.is_empty());
+        let paused = get_duty(&db, &duty.id).expect("duty");
+        assert_eq!(paused.phase, Phase::Paused);
+        let blocker = paused.blocker.expect("a blocker");
+        assert_eq!(blocker.code, "round_cap");
+        assert_eq!(wake_rows(&db), 2, "two rounds ran, the third did not");
+        // Paused duties are not woken again.
+        assert!(
+            plan_watch_pass(&db, fake("2026-10-30T00:00:00Z"))
+                .expect("pass")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_resumed_duty_starts_its_round_count_again() {
+        let db = Db::open_in_memory().expect("db");
+        crate::web::store::settings_put(&db, SETTING_MAX_ROUNDS, "1").expect("cap");
+        let duty = duty_due_at(&db, 30, fake(T0));
+        assert_eq!(plan_watch_pass(&db, fake(T0)).expect("pass").len(), 1);
+        assert!(
+            plan_watch_pass(&db, fake("2026-10-22T00:00:30Z"))
+                .expect("pass")
+                .is_empty()
+        );
+        let paused = get_duty(&db, &duty.id).expect("duty");
+        let resumed = update_duty(
+            &db,
+            &duty.id,
+            paused.revision,
+            &DutyPatch {
+                phase: Some(Phase::Watching),
+                ..DutyPatch::default()
+            },
+        )
+        .expect("resume");
+        assert_eq!(resumed.watch_rounds, 0);
+    }
+
+    #[test]
+    fn a_stale_revision_on_the_wake_path_is_skipped_not_retried() {
+        let db = Db::open_in_memory().expect("db");
+        let duty = duty_due_at(&db, 60, fake(T0));
+        // Another writer moves the revision between read and write.
+        let read = list_duties(&db, None).expect("list");
+        assert_eq!(read[0].revision, duty.revision);
+        update_duty(
+            &db,
+            &duty.id,
+            duty.revision,
+            &DutyPatch {
+                statement: Some("Watch the backup job closely".to_owned()),
+                ..DutyPatch::default()
+            },
+        )
+        .expect("concurrent edit");
+        // The planner reads fresh, so it sees the new revision and wakes once;
+        // a true stale write is covered by the store's compare-and-set tests.
+        let wakes = plan_watch_pass(&db, fake(T0)).expect("pass");
+        assert_eq!(wakes.len(), 1);
+        assert_eq!(wake_rows(&db), 1);
+    }
+
+    #[test]
+    fn boot_arms_an_open_duty_with_a_cadence_and_no_wake() {
+        let db = Db::open_in_memory().expect("db");
+        let duty = create_duty(&db, "Watch the mail queue", Some(120)).expect("create");
+        let cleared = update_duty(
+            &db,
+            &duty.id,
+            duty.revision,
+            &DutyPatch {
+                next_wake_at: Some(None),
+                ..DutyPatch::default()
+            },
+        )
+        .expect("clear the wake");
+        assert!(cleared.next_wake_at.is_none());
+        assert_eq!(reconcile_watch_on_boot(&db, fake(T0)).expect("boot"), 1);
+        let armed = get_duty(&db, &duty.id).expect("duty");
+        assert_eq!(armed.next_wake_at.as_deref(), Some("2026-10-22T00:02:00Z"));
     }
 }
