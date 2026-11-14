@@ -734,6 +734,7 @@ fn production_runner(request: &WorkRequest) -> Result<WorkOutput, (String, Strin
             tools: false,
             max_rounds: 1,
             agents: false,
+            index: true,
             context_budget: None,
             // A worker lane is offered no `budget` tool: it is not a
             // conversation turn, so there is no chat to report on.

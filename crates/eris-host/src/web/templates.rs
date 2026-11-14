@@ -918,6 +918,8 @@ pub enum Nav {
     Triggers,
     /// The audit trail.
     Activity,
+    /// Tasks that survive the session that named them.
+    Workboard,
     /// The archive list, the create button, and the restore form.
     Backups,
     /// The environment file the daemon reads at start, and the form that writes it.
@@ -927,7 +929,7 @@ pub enum Nav {
 impl Nav {
     /// Every entry, in display order. Every one of them is a page: the nav has
     /// no placeholder in it.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Chat,
         Self::Dashboard,
         Self::Sessions,
@@ -939,6 +941,7 @@ impl Nav {
         Self::Roster,
         Self::Triggers,
         Self::Activity,
+        Self::Workboard,
         Self::Backups,
         Self::Environment,
     ];
@@ -958,6 +961,7 @@ impl Nav {
             Self::Roster => crate::admin::ROUTE_ROSTER,
             Self::Triggers => crate::admin::ROUTE_TRIGGERS,
             Self::Activity => crate::admin::ROUTE_ACTIVITY,
+            Self::Workboard => crate::admin::ROUTE_WORKBOARD,
             Self::Backups => crate::admin::ROUTE_BACKUPS,
             Self::Environment => crate::admin::ROUTE_ENV,
         }
@@ -978,6 +982,7 @@ impl Nav {
             Self::Roster => "Roster",
             Self::Triggers => "Triggers",
             Self::Activity => "Activity",
+            Self::Workboard => "Workboard",
             Self::Backups => "Backups",
             Self::Environment => "Environment",
         }
@@ -2388,6 +2393,12 @@ pub struct SettingsView {
     pub greeting_model: String,
     /// `hour`, `day` or `week`: how old the stored line may get.
     pub greeting_refresh: String,
+    /// Whether the compressed tool list is on.
+    pub tool_index_enabled: bool,
+    /// Whether the phone speaks an answer.
+    pub tts_enabled: bool,
+    /// The voice it speaks with.
+    pub tts_voice: String,
     /// Whether an over-long review is repaired instead of dropped.
     pub learning_repair: bool,
     /// How long a skill nothing has ever read may stay in the catalog.
@@ -2408,6 +2419,8 @@ pub struct SettingsView {
     pub jobs_notify_on_complete: bool,
     /// How many days a finished job's receipt is kept.
     pub jobs_receipt_days: String,
+    /// The project a new board row starts on.
+    pub workboard_default_project: String,
     /// How many hits a search returns when the caller does not say.
     pub search_limit: String,
     /// `all` or `conversation`: the scope a search starts on.
@@ -2514,6 +2527,9 @@ impl SettingsView {
             greeting_enabled: false,
             greeting_model: crate::greeting::INHERIT.to_owned(),
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
+            tool_index_enabled: true,
+            tts_enabled: false,
+            tts_voice: crate::speech::DEFAULT_VOICE.to_owned(),
             learning_repair: true,
             curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
             consolidate_nightly: false,
@@ -2524,6 +2540,7 @@ impl SettingsView {
             schedule_email_enabled: true,
             jobs_notify_on_complete: true,
             jobs_receipt_days: "7".to_owned(),
+            workboard_default_project: String::new(),
             search_limit: crate::search::DEFAULT_LIMIT.to_string(),
             search_scope_default: "all".to_owned(),
             chat_hint: crate::greeting::DEFAULT_HINT.to_owned(),
@@ -3507,6 +3524,15 @@ fn search_group(view: &SettingsView) -> Markup {
                     "Everywhere ranks across the whole history instead."
                 }
             }
+            div .field {
+                label for="workboard_default_project" { "Default board project" }
+                input id="workboard_default_project" type="text"
+                    name="workboard_default_project" value=(view.workboard_default_project);
+                span .hint {
+                    "What a new workboard row belongs to. Blank leaves rows unattached. The board "
+                    "lives beside Activity and is where a task outlives the session."
+                }
+            }
             div .actions { button type="submit" { "Save search" } }
         }
     }
@@ -4007,6 +4033,19 @@ fn tools_group(view: &SettingsView) -> Markup {
                 span .hint {
                     "Off means the model is offered nothing and answers from the prompt alone. "
                     "On, it can read, write and run commands within the sandbox mode above."
+                }
+            }
+            div .field {
+                label for="tool_index_enabled" {
+                    input type="checkbox" id="tool_index_enabled" name="tool_index_enabled"
+                        value="true" checked[view.tool_index_enabled];
+                    " Compress the tool list behind an index"
+                }
+                span .hint {
+                    "Only engages at " (crate::tools::TOOL_INDEX_MIN) " tools or more; below that "
+                    "the catalogue costs more than it saves and the payload is unchanged. Engaged, "
+                    "the frequent tools keep their schemas, the rest are one line each behind "
+                    "`tool_index`, and every one of them is still callable by name."
                 }
             }
             div .field {
@@ -4649,6 +4688,30 @@ fn tab_devices(view: &SettingsView) -> Markup {
                     }
                     @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("notify_on_reply")) {
                         span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    label for="tts_enabled" {
+                        input type="checkbox" id="tts_enabled" name="tts_enabled" value="true"
+                            checked[view.tts_enabled];
+                        " Speak the answer on the phone"
+                    }
+                    span .hint {
+                        "The phone asks the daemon for audio and plays it. Synthesis goes to the "
+                        "configured provider's speech endpoint; with none, the phone is told "
+                        "`tts_not_configured` rather than going quiet."
+                    }
+                }
+                div .field {
+                    label for="tts_voice" { "Voice" }
+                    select id="tts_voice" name="tts_voice" {
+                        @for (key, label) in crate::speech::VOICES {
+                            option value=(key) selected[view.tts_voice == key] { (label) }
+                        }
+                    }
+                    span .hint {
+                        "The list is the daemon's, not the client's, and `GET /v1/voices` "
+                        "publishes it with the current choice."
                     }
                 }
                 div .field {
@@ -5767,6 +5830,160 @@ pub fn learning_page(view: &LearningView) -> Markup {
         "Learning",
         view.state,
         Some(Nav::Learning),
+        body,
+        &view.chrome,
+    )
+}
+
+/// Everything the workboard page needs.
+#[derive(Debug, Clone)]
+pub struct WorkView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every row, in-flow first.
+    pub items: Vec<crate::workboard::Item>,
+    /// The status filter in force, when one is.
+    pub filter: Option<String>,
+    /// The project a new row starts on, from the setting.
+    pub default_project: String,
+    /// A success line, when a form just saved.
+    pub notice: Option<String>,
+    /// A failure to show.
+    pub error: Option<FormError>,
+}
+
+impl WorkView {
+    /// An empty view, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            items: Vec::new(),
+            filter: None,
+            default_project: String::new(),
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The workboard: the table, the add form, and one move control per row.
+///
+/// Server-rendered and scriptless like the rest: every control is a form, and the
+/// status of a row is what the row says rather than a colour.
+pub fn workboard_page(view: &WorkView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    let body = html! {
+        h1 { "Workboard" }
+        p .lede {
+            "Tasks that outlive the session that named them. The list is in the database, so it "
+            "survives a restart and reads the same from the phone. In-flight work leads, then what "
+            "is open, then what is blocked, then what is done."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        p .small .filters {
+            @if view.filter.is_some() {
+                a href=(crate::admin::ROUTE_WORKBOARD) { "Every status" }
+            } @else {
+                @for status in crate::workboard::STATUSES {
+                    a href=(format!("{}?status={status}", crate::admin::ROUTE_WORKBOARD)) {
+                        (status)
+                    }
+                    @if status != crate::workboard::STATUSES[crate::workboard::STATUSES.len() - 1] {
+                        " · "
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="work-add" {
+            h2 id="work-add" { "Add a task" }
+            form method="post" action=(crate::admin::ROUTE_WORKBOARD_ADD) novalidate {
+                div .field {
+                    label for="work_title" { "Title" }
+                    input id="work_title" type="text" name="title" maxlength=(crate::workboard::MAX_TITLE_CHARS)
+                        autofocus[focuses("title")];
+                    @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("title")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    label for="work_project" { "Project" }
+                    input id="work_project" type="text" name="project"
+                        value=(view.default_project);
+                    span .hint { "Blank uses the stored default; clearing it on a row detaches it." }
+                }
+                div .field {
+                    label for="work_due" { "Due" }
+                    input id="work_due" type="text" name="due" placeholder="2026-12-01";
+                }
+                div .actions { button type="submit" { "Add it" } }
+            }
+        }
+        section .card aria-labelledby="work-list" {
+            h2 id="work-list" { "Board" }
+            @if view.items.is_empty() {
+                p .empty {
+                    strong { "Nothing on the board" }
+                    "Add a task above, or let a turn add one."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Task" }
+                            th scope="col" { "Status" }
+                            th scope="col" { "Project" }
+                            th scope="col" { "Due" }
+                            th scope="col" { "Moved" }
+                            th scope="col" { "Control" }
+                        }
+                    }
+                    tbody {
+                        @for item in &view.items {
+                            tr {
+                                td {
+                                    (item.title)
+                                    @if let Some(by) = item.source_conversation.as_deref().filter(|v| !v.is_empty()) {
+                                        p .small .mono { "from " (by) }
+                                    }
+                                }
+                                td { (item.status) }
+                                td .small { (item.project.as_deref().unwrap_or("-")) }
+                                td .mono .small { (item.due.as_deref().unwrap_or("-")) }
+                                td .mono .small { (item.checks) }
+                                td {
+                                    @for status in crate::workboard::STATUSES {
+                                        @if *status != item.status {
+                                            form .inline-form method="post" action=(crate::admin::ROUTE_WORKBOARD_ITEM) novalidate {
+                                                input type="hidden" name="id" value=(item.id);
+                                                input type="hidden" name="action" value="status";
+                                                input type="hidden" name="status" value=(status);
+                                                button type="submit" { (status) }
+                                            }
+                                        }
+                                    }
+                                    form .inline-form method="post" action=(crate::admin::ROUTE_WORKBOARD_ITEM) novalidate {
+                                        input type="hidden" name="id" value=(item.id);
+                                        input type="hidden" name="action" value="delete";
+                                        button type="submit" class="danger" { "Drop" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p .small { (view.items.len()) " task(s)." }
+        }
+    };
+    shell(
+        "Workboard",
+        view.state,
+        Some(Nav::Workboard),
         body,
         &view.chrome,
     )

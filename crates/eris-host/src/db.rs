@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 32;
+pub const SCHEMA_VERSION: i64 = 33;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -44,7 +44,7 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// and no table at all; 0024 adds the three learning tables; 0029 adds the four
 /// memory-tier tables. 0030 adds the standing roster. 0031 adds the webhook
 /// triggers and the fires they record.
-pub const TABLES: [&str; 29] = [
+pub const TABLES: [&str; 30] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
@@ -67,6 +67,7 @@ pub const TABLES: [&str; 29] = [
     "projects",
     "roster",
     "schedule_runs",
+    "workboard_items",
     "schedules",
     "sessions",
     "settings",
@@ -244,6 +245,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 32,
         name: "0032_skill_archiving",
         sql: MIGRATION_0032,
+    },
+    Migration {
+        version: 33,
+        name: "0033_workboard",
+        sql: MIGRATION_0033,
     },
 ];
 
@@ -1137,6 +1143,32 @@ ALTER TABLE skill_usage ADD COLUMN archived_at TEXT;
 ALTER TABLE skill_usage ADD COLUMN reason TEXT;
 ";
 
+/// Migration 0033: tasks that survive the session that named them.
+///
+/// `status` is a closed set because "is this done" is the only question the board
+/// exists to answer and a free-text status makes it unanswerable. `checks` is a
+/// count of how many times the row was moved, which is the one cheap way to spot
+/// a task that keeps being reopened.
+const MIGRATION_0033: &str = r"
+CREATE TABLE IF NOT EXISTS workboard_items (
+    id                  TEXT PRIMARY KEY NOT NULL,
+    title               TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'doing', 'blocked', 'done')),
+    project             TEXT,
+    owner_kind          TEXT NOT NULL DEFAULT 'operator'
+                        CHECK (owner_kind IN ('operator', 'agent')),
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    due                 TEXT,
+    source_conversation TEXT,
+    checks              INTEGER NOT NULL DEFAULT 0 CHECK (checks >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workboard_status ON workboard_items (status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workboard_project ON workboard_items (project);
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 /// `setup` until onboarding completes, `ready` after.
@@ -1560,7 +1592,7 @@ mod tests {
         );
         assert_eq!(
             db.applied_migration_count().expect("count"),
-            32,
+            33,
             "one row per migration, and the new one is the last"
         );
 
@@ -1573,8 +1605,8 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, 32, "one row per migration, on a fresh file");
-        assert_eq!(first.schema_version().expect("version"), 32);
+        assert_eq!(applied, 33, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 33);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");
         assert_eq!(
@@ -1628,8 +1660,8 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 32);
-        assert_eq!(TABLES.len(), 29, "the list and the schema agree on arity");
+        assert_eq!(db.schema_version().expect("version"), 33);
+        assert_eq!(TABLES.len(), 30, "the list and the schema agree on arity");
     }
 
     /// Migration 0031 adds the trigger tables, and `TABLES` names both.
@@ -1644,7 +1676,7 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 32);
-        assert_eq!(TABLES.len(), 29, "the list and the schema agree on arity");
+        assert_eq!(db.schema_version().expect("version"), 33);
+        assert_eq!(TABLES.len(), 30, "the list and the schema agree on arity");
     }
 }

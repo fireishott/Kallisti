@@ -405,6 +405,91 @@ impl ToolResult {
     }
 }
 
+/// The `settings` row that turns the compressed tool list on.
+pub const SETTING_TOOL_INDEX_ENABLED: &str = "tools.index_enabled";
+
+/// How many tools a turn must offer before the index compresses the list.
+///
+/// Below this the payload is small enough that a catalogue costs more than it
+/// saves, which is why the feature arrives late rather than with the first tool.
+pub const TOOL_INDEX_MIN: usize = 20;
+
+/// The tools a compressed turn keeps in full.
+///
+/// These are the ones a turn reaches for without knowing it needs them: the file
+/// pair, the command and its handle, the notes, the transcript, and the index
+/// itself. Everything else is a name and a line until it is called.
+pub const TOOL_SHORTLIST: [&str; 8] = [
+    "list_dir",
+    "read_file",
+    "write_file",
+    "run_command",
+    "process",
+    "memory_manage",
+    "search_sessions",
+    "tool_index",
+];
+
+/// The index tool: the catalogue of everything the shortlist left out.
+fn index_spec(hidden: &[(String, String)]) -> ToolSpec {
+    let mut lines = String::new();
+    for (name, description) in hidden {
+        lines.push_str(&format!("- `{name}`: {description}\n"));
+    }
+    ToolSpec {
+        name: "tool_index".to_owned(),
+        description: format!(
+            "Every other tool this turn can call, by name with one line on what it does. \
+             Call this tool to read the list, then call the tool you want directly: the \
+             name is the call, and nothing has to be enabled first.\n\n{lines}"
+        ),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        }),
+    }
+}
+
+/// The tool list, compressed when the index is on and the list is long enough.
+///
+/// Compression never removes a name from dispatch: [`execute`] is unchanged, so
+/// every tool in the catalogue still runs when it is called. What shrinks is the
+/// schema payload, and what the model loses is the argument detail it would have
+/// read anyway before calling something it already decided to call.
+#[must_use]
+pub fn specs_shaped(mode: SandboxMode, agents: bool, index: bool) -> Vec<ToolSpec> {
+    shape(specs_offering(mode, agents), index)
+}
+
+/// [`specs_shaped`] over a list the caller already holds, so a test can hand in a
+/// longer one than this build actually offers.
+#[must_use]
+pub fn shape(full: Vec<ToolSpec>, index: bool) -> Vec<ToolSpec> {
+    if !index || full.len() < TOOL_INDEX_MIN {
+        return full;
+    }
+    let mut kept: Vec<ToolSpec> = Vec::new();
+    let mut hidden: Vec<(String, String)> = Vec::new();
+    for spec in full {
+        if TOOL_SHORTLIST.contains(&spec.name.as_str()) {
+            kept.push(spec);
+        } else {
+            hidden.push((spec.name, first_sentence(&spec.description)));
+        }
+    }
+    kept.push(index_spec(&hidden));
+    kept
+}
+
+/// The first sentence of a description, for a one-line catalogue entry.
+fn first_sentence(description: &str) -> String {
+    let cut = description
+        .split_once(". ")
+        .map_or(description, |(first, _)| first);
+    cut.trim_end_matches('.').trim().to_owned()
+}
+
 /// The tools offered to the model this build.
 ///
 /// Four, deliberately. A file tool that works beats a catalogue of half-built
@@ -608,6 +693,13 @@ pub fn execute_streaming(
         // Named rather than unknown, for the same reason `dispatch_agent` is: the
         // search needs the database, which this layer does not hold. The turn that
         // offered the spec answers the call before it reaches here.
+        // The catalogue itself. It is answered here rather than by the turn: the
+        // list is the same table `execute` dispatches through, so the index cannot
+        // name a tool the daemon will not run.
+        "tool_index" => ToolResult::ok(serde_json::json!({
+            "tools": index_entries(),
+            "note": "Call any of these by name directly; nothing has to be enabled first.",
+        })),
         "search_sessions" => ToolResult::refused(
             "the transcript search needs the turn that offered it, so this call did \
              nothing; it runs inside a conversation turn and not in the sandbox layer",
@@ -619,6 +711,19 @@ pub fn execute_streaming(
         "budget" => crate::budget::sandbox_refusal(),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
+}
+
+/// Every tool with a one-line summary, for the index tool's answer.
+fn index_entries() -> Vec<serde_json::Value> {
+    super::tools::specs(super::tools::SandboxMode::Full)
+        .into_iter()
+        .map(|spec| {
+            serde_json::json!({
+                "name": spec.name,
+                "summary": first_sentence(&spec.description),
+            })
+        })
+        .collect()
 }
 
 /// Pull a required string argument.
@@ -1713,5 +1818,96 @@ mod encoding_tests {
             "the refusal says what it looked for: {}",
             result.content
         );
+    }
+}
+
+/// The tool index, pinned: off is byte-identical, on only engages past the
+/// threshold, and every name the index hides is still dispatchable.
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    fn names(specs: &[ToolSpec]) -> Vec<String> {
+        specs.iter().map(|spec| spec.name.clone()).collect()
+    }
+
+    #[test]
+    fn off_is_the_uncompressed_list_byte_for_byte() {
+        let plain = specs_offering(SandboxMode::Full, true);
+        let shaped = specs_shaped(SandboxMode::Full, true, false);
+        assert_eq!(
+            format!("{plain:?}"),
+            format!("{shaped:?}"),
+            "an off switch has to be the old payload exactly"
+        );
+    }
+
+    #[test]
+    fn on_below_the_threshold_also_changes_nothing() {
+        let full = specs_offering(SandboxMode::Full, true);
+        assert!(
+            full.len() < TOOL_INDEX_MIN,
+            "fixture is under the threshold"
+        );
+        assert_eq!(
+            names(&specs_shaped(SandboxMode::Full, true, true)),
+            names(&full)
+        );
+    }
+
+    #[test]
+    fn engaged_the_payload_shrinks_and_every_hidden_name_is_still_callable() {
+        // A synthetic list past the threshold, plus one real tool to dispatch.
+        let mut full = specs_offering(SandboxMode::Full, true);
+        while full.len() < TOOL_INDEX_MIN {
+            let index = full.len();
+            full.push(ToolSpec {
+                name: format!("filler_{index}"),
+                description: "A filler tool. It does nothing at all, and that is the point."
+                    .to_owned(),
+                parameters: serde_json::json!({"type": "object", "properties": {}, "required": []}),
+            });
+        }
+        let before = format!("{full:?}").len();
+        let shaped = shape(full.clone(), true);
+        let after = format!("{shaped:?}").len();
+        assert!(after < before, "the payload shrinks: {before} -> {after}");
+        assert!(
+            names(&shaped).contains(&"tool_index".to_owned()),
+            "the index tool is offered"
+        );
+        // The shortlist keeps its schema; everything else is in the catalogue.
+        for kept in ["read_file", "run_command", "process"] {
+            assert!(names(&shaped).contains(&kept.to_owned()), "{kept} kept");
+        }
+        let hidden: Vec<String> = names(&full)
+            .into_iter()
+            .filter(|name| !TOOL_SHORTLIST.contains(&name.as_str()))
+            .collect();
+        assert!(!hidden.is_empty());
+        let catalogue = names(&shaped);
+        let index = shaped
+            .iter()
+            .find(|spec| spec.name == "tool_index")
+            .expect("index spec");
+        for name in &hidden {
+            assert!(
+                !catalogue.contains(name),
+                "{name} is not carrying its schema"
+            );
+            assert!(
+                index.description.contains(name),
+                "the catalogue names {name}: {}",
+                index.description
+            );
+        }
+        // And dispatch does not consult the list at all.
+        let dir = tempfile::tempdir().expect("dir");
+        let sandbox = Sandbox::new(dir.path().to_path_buf(), SandboxMode::Full);
+        let result = execute("list_dir", &serde_json::json!({}), &sandbox);
+        assert!(!result.is_error, "{}", result.content);
+        let indexed = execute("tool_index", &serde_json::json!({}), &sandbox);
+        assert!(!indexed.is_error, "{}", indexed.content);
+        assert!(indexed.content.contains("read_file"), "{}", indexed.content);
     }
 }

@@ -134,6 +134,7 @@ async fn run(
                 tools: false,
                 max_rounds: 1,
                 agents: false,
+                index: false,
                 // No window in this suite: the fallback path is about retries,
                 // and a budget would only make the prompt a moving target.
                 context_budget: None,

@@ -271,7 +271,7 @@ fn hex_digit(byte: u8) -> Result<u8, DeviceError> {
 }
 
 /// One field, trimmed. Missing reads as empty, so validation owns the message.
-fn field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> &'a str {
+pub(crate) fn field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> &'a str {
     fields.get(name).map(String::as_str).unwrap_or("").trim()
 }
 
@@ -2542,6 +2542,34 @@ fn read_schedule_email_enabled(engine: &SetupEngine) -> Result<String, DeviceErr
     Ok(crate::delivery::email_enabled(engine.db()).to_string())
 }
 
+fn read_tts_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::speech::enabled(engine.db()).to_string())
+}
+
+fn read_tts_voice(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::speech::voice(engine.db()))
+}
+
+fn read_workboard_default_project(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::workboard::default_project(engine.db()).unwrap_or_default())
+}
+
+fn read_tool_index(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(tool_index_enabled(engine).to_string())
+}
+
+fn tool_index_enabled(engine: &SetupEngine) -> bool {
+    !matches!(
+        engine
+            .setting(crate::tools::SETTING_TOOL_INDEX_ENABLED)
+            .ok()
+            .flatten()
+            .as_deref()
+            .map(str::trim),
+        Some("false")
+    )
+}
+
 fn read_consolidate_nightly(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::memconsolidate::nightly(engine.db()).to_string())
 }
@@ -2677,6 +2705,16 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         normalize: None,
     },
     SettingSpec {
+        key: "tool_index_enabled",
+        label: "Tool index",
+        group: "models",
+        kind: SettingKind::Bool,
+        row: crate::tools::SETTING_TOOL_INDEX_ENABLED,
+        writable: true,
+        read: read_tool_index,
+        normalize: None,
+    },
+    SettingSpec {
         key: "assistant_name",
         label: "Assistant name",
         group: "assistant",
@@ -2767,6 +2805,16 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         normalize: None,
     },
     SettingSpec {
+        key: "workboard_default_project",
+        label: "Default project",
+        group: "assistant",
+        kind: SettingKind::Text,
+        row: crate::workboard::SETTING_DEFAULT_PROJECT,
+        writable: true,
+        read: read_workboard_default_project,
+        normalize: None,
+    },
+    SettingSpec {
         key: "search_limit",
         label: "Search results",
         group: "assistant",
@@ -2822,6 +2870,26 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::selfmemory::SETTING_CAP_CHARS,
         writable: true,
         read: read_memory_cap_chars,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "tts_enabled",
+        label: "Speak answers",
+        group: "devices",
+        kind: SettingKind::Bool,
+        row: crate::speech::SETTING_ENABLED,
+        writable: true,
+        read: read_tts_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "tts_voice",
+        label: "Voice",
+        group: "devices",
+        kind: SettingKind::Text,
+        row: crate::speech::SETTING_VOICE,
+        writable: true,
+        read: read_tts_voice,
         normalize: None,
     },
     SettingSpec {

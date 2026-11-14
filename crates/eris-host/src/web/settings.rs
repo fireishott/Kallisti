@@ -1763,6 +1763,10 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         "goal_rounds_ceiling",
     ),
     (crate::subagents::SETTING_AGENTS_ENABLED, "agents_enabled"),
+    (
+        crate::tools::SETTING_TOOL_INDEX_ENABLED,
+        "tool_index_enabled",
+    ),
     (crate::persona::SETTING_ASSISTANT_NAME, "assistant_name"),
     (crate::persona::SETTING_PERSONA_ENABLED, "persona_enabled"),
     (crate::web::chat::SETTING_SHOW_REASONING, "show_reasoning"),
@@ -1794,6 +1798,10 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
     ),
     (crate::process::SETTING_RECEIPT_DAYS, "jobs_receipt_days"),
     (crate::learning::SETTING_UNUSED_DAYS, "curator_archive_days"),
+    (
+        crate::workboard::SETTING_DEFAULT_PROJECT,
+        "workboard_default_project",
+    ),
     (crate::search::SETTING_SEARCH_LIMIT, "search_limit"),
     (
         crate::search::SETTING_SEARCH_SCOPE_DEFAULT,
@@ -1805,6 +1813,8 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         crate::memconsolidate::SETTING_NIGHTLY,
         "consolidate_nightly",
     ),
+    (crate::speech::SETTING_ENABLED, "tts_enabled"),
+    (crate::speech::SETTING_VOICE, "tts_voice"),
     (crate::push::SETTING_NOTIFY_ON_REPLY, "notify_on_reply"),
     (crate::push::SETTING_NOTIFY_SCOPE, "notify_scope"),
     (crate::push::SETTING_NOTIFY_DEVICES, "notify_devices"),

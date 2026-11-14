@@ -42,7 +42,7 @@ use crate::skills;
 use crate::web::{chat, store};
 
 use super::handlers::{
-    authenticate, model_write_refusal, read_fields, refuse_value, require_admin,
+    authenticate, field, model_write_refusal, read_fields, refuse_value, require_admin,
     resolve_model_value, settings_unavailable,
 };
 
@@ -58,6 +58,9 @@ use super::handlers::{
 const AUDIT_MODELS: &str = "settings.device_models";
 /// See [`AUDIT_MODELS`].
 const AUDIT_SCHEDULES: &str = "settings.device_schedules";
+
+/// The audit action a workboard change writes.
+const AUDIT_WORKBOARD: &str = "workboard.changed";
 /// See [`AUDIT_MODELS`].
 const AUDIT_AUX: &str = "settings.device_aux";
 /// See [`AUDIT_MODELS`]. One action for both skill writes, because the trail
@@ -807,6 +810,256 @@ pub async fn search_transcript(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "search_failed",
             format!("the transcript could not be searched: {error}"),
+        )
+        .into_response(),
+    }
+}
+
+/// `GET /v1/voices` - the voice list, from the daemon rather than the client.
+///
+/// Published even with speech off: a phone draws its picker before it knows
+/// whether speaking works, and an empty list would look like a missing feature
+/// rather than a switch.
+pub async fn voices(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let db = service.engine().db();
+    let voices: Vec<serde_json::Value> = crate::speech::VOICES
+        .iter()
+        .map(|(key, label)| serde_json::json!({"id": key, "label": label}))
+        .collect();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "enabled": crate::speech::enabled(db),
+        "voice": crate::speech::voice(db),
+        "voices": voices,
+    }))
+    .into_response()
+}
+
+/// `POST /v1/speak` - synthesize one answer, as audio bytes.
+///
+/// The same aux path vision takes: the base URL, key and model come from the
+/// configured provider, so nothing new is stored and no second client exists.
+pub async fn speak(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let text = field(&fields, "text").to_owned();
+    let config = crate::web::chat::turn_config(service.engine())
+        .ok()
+        .flatten();
+    match crate::speech::speak(service.engine().db(), config.as_ref(), &text).await {
+        Ok((bytes, voice)) => {
+            let _ = audit(
+                &service,
+                token.device_id(),
+                "tts.spoken",
+                &format!("voice={voice} bytes={}", bytes.len()),
+            );
+            let mut out = axum::http::HeaderMap::new();
+            out.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("audio/mpeg"),
+            );
+            if let Ok(value) = axum::http::HeaderValue::from_str(&voice) {
+                out.insert(
+                    axum::http::header::HeaderName::from_static("x-tts-voice"),
+                    value,
+                );
+            }
+            (out, bytes).into_response()
+        }
+        Err((status, code)) => DeviceError::new(
+            axum::http::StatusCode::from_u16(status)
+                .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+            code,
+            match code {
+                "tts_disabled" => "speech is switched off on the daemon",
+                "tts_empty" => "there is nothing to say",
+                "tts_not_configured" => {
+                    "no provider is configured with a speech endpoint, so nothing was spoken"
+                }
+                _ => "the provider refused the speech request",
+            },
+        )
+        .into_response(),
+    }
+}
+
+/// What the workboard list accepts.
+#[derive(Debug, serde::Deserialize)]
+pub struct WorkQuery {
+    /// `open`, `doing`, `blocked` or `done`; every status when absent.
+    #[serde(default)]
+    status: Option<String>,
+    /// How many rows, clamped here.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// `GET /v1/workboard` - the board, in-flow first.
+pub async fn workboard(
+    State(service): State<DeviceService>,
+    Query(params): Query<WorkQuery>,
+    headers: HeaderMap,
+) -> Response {
+    // The board is ordinary assistant work, not administration: a phone that can
+    // chat but not read its own task list is a phone with half a feature.
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let status = params
+        .status
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| crate::workboard::STATUSES.contains(&value.as_str()));
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    match crate::workboard::list(service.engine().db(), status.as_deref(), limit) {
+        Ok(rows) => {
+            let items: Vec<serde_json::Value> =
+                rows.iter().map(crate::workboard::Item::json).collect();
+            axum::Json(serde_json::json!({"ok": true, "items": items, "returned": items.len()}))
+                .into_response()
+        }
+        Err(error) => DeviceError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "workboard_failed",
+            format!("the board could not be read: {error}"),
+        )
+        .into_response(),
+    }
+}
+
+/// `POST /v1/workboard` - add a task.
+pub async fn create_work(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let draft = crate::workboard::Draft {
+        title: field(&fields, "title").to_owned(),
+        status: fields.get("status").cloned(),
+        project: fields.get("project").cloned(),
+        // The phone says what it is; everything it posts is an agent's row.
+        owner_kind: Some("agent".to_owned()),
+        due: fields.get("due").cloned(),
+        source_conversation: fields.get("conversation").cloned(),
+    };
+    match crate::workboard::create(service.engine().db(), &draft) {
+        Ok(id) => {
+            let _ = audit(
+                &service,
+                token.device_id(),
+                AUDIT_WORKBOARD,
+                &format!("create id={id}"),
+            );
+            axum::Json(serde_json::json!({"ok": true, "id": id})).into_response()
+        }
+        Err(error) => DeviceError::bad_request("workboard_invalid", error).into_response(),
+    }
+}
+
+/// `PATCH /v1/workboard/{id}` - move or retitle one task.
+pub async fn patch_work(
+    State(service): State<DeviceService>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    if fields.is_empty() {
+        return DeviceError::bad_request(
+            "workboard_patch_empty",
+            "the body named no title, status, project or due; nothing was changed",
+        )
+        .into_response();
+    }
+    let change = crate::workboard::Change {
+        title: fields.get("title").cloned(),
+        status: fields.get("status").cloned(),
+        project: fields.get("project").cloned(),
+        due: fields.get("due").cloned(),
+    };
+    match crate::workboard::patch(service.engine().db(), &id, &change) {
+        Ok(true) => {
+            let _ = audit(
+                &service,
+                token.device_id(),
+                AUDIT_WORKBOARD,
+                &format!("patch id={id}"),
+            );
+            match crate::workboard::get(service.engine().db(), &id) {
+                Ok(Some(item)) => {
+                    axum::Json(serde_json::json!({"ok": true, "item": item.json()})).into_response()
+                }
+                _ => axum::Json(serde_json::json!({"ok": true})).into_response(),
+            }
+        }
+        Ok(false) => DeviceError::new(
+            axum::http::StatusCode::NOT_FOUND,
+            "workboard_missing",
+            format!("no task `{id}` on this board"),
+        )
+        .into_response(),
+        Err(error) => DeviceError::bad_request("workboard_invalid", error).into_response(),
+    }
+}
+
+/// `DELETE /v1/workboard/{id}` - drop one task.
+pub async fn delete_work(
+    State(service): State<DeviceService>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    match crate::workboard::remove(service.engine().db(), &id) {
+        Ok(true) => {
+            let _ = audit(
+                &service,
+                token.device_id(),
+                AUDIT_WORKBOARD,
+                &format!("delete id={id}"),
+            );
+            axum::Json(serde_json::json!({"ok": true})).into_response()
+        }
+        Ok(false) => DeviceError::new(
+            axum::http::StatusCode::NOT_FOUND,
+            "workboard_missing",
+            format!("no task `{id}` on this board"),
+        )
+        .into_response(),
+        Err(error) => DeviceError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "workboard_failed",
+            format!("the task could not be removed: {error}"),
         )
         .into_response(),
     }

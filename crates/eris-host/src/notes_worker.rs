@@ -646,6 +646,7 @@ fn production_runner(
             tools: allow_read,
             max_rounds: if allow_read { 6 } else { 1 },
             agents: false,
+            index: true,
             // One note, one prompt, no history: nothing here can grow past a
             // window, so there is no budget to enforce.
             context_budget: None,
