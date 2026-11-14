@@ -13325,97 +13325,6 @@ async fn disconnect_account(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::SetupState;
-    use crate::onboarding::StepStatus;
-
-    #[test]
-    fn percent_decoding_handles_spaces_and_escapes() {
-        assert_eq!(
-            percent_decode("six+words+here").expect("decode"),
-            "six words here"
-        );
-        assert_eq!(
-            percent_decode("env%3ANINEROUTER_API_KEY").expect("decode"),
-            "env:NINEROUTER_API_KEY"
-        );
-        assert_eq!(
-            percent_decode("~%2Fkallisti").expect("decode"),
-            "~/kallisti"
-        );
-        assert!(percent_decode("%zz").is_err());
-        assert!(percent_decode("%4").is_err());
-    }
-
-    #[test]
-    fn a_browser_is_recognised_by_its_accept_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::ACCEPT,
-            "text/html,application/xhtml+xml".parse().expect("value"),
-        );
-        assert!(wants_html(&headers));
-        let mut api = HeaderMap::new();
-        api.insert(header::ACCEPT, "*/*".parse().expect("value"));
-        assert!(!wants_html(&api));
-        assert!(!wants_html(&HeaderMap::new()));
-    }
-
-    #[test]
-    fn the_status_mapping_is_the_documented_one() {
-        assert_eq!(
-            failure_status("rate_limited"),
-            StatusCode::TOO_MANY_REQUESTS
-        );
-        assert_eq!(failure_status("wizard_locked"), StatusCode::CONFLICT);
-        assert_eq!(failure_status("step_out_of_order"), StatusCode::CONFLICT);
-        assert_eq!(failure_status("no_session"), StatusCode::FORBIDDEN);
-        assert_eq!(
-            failure_status("db_error"),
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
-        assert_eq!(
-            failure_status("passphrase_rejected"),
-            StatusCode::BAD_REQUEST
-        );
-    }
-
-    #[test]
-    fn the_wizard_json_shape_is_stable() {
-        let wizard = Wizard {
-            state: SetupState::Setup,
-            steps: Step::ALL
-                .iter()
-                .map(|step| StepStatus {
-                    step: *step,
-                    completed_at: None,
-                    optional: step.is_optional(),
-                })
-                .collect(),
-            next_step: Some(Step::Claim),
-        };
-        let json = wizard_json(&wizard);
-        assert_eq!(json["ok"], true);
-        assert_eq!(json["state"], "setup");
-        assert_eq!(json["next_step"], "claim");
-        assert_eq!(json["steps"].as_array().map(Vec::len), Some(7));
-        assert_eq!(json["steps"][5]["optional"], true);
-        assert_eq!(json["steps"][5]["id"], "device");
-    }
-
-    #[test]
-    fn a_checkbox_field_reads_the_browser_spellings() {
-        let mut fields = BTreeMap::new();
-        fields.insert("device_listener_enabled".to_owned(), "on".to_owned());
-        assert!(flag(&fields, "device_listener_enabled"));
-        fields.insert("device_listener_enabled".to_owned(), "false".to_owned());
-        assert!(!flag(&fields, "device_listener_enabled"));
-        assert!(!flag(&fields, "absent"));
-    }
-}
-
 // ---------------------------------------------------------------------------
 // The Steward page
 // ---------------------------------------------------------------------------
@@ -13670,5 +13579,96 @@ async fn steward_seed_charter(
             ))
         }
         Err(error) => fail_steward(&state, as_html, steward_form_error(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::SetupState;
+    use crate::onboarding::StepStatus;
+
+    #[test]
+    fn percent_decoding_handles_spaces_and_escapes() {
+        assert_eq!(
+            percent_decode("six+words+here").expect("decode"),
+            "six words here"
+        );
+        assert_eq!(
+            percent_decode("env%3ANINEROUTER_API_KEY").expect("decode"),
+            "env:NINEROUTER_API_KEY"
+        );
+        assert_eq!(
+            percent_decode("~%2Fkallisti").expect("decode"),
+            "~/kallisti"
+        );
+        assert!(percent_decode("%zz").is_err());
+        assert!(percent_decode("%4").is_err());
+    }
+
+    #[test]
+    fn a_browser_is_recognised_by_its_accept_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT,
+            "text/html,application/xhtml+xml".parse().expect("value"),
+        );
+        assert!(wants_html(&headers));
+        let mut api = HeaderMap::new();
+        api.insert(header::ACCEPT, "*/*".parse().expect("value"));
+        assert!(!wants_html(&api));
+        assert!(!wants_html(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn the_status_mapping_is_the_documented_one() {
+        assert_eq!(
+            failure_status("rate_limited"),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(failure_status("wizard_locked"), StatusCode::CONFLICT);
+        assert_eq!(failure_status("step_out_of_order"), StatusCode::CONFLICT);
+        assert_eq!(failure_status("no_session"), StatusCode::FORBIDDEN);
+        assert_eq!(
+            failure_status("db_error"),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            failure_status("passphrase_rejected"),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn the_wizard_json_shape_is_stable() {
+        let wizard = Wizard {
+            state: SetupState::Setup,
+            steps: Step::ALL
+                .iter()
+                .map(|step| StepStatus {
+                    step: *step,
+                    completed_at: None,
+                    optional: step.is_optional(),
+                })
+                .collect(),
+            next_step: Some(Step::Claim),
+        };
+        let json = wizard_json(&wizard);
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["state"], "setup");
+        assert_eq!(json["next_step"], "claim");
+        assert_eq!(json["steps"].as_array().map(Vec::len), Some(7));
+        assert_eq!(json["steps"][5]["optional"], true);
+        assert_eq!(json["steps"][5]["id"], "device");
+    }
+
+    #[test]
+    fn a_checkbox_field_reads_the_browser_spellings() {
+        let mut fields = BTreeMap::new();
+        fields.insert("device_listener_enabled".to_owned(), "on".to_owned());
+        assert!(flag(&fields, "device_listener_enabled"));
+        fields.insert("device_listener_enabled".to_owned(), "false".to_owned());
+        assert!(!flag(&fields, "device_listener_enabled"));
+        assert!(!flag(&fields, "absent"));
     }
 }
