@@ -790,10 +790,11 @@ struct AppStoresTests {
         #expect(chatStore.isStreaming == false)
     }
 
-    @Test @MainActor
+    @Test(.timeLimit(.minutes(1))) @MainActor
     func liveHeraldClientRefreshesConversationBeforeResolvingFinishedStreamMessage() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
+        configuration.timeoutIntervalForRequest = 10
         let session = URLSession(configuration: configuration)
 
         let conversationID = UUID()
