@@ -36,16 +36,17 @@ use crate::admin::{
     ROUTE_LEARNING_SKILL, ROUTE_LOGIN, ROUTE_LOGOUT, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN,
     ROUTE_ROSTER, ROUTE_ROSTER_DELETE, ROUTE_ROSTER_SAVE, ROUTE_ROSTER_TOGGLE, ROUTE_SEARCH,
     ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
-    ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL,
-    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS,
-    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
-    ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT,
-    ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA,
-    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
-    ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
-    ROUTE_SETTINGS_UPDATE, ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK,
-    ROUTE_SETTINGS_UPDATE_PROGRESS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS,
-    ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE, ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE,
+    ROUTE_SETTINGS_DELIVERY, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS,
+    ROUTE_SETTINGS_GOAL, ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_JOBS, ROUTE_SETTINGS_LEARNING,
+    ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD,
+    ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
+    ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
+    ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SEARCH, ROUTE_SETTINGS_SKILLS,
+    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
+    ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE,
+    ROUTE_SKILLS_RESTORE, ROUTE_SKILLS_SAVE, ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE,
     ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
@@ -64,12 +65,11 @@ use crate::web::store;
 use crate::web::templates::{
     ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
     DashboardView, DeviceRow, DevicesView, EnvRow, EnvView, FormError, IssuedCodeView,
-    LearningView, MintedToken, RosterDraft, RosterView, SearchHitRow, SearchView,
-    SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView, SkillEditor,
-    SkillsView, TriggerDraft, TriggersView, UpdateCard, activity_page, backups_page, chat_page,
-    dashboard_page, devices_page, env_page, error_page, learning_page, login_page, roster_page,
-    search_page, session_page, sessions_page, settings_page, setup_page, skills_page,
-    triggers_page, type_badge,
+    LearningView, MintedToken, RosterDraft, RosterView, SearchView, SessionDetailView,
+    SessionsView, SettingsGroup, SettingsView, SetupView, SkillEditor, SkillsView, TriggerDraft,
+    TriggersView, UpdateCard, activity_page, backups_page, chat_page, dashboard_page, devices_page,
+    env_page, error_page, learning_page, login_page, roster_page, search_page, session_page,
+    sessions_page, settings_page, setup_page, skills_page, triggers_page, type_badge,
 };
 use crate::web::wallpaper;
 
@@ -163,6 +163,10 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_AUX, post(save_aux))
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
         .route(ROUTE_SETTINGS_GREETING, post(save_greeting))
+        .route(ROUTE_SETTINGS_SEARCH, post(save_search))
+        .route(ROUTE_SETTINGS_LEARNING, post(save_learning_repair))
+        .route(ROUTE_SETTINGS_JOBS, post(save_jobs))
+        .route(ROUTE_SETTINGS_DELIVERY, post(save_delivery))
         .route(ROUTE_ACCOUNTS_CONNECT, post(connect_account))
         .route(ROUTE_ACCOUNTS_VERIFY, post(verify_account))
         .route(ROUTE_ACCOUNTS_DISCONNECT, post(disconnect_account))
@@ -179,6 +183,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SEARCH, get(search))
         .route(ROUTE_DASHBOARD_PROCESS_KILL, post(kill_background_process))
         .route(ROUTE_SKILLS, get(skills_page_handler))
+        .route(ROUTE_SKILLS_RESTORE, post(restore_skill))
         // The editor carries a whole file, which is far larger than the 16 KiB
         // the other forms allow, so this one route states its own ceiling.
         .route(
@@ -1093,6 +1098,16 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .map_err(|error| form_error(&error))?
             .as_deref(),
     );
+    // Read through `crate::search` so the form shows exactly what a search
+    // would use rather than a second copy of the same clamp.
+    view.learning_repair = crate::learning::review_repair(engine.db());
+    view.curator_archive_days = crate::learning::unused_days(engine.db()).to_string();
+    view.schedule_delivery_default = crate::delivery::default_channel(engine.db());
+    view.schedule_email_enabled = crate::delivery::email_enabled(engine.db());
+    view.jobs_notify_on_complete = crate::process::notify_on_complete(engine.db());
+    view.jobs_receipt_days = crate::process::receipt_days(engine.db()).to_string();
+    view.search_limit = crate::search::stored_limit(engine.db()).to_string();
+    view.search_scope_default = crate::search::stored_scope(engine.db());
     // The objective every turn carries until it is cleared. Read through
     // `crate::goal` so the page shows exactly what a turn would be given, rather
     // than a second copy of the same rule that can drift from it.
@@ -1337,6 +1352,17 @@ fn build_activity_view(state: &AppState) -> Result<ActivityView, FormError> {
     view.rows =
         store::audit_recent(engine.db(), AUDIT_PAGE_SIZE).map_err(|error| db_error(&error))?;
     view.total = store::audit_count(engine.db()).map_err(|error| db_error(&error))?;
+    // The one handle table the tool, the device route and the dashboard all read,
+    // so this card cannot disagree with any of them.
+    let workspace = engine
+        .workspace_path()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let desk = crate::process::Desk::new(engine.db().clone(), &workspace);
+    view.processes = desk.snapshot()["processes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    view.receipts = crate::process::receipts(&workspace.join(".processes"), 20);
     Ok(view)
 }
 
@@ -1623,19 +1649,33 @@ async fn search(
     let mut view = SearchView::new(setup);
     view.chrome = state.chrome();
     view.query = text.clone();
-    if !text.is_empty() {
-        match crate::search::discover(engine.db(), &text, crate::search::DEFAULT_LIMIT) {
-            Ok(hits) => {
-                view.hits = hits
-                    .into_iter()
-                    .map(|hit| SearchHitRow {
-                        conversation: hit.conversation_id,
-                        title: hit.title,
-                        snippet: hit.snippet,
-                        created_at: hit.created_at,
-                        matches: hit.matches,
-                    })
-                    .collect();
+    view.scope = query
+        .get("scope")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| crate::search::SCOPE_VALUES.contains(&value.as_str()))
+        .unwrap_or_else(|| crate::search::stored_scope(engine.db()));
+    view.role = query
+        .get("role")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| crate::search::ROLE_VALUES.contains(&value.as_str()))
+        .unwrap_or_else(|| "all".to_owned());
+    if !text.is_empty() || query.contains_key("conversation_id") {
+        let request = crate::search::Request {
+            query: text.clone(),
+            scope: view.scope.clone(),
+            conversation_id: query.get("conversation_id").cloned(),
+            role: view.role.clone(),
+            since: None,
+            until: None,
+            mode: crate::search::Mode::Discovery,
+            limit: crate::search::stored_limit(engine.db()),
+            cursor: query.get("cursor").cloned(),
+        };
+        match crate::search::search(engine.db(), &request) {
+            Ok(page) => {
+                view.hits = page.hits;
+                view.total = page.total;
+                view.cursor = page.cursor;
             }
             Err(error) => {
                 return ApiError::internal(
@@ -1927,10 +1967,78 @@ async fn skills_page_handler(
     // the Learning page sends a learned skill here instead of growing a second
     // delete of its own.
     let confirming = query.get("delete").cloned();
-    match build_skills_view(&state, notice, edit, confirming, None) {
+    let archived_only = matches!(
+        query.get("archived").map(String::as_str),
+        Some("1" | "true")
+    );
+    match build_skills_view(&state, notice, edit, confirming, None, archived_only) {
         Ok(view) => page(skills_page(&view)),
         Err(error) => refusal(error),
     }
+}
+
+/// `POST /dashboard/skills/restore` - put an archived skill back.
+///
+/// Archiving is a ledger state now: the file never moved, so this clears the
+/// state and nothing else. A directory an older build moved into `.archive/` is
+/// renamed back by [`crate::learning::restore`], so both shapes restore.
+async fn restore_skill(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_skills(&state, as_html, error, None),
+    };
+    let key = field(&fields, "key").to_owned();
+    if !crate::skills::valid_key(&key) {
+        return fail_skills(
+            &state,
+            as_html,
+            FormError::new(Some("key"), "key_invalid", "that is not a skill key"),
+            None,
+        );
+    }
+    let Some(shelf) = crate::learning::Shelf::for_engine(&state.engine) else {
+        return fail_skills(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "no_library",
+                "there is no skill library to restore into",
+            ),
+            None,
+        );
+    };
+    if let Err(error) = crate::learning::restore(&shelf, &key) {
+        return fail_skills(
+            &state,
+            as_html,
+            FormError::new(Some("key"), "restore_failed", error.to_string()),
+            None,
+        );
+    }
+    if let Err(error) =
+        crate::learning::set_state(state.engine.db(), &key, crate::learning::State::Active)
+    {
+        return store_failure(&request_id.0, "the skill row", error);
+    }
+    if let Err(error) =
+        state
+            .engine
+            .auth()
+            .audit("loopback", "skills.restore", Some(&format!("key={key}")))
+    {
+        return audit_failure(&request_id.0, "skills.restore", error);
+    }
+    see_other(ROUTE_SKILLS)
 }
 
 /// `POST /dashboard/skills/save` - replace one skill's whole file.
@@ -2006,7 +2114,7 @@ async fn delete_skill(
     };
     let key = field(&fields, "key").to_owned();
     if !flag(&fields, "confirm") {
-        return match build_skills_view(&state, None, Some(&key), Some(key.clone()), None) {
+        return match build_skills_view(&state, None, Some(&key), Some(key.clone()), None, false) {
             Ok(view) => page(skills_page(&view)),
             Err(error) => refusal(error),
         };
@@ -2631,6 +2739,7 @@ fn build_skills_view(
     edit: Option<&str>,
     confirming: Option<String>,
     draft: Option<(&str, &str)>,
+    archived_only: bool,
 ) -> Result<SkillsView, FormError> {
     let engine = &state.engine;
     let db = engine.db();
@@ -2649,7 +2758,7 @@ fn build_skills_view(
         .unwrap_or_default();
     view.notice = notice;
     view.confirming = confirming;
-    let (skills, _library) = match crate::skills::list(db, stored.as_deref()) {
+    let (mut skills, _library) = match crate::skills::list(db, stored.as_deref()) {
         Ok(found) => found,
         Err(error) => {
             view.error = Some(FormError::new(
@@ -2660,6 +2769,15 @@ fn build_skills_view(
             return Ok(view);
         }
     };
+    view.archived_only = archived_only;
+    if archived_only {
+        // The filter narrows the table, not the editor: a skill opened by key is
+        // still editable after the filter was switched on.
+        skills.retain(|skill| {
+            matches!(skill.state, crate::learning::State::Archived)
+                || edit.is_some_and(|key| key == skill.key)
+        });
+    }
     // The named skill, else the first one. `draft` is what a failed save tried to
     // write, so the box keeps the operator's text and not the file they replaced.
     let selected = match draft {
@@ -2703,7 +2821,7 @@ fn fail_skills(
     let status = failure_status(&error.code);
     if as_html {
         let edit = draft.map(|(key, _)| key);
-        match build_skills_view(state, None, edit, None, draft) {
+        match build_skills_view(state, None, edit, None, draft, false) {
             Ok(mut view) => {
                 view.error = Some(error);
                 page_with_status(skills_page(&view), status)
@@ -7508,6 +7626,275 @@ async fn save_greeting(
     see_other(SAVED_GREETING)
 }
 
+const SAVED_SEARCH: &str = "/dashboard/settings?saved=search";
+
+/// `POST /dashboard/settings/search` - the transcript search defaults.
+///
+/// Both values are the reader's own: the limit is clamped to the same window
+/// [`crate::search::MAX_SETTING_LIMIT`] publishes and the scope is one of the two
+/// [`crate::search::SCOPE_VALUES`] holds, so a saved value is a value the query
+/// honours.
+async fn save_search(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    let limit = field(&fields, "search_limit").trim();
+    let limit: u32 = match limit.parse::<u32>() {
+        Ok(number)
+            if (crate::search::MIN_SETTING_LIMIT..=crate::search::MAX_SETTING_LIMIT)
+                .contains(&number) =>
+        {
+            number
+        }
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("search_limit"),
+                    "search_limit_invalid",
+                    format!(
+                        "a whole number from {} to {}",
+                        crate::search::MIN_SETTING_LIMIT,
+                        crate::search::MAX_SETTING_LIMIT
+                    ),
+                ),
+            );
+        }
+    };
+    let scope = field(&fields, "search_scope_default")
+        .trim()
+        .to_ascii_lowercase();
+    if !crate::search::SCOPE_VALUES.contains(&scope.as_str()) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("search_scope_default"),
+                "search_scope_invalid",
+                format!("one of: {}", crate::search::SCOPE_VALUES.join(", ")),
+            ),
+        );
+    }
+
+    for (key, value) in [
+        (crate::search::SETTING_SEARCH_LIMIT, limit.to_string()),
+        (crate::search::SETTING_SEARCH_SCOPE_DEFAULT, scope.clone()),
+    ] {
+        if let Err(error) = store::settings_put(state.engine.db(), key, &value) {
+            return store_failure(&request_id.0, key, error);
+        }
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.search",
+        Some(&format!("limit={limit}; scope={scope}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.search", error);
+    }
+    see_other(SAVED_SEARCH)
+}
+
+const SAVED_LEARNING_REPAIR: &str = "/dashboard/settings?saved=learning";
+
+/// `POST /dashboard/settings/learning` - repair a refused review, or drop it.
+///
+/// Writes the same row the worker reads, so the switch and the behaviour cannot
+/// drift apart.
+async fn save_learning_repair(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let on = matches!(
+        field(&fields, "learning_repair").trim(),
+        "true" | "on" | "1"
+    );
+    let stored = if on { "true" } else { "false" };
+    let days = field(&fields, "curator_archive_days").trim().to_owned();
+    let days: u32 = match days.parse::<u32>() {
+        Ok(number)
+            if (crate::learning::MIN_UNUSED_DAYS..=crate::learning::MAX_UNUSED_DAYS)
+                .contains(&number) =>
+        {
+            number
+        }
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("curator_archive_days"),
+                    "curator_archive_days_invalid",
+                    format!(
+                        "a whole number from {} to {} days",
+                        crate::learning::MIN_UNUSED_DAYS,
+                        crate::learning::MAX_UNUSED_DAYS
+                    ),
+                ),
+            );
+        }
+    };
+    for (key, value) in [
+        (crate::learning::SETTING_REVIEW_REPAIR, stored.to_owned()),
+        (crate::learning::SETTING_UNUSED_DAYS, days.to_string()),
+    ] {
+        if let Err(error) = store::settings_put(state.engine.db(), key, &value) {
+            return store_failure(&request_id.0, "the learning switch", error);
+        }
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.learning",
+        Some(&format!("repair={stored}; curator_unused_days={days}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.learning", error);
+    }
+    see_other(SAVED_LEARNING_REPAIR)
+}
+
+const SAVED_JOBS: &str = "/dashboard/settings?saved=jobs";
+
+/// `POST /dashboard/settings/jobs` - finish notices and receipt retention.
+async fn save_jobs(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let notify = matches!(
+        field(&fields, "jobs_notify_on_complete").trim(),
+        "true" | "on" | "1"
+    );
+    let days = field(&fields, "jobs_receipt_days").trim().to_owned();
+    let days: u32 = match days.parse::<u32>() {
+        Ok(number)
+            if (crate::process::MIN_RECEIPT_DAYS..=crate::process::MAX_RECEIPT_DAYS)
+                .contains(&number) =>
+        {
+            number
+        }
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("jobs_receipt_days"),
+                    "jobs_receipt_days_invalid",
+                    format!(
+                        "a whole number from {} to {} days",
+                        crate::process::MIN_RECEIPT_DAYS,
+                        crate::process::MAX_RECEIPT_DAYS
+                    ),
+                ),
+            );
+        }
+    };
+    for (key, value) in [
+        (
+            crate::process::SETTING_NOTIFY_ON_COMPLETE,
+            if notify { "true" } else { "false" }.to_owned(),
+        ),
+        (crate::process::SETTING_RECEIPT_DAYS, days.to_string()),
+    ] {
+        if let Err(error) = store::settings_put(state.engine.db(), key, &value) {
+            return store_failure(&request_id.0, "a job setting", error);
+        }
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.jobs",
+        Some(&format!("notify_on_complete={notify}; receipt_days={days}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.jobs", error);
+    }
+    see_other(SAVED_JOBS)
+}
+
+const SAVED_DELIVERY: &str = "/dashboard/settings?saved=delivery";
+
+/// `POST /dashboard/settings/delivery` - the default channel and the mail gate.
+async fn save_delivery(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let channel = field(&fields, "schedule_delivery_default")
+        .trim()
+        .to_ascii_lowercase();
+    if !crate::delivery::DEFAULT_VALUES.contains(&channel.as_str()) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("schedule_delivery_default"),
+                "delivery_channel_invalid",
+                format!("one of: {}", crate::delivery::DEFAULT_VALUES.join(", ")),
+            ),
+        );
+    }
+    let mail = matches!(
+        field(&fields, "schedule_email_enabled").trim(),
+        "true" | "on" | "1"
+    );
+    for (key, value) in [
+        (crate::delivery::SETTING_DELIVERY_DEFAULT, channel.clone()),
+        (
+            crate::delivery::SETTING_EMAIL_ENABLED,
+            if mail { "true" } else { "false" }.to_owned(),
+        ),
+    ] {
+        if let Err(error) = store::settings_put(state.engine.db(), key, &value) {
+            return store_failure(&request_id.0, "a delivery setting", error);
+        }
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.delivery",
+        Some(&format!("default={channel}; mail_enabled={mail}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.delivery", error);
+    }
+    see_other(SAVED_DELIVERY)
+}
+
 /// `POST /dashboard/settings/mcp` - the configured MCP server list.
 async fn save_mcp(
     State(state): State<AppState>,
@@ -11994,6 +12381,45 @@ async fn save_schedules(
                 "loopback",
                 "settings.schedules",
                 Some(&format!("toggle id={id} on={on}")),
+            );
+        }
+        "retry" => {
+            let id = field(&fields, "schedule_id").trim().to_owned();
+            let Some(schedule) = crate::scheduler::get(db, &id).ok().flatten() else {
+                return fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(Some("schedule_id"), "schedule_invalid", "no such schedule"),
+                );
+            };
+            let Some((run_id, conversation, summary)) =
+                crate::scheduler::last_finished_run(db, &id).ok().flatten()
+            else {
+                return fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(
+                        Some("schedule_id"),
+                        "schedule_invalid",
+                        "that schedule has no finished run to deliver",
+                    ),
+                );
+            };
+            // The answer is already written and paid for; only the delivery is
+            // retried, against the same run row, so the page shows the new outcome.
+            let (delivered, note) = crate::delivery::deliver(
+                &state,
+                &schedule,
+                &run_id,
+                conversation.as_deref().unwrap_or_default(),
+                summary.as_deref(),
+            )
+            .await;
+            let _ = crate::scheduler::record_delivery(db, &run_id, &delivered, &note);
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "settings.schedules",
+                Some(&format!("retry id={id} run={run_id} delivered={delivered}")),
             );
         }
         "delete" => {

@@ -2530,6 +2530,38 @@ fn read_skills_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
 
 /// The workspace a turn may write in. Read-only here: it is set by the wizard and
 /// moving it from a phone is a different decision with a different card.
+fn read_schedule_delivery_default(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::delivery::default_channel(engine.db()))
+}
+
+fn read_schedule_email_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::delivery::email_enabled(engine.db()).to_string())
+}
+
+fn read_jobs_notify_on_complete(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::process::notify_on_complete(engine.db()).to_string())
+}
+
+fn read_jobs_receipt_days(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::process::receipt_days(engine.db()).to_string())
+}
+
+fn read_curator_unused_days(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::learning::unused_days(engine.db()).to_string())
+}
+
+fn read_learning_repair(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::learning::review_repair(engine.db()).to_string())
+}
+
+fn read_search_limit(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::search::stored_limit(engine.db()).to_string())
+}
+
+fn read_search_scope_default(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::search::stored_scope(engine.db()))
+}
+
 fn read_workspace(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(row_of(engine, crate::onboarding::SETTING_WORKSPACE)?
         .unwrap_or_default()
@@ -2555,6 +2587,10 @@ const NOTIFY_SCOPE_VALUES: &[&str] = &["origin", "all", "targeted"];
 const CLOCK_FORMAT_VALUES: &[&str] = &["12h", "24h"];
 /// The values `display.conversation_sort` accepts.
 const CONVERSATION_SORT_VALUES: &[&str] = &["updated", "created", "title", "day"];
+/// The values `search.scope_default` accepts, from [`crate::search`] itself.
+const SEARCH_SCOPE_VALUES: &[&str] = crate::search::SCOPE_VALUES;
+/// The values `schedule.delivery_default` accepts.
+const DELIVERY_VALUES: &[&str] = crate::delivery::DEFAULT_VALUES;
 
 /// Every operator-facing setting the daemon serves, described once.
 ///
@@ -2709,6 +2745,31 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         normalize: None,
     },
     SettingSpec {
+        key: "search_limit",
+        label: "Search results",
+        group: "assistant",
+        // The bounds are `search::search`'s own ceiling and the fewest lines a
+        // result list is worth drawing.
+        kind: SettingKind::Int(
+            crate::search::MIN_SETTING_LIMIT,
+            crate::search::MAX_SETTING_LIMIT,
+        ),
+        row: crate::search::SETTING_SEARCH_LIMIT,
+        writable: true,
+        read: read_search_limit,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "search_scope_default",
+        label: "Search scope",
+        group: "assistant",
+        kind: SettingKind::Enum(SEARCH_SCOPE_VALUES),
+        row: crate::search::SETTING_SEARCH_SCOPE_DEFAULT,
+        writable: true,
+        read: read_search_scope_default,
+        normalize: None,
+    },
+    SettingSpec {
         key: "memory",
         label: "Memory",
         group: "memory",
@@ -2756,6 +2817,76 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::scheduler::SETTING_ENABLED,
         writable: true,
         read: read_schedules_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "curator_archive_days",
+        label: "Curator window",
+        group: "automation",
+        // The bounds are `learning::unused_days`'s own clamp, so the form and the
+        // curator refuse the same numbers.
+        kind: SettingKind::Int(
+            crate::learning::MIN_UNUSED_DAYS,
+            crate::learning::MAX_UNUSED_DAYS,
+        ),
+        row: crate::learning::SETTING_UNUSED_DAYS,
+        writable: true,
+        read: read_curator_unused_days,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "learning_repair_enabled",
+        label: "Repair reviews",
+        group: "automation",
+        kind: SettingKind::Bool,
+        // The row the worker already reads, so the record and the loop cannot
+        // disagree about whether a bad review is repaired.
+        row: crate::learning::SETTING_REVIEW_REPAIR,
+        writable: true,
+        read: read_learning_repair,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "schedule_delivery_default",
+        label: "Delivery",
+        group: "automation",
+        kind: SettingKind::Enum(DELIVERY_VALUES),
+        row: crate::delivery::SETTING_DELIVERY_DEFAULT,
+        writable: true,
+        read: read_schedule_delivery_default,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "schedule_email_enabled",
+        label: "Mail delivery",
+        group: "automation",
+        kind: SettingKind::Bool,
+        row: crate::delivery::SETTING_EMAIL_ENABLED,
+        writable: true,
+        read: read_schedule_email_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "jobs_notify_on_complete",
+        label: "Job finish notice",
+        group: "automation",
+        kind: SettingKind::Bool,
+        row: crate::process::SETTING_NOTIFY_ON_COMPLETE,
+        writable: true,
+        read: read_jobs_notify_on_complete,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "jobs_receipt_days",
+        label: "Job receipts",
+        group: "automation",
+        kind: SettingKind::Int(
+            crate::process::MIN_RECEIPT_DAYS,
+            crate::process::MAX_RECEIPT_DAYS,
+        ),
+        row: crate::process::SETTING_RECEIPT_DAYS,
+        writable: true,
+        read: read_jobs_receipt_days,
         normalize: None,
     },
     SettingSpec {

@@ -382,6 +382,17 @@ impl LearningWorker {
                                 review
                             }
                             Err(again) => {
+                                // The raw reply is kept with the failure: a run
+                                // dropped on a formatting rule has to be readable
+                                // afterwards, or the rule cannot be argued with.
+                                let stored: String = second.text.chars().take(4000).collect();
+                                let _ = db.with_conn(|conn| {
+                                    conn.execute(
+                                        "UPDATE learning_runs SET error_text = ?2 WHERE id = ?1",
+                                        params![claimed.id, stored],
+                                    )?;
+                                    Ok(())
+                                });
                                 return self.fail(
                                     db,
                                     claimed,
@@ -406,9 +417,18 @@ impl LearningWorker {
         } else {
             "done"
         };
+        // A lesson that changed no skill still has a home. Without this it ended
+        // as a sentence in a row nobody scrolls back to.
+        let kept =
+            applied.action == "none" && learning::remember_lesson(db, &review, Some(&claimed.id));
+        let base_note = if kept {
+            format!("{}; kept as a memory entry", applied.note)
+        } else {
+            applied.note.clone()
+        };
         let note = match &repair_note {
-            Some(repair) => format!("{} ({repair})", applied.note),
-            None => applied.note.clone(),
+            Some(repair) => format!("{base_note} ({repair})"),
+            None => base_note,
         };
         self.settle(
             db,
@@ -560,6 +580,7 @@ pub fn run_curator(db: &Db, shelf: &Shelf) -> Result<CuratorOutcome, LearningErr
     let started = learning::now();
     let _ = learning::sync_library(db, &shelf.dir);
     let stale = time::Duration::days(learning::stale_days(db));
+    let unused = time::Duration::days(learning::unused_days(db));
     let archive = time::Duration::days(learning::archive_days(db));
     let now = OffsetDateTime::now_utc();
     let mut outcome = CuratorOutcome::default();
@@ -582,7 +603,7 @@ pub fn run_curator(db: &Db, shelf: &Shelf) -> Result<CuratorOutcome, LearningErr
         // Nothing is deleted: [`learning::archive`] moves the directory into
         // `.archive/` and the ledger keeps the row, which is what makes a restore
         // possible.
-        if row.use_count == 0 && age >= stale && row.state != State::Archived {
+        if row.use_count == 0 && age >= unused && row.state != State::Archived {
             if on_disk {
                 match learning::archive(shelf, &row.key) {
                     Ok(path) => {
@@ -598,7 +619,11 @@ pub fn run_curator(db: &Db, shelf: &Shelf) -> Result<CuratorOutcome, LearningErr
                     }
                 }
             }
-            learning::mark_archived(db, &row.key)?;
+            learning::mark_archived_because(
+                db,
+                &row.key,
+                &format!("nothing ever read it in {} days", learning::unused_days(db)),
+            )?;
             outcome.archived += 1;
             continue;
         }
@@ -615,7 +640,11 @@ pub fn run_curator(db: &Db, shelf: &Shelf) -> Result<CuratorOutcome, LearningErr
                         }
                     }
                 }
-                learning::mark_archived(db, &row.key)?;
+                learning::mark_archived_because(
+                    db,
+                    &row.key,
+                    &format!("unread for {} days", learning::archive_days(db)),
+                )?;
                 outcome.archived += 1;
             }
         } else if age >= stale && row.state == State::Active {
@@ -1146,8 +1175,18 @@ mod tests {
             learning::usage(db, "old-one").unwrap().unwrap().state,
             State::Archived
         );
-        assert!(!shelf.dir.join("old-one").exists(), "the directory moved");
-        assert!(shelf.dir.join(learning::ARCHIVE_DIR).exists());
+        assert!(
+            shelf.dir.join("old-one").exists(),
+            "archived in place, so the file never moves"
+        );
+        assert_eq!(
+            learning::usage(db, "old-one")
+                .unwrap()
+                .unwrap()
+                .reason
+                .as_deref(),
+            Some("nothing ever read it in 30 days")
+        );
     }
 
     /// A skill that was read but has gone quiet still ages in two steps.
@@ -1205,7 +1244,10 @@ mod tests {
             learning::usage(db, "used-one").unwrap().unwrap().state,
             State::Archived
         );
-        assert!(!shelf.dir.join("used-one").exists());
+        assert!(
+            shelf.dir.join("used-one").exists(),
+            "archived in place, so the file never moves"
+        );
     }
 
     #[test]

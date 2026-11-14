@@ -67,6 +67,19 @@ pub const SETTING_STALE_DAYS: &str = "learning.curator.stale_days";
 /// The age at which a learned skill is archived, in days.
 pub const SETTING_ARCHIVE_DAYS: &str = "learning.curator.archive_days";
 
+/// The age at which a skill that was *never read* is archived, in days.
+///
+/// Kept apart from the staleness window because the two answer different
+/// questions: staleness is "used once and then left", and this is "never opened
+/// at all", which is the entry paying prompt rent for nothing.
+pub const SETTING_UNUSED_DAYS: &str = "learning.curator.unused_days";
+
+/// The narrowest window the record offers for [`SETTING_UNUSED_DAYS`].
+pub const MIN_UNUSED_DAYS: u32 = 7;
+
+/// The widest.
+pub const MAX_UNUSED_DAYS: u32 = 365;
+
 /// How often the maintenance pass is allowed to run, in hours.
 pub const SETTING_INTERVAL_HOURS: &str = "learning.curator.interval_hours";
 
@@ -78,6 +91,8 @@ pub const SETTING_LAST_CURATOR: &str = "learning.curator.last_run_at";
 
 /// The default staleness window.
 pub const DEFAULT_STALE_DAYS: i64 = 30;
+/// The default window for a skill nothing has ever read.
+pub const DEFAULT_UNUSED_DAYS: u32 = 30;
 
 /// The default archive window. Both follow the shape an agent's own skill
 /// library needs: a month unused is a warning, a quarter is an archive.
@@ -203,6 +218,13 @@ pub fn stale_days(db: &Db) -> i64 {
     number(db, SETTING_STALE_DAYS, DEFAULT_STALE_DAYS).max(1)
 }
 
+/// The window a skill nothing has ever read may sit in the catalog for.
+#[must_use]
+pub fn unused_days(db: &Db) -> i64 {
+    number(db, SETTING_UNUSED_DAYS, i64::from(DEFAULT_UNUSED_DAYS))
+        .clamp(i64::from(MIN_UNUSED_DAYS), i64::from(MAX_UNUSED_DAYS))
+}
+
 /// The archive window. Always at least the staleness window.
 #[must_use]
 pub fn archive_days(db: &Db) -> i64 {
@@ -305,6 +327,10 @@ pub struct Usage {
     pub description: Option<String>,
     /// The review run that created it, when one did.
     pub run_id: Option<String>,
+    /// When it was archived, when it was.
+    pub archived_at: Option<String>,
+    /// Why it was archived, in the curator's own words.
+    pub reason: Option<String>,
 }
 
 /// Every ledger row, newest activity first.
@@ -316,7 +342,7 @@ pub fn rows(db: &Db) -> Result<Vec<Usage>, DbError> {
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
             "SELECT key, use_count, created_at, last_used_at, last_activity_at, created_by, \
-                    state, pinned, description, run_id \
+                    state, pinned, description, run_id, archived_at, reason \
                FROM skill_usage \
               ORDER BY COALESCE(last_activity_at, created_at) DESC, key",
         )?;
@@ -332,6 +358,8 @@ pub fn rows(db: &Db) -> Result<Vec<Usage>, DbError> {
                 pinned: row.get::<_, i64>(7)? != 0,
                 description: row.get(8)?,
                 run_id: row.get(9)?,
+                archived_at: row.get(10)?,
+                reason: row.get(11)?,
             })
         })?;
         mapped.collect()
@@ -495,10 +523,25 @@ pub fn record_written(db: &Db, key: &str, description: Option<&str>) -> Result<(
 ///
 /// [`DbError`] when the row cannot be updated.
 pub fn mark_archived(db: &Db, key: &str) -> Result<(), DbError> {
+    mark_archived_because(db, key, "archived by the curator")
+}
+
+/// Archive one row and record why and when.
+///
+/// The state column alone said a skill had left the catalog and nothing about
+/// who took it out; months later the row could not answer for itself. The reason
+/// is a sentence the page prints, so it is written by the caller that knows.
+///
+/// # Errors
+///
+/// [`DbError`] when the row cannot be written.
+pub fn mark_archived_because(db: &Db, key: &str, reason: &str) -> Result<(), DbError> {
     db.with_conn(|conn| {
         conn.execute(
-            "UPDATE skill_usage SET state = 'archived' WHERE key = ?1",
-            params![key],
+            "UPDATE skill_usage
+                SET state = 'archived', archived_at = ?2, reason = ?3
+              WHERE key = ?1",
+            params![key, now(), reason],
         )?;
         Ok(())
     })
@@ -848,6 +891,28 @@ pub fn repair_review(raw: &str, error: &ReviewError) -> Option<String> {
             }
             object.insert("description".to_owned(), serde_json::Value::String(fitted));
         }
+        ReviewError::BadAppend => {
+            let original = object.get("body")?.as_str()?;
+            let flat = original
+                .split(['\n', '\r'])
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if flat.chars().count() < 10 {
+                return None;
+            }
+            let fitted = if flat.len() > MAX_APPEND_BYTES {
+                let cut: String = flat.chars().take(MAX_APPEND_BYTES).collect();
+                match cut.rfind(' ') {
+                    Some(index) if index > MAX_APPEND_BYTES / 2 => cut[..index].trim().to_owned(),
+                    _ => cut,
+                }
+            } else {
+                flat
+            };
+            object.insert("body".to_owned(), serde_json::Value::String(fitted));
+        }
         ReviewError::BadName => {
             let original = object.get("name")?.as_str()?;
             let flat = original
@@ -1152,7 +1217,20 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), LearningError> {
 /// # Errors
 ///
 /// [`LearningError::Refused`] when the skill is missing, or
-/// [`LearningError::Io`] when the move fails.
+/// Take a skill out of the catalog without moving its file.
+///
+/// Archiving used to rename the directory into `.archive/`, which took the skill
+/// out of the catalog and out of the library listing at the same time: the
+/// operator could no longer see what had been archived, only that a skill had
+/// vanished. The state column is the archive now, so the directory stays exactly
+/// where it was and `list` keeps drawing it, flagged.
+///
+/// Nothing is copied or rewritten: a restore is a state change and the file was
+/// never touched.
+///
+/// # Errors
+///
+/// [`LearningError::Refused`] when there is no such skill in the library.
 pub fn archive(shelf: &Shelf, key: &str) -> Result<PathBuf, LearningError> {
     let source = shelf.dir.join(key);
     if !source.is_dir() {
@@ -1160,17 +1238,7 @@ pub fn archive(shelf: &Shelf, key: &str) -> Result<PathBuf, LearningError> {
             "no skill named `{key}` is in this library"
         )));
     }
-    let archive = shelf.dir.join(ARCHIVE_DIR);
-    std::fs::create_dir_all(&archive).map_err(|error| LearningError::io(&archive, error))?;
-    let stamp = file_stamp();
-    let mut target = archive.join(format!("{key}-{stamp}"));
-    let mut suffix = 1;
-    while target.exists() {
-        suffix += 1;
-        target = archive.join(format!("{key}-{stamp}-{suffix}"));
-    }
-    std::fs::rename(&source, &target).map_err(|error| LearningError::io(&source, error))?;
-    Ok(target)
+    Ok(source)
 }
 
 /// Move the newest archived copy of a skill back into the library.
@@ -1184,7 +1252,13 @@ pub fn restore(shelf: &Shelf, key: &str) -> Result<PathBuf, LearningError> {
             "`{key}` is not a usable skill key"
         )));
     }
-    if shelf.dir.join(key).exists() {
+    let live = shelf.dir.join(key);
+    if live.is_dir() {
+        // Archived in place: the file never left, so a restore is only the
+        // state change the caller makes afterwards.
+        return Ok(live);
+    }
+    if live.exists() {
         return Err(LearningError::Refused(format!(
             "`{key}` is already in the library"
         )));
@@ -1228,6 +1302,38 @@ pub fn restore(shelf: &Shelf, key: &str) -> Result<PathBuf, LearningError> {
 /// [`LearningError`] for a database or filesystem failure. A policy refusal is
 /// `Ok(Applied)` with a `none` action and the reason, because it is an outcome
 /// a page should show, not an error the worker should retry.
+/// Keep a lesson that changed no skill in the memory store.
+///
+/// A review that says `none` used to end at the run row: the sentence was
+/// written, read once by the operator, and then only in a page that scrolls. The
+/// memory store is where a constraint belongs, and an entry there is visible to
+/// recall and to the phone.
+///
+/// The origin is [`mem::Origin::Model`], so the row is stored for inspection and
+/// is not recallable until something promotes it: a loop that could promote its
+/// own writing would quietly rewrite what recall believes.
+///
+/// Returns whether an entry landed. A duplicate is not an error and does not
+/// report a write.
+pub fn remember_lesson(db: &Db, review: &Review, run_id: Option<&str>) -> bool {
+    let text = review.description.trim();
+    if text.is_empty() {
+        return false;
+    }
+    let clipped: String = text.chars().take(400).collect();
+    crate::mem::insert_entry(
+        db,
+        &crate::mem::NewEntry {
+            tier: crate::mem::Tier::Curated,
+            target: "memory",
+            entry: &clipped,
+            origin: crate::mem::Origin::Model,
+            source_ref: run_id,
+        },
+    )
+    .is_ok()
+}
+
 pub fn apply(
     db: &Db,
     shelf: &Shelf,
@@ -1573,6 +1679,10 @@ pub struct Totals {
     pub archived: i64,
     /// Runs still queued.
     pub pending: i64,
+    /// Runs this window repaired rather than dropped.
+    pub repaired: i64,
+    /// Runs this window dropped on an invalid review.
+    pub dropped: i64,
 }
 
 /// The counts the page shows.
@@ -1592,6 +1702,23 @@ pub fn totals(db: &Db) -> Result<Totals, DbError> {
             State::Archived => totals.archived += 1,
         }
     }
+    // Repair and drop are counted apart on purpose: one number cannot say
+    // whether the loop is losing lessons or saving them.
+    totals.repaired = db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM learning_runs
+              WHERE attempts > 0 AND status IN ('done', 'skipped')",
+            [],
+            |row| row.get(0),
+        )
+    })?;
+    totals.dropped = db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM learning_runs WHERE status = 'failed'",
+            [],
+            |row| row.get(0),
+        )
+    })?;
     totals.pending = db.with_conn(|conn| {
         conn.query_row(
             "SELECT COUNT(*) FROM learning_runs WHERE status IN ('queued', 'running')",
@@ -1866,17 +1993,35 @@ mod tests {
     }
 
     #[test]
-    fn archiving_moves_the_directory_and_restoring_brings_it_back() {
+    fn archiving_leaves_the_file_and_restoring_is_a_state_change() {
         let (_dir, shelf) = shelf();
         let db = db();
         let review = parse_review(&reviewed("create")).expect("a review");
         apply(&db, &shelf, &review, None).expect("create");
         let archived = archive(&shelf, "deploy-host").expect("archive");
-        assert!(!shelf.dir.join("deploy-host").exists());
-        assert!(archived.is_dir());
+        assert!(
+            shelf.dir.join("deploy-host").exists(),
+            "the file stays where it was"
+        );
+        assert_eq!(archived, shelf.dir.join("deploy-host"));
+        mark_archived_because(&db, "deploy-host", "nothing ever read it").expect("archive");
+        let row = usage(&db, "deploy-host").unwrap().unwrap();
+        assert_eq!(row.state, State::Archived);
+        assert!(row.archived_at.is_some());
+        assert_eq!(row.reason.as_deref(), Some("nothing ever read it"));
         let restored = restore(&shelf, "deploy-host").expect("restore");
-        assert!(restored.is_dir());
         assert_eq!(restored, shelf.dir.join("deploy-host"));
+    }
+
+    #[test]
+    fn a_legacy_archived_directory_is_still_restored() {
+        let (_dir, shelf) = shelf();
+        let moved = shelf.dir.join(ARCHIVE_DIR).join("legacy-20261101");
+        std::fs::create_dir_all(&moved).expect("legacy dir");
+        std::fs::write(moved.join("SKILL.md"), "---\nname: L\n---\n\nbody\n").expect("file");
+        let restored = restore(&shelf, "legacy").expect("restore");
+        assert!(restored.is_dir());
+        assert!(shelf.dir.join("legacy").join("SKILL.md").is_file());
     }
 
     #[test]
@@ -2043,6 +2188,83 @@ mod tests {
 
         let blank = r#"{"action":"create","key":"guard","name":"  ","description":"Ship it behind the guard.","body":"Run the guard first, then deploy the build safely."}"#;
         assert!(repair_review(blank, &ReviewError::BadName).is_none());
+    }
+
+    /// The two lengths the guide names: ninety characters and one character over
+    /// the sixty-character line. Both must repair to something the parser accepts.
+    #[test]
+    fn a_ninety_character_and_a_sixty_one_character_description_both_repair() {
+        for length in [90usize, 61] {
+            let words = "deploy guard snapshot host lane diff check widen timeout record";
+            let mut long = String::new();
+            while long.chars().count() < length {
+                for word in words.split(' ') {
+                    if long.chars().count() >= length {
+                        break;
+                    }
+                    if !long.is_empty() {
+                        long.push(' ');
+                    }
+                    long.push_str(word);
+                }
+            }
+            let raw = format!(
+                r#"{{"action":"create","key":"guard","name":"Guard","description":"{long}","body":"{}"}}"#,
+                "Run the guard, then deploy.".repeat(3)
+            );
+            let error = parse_review(&raw).expect_err("over the line");
+            assert!(matches!(error, ReviewError::BadDescription));
+            let fixed = repair_review(&raw, &error).expect("repairable");
+            let review = parse_review(&fixed).expect("the repair parses");
+            assert!(
+                review.description.chars().count() <= MAX_DESCRIPTION_CHARS,
+                "{} chars",
+                review.description.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn repair_flattens_an_over_long_append_and_keeps_it_readable() {
+        let paragraph = "The lane health check runs before the deploy; ".repeat(120);
+        let raw = format!(
+            r#"{{"action":"append","key":"guard","name":"Guard","description":"Ship it behind the guard.","section":"Pitfalls","body":"{paragraph}"}}"#
+        );
+        let error = parse_review(&raw).expect_err("over the append limit");
+        assert!(matches!(error, ReviewError::BadAppend), "{error}");
+        let fixed = repair_review(&raw, &error).expect("repairable");
+        let review = parse_review(&fixed).expect("the repair parses");
+        assert!(review.body.len() <= MAX_APPEND_BYTES);
+        assert!(review.body.chars().count() >= 10);
+        assert!(!review.body.contains('\n'));
+    }
+
+    #[test]
+    fn a_lesson_that_changed_no_skill_lands_in_memory() {
+        let db = db();
+        let review = Review {
+            action: Action::None,
+            key: String::new(),
+            name: String::new(),
+            description: "Always run the guard before the deploy.".to_owned(),
+            section: None,
+            body: "Guarding is not optional".to_owned(),
+            reason: "a correction".to_owned(),
+        };
+        assert!(remember_lesson(&db, &review, Some("run-7")));
+        let live = crate::mem::live_entries(&db, "memory", false, 10).expect("live");
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].entry, "Always run the guard before the deploy.");
+        assert_eq!(live[0].origin, "model");
+        assert_eq!(live[0].source_ref.as_deref(), Some("run-7"));
+        // A duplicate is not a second row.
+        assert!(remember_lesson(&db, &review, Some("run-7")));
+        assert_eq!(
+            crate::mem::live_entries(&db, "memory", false, 10)
+                .expect("live")
+                .len(),
+            1
+        );
     }
 
     #[test]

@@ -415,6 +415,36 @@ pub fn get(db: &Db, id: &str) -> Result<Option<Schedule>, DbError> {
     })
 }
 
+/// One finished run: id, conversation and summary. The conversation and the
+/// summary are optional because a refused run may have neither.
+pub type FinishedRun = (String, Option<String>, Option<String>);
+
+/// The newest finished run of one schedule: its id, conversation and summary.
+///
+/// The delivery retry needs the run that already happened, not a new turn: the
+/// answer is written and paid for, and only the part that did not land is retried.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn last_finished_run(db: &Db, schedule_id: &str) -> Result<Option<FinishedRun>, DbError> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT id, conversation_id, summary FROM schedule_runs \
+              WHERE schedule_id = ?1 AND status IN ('ok', 'failed', 'refused') \
+              ORDER BY started_at DESC, rowid DESC LIMIT 1",
+        )?;
+        let mut rows = statement.query_map(rusqlite::params![schedule_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        rows.next().transpose()
+    })
+}
+
 /// How many schedules exist.
 ///
 /// # Errors
@@ -422,6 +452,49 @@ pub fn get(db: &Db, id: &str) -> Result<Option<Schedule>, DbError> {
 /// A database failure.
 pub fn count(db: &Db) -> Result<i64, DbError> {
     db.with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM schedules", [], |row| row.get(0)))
+}
+
+/// The three schedules a fresh install starts with.
+///
+/// A schedule backend with no rows is a feature nobody finds: the page is a form
+/// above an empty list. These are the three the operator would have written, and
+/// they are seeded only when the table is empty, so deleting one does not bring
+/// it back on the next boot.
+pub const DEFAULTS: [(&str, &str, &str); 3] = [
+    (
+        "Morning brief",
+        "0 7 * * *",
+        "Brief me for the day: what is on, what is late, and the one thing to do first. \
+         Keep it under eight lines.",
+    ),
+    (
+        "Lane health",
+        "30 8 * * *",
+        "Check the lanes and say which are healthy and which are not, in one line each. \
+         Say nothing else.",
+    ),
+    (
+        "Weekly cost report",
+        "0 9 * * 1",
+        "Report last week's tokens, cache hit rate, failures and the p50/p95 turn time. \
+         Numbers only, one line each.",
+    ),
+];
+
+/// Seed [`DEFAULTS`] when there are no schedules at all. Returns how many landed.
+#[must_use]
+pub fn seed_defaults(db: &Db, offset: time::UtcOffset) -> usize {
+    if count(db).unwrap_or(0) > 0 {
+        return 0;
+    }
+    let mut seeded = 0usize;
+    for (name, cron, prompt) in DEFAULTS {
+        if let Ok(id) = create(db, name, cron, prompt, offset) {
+            let _ = set_deliver(db, &id, crate::delivery::DEFAULT_CHANNEL);
+            seeded += 1;
+        }
+    }
+    seeded
 }
 
 /// Insert one schedule, computing its first fire time now.
@@ -1043,6 +1116,25 @@ mod tests {
 
     fn db() -> Db {
         Db::open_in_memory().expect("in-memory db")
+    }
+
+    #[test]
+    fn three_schedules_are_seeded_once_and_deleting_one_does_not_bring_it_back() {
+        let db = db();
+        assert_eq!(seed_defaults(&db, time::UtcOffset::UTC), 3);
+        let seeded = list(&db).expect("list");
+        assert_eq!(seeded.len(), 3);
+        assert_eq!(seeded[0].deliver, crate::delivery::DEFAULT_CHANNEL);
+        let names: Vec<&str> = seeded.iter().map(|row| row.name.as_str()).collect();
+        assert!(names.contains(&"Morning brief"), "{names:?}");
+        assert!(names.contains(&"Lane health"), "{names:?}");
+        assert!(names.contains(&"Weekly cost report"), "{names:?}");
+        // Every seeded row is a real cron expression that produced a fire time.
+        assert!(seeded.iter().all(|row| row.next_fire_at.is_some()));
+
+        delete(&db, &seeded[0].id).expect("delete");
+        assert_eq!(seed_defaults(&db, time::UtcOffset::UTC), 0);
+        assert_eq!(list(&db).expect("list").len(), 2);
     }
 
     #[test]

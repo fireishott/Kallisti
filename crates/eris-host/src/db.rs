@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 31;
+pub const SCHEMA_VERSION: i64 = 32;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -239,6 +239,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 31,
         name: "0031_triggers",
         sql: MIGRATION_0031,
+    },
+    Migration {
+        version: 32,
+        name: "0032_skill_archiving",
+        sql: MIGRATION_0032,
     },
 ];
 
@@ -1121,6 +1126,17 @@ CREATE TABLE IF NOT EXISTS trigger_fires (
 CREATE INDEX IF NOT EXISTS idx_trigger_fires_trigger ON trigger_fires (trigger_id, fired_at);
 ";
 
+/// Migration 0032: why a skill left the catalog, and when.
+///
+/// The state column already said `archived`, which is enough to filter the
+/// catalog and not enough to explain a row months later. Both columns are
+/// nullable and neither is written for a skill that was never archived, so an
+/// untouched row keeps exactly the shape it had.
+const MIGRATION_0032: &str = r"
+ALTER TABLE skill_usage ADD COLUMN archived_at TEXT;
+ALTER TABLE skill_usage ADD COLUMN reason TEXT;
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 /// `setup` until onboarding completes, `ready` after.
@@ -1544,7 +1560,7 @@ mod tests {
         );
         assert_eq!(
             db.applied_migration_count().expect("count"),
-            31,
+            32,
             "one row per migration, and the new one is the last"
         );
 
@@ -1557,8 +1573,8 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, 31, "one row per migration, on a fresh file");
-        assert_eq!(first.schema_version().expect("version"), 31);
+        assert_eq!(applied, 32, "one row per migration, on a fresh file");
+        assert_eq!(first.schema_version().expect("version"), 32);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");
         assert_eq!(
@@ -1612,7 +1628,7 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 31);
+        assert_eq!(db.schema_version().expect("version"), 32);
         assert_eq!(TABLES.len(), 29, "the list and the schema agree on arity");
     }
 
@@ -1628,7 +1644,7 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 31);
+        assert_eq!(db.schema_version().expect("version"), 32);
         assert_eq!(TABLES.len(), 29, "the list and the schema agree on arity");
     }
 }

@@ -525,6 +525,33 @@ pub async fn patch_cron(
         ) {
             return error.into_response();
         }
+    } else if let Some(channel) = fields
+        .get("deliver")
+        .map(|value| value.trim().to_lowercase())
+    {
+        // The delivery picker on the cron page and on the phone sends one field:
+        // where the answer goes. It is a closed set and refused by name.
+        if !crate::delivery::valid(&channel) {
+            return DeviceError::bad_request(
+                "schedule_patch_invalid",
+                format!(
+                    "`{channel}` is not a delivery channel; the daemon has {}",
+                    crate::delivery::DEFAULT_VALUES.join(", ")
+                ),
+            )
+            .into_response();
+        }
+        if let Err(error) = scheduler::set_deliver(engine.db(), &id, &channel) {
+            return schedule_failure(error, "deliver").into_response();
+        }
+        if let Err(error) = audit(
+            &service,
+            token.device_id(),
+            AUDIT_SCHEDULES,
+            &format!("deliver id={id} channel={channel}"),
+        ) {
+            return error.into_response();
+        }
     } else if fields.contains_key("name")
         || fields.contains_key("schedule")
         || fields.contains_key("prompt")
@@ -653,6 +680,8 @@ pub async fn skills_list(State(service): State<DeviceService>, headers: HeaderMa
                         // the library apart from the part of it a prompt carries.
                         "use_count": skill.use_count,
                         "last_used": skill.last_used,
+                        "archived_at": skill.archived_at,
+                        "reason": skill.archived_reason,
                     })
                 })
                 .collect();
@@ -676,31 +705,52 @@ pub async fn skills_list(State(service): State<DeviceService>, headers: HeaderMa
 }
 
 /// What a search asked for.
+///
+/// Every field the tool takes is here, because the two are one query: a phone and
+/// a turn that ask the same question get the same bytes.
 #[derive(Debug, serde::Deserialize)]
 pub struct SearchQuery {
     /// The words to look for.
     #[serde(default)]
     q: String,
-    /// How many conversations, clamped by the route.
+    /// `all` or `conversation`; the stored default when absent.
+    #[serde(default)]
+    scope: Option<String>,
+    /// The conversation to hold to.
+    #[serde(default)]
+    conversation_id: Option<String>,
+    /// `all`, `user` or `assistant`.
+    #[serde(default)]
+    role: Option<String>,
+    /// ISO 8601 lower bound.
+    #[serde(default)]
+    since: Option<String>,
+    /// ISO 8601 upper bound.
+    #[serde(default)]
+    until: Option<String>,
+    /// `discovery` or `browse`.
+    #[serde(default)]
+    mode: Option<String>,
+    /// Discovery: a `cursor` from the previous page. Browse: a message id.
+    #[serde(default)]
+    cursor: Option<String>,
+    /// How many hits; clamped by [`crate::search`] and its setting.
     #[serde(default)]
     limit: Option<usize>,
 }
 
-/// `GET /v1/search?q=&limit=` - the transcript, searched.
+/// `GET /v1/search` - the transcript, searched.
 ///
 /// The phone had no way to ask what it had already talked about; the only search
 /// it could reach covered skills, notes, models and logs. This route reads the
-/// same FTS5 index the turn's `search_sessions` tool reads, so what the operator
-/// types on the phone and what the assistant recalls are one transcript.
+/// same FTS5 index the turn's `search_sessions` tool reads, through the same
+/// function, so what the operator types on the phone and what the assistant
+/// recalls are one transcript and one answer.
 ///
-/// The body is one row per conversation rather than one per message, because that
-/// is the question a person types: "where did we talk about this". A search that
-/// matched eight messages in one conversation is one line in the list, with a
-/// count, and the conversation is opened at its best-scoring message.
-///
-/// An empty `q` is a `200` with no hits, not a `400`: a search field arrives
-/// empty on every screen that draws it, and telling the client that an empty box
-/// is a bad request would make a normal first paint look like a failure.
+/// The body of an empty query is a `200` with no hits, not a `400`: a search field
+/// arrives empty on every screen that draws it, and telling the client that an
+/// empty box is a bad request would make a normal first paint look like a
+/// failure.
 pub async fn search_transcript(
     State(service): State<DeviceService>,
     Query(params): Query<SearchQuery>,
@@ -713,42 +763,46 @@ pub async fn search_transcript(
     if let Err(error) = authenticate(&service, &headers) {
         return error.into_response();
     }
-    let text = params.q.trim();
-    if text.is_empty() {
+    let db = service.engine().db();
+    let text = params.q.trim().to_owned();
+    let mut request = crate::search::Request {
+        query: text.clone(),
+        scope: params.scope.unwrap_or_default(),
+        conversation_id: params
+            .conversation_id
+            .filter(|value| !value.trim().is_empty()),
+        role: params.role.unwrap_or_else(|| "all".to_owned()),
+        since: params.since.filter(|value| !value.is_empty()),
+        until: params.until.filter(|value| !value.is_empty()),
+        mode: params
+            .mode
+            .as_deref()
+            .map(crate::search::Mode::parse)
+            .unwrap_or(crate::search::Mode::Discovery),
+        limit: params.limit.unwrap_or(0),
+        cursor: params.cursor.filter(|value| !value.is_empty()),
+    };
+    if request.mode == crate::search::Mode::Discovery && request.conversation_id.is_some() {
+        request.mode = crate::search::Mode::Browse;
+    }
+    crate::search::apply_defaults(db, &mut request);
+    if text.is_empty() && request.conversation_id.is_none() {
         return axum::Json(serde_json::json!({
-            "ok": true,
-            "query": "",
-            "returned": 0,
             "hits": [],
+            "total": 0,
+            "cursor": null,
+            "took_ms": 0,
         }))
         .into_response();
     }
-    let limit = params
-        .limit
-        .unwrap_or(crate::search::DEFAULT_LIMIT)
-        .clamp(1, crate::search::MAX_LIMIT);
-    match crate::search::discover(service.engine().db(), text, limit) {
-        Ok(hits) => {
-            let rows: Vec<serde_json::Value> = hits
-                .iter()
-                .map(|hit| {
-                    serde_json::json!({
-                        "conversation": hit.conversation_id,
-                        "title": hit.title,
-                        "snippet": hit.snippet,
-                        "created_at": hit.created_at,
-                        "matches": hit.matches,
-                    })
-                })
-                .collect();
-            axum::Json(serde_json::json!({
-                "ok": true,
-                "query": text,
-                "returned": rows.len(),
-                "hits": rows,
-            }))
-            .into_response()
-        }
+    match crate::search::answer(db, &request) {
+        // `search::answer` is the seam the tool writes its `ToolResult` from, so
+        // the phone and the assistant cannot answer the same question differently.
+        Ok(body) => (
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            body.to_string(),
+        )
+            .into_response(),
         Err(error) => DeviceError::new(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "search_failed",

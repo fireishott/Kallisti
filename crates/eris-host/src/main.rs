@@ -873,6 +873,36 @@ fn run_serve(
         Err(error) => eprintln!("eris serve: could not settle interrupted scheduled runs: {error}"),
     }
 
+    // Three schedules on a host that has none, so the page is not a form above an
+    // empty list. Seeded once: deleting one does not bring it back.
+    {
+        let zone = eris_host::zone::Zone::parse(
+            eris_host::web::store::settings_get(&db, eris_host::zone::SETTING_TIMEZONE)
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        let offset = eris_host::scheduler::local_offset(&db, &zone.modifier());
+        let seeded = eris_host::scheduler::seed_defaults(&db, offset);
+        if seeded > 0 {
+            eprintln!("eris serve: seeded {seeded} default schedule(s)");
+        }
+    }
+
+    // Background processes are `jobs` rows of kind `tool`. Nothing in this
+    // process holds their children at boot, so a row still `running` is a job
+    // whose pid either survived the restart or did not. A dead pid is settled as
+    // lost with a receipt, because `running` is the one status a page cannot
+    // tell from healthy.
+    {
+        let workspace = loaded.toml().workspace_path();
+        let desk_dir = workspace.join(".processes");
+        let lost = eris_host::process::reconcile_orphans(&db, &desk_dir);
+        if lost > 0 {
+            eprintln!("eris serve: settled {lost} background job(s) with no live pid");
+        }
+    }
+
     // Every retired token verifier is one more Argon2 hash on every device
     // request, because verification scans the rows to answer "revoked" rather
     // than "unknown". A device that refreshes hourly retires two rows each

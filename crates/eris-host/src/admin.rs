@@ -266,6 +266,16 @@ pub const ROUTE_SETTINGS_MCP: &str = "/dashboard/settings/mcp";
 
 /// `POST /dashboard/settings/greeting` - the generated line on an empty chat page.
 pub const ROUTE_SETTINGS_GREETING: &str = "/dashboard/settings/greeting";
+/// The search defaults form (Assistant tab): hits per search, starting scope.
+pub const ROUTE_SETTINGS_SEARCH: &str = "/dashboard/settings/search";
+/// The learning card (Automation tab): repair a refused review, or drop it.
+pub const ROUTE_SETTINGS_LEARNING: &str = "/dashboard/settings/learning";
+
+/// The background-job card (Automation tab): finish notices and receipts.
+pub const ROUTE_SETTINGS_JOBS: &str = "/dashboard/settings/jobs";
+
+/// The schedule-delivery card (Automation tab): default channel and the mail gate.
+pub const ROUTE_SETTINGS_DELIVERY: &str = "/dashboard/settings/delivery";
 /// `POST /dashboard/settings/accounts/connect` - start a browser login for one
 /// account. The form names which, and the answer is a redirect to the provider.
 pub const ROUTE_ACCOUNTS_CONNECT: &str = "/dashboard/settings/accounts/connect";
@@ -334,6 +344,8 @@ pub const ROUTE_SKILLS_SAVE: &str = "/dashboard/skills/save";
 /// `POST /dashboard/skills/delete` - archive one skill into `.archive/`. Two
 /// posts: the first asks, the second carries `confirm=true`.
 pub const ROUTE_SKILLS_DELETE: &str = "/dashboard/skills/delete";
+/// Put one archived skill back in the catalog. The file never moved.
+pub const ROUTE_SKILLS_RESTORE: &str = "/dashboard/skills/restore";
 
 /// `GET /dashboard/roster` - the standing agents the model may hand work to.
 ///
@@ -513,6 +525,10 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_MCP,
     ROUTE_SETTINGS_GREETING,
+    ROUTE_SETTINGS_SEARCH,
+    ROUTE_SETTINGS_LEARNING,
+    ROUTE_SETTINGS_JOBS,
+    ROUTE_SETTINGS_DELIVERY,
     ROUTE_ACCOUNTS_CONNECT,
     ROUTE_ACCOUNTS_VERIFY,
     ROUTE_ACCOUNTS_DISCONNECT,
@@ -521,6 +537,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_SKILLS,
     ROUTE_SKILLS_SAVE,
     ROUTE_SKILLS_DELETE,
+    ROUTE_SKILLS_RESTORE,
     ROUTE_ROSTER_SAVE,
     ROUTE_ROSTER_TOGGLE,
     ROUTE_ROSTER_DELETE,

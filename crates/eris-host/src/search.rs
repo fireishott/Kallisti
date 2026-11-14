@@ -27,11 +27,30 @@ use crate::tools::ToolResult;
 /// The tool name the model calls.
 pub const TOOL: &str = "search_sessions";
 
-/// Hits returned when the caller does not say.
+/// The `settings` row holding how many hits a search returns when nobody says.
+pub const SETTING_SEARCH_LIMIT: &str = "search.limit";
+
+/// The `settings` row holding the scope a search starts on.
+pub const SETTING_SEARCH_SCOPE_DEFAULT: &str = "search.scope_default";
+
+/// The scopes a search accepts.
+pub const SCOPE_VALUES: &[&str] = &["all", "conversation"];
+
+/// The roles a hit can be filtered on.
+pub const ROLE_VALUES: &[&str] = &["all", "user", "assistant"];
+
+/// The narrowest `search_limit` the record accepts.
+pub const MIN_SETTING_LIMIT: u32 = 5;
+
+/// The widest `search_limit` the record accepts, which is also the ceiling the
+/// query clamps to: the setting cannot pin a number the reader then ignores.
+pub const MAX_SETTING_LIMIT: u32 = 50;
+
+/// Hits returned when the caller does not say and the row is empty.
 pub const DEFAULT_LIMIT: usize = 8;
 
 /// The most any one call will return, so a broad word cannot flood a turn.
-pub const MAX_LIMIT: usize = 25;
+pub const MAX_LIMIT: usize = MAX_SETTING_LIMIT as usize;
 
 /// Messages returned by one scroll window.
 pub const DEFAULT_WINDOW: usize = 20;
@@ -102,25 +121,44 @@ pub fn spec() -> core_runtime::provider::ToolSpec {
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
-                "text": {
+                "query": {
                     "type": "string",
-                    "description": "Words to look for. All of them first, then any of them when that finds nothing. Omit when scrolling a conversation."
+                    "description": "Words to look for. All of them first, then any of them when that finds nothing. Omit when browsing a conversation."
                 },
-                "conversation": {
+                "scope": {
                     "type": "string",
-                    "description": "Conversation id to scroll. Returns a window of that transcript instead of a discovery list."
+                    "enum": ["all", "conversation"],
+                    "description": "`all` ranks across every conversation; `conversation` holds to `conversation_id`."
                 },
-                "before": {
+                "conversation_id": {
                     "type": "string",
-                    "description": "Scroll only: ISO 8601 timestamp; return messages written before it."
+                    "description": "Conversation to hold to. Setting it switches the call to a browse window even when `mode` says discovery."
                 },
-                "after": {
+                "role": {
                     "type": "string",
-                    "description": "Scroll only: ISO 8601 timestamp; return messages written after it."
+                    "enum": ["all", "user", "assistant"],
+                    "description": "Only this speaker's turns. Defaults to all."
+                },
+                "since": {
+                    "type": "string",
+                    "description": "ISO 8601 lower bound on when the message was written."
+                },
+                "until": {
+                    "type": "string",
+                    "description": "ISO 8601 upper bound on when the message was written."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["discovery", "browse"],
+                    "description": "`discovery` returns ranked snippets; `browse` returns a window around `cursor`."
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Discovery: the `cursor` from a previous result to read the next page. Browse: the message id to centre the window on."
                 },
                 "limit": {
                     "type": "integer",
-                    "description": format!("How many results, 1 to {MAX_LIMIT}. Defaults to {DEFAULT_LIMIT} for discovery and {DEFAULT_WINDOW} for a window.")
+                    "description": format!("How many hits, 1 to {MAX_LIMIT}. Defaults to the operator's search limit.")
                 }
             },
             "required": []
@@ -146,78 +184,58 @@ impl Access {
         Self { db }
     }
 
-    /// Answer one call.
+    /// Answer one call with the same bytes the route returns for the same
+    /// request.
     #[must_use]
     pub fn call(&self, arguments: &serde_json::Value) -> ToolResult {
-        let text = arguments
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .trim();
-        let conversation = arguments
-            .get("conversation")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let limit = arguments
-            .get("limit")
-            .and_then(serde_json::Value::as_u64)
-            .map(|value| value as usize);
-
-        if let Some(conversation) = conversation {
-            let before = arguments.get("before").and_then(serde_json::Value::as_str);
-            let after = arguments.get("after").and_then(serde_json::Value::as_str);
-            let window = limit.unwrap_or(DEFAULT_WINDOW).clamp(1, MAX_LIMIT);
-            return match scroll(&self.db, conversation, text, before, after, window) {
-                Ok(messages) => ToolResult::ok(serde_json::json!({
-                    "conversation": conversation,
-                    "messages": messages.iter().map(message_json).collect::<Vec<_>>(),
-                    "returned": messages.len(),
-                })),
-                Err(error) => {
-                    ToolResult::error(format!("the transcript could not be read: {error}"))
-                }
-            };
+        let string = |key: &str| {
+            arguments
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        };
+        // `text` and `conversation` are the pre-contract spellings and stay
+        // accepted, because a model that learned the old spec keeps working.
+        let mut request = Request {
+            query: string("query")
+                .or_else(|| string("text"))
+                .unwrap_or_default(),
+            scope: string("scope").unwrap_or_default(),
+            conversation_id: string("conversation_id").or_else(|| string("conversation")),
+            role: string("role").unwrap_or_else(|| "all".to_owned()),
+            since: string("since"),
+            until: string("until"),
+            mode: arguments
+                .get("mode")
+                .and_then(serde_json::Value::as_str)
+                .map(Mode::parse)
+                .unwrap_or(Mode::Discovery),
+            limit: arguments
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .map_or(0, |value| value as usize),
+            cursor: string("cursor"),
+        };
+        if request.mode == Mode::Discovery && request.conversation_id.is_some() {
+            request.mode = Mode::Browse;
         }
+        apply_defaults(&self.db, &mut request);
 
-        if text.is_empty() {
+        if request.query.is_empty() && request.conversation_id.is_none() {
             return ToolResult::refused(
-                "searching needs either `text` to look for or `conversation` to scroll; \
+                "searching needs either `query` to look for or `conversation_id` to scroll; \
                  nothing was searched",
             );
         }
-        let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-        match discover(&self.db, text, limit) {
-            Ok(hits) => ToolResult::ok(serde_json::json!({
-                "query": text,
-                "conversations": hits.iter().map(conversation_json).collect::<Vec<_>>(),
-                "returned": hits.len(),
-            })),
+        match answer(&self.db, &request) {
+            Ok(body) => ToolResult::ok(body),
             Err(error) => {
                 ToolResult::error(format!("the transcript could not be searched: {error}"))
             }
         }
     }
-}
-
-fn conversation_json(hit: &ConversationHit) -> serde_json::Value {
-    serde_json::json!({
-        "conversation": hit.conversation_id,
-        "title": hit.title,
-        "snippet": hit.snippet,
-        "created_at": hit.created_at,
-        "matches": hit.matches,
-    })
-}
-
-fn message_json(message: &Message) -> serde_json::Value {
-    serde_json::json!({
-        "id": message.id,
-        "role": message.role,
-        "created_at": message.created_at,
-        "body": message.body,
-        "snippet": message.snippet,
-    })
 }
 
 /// Turn operator or model text into an FTS5 expression that cannot be a syntax
@@ -426,6 +444,633 @@ fn clip(body: &str) -> String {
     format!("{} [... clipped]", &trimmed[..end])
 }
 
+// ---------------------------------------------------------------------------
+// One request, three surfaces
+// ---------------------------------------------------------------------------
+
+/// What a search is for.
+///
+/// Two modes rather than one query with a flag, because they answer different
+/// questions and page differently: `Discovery` is "where did we settle this" and
+/// ranks across every conversation, `Browse` is "show me that part" and walks one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// Ranked hits across the whole transcript.
+    #[default]
+    Discovery,
+    /// A window of one conversation around one message.
+    Browse,
+}
+
+impl Mode {
+    /// The wire spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovery => "discovery",
+            Self::Browse => "browse",
+        }
+    }
+
+    /// Read a wire spelling, falling back to [`Self::Discovery`].
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        if value.trim().eq_ignore_ascii_case("browse") {
+            Self::Browse
+        } else {
+            Self::Discovery
+        }
+    }
+}
+
+/// One search, exactly as the tool, the route and the page state it.
+///
+/// The three surfaces build this from their own input and hand it to
+/// [`search`], so the tool cannot answer a different question from the route.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Request {
+    /// The words to look for. Empty is legal in browse and in a scope-wide walk.
+    pub query: String,
+    /// `all` or `conversation`. A scope of `conversation` needs a conversation.
+    pub scope: String,
+    /// The conversation to hold to, when the scope is `conversation` or the mode
+    /// is browse.
+    pub conversation_id: Option<String>,
+    /// `all`, `user` or `assistant`.
+    pub role: String,
+    /// ISO 8601 lower bound on `created_at`.
+    pub since: Option<String>,
+    /// ISO 8601 upper bound on `created_at`.
+    pub until: Option<String>,
+    /// Which shape is being asked for.
+    pub mode: Mode,
+    /// How many hits, already resolved against [`SETTING_SEARCH_LIMIT`].
+    pub limit: usize,
+    /// Discovery: an opaque continuation from a previous [`Page`]. Browse: the
+    /// message id to centre the window on.
+    pub cursor: Option<String>,
+}
+
+/// One ranked hit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HitRow {
+    /// The conversation.
+    pub conversation_id: String,
+    /// That conversation's title, or the id when the row is missing.
+    pub title: String,
+    /// The message.
+    pub message_id: String,
+    /// When it was written.
+    pub ts: String,
+    /// `user` or `assistant`.
+    pub role: String,
+    /// The excerpt, with the matched terms inside `<b>`.
+    pub snippet: String,
+    /// Lower is better, and it is negative. `0.0` for a browse row.
+    pub score: f64,
+}
+
+impl HitRow {
+    /// The score at a fixed twelve significant digits.
+    ///
+    /// `bm25` is recomputed per statement and its last two digits wobble between
+    /// two runs of the same query, which is enough to make the tool's bytes and
+    /// the route's bytes differ and enough to break a cursor that quoted the raw
+    /// value. Twelve digits keeps the ranking and drops the wobble.
+    #[must_use]
+    pub fn score(&self) -> f64 {
+        format!("{:.12e}", self.score)
+            .parse::<f64>()
+            .unwrap_or(self.score)
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "conversation_id": self.conversation_id,
+            "title": self.title,
+            "message_id": self.message_id,
+            "ts": self.ts,
+            "role": self.role,
+            "snippet": self.snippet,
+            "score": self.score(),
+        })
+    }
+}
+
+/// One page of results, in the shape both clients read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Page {
+    /// The ranked rows, best first.
+    pub hits: Vec<HitRow>,
+    /// How many rows match in total, from a count query rather than by
+    /// over-fetching.
+    pub total: i64,
+    /// Where the next page starts, when there is one.
+    pub cursor: Option<String>,
+    /// How long the query took, in whole milliseconds.
+    pub took_ms: u64,
+}
+
+impl Page {
+    /// The wire body. The tool returns this value's bytes and the route returns
+    /// the same bytes, which is what keeps the two surfaces one answer.
+    #[must_use]
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "hits": self.hits.iter().map(HitRow::json).collect::<Vec<_>>(),
+            "total": self.total,
+            "cursor": self.cursor,
+            "took_ms": self.took_ms,
+        })
+    }
+
+    /// The body as compact JSON, byte-identical for the same page.
+    #[must_use]
+    pub fn body(&self) -> String {
+        self.json().to_string()
+    }
+}
+
+/// Markers the index writes around a matched term.
+///
+/// Control characters rather than `<b>` in the `snippet()` call, so the body can
+/// be HTML-escaped first and the tags added after: a transcript that contains a
+/// literal `<b>` cannot then be mistaken for emphasis.
+const OPEN: &str = "\u{1}";
+const CLOSE: &str = "\u{2}";
+
+/// Escape the body, then turn the marker characters into `<b>`.
+fn markup(raw: &str) -> String {
+    let open = OPEN.chars().next().unwrap_or('\u{1}');
+    let close = CLOSE.chars().next().unwrap_or('\u{2}');
+    let mut out = String::with_capacity(raw.len() + 16);
+    for character in raw.chars() {
+        match character {
+            _ if character == open => out.push_str("<b>"),
+            _ if character == close => out.push_str("</b>"),
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The `settings` row value, or `None`.
+///
+/// Read here rather than through the setup engine because the tool's access
+/// holds a database and nothing else; it is one indexed row on a per-call path.
+fn stored(db: &Db, row: &str) -> Option<String> {
+    db.with_conn(|conn| {
+        use rusqlite::OptionalExtension;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            rusqlite::params![row],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+    })
+    .ok()
+    .flatten()
+}
+
+/// The stored result count, clamped to the bounds the record publishes.
+#[must_use]
+pub fn stored_limit(db: &Db) -> usize {
+    stored(db, SETTING_SEARCH_LIMIT)
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| {
+            *value >= MIN_SETTING_LIMIT as usize && *value <= MAX_SETTING_LIMIT as usize
+        })
+        .unwrap_or(DEFAULT_LIMIT)
+}
+
+/// The stored default scope, or `all` when the row holds something else.
+#[must_use]
+pub fn stored_scope(db: &Db) -> String {
+    stored(db, SETTING_SEARCH_SCOPE_DEFAULT)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| SCOPE_VALUES.contains(&value.as_str()))
+        .unwrap_or_else(|| "all".to_owned())
+}
+
+/// Fill in the two fields a caller may leave to the daemon's own settings.
+///
+/// Both surfaces call this before [`search`], so "whatever the operator set" is
+/// one rule rather than one rule per client.
+pub fn apply_defaults(db: &Db, request: &mut Request) {
+    if request.limit == 0 {
+        request.limit = stored_limit(db);
+    }
+    if request.scope.trim().is_empty() {
+        let scope = stored_scope(db);
+        if scope == "conversation" && request.conversation_id.is_none() {
+            request.scope = "all".to_owned();
+        } else {
+            request.scope = scope;
+        }
+    }
+}
+
+/// Run one search.
+///
+/// `total` is a count query over the same filters, never the length of an
+/// over-fetch, so a page can say "143 hits" while returning twenty.
+///
+/// # Errors
+///
+/// Returns the database's own error when a statement fails.
+pub fn search(db: &Db, request: &Request) -> Result<Page, DbError> {
+    let started = std::time::Instant::now();
+    let limit = request.limit.clamp(1, MAX_LIMIT);
+    let role = match request.role.trim().to_ascii_lowercase().as_str() {
+        "user" => Some("user".to_owned()),
+        "assistant" => Some("assistant".to_owned()),
+        _ => None,
+    };
+    let conversation = request
+        .conversation_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let held_to = if request.mode == Mode::Browse
+        || request.scope.trim().eq_ignore_ascii_case("conversation")
+    {
+        conversation.clone()
+    } else {
+        None
+    };
+    let since = request.since.as_deref().filter(|value| !value.is_empty());
+    let until = request.until.as_deref().filter(|value| !value.is_empty());
+
+    if request.mode == Mode::Browse {
+        let page = browse(
+            db,
+            request,
+            held_to.as_deref(),
+            role.as_deref(),
+            since,
+            until,
+            limit,
+        )?;
+        return Ok(Page {
+            took_ms: elapsed(started),
+            ..page
+        });
+    }
+
+    let text = request.query.trim();
+    if text.is_empty() {
+        // A scoped walk with no words is a legitimate browse: it reads the
+        // conversation rather than ranking it.
+        let page = browse(
+            db,
+            request,
+            held_to.as_deref(),
+            role.as_deref(),
+            since,
+            until,
+            limit,
+        )?;
+        return Ok(Page {
+            took_ms: elapsed(started),
+            ..page
+        });
+    }
+
+    // All words first, then any of them. The count decides, not the page, so a
+    // later page cannot silently change the expression under the caller.
+    let mut chosen = None;
+    for and in [true, false] {
+        let Some(expression) = expression(text, and) else {
+            return Ok(Page {
+                hits: Vec::new(),
+                total: 0,
+                cursor: None,
+                took_ms: elapsed(started),
+            });
+        };
+        let total = count(
+            db,
+            &expression,
+            held_to.as_deref(),
+            role.as_deref(),
+            since,
+            until,
+        )?;
+        chosen = Some((expression, total));
+        if total > 0 {
+            break;
+        }
+    }
+    let Some((expression, total)) = chosen else {
+        return Ok(Page {
+            hits: Vec::new(),
+            total: 0,
+            cursor: None,
+            took_ms: elapsed(started),
+        });
+    };
+
+    let after = parse_cursor(request.cursor.as_deref());
+    let hits = page(
+        db,
+        &expression,
+        held_to.as_deref(),
+        role.as_deref(),
+        since,
+        until,
+        after.as_ref(),
+        limit,
+    )?;
+    // A cursor is offered only when a further row is really there: `hits.len()`
+    // against `total` is not enough, because a skipped or filtered row would
+    // then hand the caller a next-page link that returns nothing.
+    let cursor = match hits.last() {
+        Some(last) if (hits.len() as i64) < total => {
+            let probe = (last.score, last.message_id.clone());
+            let more = page(
+                db,
+                &expression,
+                held_to.as_deref(),
+                role.as_deref(),
+                since,
+                until,
+                Some(&probe),
+                1,
+            )?;
+            more.first()
+                .map(|_| format!("{}:{}", last.score, last.message_id))
+        }
+        _ => None,
+    };
+    Ok(Page {
+        hits,
+        total,
+        cursor,
+        took_ms: elapsed(started),
+    })
+}
+
+/// The one value both the tool and the route hand back.
+///
+/// This is the single seam the two surfaces share: the tool renders it into its
+/// `ToolResult`, the route renders the same value onto the wire, and the
+/// dashboard reads the same [`Page`]. Serializing one value twice cannot make the
+/// two disagree, and a test compares the rendered bytes anyway.
+///
+/// # Errors
+///
+/// Returns the database's own error when the query fails.
+pub fn answer(db: &Db, request: &Request) -> Result<serde_json::Value, DbError> {
+    search(db, request).map(|page| page.json())
+}
+
+fn elapsed(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// A decoded continuation: the score and id of the last row the caller saw.
+fn parse_cursor(cursor: Option<&str>) -> Option<(f64, String)> {
+    let cursor = cursor?;
+    let (score, id) = cursor.split_once(':')?;
+    Some((score.parse::<f64>().ok()?, id.to_owned()))
+}
+
+/// How many rows match, from a count query.
+#[allow(clippy::too_many_arguments)]
+fn count(
+    db: &Db,
+    expression: &str,
+    conversation: Option<&str>,
+    role: Option<&str>,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> Result<i64, DbError> {
+    const SQL: &str = "
+        SELECT count(*)
+          FROM chat_messages_fts
+          JOIN chat_messages m ON m.rowid = chat_messages_fts.rowid
+         WHERE chat_messages_fts MATCH ?1
+           AND m.state = 'complete'
+           AND (?2 IS NULL OR m.conversation_id = ?2)
+           AND (?3 IS NULL OR m.role = ?3)
+           AND (?4 IS NULL OR m.created_at >= ?4)
+           AND (?5 IS NULL OR m.created_at <= ?5)";
+    db.with_conn(|conn| {
+        conn.query_row(
+            SQL,
+            rusqlite::params![expression, conversation, role, since, until],
+            |row| row.get(0),
+        )
+    })
+}
+
+/// One ranked page, continued from `after` when the caller passed a cursor.
+#[allow(clippy::too_many_arguments)]
+fn page(
+    db: &Db,
+    expression: &str,
+    conversation: Option<&str>,
+    role: Option<&str>,
+    since: Option<&str>,
+    until: Option<&str>,
+    after: Option<&(f64, String)>,
+    limit: usize,
+) -> Result<Vec<HitRow>, DbError> {
+    // `bm25` is the sort key both for the page and for the cursor comparison, so
+    // a tie cannot repeat or skip a row: the id breaks it on both sides.
+    //
+    // The value is quantized with `printf` before it is used, because the raw
+    // score wobbles in its last digits between two statements of the same query
+    // and a cursor that quoted the wobbling value would repeat the row it
+    // continued from. `SCORE` is the one spelling of that, used for the selected
+    // column, the sort and the comparison alike.
+    const SQL: &str = "
+        SELECT m.conversation_id,
+               COALESCE(c.title, m.conversation_id),
+               m.id,
+               m.created_at,
+               m.role,
+               snippet(chat_messages_fts, 0, char(1), char(2), '...', 12),
+               CAST(printf('%.12e', bm25(chat_messages_fts)) AS REAL)
+          FROM chat_messages_fts
+          JOIN chat_messages m ON m.rowid = chat_messages_fts.rowid
+          LEFT JOIN chat_conversations c ON c.id = m.conversation_id
+         WHERE chat_messages_fts MATCH ?1
+           AND m.state = 'complete'
+           AND (?2 IS NULL OR m.conversation_id = ?2)
+           AND (?3 IS NULL OR m.role = ?3)
+           AND (?4 IS NULL OR m.created_at >= ?4)
+           AND (?5 IS NULL OR m.created_at <= ?5)
+           AND (?6 IS NULL
+                OR CAST(printf('%.12e', bm25(chat_messages_fts)) AS REAL) > ?6
+                OR (CAST(printf('%.12e', bm25(chat_messages_fts)) AS REAL) = ?6 AND m.id > ?7))
+         ORDER BY CAST(printf('%.12e', bm25(chat_messages_fts)) AS REAL), m.id
+         LIMIT ?8";
+    let (score, id) = match after {
+        Some((score, id)) => (Some(*score), Some(id.clone())),
+        None => (None, None),
+    };
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(SQL)?;
+        let rows = statement.query_map(
+            rusqlite::params![
+                expression,
+                conversation,
+                role,
+                since,
+                until,
+                score,
+                id,
+                limit as i64
+            ],
+            |row| {
+                let snippet: String = row.get(5)?;
+                Ok(HitRow {
+                    conversation_id: row.get(0)?,
+                    title: row.get(1)?,
+                    message_id: row.get(2)?,
+                    ts: row.get(3)?,
+                    role: row.get(4)?,
+                    snippet: markup(&snippet),
+                    score: row.get(6)?,
+                })
+            },
+        )?;
+        rows.collect()
+    })
+}
+
+/// A window of one conversation, centred on `request.cursor` when it names a
+/// message and the newest window otherwise.
+///
+/// `score` is `0.0` here: nothing was ranked, and pretending otherwise would let
+/// a client compare a browse row's score to a discovery score.
+#[allow(clippy::too_many_arguments)]
+fn browse(
+    db: &Db,
+    request: &Request,
+    conversation: Option<&str>,
+    role: Option<&str>,
+    since: Option<&str>,
+    until: Option<&str>,
+    limit: usize,
+) -> Result<Page, DbError> {
+    let anchor = request
+        .cursor
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let text = request.query.trim();
+    let expression = if text.is_empty() {
+        None
+    } else {
+        expression(text, false)
+    };
+
+    let total = if let Some(conversation) = conversation {
+        if let Some(expression) = &expression {
+            count(db, expression, Some(conversation), role, since, until)?
+        } else {
+            db.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT count(*) FROM chat_messages
+                      WHERE conversation_id = ?1
+                        AND (?2 IS NULL OR role = ?2)
+                        AND (?3 IS NULL OR created_at >= ?3)
+                        AND (?4 IS NULL OR created_at <= ?4)",
+                    rusqlite::params![conversation, role, since, until],
+                    |row| row.get(0),
+                )
+            })?
+        }
+    } else if let Some(expression) = &expression {
+        count(db, expression, None, role, since, until)?
+    } else {
+        db.with_conn(|conn| {
+            conn.query_row("SELECT count(*) FROM chat_messages", [], |row| row.get(0))
+        })?
+    };
+
+    const SQL: &str = "
+        SELECT m.conversation_id,
+               COALESCE(c.title, m.conversation_id),
+               m.id,
+               m.created_at,
+               m.role,
+               substr(m.body, 1, 400),
+               0.0,
+               CASE WHEN ?1 IS NULL THEN NULL ELSE (
+                 SELECT snippet(chat_messages_fts, 0, char(1), char(2), '...', 12)
+                   FROM chat_messages_fts WHERE chat_messages_fts.rowid = m.rowid
+               ) END
+          FROM chat_messages m
+          LEFT JOIN chat_conversations c ON c.id = m.conversation_id
+         WHERE m.state = 'complete'
+           AND (?2 IS NULL OR m.conversation_id = ?2)
+           AND (?3 IS NULL OR m.role = ?3)
+           AND (?4 IS NULL OR m.created_at >= ?4)
+           AND (?5 IS NULL OR m.created_at <= ?5)
+           AND (?6 IS NULL OR m.conversation_id IN (
+                 SELECT mm.conversation_id FROM chat_messages_fts
+                   JOIN chat_messages mm ON mm.rowid = chat_messages_fts.rowid
+                  WHERE chat_messages_fts MATCH ?6))
+           AND (?7 IS NULL OR m.created_at <= (
+                 SELECT created_at FROM chat_messages WHERE id = ?7))
+         ORDER BY m.created_at DESC, m.rowid DESC
+         LIMIT ?8";
+    let hits: Vec<HitRow> = db.with_conn(|conn| {
+        let mut statement = conn.prepare(SQL)?;
+        let rows = statement.query_map(
+            rusqlite::params![
+                expression.as_deref(),
+                conversation,
+                role,
+                since,
+                until,
+                expression.as_deref(),
+                anchor,
+                limit as i64
+            ],
+            |row| {
+                // Without a query there is nothing to mark, so the row carries the
+                // message itself: a window of blank snippets is not a window.
+                let raw: Option<String> = row.get(7)?;
+                let body: String = row.get(5)?;
+                Ok(HitRow {
+                    conversation_id: row.get(0)?,
+                    title: row.get(1)?,
+                    message_id: row.get(2)?,
+                    ts: row.get(3)?,
+                    role: row.get(4)?,
+                    snippet: raw.as_deref().map_or_else(|| markup(&clip(&body)), markup),
+                    score: row.get(6)?,
+                })
+            },
+        )?;
+        rows.collect()
+    })?;
+
+    // Newest-first is the right fetch order and the wrong read order for a
+    // window: a person scrolling back expects the transcript to run downwards.
+    let mut hits = hits;
+    hits.reverse();
+    let oldest = hits
+        .first()
+        .map(|hit| format!("0:{}", hit.message_id))
+        .filter(|_| (hits.len() as i64) < total);
+    Ok(Page {
+        hits,
+        total,
+        cursor: oldest,
+        took_ms: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,6 +1257,84 @@ mod tests {
             "a call with no shape must not report success"
         );
         assert!(empty.content.contains("nothing was searched"));
+    }
+
+    #[test]
+    fn the_tool_and_the_route_return_the_same_bytes() {
+        // The route body is `answer(...).to_string()`; the tool body is the same
+        // value through `ToolResult::ok`. If either side ever grows its own
+        // wrapper, this is the test that notices.
+        let access = Access::new(seeded());
+        let tool = access.call(&serde_json::json!({ "query": "warehouse", "limit": 5 }));
+        assert!(!tool.is_error);
+
+        let mut request = Request {
+            query: "warehouse".to_owned(),
+            scope: "all".to_owned(),
+            role: "all".to_owned(),
+            mode: Mode::Discovery,
+            limit: 5,
+            ..Request::default()
+        };
+        apply_defaults(&access.db, &mut request);
+        let route = answer(&access.db, &request).expect("answer");
+        // `took_ms` is a stopwatch, so it is compared for presence, not equality.
+        let mut tool_json: serde_json::Value =
+            serde_json::from_str(&tool.content).expect("the tool answers JSON");
+        let mut route_json = route.clone();
+        for value in [&mut tool_json, &mut route_json] {
+            value["took_ms"] = serde_json::json!(0);
+        }
+        assert_eq!(tool_json, route_json, "one request, one answer");
+        assert_eq!(
+            serde_json::to_string(&tool_json).expect("compact"),
+            route_json.to_string(),
+            "both surfaces render the same value the same way"
+        );
+    }
+
+    #[test]
+    fn a_bad_enum_falls_back_and_the_record_publishes_the_values() {
+        let db = seeded();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, 'sideways')
+                 ON CONFLICT(key) DO UPDATE SET value = 'sideways'",
+                rusqlite::params![SETTING_SEARCH_SCOPE_DEFAULT],
+            )
+        })
+        .expect("store");
+        assert_eq!(stored_scope(&db), "all");
+        assert_eq!(stored_limit(&db), DEFAULT_LIMIT);
+        assert!(SCOPE_VALUES.contains(&"conversation"));
+    }
+
+    #[test]
+    fn a_cursor_continues_without_repeating_a_row() {
+        let db = seeded();
+        let mut first = Request {
+            query: "warehouse".to_owned(),
+            scope: "all".to_owned(),
+            role: "all".to_owned(),
+            mode: Mode::Discovery,
+            limit: 1,
+            ..Request::default()
+        };
+        apply_defaults(&db, &mut first);
+        let one = search(&db, &first).expect("first page");
+        assert_eq!(one.hits.len(), 1);
+        assert_eq!(one.total, 2);
+        let cursor = one.cursor.clone().expect("a cursor while rows remain");
+
+        let mut second = first.clone();
+        second.cursor = Some(cursor);
+        let two = search(&db, &second).expect("second page");
+        assert_eq!(two.hits.len(), 1);
+        assert_ne!(
+            two.hits[0].message_id, one.hits[0].message_id,
+            "a page must not repeat the row it continued from"
+        );
+        assert!(two.cursor.is_none(), "the last page offers no cursor");
     }
 
     #[test]

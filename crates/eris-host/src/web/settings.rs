@@ -1778,6 +1778,26 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         crate::greeting::SETTING_GREETING_REFRESH,
         "greeting_refresh",
     ),
+    (crate::learning::SETTING_REVIEW_REPAIR, "learning_repair"),
+    (
+        crate::delivery::SETTING_DELIVERY_DEFAULT,
+        "schedule_delivery_default",
+    ),
+    (
+        crate::delivery::SETTING_EMAIL_ENABLED,
+        "schedule_email_enabled",
+    ),
+    (
+        crate::process::SETTING_NOTIFY_ON_COMPLETE,
+        "jobs_notify_on_complete",
+    ),
+    (crate::process::SETTING_RECEIPT_DAYS, "jobs_receipt_days"),
+    (crate::learning::SETTING_UNUSED_DAYS, "curator_archive_days"),
+    (crate::search::SETTING_SEARCH_LIMIT, "search_limit"),
+    (
+        crate::search::SETTING_SEARCH_SCOPE_DEFAULT,
+        "search_scope_default",
+    ),
     (crate::memory::SETTING_BACKEND, "memory_backend"),
     (crate::push::SETTING_NOTIFY_ON_REPLY, "notify_on_reply"),
     (crate::push::SETTING_NOTIFY_SCOPE, "notify_scope"),

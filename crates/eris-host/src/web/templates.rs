@@ -1964,6 +1964,12 @@ pub enum SettingsGroup {
     Goal,
     /// The generated line on an empty conversation: its switch, model, window.
     Greeting,
+    /// The transcript search defaults: how many hits, and what scope it starts on.
+    Search,
+    /// Background jobs: the finish notice and the receipt window.
+    Jobs,
+    /// Schedule delivery: the default channel and the mail gate.
+    Delivery,
     /// Cron schedules and their run history.
     Schedules,
     /// The operator's skill library and its per-skill switches.
@@ -1976,7 +1982,7 @@ pub enum SettingsGroup {
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 13] = [
         Self::Provider,
         Self::Accounts,
         Self::Workspace,
@@ -1984,6 +1990,9 @@ impl SettingsGroup {
         Self::Persona,
         Self::Goal,
         Self::Greeting,
+        Self::Search,
+        Self::Jobs,
+        Self::Delivery,
         Self::Schedules,
         Self::Skills,
         Self::Update,
@@ -1999,6 +2008,9 @@ impl SettingsGroup {
             Self::Persona => "persona",
             Self::Goal => "goal",
             Self::Greeting => "greeting",
+            Self::Search => "search",
+            Self::Jobs => "jobs",
+            Self::Delivery => "delivery",
             Self::Schedules => "schedules",
             Self::Skills => "skills",
             Self::Accounts => "accounts",
@@ -2029,6 +2041,12 @@ impl SettingsGroup {
             Self::Greeting => matches!(
                 field,
                 "greeting_enabled" | "greeting_model" | "greeting_refresh"
+            ),
+            Self::Search => matches!(field, "search_limit" | "search_scope_default"),
+            Self::Jobs => matches!(field, "jobs_notify_on_complete" | "jobs_receipt_days"),
+            Self::Delivery => matches!(
+                field,
+                "schedule_delivery_default" | "schedule_email_enabled"
             ),
             Self::Schedules => matches!(
                 field,
@@ -2063,6 +2081,9 @@ impl SettingsGroup {
             Self::Persona => "assistant identity saved",
             Self::Goal => "objective saved",
             Self::Greeting => "greeting saved",
+            Self::Search => "search defaults saved",
+            Self::Jobs => "job settings saved",
+            Self::Delivery => "delivery settings saved",
             Self::Schedules => "schedules saved",
             Self::Skills => "skills saved",
             Self::Accounts => "account updated",
@@ -2361,6 +2382,22 @@ pub struct SettingsView {
     pub greeting_model: String,
     /// `hour`, `day` or `week`: how old the stored line may get.
     pub greeting_refresh: String,
+    /// Whether an over-long review is repaired instead of dropped.
+    pub learning_repair: bool,
+    /// How long a skill nothing has ever read may stay in the catalog.
+    pub curator_archive_days: String,
+    /// Where a schedule's output goes by default.
+    pub schedule_delivery_default: String,
+    /// Whether mail may leave the daemon at all.
+    pub schedule_email_enabled: bool,
+    /// Whether a finished background job announces itself.
+    pub jobs_notify_on_complete: bool,
+    /// How many days a finished job's receipt is kept.
+    pub jobs_receipt_days: String,
+    /// How many hits a search returns when the caller does not say.
+    pub search_limit: String,
+    /// `all` or `conversation`: the scope a search starts on.
+    pub search_scope_default: String,
     /// The line under the salutation, as the form shows it.
     pub chat_hint: String,
     /// One row per auxiliary role: what it is, what it does, what it uses.
@@ -2463,6 +2500,14 @@ impl SettingsView {
             greeting_enabled: false,
             greeting_model: crate::greeting::INHERIT.to_owned(),
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
+            learning_repair: true,
+            curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
+            schedule_delivery_default: crate::delivery::DEFAULT_CHANNEL.to_owned(),
+            schedule_email_enabled: true,
+            jobs_notify_on_complete: true,
+            jobs_receipt_days: "7".to_owned(),
+            search_limit: crate::search::DEFAULT_LIMIT.to_string(),
+            search_scope_default: "all".to_owned(),
             chat_hint: crate::greeting::DEFAULT_HINT.to_owned(),
             aux_roles: Vec::new(),
             accounts: Vec::new(),
@@ -2627,9 +2672,11 @@ impl SettingsTab {
     pub fn for_group(group: SettingsGroup) -> Self {
         match group {
             SettingsGroup::Provider | SettingsGroup::Accounts => Self::Models,
-            SettingsGroup::Persona | SettingsGroup::Goal | SettingsGroup::Greeting => {
-                Self::Assistant
-            }
+            SettingsGroup::Persona
+            | SettingsGroup::Goal
+            | SettingsGroup::Greeting
+            | SettingsGroup::Search => Self::Assistant,
+            SettingsGroup::Jobs | SettingsGroup::Delivery => Self::Automation,
             SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
             SettingsGroup::Workspace | SettingsGroup::Permissions | SettingsGroup::Update => {
                 Self::System
@@ -2691,10 +2738,24 @@ impl SettingsTab {
             | "account_provider"
             | "account_action"
             | "account_paste" => Self::Models,
-            "persona_text" | "persona_enabled" | "assistant_name" | "reply_state"
-            | "show_reasoning" | "streaming" | "show_quota" | "show_tool_log" | "tool_log_mode"
-            | "greeting_enabled" | "greeting_model" | "greeting_refresh" | "chat_hint"
-            | "goal_text" | "goal_action" | "soft_cap_tokens" => Self::Assistant,
+            "persona_text"
+            | "persona_enabled"
+            | "assistant_name"
+            | "reply_state"
+            | "show_reasoning"
+            | "streaming"
+            | "show_quota"
+            | "show_tool_log"
+            | "tool_log_mode"
+            | "greeting_enabled"
+            | "greeting_model"
+            | "greeting_refresh"
+            | "chat_hint"
+            | "search_limit"
+            | "search_scope_default"
+            | "goal_text"
+            | "goal_action"
+            | "soft_cap_tokens" => Self::Assistant,
             "memory_backend" | "memory_vault" => Self::Memory,
             "device_listen" | "device_relay" | "notify_on_reply" | "notify_scope"
             | "notify_devices" => Self::Devices,
@@ -3363,6 +3424,67 @@ fn goal_group(view: &SettingsView) -> Markup {
 ///
 /// Off by default, and the card says so: a line that costs a provider call is not
 /// something anybody should get without asking for it.
+fn search_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_SEARCH) novalidate {
+            (group_region(view, SettingsGroup::Search))
+            div .field {
+                label for="search_limit" { "Results per search" }
+                input type="number" id="search_limit" name="search_limit"
+                    min=(crate::search::MIN_SETTING_LIMIT) max=(crate::search::MAX_SETTING_LIMIT)
+                    value=(view.search_limit)
+                    autofocus[focuses("search_limit")];
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("search_limit")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Five to fifty. A wide number is a longer page, not a slower query: the count "
+                    "and the page are separate statements and the count never over-fetches."
+                }
+            }
+            div .field {
+                label for="search_scope_default" { "Starts on" }
+                select id="search_scope_default" name="search_scope_default"
+                    autofocus[focuses("search_scope_default")] {
+                    @for value in crate::search::SCOPE_VALUES {
+                        option value=(value) selected[view.search_scope_default == *value] {
+                            (search_scope_label(value))
+                        }
+                    }
+                }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("search_scope_default")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Holding to one conversation keeps a follow-up in the transcript already open. "
+                    "Everywhere ranks across the whole history instead."
+                }
+            }
+            div .actions { button type="submit" { "Save search" } }
+        }
+    }
+}
+
+/// The words a delivery channel is offered under.
+fn delivery_label(value: &str) -> &'static str {
+    match value {
+        "inbox" => "Inbox row",
+        "email" => "Mail",
+        "off" => "Nothing",
+        _ => "Push to devices",
+    }
+}
+
+/// The words a scope is offered under.
+fn search_scope_label(value: &str) -> &'static str {
+    match value {
+        "conversation" => "This conversation",
+        _ => "Every conversation",
+    }
+}
+
 fn greeting_group(view: &SettingsView) -> Markup {
     let error = view.error.as_ref();
     let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
@@ -4051,15 +4173,16 @@ fn schedules_group(view: &SettingsView) -> Markup {
             div .field {
                 label for="schedule_deliver" { "Delivery" }
                 select id="schedule_deliver" name="schedule_deliver" {
-                    @for channel in crate::delivery::CHANNELS {
-                        option value=(channel) selected[channel == crate::delivery::DEFAULT_CHANNEL] {
-                            (channel)
+                    @for channel in crate::delivery::DEFAULT_VALUES {
+                        option value=(channel)
+                            selected[*channel == view.schedule_delivery_default] {
+                            (delivery_label(channel))
                         }
                     }
                 }
                 span .hint {
-                    "Where the answer goes. `push` alerts the paired devices, `email` writes "
-                    "to the one permitted address, `both` does both, and `none` only writes "
+                    "Where the answer goes. Push alerts the paired devices, an inbox row waits in "
+                    "the tray, mail writes to the one permitted address, and nothing leaves it in "
                     "the conversation. The address rule is not configurable here."
                 }
             }
@@ -4085,6 +4208,7 @@ fn schedules_group(view: &SettingsView) -> Markup {
                     @if let Some(status) = &schedule.last_status {
                         " last " (status)
                     }
+                    " · delivery " (delivery_label(&schedule.deliver))
                 }
                 form method="post" action=(crate::admin::ROUTE_SETTINGS_SCHEDULES) novalidate {
                     input type="hidden" name="schedule_id" value=(schedule.id.as_str());
@@ -4093,6 +4217,10 @@ fn schedules_group(view: &SettingsView) -> Markup {
                         value=@if schedule.enabled { "true" } @else { "false" };
                     button type="submit" {
                         @if schedule.enabled { "Disable" } @else { "Enable" }
+                    }
+                    " "
+                    button type="submit" name="schedules_action" value="retry" {
+                        "Send again"
                     }
                     " "
                     button type="submit" class="danger" name="schedules_action" value="delete" {
@@ -4391,6 +4519,16 @@ fn tab_assistant(view: &SettingsView) -> Markup {
             (quota_group(view))
         }
 
+        section .card aria-labelledby="search-heading" {
+            h2 id="search-heading" { "Search" }
+            p .small {
+                "The transcript search on the dashboard and on the phone reads one index. These two "
+                "values are its defaults: the phone asks for them when it has no opinion, and a "
+                "result list never grows past the limit."
+            }
+            (search_group(view))
+        }
+
         section .card aria-labelledby="greeting-heading" {
             h2 id="greeting-heading" { "Greeting" }
             p .small {
@@ -4550,6 +4688,123 @@ fn tab_automation(view: &SettingsView) -> Markup {
                 "a conversation named after the schedule."
             }
             (schedules_group(view))
+        }
+
+        section .card aria-labelledby="delivery-heading" {
+            h2 id="delivery-heading" { "Schedule delivery" }
+            p .small {
+                "Where a schedule's answer lands. A schedule may choose its own; this is what a new "
+                "one starts on, and it is the switch that lets mail out of this daemon at all. The "
+                "recipient is fixed: one address, no CC, no aliases."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_DELIVERY) novalidate {
+                div .field {
+                    label for="schedule_delivery_default" { "Default channel" }
+                    select id="schedule_delivery_default" name="schedule_delivery_default" {
+                        @for value in crate::delivery::DEFAULT_VALUES {
+                            option value=(value) selected[view.schedule_delivery_default == *value] {
+                                (delivery_label(value))
+                            }
+                        }
+                    }
+                    span .hint {
+                        "Push to every paired device, an inbox row, mail, or nothing but the "
+                        "conversation. Every run records which of them landed."
+                    }
+                }
+                div .field {
+                    label for="schedule_email_enabled" {
+                        input type="checkbox" id="schedule_email_enabled" name="schedule_email_enabled"
+                            value="true" checked[view.schedule_email_enabled];
+                        " Allow mail"
+                    }
+                    span .hint {
+                        "Off, a run that asked for mail falls back to the inbox and its row says so. "
+                        "Mail needs a relay at " code { "deliver.smtp_host" } "; without one the "
+                        "message is written to the outbox and nothing claims it was sent."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save delivery" }
+                    a .button href=(crate::admin::ROUTE_TRIGGERS) { "Open schedules" }
+                }
+            }
+        }
+
+        section .card aria-labelledby="jobs-heading" {
+            h2 id="jobs-heading" { "Background jobs" }
+            p .small {
+                "Work started with the background flag outlives the thirty-second command cap. "
+                "These are how it reports and how long its receipt survives: a job that ends on "
+                "its own arrives as its own turn instead of costing a poll."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_JOBS) novalidate {
+                div .field {
+                    label for="jobs_notify_on_complete" {
+                        input type="checkbox" id="jobs_notify_on_complete"
+                            name="jobs_notify_on_complete" value="true"
+                            checked[view.jobs_notify_on_complete];
+                        " Report a finish instead of polling"
+                    }
+                    span .hint {
+                        "Two quiet checks arm it, and the turn is told to stop asking. Off, every "
+                        "job is polled until it is done."
+                    }
+                }
+                div .field {
+                    label for="jobs_receipt_days" { "Keep receipts for" }
+                    input type="number" id="jobs_receipt_days" name="jobs_receipt_days"
+                        min=(crate::process::MIN_RECEIPT_DAYS)
+                        max=(crate::process::MAX_RECEIPT_DAYS) value=(view.jobs_receipt_days);
+                    span .hint {
+                        "Days, 1 to 30, newest sixty-four kept whatever the age. A receipt carries "
+                        "the exit code and the tail, so a crash is readable afterwards."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save jobs" }
+                    a .button href=(crate::admin::ROUTE_ACTIVITY) { "Open activity" }
+                }
+            }
+        }
+
+        section .card aria-labelledby="learning-heading" {
+            h2 id="learning-heading" { "Learning" }
+            p .small {
+                "The loop reads a finished turn and writes down what it taught. A review is one "
+                "JSON object, and a reply that breaks the loop's own rules used to be thrown away "
+                "with the lesson still inside it."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_LEARNING) novalidate {
+                div .field {
+                    label for="learning_repair" {
+                        input type="checkbox" id="learning_repair" name="learning_repair"
+                            value="true" checked[view.learning_repair];
+                        " Repair an over-long review"
+                    }
+                    span .hint {
+                        "Collapse the whitespace, cut at a word boundary, add the full stop, then "
+                        "re-read it. One re-ask follows if that fails; off, both are skipped and the "
+                        "run fails on the first refusal."
+                    }
+                }
+                div .field {
+                    label for="curator_archive_days" { "Archive a never-read skill after" }
+                    input type="number" id="curator_archive_days" name="curator_archive_days"
+                        min=(crate::learning::MIN_UNUSED_DAYS)
+                        max=(crate::learning::MAX_UNUSED_DAYS)
+                        value=(view.curator_archive_days);
+                    span .hint {
+                        "Days, 7 to 365. A skill nothing has ever opened leaves the catalog when it "
+                        "is that old, stays on disk, and is reachable again with one un-archive. A "
+                        "pinned skill is never archived."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save learning" }
+                    a .button href=(crate::admin::ROUTE_LEARNING) { "Open the loop" }
+                }
+            }
         }
 
         section .card aria-labelledby="skills-heading" {
@@ -4946,6 +5201,10 @@ pub struct ActivityView {
     pub error: Option<FormError>,
     /// A success line, unused today but the page shares the shell's contract.
     pub notice: Option<String>,
+    /// Live background processes, newest first.
+    pub processes: Vec<serde_json::Value>,
+    /// The retained receipts, newest first.
+    pub receipts: Vec<serde_json::Value>,
 }
 
 impl ActivityView {
@@ -4959,6 +5218,8 @@ impl ActivityView {
             total: 0,
             error: None,
             notice: None,
+            processes: Vec::new(),
+            receipts: Vec::new(),
         }
     }
 }
@@ -4993,6 +5254,81 @@ pub fn activity_page(view: &ActivityView) -> Markup {
             "sign-in, every device change lands here, and nothing in the log can be edited from a page."
         }
         (alert_region(error, view.notice.as_deref()))
+        section .card aria-labelledby="processes-heading" {
+            h2 id="processes-heading" { "Background processes" }
+            @if view.processes.is_empty() {
+                p .empty {
+                    strong { "Nothing running" }
+                    "No background job belongs to this daemon right now."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Started" }
+                            th scope="col" { "Command" }
+                            th scope="col" { "Status" }
+                            th scope="col" { "Bytes" }
+                            th scope="col" { "Control" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.processes {
+                            tr {
+                                td .mono .small { (row["started_at"].as_str().unwrap_or_default()) }
+                                td .mono .small {
+                                    (row["command"].as_str().unwrap_or_default())
+                                    @if let Some(id) = row["process_id"].as_str() {
+                                        p .small .mono {
+                                            "pid " (row["pid"]) " · " (id)
+                                        }
+                                    }
+                                }
+                                td { (row["status"].as_str().unwrap_or_default()) }
+                                td .mono .small { (row["bytes"]) }
+                                td {
+                                    @if row["status"] == "running" {
+                                        form .inline-form method="post"
+                                            action=(format!("{}/{}", crate::admin::ROUTE_DASHBOARD_PROCESS_KILL,
+                                                row["process_id"].as_str().unwrap_or_default())) novalidate {
+                                            button type="submit" { "Stop" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p .small {
+                "Started through the process tool by a turn. A job outlives the command cap; its "
+                "receipt below outlives the job."
+            }
+        }
+        section .card aria-labelledby="receipts-heading" {
+            h2 id="receipts-heading" { "Receipts" }
+            @if view.receipts.is_empty() {
+                p .empty { "No receipt is retained." }
+            } @else {
+                @for row in &view.receipts {
+                    article .receipt {
+                        p .mono .small {
+                            (row["finished_at"].as_str().unwrap_or_default()) " · "
+                            (row["status"].as_str().unwrap_or_default())
+                            @if let Some(code) = row["exit_code"].as_i64() { " · exit " (code) }
+                            @if let Some(signal) = row["signal"].as_i64() { " · signal " (signal) }
+                        }
+                        p .mono .small { (row["command"].as_str().unwrap_or_default()) }
+                        @if let Some(note) = row["signal_note"].as_str() {
+                            p .small { (note) }
+                        }
+                        @if let Some(output) = row["output"].as_str().filter(|text| !text.is_empty()) {
+                            pre .tail { (output) }
+                        }
+                    }
+                }
+            }
+        }
         section .card aria-labelledby="audit-heading" {
             h2 id="audit-heading" { "Audit log" }
             @if view.rows.is_empty() {
@@ -5158,6 +5494,8 @@ pub fn learning_page(view: &LearningView) -> Markup {
                 (view.totals.active) " learned skill(s) active, "
                 (view.totals.stale) " stale, "
                 (view.totals.archived) " archived, "
+                (view.totals.repaired) " review(s) repaired, "
+                (view.totals.dropped) " dropped, "
                 (view.totals.pending) " review(s) queued. "
                 (operator) " operator-owned skill(s) are in the library and off limits to the loop."
             }
@@ -5286,21 +5624,6 @@ pub fn learning_page(view: &LearningView) -> Markup {
     )
 }
 
-/// One conversation that matched, as the search page lists it.
-#[derive(Debug, Clone)]
-pub struct SearchHitRow {
-    /// The conversation id the link opens.
-    pub conversation: String,
-    /// Its title.
-    pub title: String,
-    /// The excerpt, with the matched words in brackets.
-    pub snippet: String,
-    /// When the best-scoring message was written.
-    pub created_at: String,
-    /// How many messages in it matched.
-    pub matches: i64,
-}
-
 /// Everything the search page needs.
 #[derive(Debug, Clone)]
 pub struct SearchView {
@@ -5310,8 +5633,16 @@ pub struct SearchView {
     pub state: SetupState,
     /// What was typed, echoed back into the field.
     pub query: String,
-    /// One row per matching conversation, best first.
-    pub hits: Vec<SearchHitRow>,
+    /// The ranked rows, best first.
+    pub hits: Vec<crate::search::HitRow>,
+    /// How many rows match in total, from the count query.
+    pub total: i64,
+    /// Where the next page starts, when there is one.
+    pub cursor: Option<String>,
+    /// `all` or `conversation`.
+    pub scope: String,
+    /// `all`, `user` or `assistant`.
+    pub role: String,
     /// A success line, when a form just saved.
     pub notice: Option<String>,
 }
@@ -5325,6 +5656,10 @@ impl SearchView {
             state,
             query: String::new(),
             hits: Vec::new(),
+            total: 0,
+            cursor: None,
+            scope: "all".to_owned(),
+            role: "all".to_owned(),
             notice: None,
         }
     }
@@ -5351,6 +5686,21 @@ pub fn search_page(view: &SearchView) -> Markup {
             input type="search" id="search-q" name="q" value=(view.query)
                 placeholder="What did we work out about ..."
                 autocomplete="off" autofocus;
+            label for="search-scope" .sr-only { "Scope" }
+            select id="search-scope" name="scope" {
+                @for value in crate::search::SCOPE_VALUES {
+                    option value=(value) selected[view.scope == *value] {
+                        (search_scope_label(value))
+                    }
+                }
+            }
+            label for="search-role" .sr-only { "Speaker" }
+            select id="search-role" name="role" {
+                @for value in crate::search::ROLE_VALUES {
+                    option value=(value)
+                        selected[view.role.eq_ignore_ascii_case(value)] { (value) }
+                }
+            }
             button type="submit" { "Search" }
         }
         (alert_region(None, view.notice.as_deref()))
@@ -5363,28 +5713,55 @@ pub fn search_page(view: &SearchView) -> Markup {
             p .small { "Nothing matched " code { (query) } "." }
         } @else {
             p .small {
-                (view.hits.len()) " conversation"
+                (view.total) " message"
+                @if view.total != 1 { "s" }
+                " matched, best first, in " (view.hits.len()) " row"
                 @if view.hits.len() != 1 { "s" }
-                " matched."
+                " on this page."
             }
             @for hit in &view.hits {
                 article .card .search-hit {
                     h2 {
-                        a href=(format!("{}?conversation={}", crate::admin::ROUTE_CHAT, hit.conversation)) {
+                        a href=(format!("{}?conversation={}", crate::admin::ROUTE_CHAT, hit.conversation_id)) {
                             (hit.title)
                         }
                     }
-                    p .snippet { (hit.snippet) }
+                    p .snippet { (PreEscaped(&hit.snippet)) }
                     p .small .mono {
-                        (hit.created_at) " · "
-                        (hit.matches) " message"
-                        @if hit.matches != 1 { "s" }
+                        (hit.ts) " · " (hit.role) " · score " (format!("{:.2}", hit.score))
                     }
+                }
+            }
+            @if let Some(cursor) = &view.cursor {
+                p .small {
+                    a href=(format!(
+                        "{route}?q={query}&scope={scope}&role={role}&cursor={cursor}",
+                        route = crate::admin::ROUTE_SEARCH,
+                        query = urlencode(query),
+                        scope = view.scope,
+                        role = view.role,
+                    )) { "Next page" }
                 }
             }
         }
     };
     shell("Search", view.state, Some(Nav::Search), body, &view.chrome)
+}
+
+/// Percent-encode a value for a query string, so a cursor that holds a `:` and a
+/// query that holds a space survive the link.
+fn urlencode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
 }
 
 /// One skill's file, as the editor renders it.
@@ -5419,6 +5796,8 @@ pub struct SkillsView {
     pub library: String,
     /// Whether the catalog is switched on for turns.
     pub enabled: bool,
+    /// Whether the table is showing only archived skills.
+    pub archived_only: bool,
     /// The skill whose file is in the editor, when one is selected.
     pub editing: Option<SkillEditor>,
     /// The key waiting for a second press before it is archived.
@@ -5439,6 +5818,7 @@ impl SkillsView {
             skills: Vec::new(),
             library: String::new(),
             enabled: true,
+            archived_only: false,
             editing: None,
             confirming: None,
             notice: None,
@@ -5467,6 +5847,14 @@ pub fn skills_page(view: &SkillsView) -> Markup {
             "loses its ledger row with it, so the loop cannot write it back."
         }
         (alert_region(error, view.notice.as_deref()))
+        p .small .filters {
+            @if view.archived_only {
+                a href=(crate::admin::ROUTE_SKILLS) { "Show every skill" }
+                " · showing archived only"
+            } @else {
+                a href=(format!("{}?archived=1", crate::admin::ROUTE_SKILLS)) { "Show archived only" }
+            }
+        }
         @if let Some(key) = &view.confirming {
             section .card aria-labelledby="skills-confirm" {
                 h2 id="skills-confirm" { "Delete " code { (key) } "?" }
@@ -5534,6 +5922,9 @@ pub fn skills_page(view: &SkillsView) -> Markup {
                                 td {
                                     (skill.state.as_str())
                                     @if skill.pinned { " " span .tag { "pinned" } }
+                                    @if let Some(reason) = &skill.archived_reason {
+                                        p .small { (reason) }
+                                    }
                                 }
                                 td .mono .small {
                                     (skill.bytes) " bytes · " (skill.use_count) " read"
@@ -5543,6 +5934,13 @@ pub fn skills_page(view: &SkillsView) -> Markup {
                                     a .button.secondary
                                         href=(format!("{}?edit={}", crate::admin::ROUTE_SKILLS, skill.key)) {
                                         "Edit"
+                                    }
+                                    @if matches!(skill.state, crate::learning::State::Archived) {
+                                        form .inline-form method="post"
+                                            action=(crate::admin::ROUTE_SKILLS_RESTORE) novalidate {
+                                            input type="hidden" name="key" value=(skill.key);
+                                            button type="submit" { "Un-archive" }
+                                        }
                                     }
                                     form .inline-form method="post"
                                         action=(crate::admin::ROUTE_SKILLS_DELETE) novalidate {
@@ -11698,6 +12096,8 @@ mod tests {
             editable: true,
             use_count: 3,
             last_used: Some("2026-11-01T00:00:00.000Z".to_owned()),
+            archived_at: None,
+            archived_reason: None,
         }];
         view.editing = Some(SkillEditor {
             key: "deploy".to_owned(),
