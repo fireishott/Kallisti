@@ -1778,6 +1778,11 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         crate::greeting::SETTING_GREETING_REFRESH,
         "greeting_refresh",
     ),
+    (crate::search::SETTING_SEARCH_LIMIT, "search_limit"),
+    (
+        crate::search::SETTING_SEARCH_SCOPE_DEFAULT,
+        "search_scope_default",
+    ),
     (crate::memory::SETTING_BACKEND, "memory_backend"),
     (crate::push::SETTING_NOTIFY_ON_REPLY, "notify_on_reply"),
     (crate::push::SETTING_NOTIFY_SCOPE, "notify_scope"),

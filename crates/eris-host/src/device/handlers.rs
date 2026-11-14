@@ -2530,6 +2530,14 @@ fn read_skills_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
 
 /// The workspace a turn may write in. Read-only here: it is set by the wizard and
 /// moving it from a phone is a different decision with a different card.
+fn read_search_limit(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::search::stored_limit(engine.db()).to_string())
+}
+
+fn read_search_scope_default(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::search::stored_scope(engine.db()))
+}
+
 fn read_workspace(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(row_of(engine, crate::onboarding::SETTING_WORKSPACE)?
         .unwrap_or_default()
@@ -2555,6 +2563,8 @@ const NOTIFY_SCOPE_VALUES: &[&str] = &["origin", "all", "targeted"];
 const CLOCK_FORMAT_VALUES: &[&str] = &["12h", "24h"];
 /// The values `display.conversation_sort` accepts.
 const CONVERSATION_SORT_VALUES: &[&str] = &["updated", "created", "title", "day"];
+/// The values `search.scope_default` accepts, from [`crate::search`] itself.
+const SEARCH_SCOPE_VALUES: &[&str] = crate::search::SCOPE_VALUES;
 
 /// Every operator-facing setting the daemon serves, described once.
 ///
@@ -2706,6 +2716,31 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::greeting::SETTING_GREETING_REFRESH,
         writable: true,
         read: read_greeting_refresh,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "search_limit",
+        label: "Search results",
+        group: "assistant",
+        // The bounds are `search::search`'s own ceiling and the fewest lines a
+        // result list is worth drawing.
+        kind: SettingKind::Int(
+            crate::search::MIN_SETTING_LIMIT,
+            crate::search::MAX_SETTING_LIMIT,
+        ),
+        row: crate::search::SETTING_SEARCH_LIMIT,
+        writable: true,
+        read: read_search_limit,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "search_scope_default",
+        label: "Search scope",
+        group: "assistant",
+        kind: SettingKind::Enum(SEARCH_SCOPE_VALUES),
+        row: crate::search::SETTING_SEARCH_SCOPE_DEFAULT,
+        writable: true,
+        read: read_search_scope_default,
         normalize: None,
     },
     SettingSpec {

@@ -1964,6 +1964,8 @@ pub enum SettingsGroup {
     Goal,
     /// The generated line on an empty conversation: its switch, model, window.
     Greeting,
+    /// The transcript search defaults: how many hits, and what scope it starts on.
+    Search,
     /// Cron schedules and their run history.
     Schedules,
     /// The operator's skill library and its per-skill switches.
@@ -1976,7 +1978,7 @@ pub enum SettingsGroup {
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Provider,
         Self::Accounts,
         Self::Workspace,
@@ -1984,6 +1986,7 @@ impl SettingsGroup {
         Self::Persona,
         Self::Goal,
         Self::Greeting,
+        Self::Search,
         Self::Schedules,
         Self::Skills,
         Self::Update,
@@ -1999,6 +2002,7 @@ impl SettingsGroup {
             Self::Persona => "persona",
             Self::Goal => "goal",
             Self::Greeting => "greeting",
+            Self::Search => "search",
             Self::Schedules => "schedules",
             Self::Skills => "skills",
             Self::Accounts => "accounts",
@@ -2030,6 +2034,7 @@ impl SettingsGroup {
                 field,
                 "greeting_enabled" | "greeting_model" | "greeting_refresh"
             ),
+            Self::Search => matches!(field, "search_limit" | "search_scope_default"),
             Self::Schedules => matches!(
                 field,
                 "schedule_name"
@@ -2063,6 +2068,7 @@ impl SettingsGroup {
             Self::Persona => "assistant identity saved",
             Self::Goal => "objective saved",
             Self::Greeting => "greeting saved",
+            Self::Search => "search defaults saved",
             Self::Schedules => "schedules saved",
             Self::Skills => "skills saved",
             Self::Accounts => "account updated",
@@ -2361,6 +2367,10 @@ pub struct SettingsView {
     pub greeting_model: String,
     /// `hour`, `day` or `week`: how old the stored line may get.
     pub greeting_refresh: String,
+    /// How many hits a search returns when the caller does not say.
+    pub search_limit: String,
+    /// `all` or `conversation`: the scope a search starts on.
+    pub search_scope_default: String,
     /// The line under the salutation, as the form shows it.
     pub chat_hint: String,
     /// One row per auxiliary role: what it is, what it does, what it uses.
@@ -2463,6 +2473,8 @@ impl SettingsView {
             greeting_enabled: false,
             greeting_model: crate::greeting::INHERIT.to_owned(),
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
+            search_limit: crate::search::DEFAULT_LIMIT.to_string(),
+            search_scope_default: "all".to_owned(),
             chat_hint: crate::greeting::DEFAULT_HINT.to_owned(),
             aux_roles: Vec::new(),
             accounts: Vec::new(),
@@ -2627,9 +2639,10 @@ impl SettingsTab {
     pub fn for_group(group: SettingsGroup) -> Self {
         match group {
             SettingsGroup::Provider | SettingsGroup::Accounts => Self::Models,
-            SettingsGroup::Persona | SettingsGroup::Goal | SettingsGroup::Greeting => {
-                Self::Assistant
-            }
+            SettingsGroup::Persona
+            | SettingsGroup::Goal
+            | SettingsGroup::Greeting
+            | SettingsGroup::Search => Self::Assistant,
             SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
             SettingsGroup::Workspace | SettingsGroup::Permissions | SettingsGroup::Update => {
                 Self::System
@@ -2691,10 +2704,24 @@ impl SettingsTab {
             | "account_provider"
             | "account_action"
             | "account_paste" => Self::Models,
-            "persona_text" | "persona_enabled" | "assistant_name" | "reply_state"
-            | "show_reasoning" | "streaming" | "show_quota" | "show_tool_log" | "tool_log_mode"
-            | "greeting_enabled" | "greeting_model" | "greeting_refresh" | "chat_hint"
-            | "goal_text" | "goal_action" | "soft_cap_tokens" => Self::Assistant,
+            "persona_text"
+            | "persona_enabled"
+            | "assistant_name"
+            | "reply_state"
+            | "show_reasoning"
+            | "streaming"
+            | "show_quota"
+            | "show_tool_log"
+            | "tool_log_mode"
+            | "greeting_enabled"
+            | "greeting_model"
+            | "greeting_refresh"
+            | "chat_hint"
+            | "search_limit"
+            | "search_scope_default"
+            | "goal_text"
+            | "goal_action"
+            | "soft_cap_tokens" => Self::Assistant,
             "memory_backend" | "memory_vault" => Self::Memory,
             "device_listen" | "device_relay" | "notify_on_reply" | "notify_scope"
             | "notify_devices" => Self::Devices,
@@ -3363,6 +3390,57 @@ fn goal_group(view: &SettingsView) -> Markup {
 ///
 /// Off by default, and the card says so: a line that costs a provider call is not
 /// something anybody should get without asking for it.
+fn search_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_SEARCH) novalidate {
+            (group_region(view, SettingsGroup::Search))
+            div .field {
+                label for="search_limit" { "Results per search" }
+                input type="number" id="search_limit" name="search_limit"
+                    min=(crate::search::MIN_SETTING_LIMIT) max=(crate::search::MAX_SETTING_LIMIT)
+                    value=(view.search_limit)
+                    autofocus[focuses("search_limit")];
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("search_limit")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Five to fifty. A wide number is a longer page, not a slower query: the count "
+                    "and the page are separate statements and the count never over-fetches."
+                }
+            }
+            div .field {
+                label for="search_scope_default" { "Starts on" }
+                select id="search_scope_default" name="search_scope_default"
+                    autofocus[focuses("search_scope_default")] {
+                    @for value in crate::search::SCOPE_VALUES {
+                        option value=(value) selected[view.search_scope_default == *value] {
+                            (search_scope_label(value))
+                        }
+                    }
+                }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("search_scope_default")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Holding to one conversation keeps a follow-up in the transcript already open. "
+                    "Everywhere ranks across the whole history instead."
+                }
+            }
+            div .actions { button type="submit" { "Save search" } }
+        }
+    }
+}
+
+/// The words a scope is offered under.
+fn search_scope_label(value: &str) -> &'static str {
+    match value {
+        "conversation" => "This conversation",
+        _ => "Every conversation",
+    }
+}
+
 fn greeting_group(view: &SettingsView) -> Markup {
     let error = view.error.as_ref();
     let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
@@ -4391,6 +4469,16 @@ fn tab_assistant(view: &SettingsView) -> Markup {
             (quota_group(view))
         }
 
+        section .card aria-labelledby="search-heading" {
+            h2 id="search-heading" { "Search" }
+            p .small {
+                "The transcript search on the dashboard and on the phone reads one index. These two "
+                "values are its defaults: the phone asks for them when it has no opinion, and a "
+                "result list never grows past the limit."
+            }
+            (search_group(view))
+        }
+
         section .card aria-labelledby="greeting-heading" {
             h2 id="greeting-heading" { "Greeting" }
             p .small {
@@ -5286,21 +5374,6 @@ pub fn learning_page(view: &LearningView) -> Markup {
     )
 }
 
-/// One conversation that matched, as the search page lists it.
-#[derive(Debug, Clone)]
-pub struct SearchHitRow {
-    /// The conversation id the link opens.
-    pub conversation: String,
-    /// Its title.
-    pub title: String,
-    /// The excerpt, with the matched words in brackets.
-    pub snippet: String,
-    /// When the best-scoring message was written.
-    pub created_at: String,
-    /// How many messages in it matched.
-    pub matches: i64,
-}
-
 /// Everything the search page needs.
 #[derive(Debug, Clone)]
 pub struct SearchView {
@@ -5310,8 +5383,16 @@ pub struct SearchView {
     pub state: SetupState,
     /// What was typed, echoed back into the field.
     pub query: String,
-    /// One row per matching conversation, best first.
-    pub hits: Vec<SearchHitRow>,
+    /// The ranked rows, best first.
+    pub hits: Vec<crate::search::HitRow>,
+    /// How many rows match in total, from the count query.
+    pub total: i64,
+    /// Where the next page starts, when there is one.
+    pub cursor: Option<String>,
+    /// `all` or `conversation`.
+    pub scope: String,
+    /// `all`, `user` or `assistant`.
+    pub role: String,
     /// A success line, when a form just saved.
     pub notice: Option<String>,
 }
@@ -5325,6 +5406,10 @@ impl SearchView {
             state,
             query: String::new(),
             hits: Vec::new(),
+            total: 0,
+            cursor: None,
+            scope: "all".to_owned(),
+            role: "all".to_owned(),
             notice: None,
         }
     }
@@ -5351,6 +5436,21 @@ pub fn search_page(view: &SearchView) -> Markup {
             input type="search" id="search-q" name="q" value=(view.query)
                 placeholder="What did we work out about ..."
                 autocomplete="off" autofocus;
+            label for="search-scope" .sr-only { "Scope" }
+            select id="search-scope" name="scope" {
+                @for value in crate::search::SCOPE_VALUES {
+                    option value=(value) selected[view.scope == *value] {
+                        (search_scope_label(value))
+                    }
+                }
+            }
+            label for="search-role" .sr-only { "Speaker" }
+            select id="search-role" name="role" {
+                @for value in crate::search::ROLE_VALUES {
+                    option value=(value)
+                        selected[view.role.eq_ignore_ascii_case(value)] { (value) }
+                }
+            }
             button type="submit" { "Search" }
         }
         (alert_region(None, view.notice.as_deref()))
@@ -5363,28 +5463,55 @@ pub fn search_page(view: &SearchView) -> Markup {
             p .small { "Nothing matched " code { (query) } "." }
         } @else {
             p .small {
-                (view.hits.len()) " conversation"
+                (view.total) " message"
+                @if view.total != 1 { "s" }
+                " matched, best first, in " (view.hits.len()) " row"
                 @if view.hits.len() != 1 { "s" }
-                " matched."
+                " on this page."
             }
             @for hit in &view.hits {
                 article .card .search-hit {
                     h2 {
-                        a href=(format!("{}?conversation={}", crate::admin::ROUTE_CHAT, hit.conversation)) {
+                        a href=(format!("{}?conversation={}", crate::admin::ROUTE_CHAT, hit.conversation_id)) {
                             (hit.title)
                         }
                     }
-                    p .snippet { (hit.snippet) }
+                    p .snippet { (PreEscaped(&hit.snippet)) }
                     p .small .mono {
-                        (hit.created_at) " · "
-                        (hit.matches) " message"
-                        @if hit.matches != 1 { "s" }
+                        (hit.ts) " · " (hit.role) " · score " (format!("{:.2}", hit.score))
                     }
+                }
+            }
+            @if let Some(cursor) = &view.cursor {
+                p .small {
+                    a href=(format!(
+                        "{route}?q={query}&scope={scope}&role={role}&cursor={cursor}",
+                        route = crate::admin::ROUTE_SEARCH,
+                        query = urlencode(query),
+                        scope = view.scope,
+                        role = view.role,
+                    )) { "Next page" }
                 }
             }
         }
     };
     shell("Search", view.state, Some(Nav::Search), body, &view.chrome)
+}
+
+/// Percent-encode a value for a query string, so a cursor that holds a `:` and a
+/// query that holds a space survive the link.
+fn urlencode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
 }
 
 /// One skill's file, as the editor renders it.

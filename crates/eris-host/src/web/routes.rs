@@ -42,11 +42,12 @@ use crate::admin::{
     ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT,
     ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA,
     ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART, ROUTE_SETTINGS_SCHEDULES,
-    ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
-    ROUTE_SETTINGS_UPDATE, ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK,
-    ROUTE_SETTINGS_UPDATE_PROGRESS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS,
-    ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE, ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE,
-    ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION, session_path,
+    ROUTE_SETTINGS_SEARCH, ROUTE_SETTINGS_SKILLS, ROUTE_SETTINGS_STREAMING,
+    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
+    ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE,
+    ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE, ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION,
+    session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -64,12 +65,11 @@ use crate::web::store;
 use crate::web::templates::{
     ActivityView, Attachment as ChatAttachment, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT,
     DashboardView, DeviceRow, DevicesView, EnvRow, EnvView, FormError, IssuedCodeView,
-    LearningView, MintedToken, RosterDraft, RosterView, SearchHitRow, SearchView,
-    SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView, SkillEditor,
-    SkillsView, TriggerDraft, TriggersView, UpdateCard, activity_page, backups_page, chat_page,
-    dashboard_page, devices_page, env_page, error_page, learning_page, login_page, roster_page,
-    search_page, session_page, sessions_page, settings_page, setup_page, skills_page,
-    triggers_page, type_badge,
+    LearningView, MintedToken, RosterDraft, RosterView, SearchView, SessionDetailView,
+    SessionsView, SettingsGroup, SettingsView, SetupView, SkillEditor, SkillsView, TriggerDraft,
+    TriggersView, UpdateCard, activity_page, backups_page, chat_page, dashboard_page, devices_page,
+    env_page, error_page, learning_page, login_page, roster_page, search_page, session_page,
+    sessions_page, settings_page, setup_page, skills_page, triggers_page, type_badge,
 };
 use crate::web::wallpaper;
 
@@ -163,6 +163,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_AUX, post(save_aux))
         .route(ROUTE_SETTINGS_MCP, post(save_mcp))
         .route(ROUTE_SETTINGS_GREETING, post(save_greeting))
+        .route(ROUTE_SETTINGS_SEARCH, post(save_search))
         .route(ROUTE_ACCOUNTS_CONNECT, post(connect_account))
         .route(ROUTE_ACCOUNTS_VERIFY, post(verify_account))
         .route(ROUTE_ACCOUNTS_DISCONNECT, post(disconnect_account))
@@ -1093,6 +1094,10 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .map_err(|error| form_error(&error))?
             .as_deref(),
     );
+    // Read through `crate::search` so the form shows exactly what a search
+    // would use rather than a second copy of the same clamp.
+    view.search_limit = crate::search::stored_limit(engine.db()).to_string();
+    view.search_scope_default = crate::search::stored_scope(engine.db());
     // The objective every turn carries until it is cleared. Read through
     // `crate::goal` so the page shows exactly what a turn would be given, rather
     // than a second copy of the same rule that can drift from it.
@@ -1623,19 +1628,33 @@ async fn search(
     let mut view = SearchView::new(setup);
     view.chrome = state.chrome();
     view.query = text.clone();
-    if !text.is_empty() {
-        match crate::search::discover(engine.db(), &text, crate::search::DEFAULT_LIMIT) {
-            Ok(hits) => {
-                view.hits = hits
-                    .into_iter()
-                    .map(|hit| SearchHitRow {
-                        conversation: hit.conversation_id,
-                        title: hit.title,
-                        snippet: hit.snippet,
-                        created_at: hit.created_at,
-                        matches: hit.matches,
-                    })
-                    .collect();
+    view.scope = query
+        .get("scope")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| crate::search::SCOPE_VALUES.contains(&value.as_str()))
+        .unwrap_or_else(|| crate::search::stored_scope(engine.db()));
+    view.role = query
+        .get("role")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| crate::search::ROLE_VALUES.contains(&value.as_str()))
+        .unwrap_or_else(|| "all".to_owned());
+    if !text.is_empty() || query.contains_key("conversation_id") {
+        let request = crate::search::Request {
+            query: text.clone(),
+            scope: view.scope.clone(),
+            conversation_id: query.get("conversation_id").cloned(),
+            role: view.role.clone(),
+            since: None,
+            until: None,
+            mode: crate::search::Mode::Discovery,
+            limit: crate::search::stored_limit(engine.db()),
+            cursor: query.get("cursor").cloned(),
+        };
+        match crate::search::search(engine.db(), &request) {
+            Ok(page) => {
+                view.hits = page.hits;
+                view.total = page.total;
+                view.cursor = page.cursor;
             }
             Err(error) => {
                 return ApiError::internal(
@@ -7506,6 +7525,86 @@ async fn save_greeting(
     }
 
     see_other(SAVED_GREETING)
+}
+
+const SAVED_SEARCH: &str = "/dashboard/settings?saved=search";
+
+/// `POST /dashboard/settings/search` - the transcript search defaults.
+///
+/// Both values are the reader's own: the limit is clamped to the same window
+/// [`crate::search::MAX_SETTING_LIMIT`] publishes and the scope is one of the two
+/// [`crate::search::SCOPE_VALUES`] holds, so a saved value is a value the query
+/// honours.
+async fn save_search(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    let limit = field(&fields, "search_limit").trim();
+    let limit: u32 = match limit.parse::<u32>() {
+        Ok(number)
+            if (crate::search::MIN_SETTING_LIMIT..=crate::search::MAX_SETTING_LIMIT)
+                .contains(&number) =>
+        {
+            number
+        }
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("search_limit"),
+                    "search_limit_invalid",
+                    format!(
+                        "a whole number from {} to {}",
+                        crate::search::MIN_SETTING_LIMIT,
+                        crate::search::MAX_SETTING_LIMIT
+                    ),
+                ),
+            );
+        }
+    };
+    let scope = field(&fields, "search_scope_default")
+        .trim()
+        .to_ascii_lowercase();
+    if !crate::search::SCOPE_VALUES.contains(&scope.as_str()) {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("search_scope_default"),
+                "search_scope_invalid",
+                format!("one of: {}", crate::search::SCOPE_VALUES.join(", ")),
+            ),
+        );
+    }
+
+    for (key, value) in [
+        (crate::search::SETTING_SEARCH_LIMIT, limit.to_string()),
+        (crate::search::SETTING_SEARCH_SCOPE_DEFAULT, scope.clone()),
+    ] {
+        if let Err(error) = store::settings_put(state.engine.db(), key, &value) {
+            return store_failure(&request_id.0, key, error);
+        }
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.search",
+        Some(&format!("limit={limit}; scope={scope}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.search", error);
+    }
+    see_other(SAVED_SEARCH)
 }
 
 /// `POST /dashboard/settings/mcp` - the configured MCP server list.
