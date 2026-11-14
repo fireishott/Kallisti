@@ -156,7 +156,12 @@ fn string_list(arguments: &serde_json::Value, key: &str) -> Vec<String> {
     arguments
         .get(key)
         .and_then(serde_json::Value::as_array)
-        .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -174,7 +179,9 @@ fn refusal(error: &DutyError) -> ToolResult {
 #[must_use]
 pub fn execute(db: &Db, name: &str, arguments: &serde_json::Value) -> ToolResult {
     if !steward::enabled(db) {
-        return ToolResult::refused("the steward is switched off in settings, so nothing was changed");
+        return ToolResult::refused(
+            "the steward is switched off in settings, so nothing was changed",
+        );
     }
     match name {
         CHARTER => {
@@ -218,7 +225,10 @@ pub fn execute(db: &Db, name: &str, arguments: &serde_json::Value) -> ToolResult
                     Err(error) => return refusal(&error),
                 },
             };
-            let blocker = match (text_arg(arguments, "blocker_code"), text_arg(arguments, "blocker_detail")) {
+            let blocker = match (
+                text_arg(arguments, "blocker_code"),
+                text_arg(arguments, "blocker_detail"),
+            ) {
                 (None, None) => None,
                 (code, detail) => Some(Some(steward::Blocker {
                     code: code.unwrap_or_default().to_owned(),
@@ -244,7 +254,12 @@ pub fn execute(db: &Db, name: &str, arguments: &serde_json::Value) -> ToolResult
             let Some(revision) = int_arg(arguments, "revision") else {
                 return ToolResult::refused("steward_duty_close needs the revision you read");
             };
-            match steward::close_duty(db, id, revision, text_arg(arguments, "outcome").unwrap_or_default()) {
+            match steward::close_duty(
+                db,
+                id,
+                revision,
+                text_arg(arguments, "outcome").unwrap_or_default(),
+            ) {
                 Ok(duty) => ToolResult::ok(serde_json::json!({"duty": duty.json()})),
                 Err(error) => refusal(&error),
             }
@@ -310,7 +325,10 @@ mod tests {
             .filter(|spec| matches!(spec.name.as_str(), DUTY_UPDATE | DUTY_CLOSE))
             .collect();
         assert_eq!(cas.len(), 2);
-        assert!(cas.iter().all(|spec| spec.description.contains("compare-and-set")));
+        assert!(
+            cas.iter()
+                .all(|spec| spec.description.contains("compare-and-set"))
+        );
         assert!(cas.iter().all(|spec| spec.description.contains("re-read")));
     }
 
@@ -318,10 +336,22 @@ mod tests {
     fn a_stale_update_is_refused_and_names_the_current_revision() {
         let db = db();
         let duty = steward::create_duty(&db, "watch the queue", None).expect("create");
-        let first = execute(&db, DUTY_UPDATE, &serde_json::json!({"duty_id": duty.id, "revision": 1, "phase": "working"}));
+        let first = execute(
+            &db,
+            DUTY_UPDATE,
+            &serde_json::json!({"duty_id": duty.id, "revision": 1, "phase": "working"}),
+        );
         assert!(!first.is_error, "{}", first.content);
-        let stale = execute(&db, DUTY_UPDATE, &serde_json::json!({"duty_id": duty.id, "revision": 1, "phase": "paused"}));
-        assert!(stale.content.contains("\"status\":\"refused\""), "{}", stale.content);
+        let stale = execute(
+            &db,
+            DUTY_UPDATE,
+            &serde_json::json!({"duty_id": duty.id, "revision": 1, "phase": "paused"}),
+        );
+        assert!(
+            stale.content.contains("\"status\":\"refused\""),
+            "{}",
+            stale.content
+        );
         assert!(stale.content.contains("revision 2"), "{}", stale.content);
         assert!(stale.content.contains("Re-read"), "{}", stale.content);
     }
@@ -336,20 +366,48 @@ mod tests {
             &serde_json::json!({"duty_id": duty.id, "revision": 1, "question": "Pay the bill?", "choices": ["yes", "no"]}),
         );
         assert!(!call.is_error, "{}", call.content);
-        let clear = execute(&db, DUTY_UPDATE, &serde_json::json!({"duty_id": duty.id, "revision": 2, "phase": "working"}));
-        assert!(clear.content.contains("\"status\":\"refused\""), "{}", clear.content);
-        let direct = execute(&db, DUTY_UPDATE, &serde_json::json!({"duty_id": duty.id, "revision": 2, "phase": "needs_you"}));
-        assert!(direct.content.contains("only set through a call"), "{}", direct.content);
+        let clear = execute(
+            &db,
+            DUTY_UPDATE,
+            &serde_json::json!({"duty_id": duty.id, "revision": 2, "phase": "working"}),
+        );
+        assert!(
+            clear.content.contains("\"status\":\"refused\""),
+            "{}",
+            clear.content
+        );
+        let direct = execute(
+            &db,
+            DUTY_UPDATE,
+            &serde_json::json!({"duty_id": duty.id, "revision": 2, "phase": "needs_you"}),
+        );
+        assert!(
+            direct.content.contains("only set through a call"),
+            "{}",
+            direct.content
+        );
     }
 
     #[test]
     fn the_charter_tool_seeds_one_duty_per_line_once() {
         let db = db();
-        let first = execute(&db, CHARTER, &serde_json::json!({"text": "Watch backups\n\nChase vendor\n"}));
+        let first = execute(
+            &db,
+            CHARTER,
+            &serde_json::json!({"text": "Watch backups\n\nChase vendor\n"}),
+        );
         assert!(first.content.contains("Watch backups"), "{}", first.content);
-        let again = execute(&db, CHARTER, &serde_json::json!({"text": "Watch backups\nChase vendor"}));
+        let again = execute(
+            &db,
+            CHARTER,
+            &serde_json::json!({"text": "Watch backups\nChase vendor"}),
+        );
         let value: serde_json::Value = serde_json::from_str(&again.content).expect("json");
-        assert_eq!(value["created"].as_array().map_or(0, Vec::len), 0, "a second seed adds nothing");
+        assert_eq!(
+            value["created"].as_array().map_or(0, Vec::len),
+            0,
+            "a second seed adds nothing"
+        );
         assert_eq!(steward::list_duties(&db, None).expect("list").len(), 2);
     }
 
@@ -358,6 +416,10 @@ mod tests {
         let db = db();
         crate::web::store::settings_put(&db, steward::SETTING_ENABLED, "false").expect("store");
         let result = execute(&db, DUTY_LIST, &serde_json::json!({}));
-        assert!(result.content.contains("switched off"), "{}", result.content);
+        assert!(
+            result.content.contains("switched off"),
+            "{}",
+            result.content
+        );
     }
 }

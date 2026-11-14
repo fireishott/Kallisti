@@ -1882,7 +1882,9 @@ fn steward_refusal(error: crate::steward::DutyError) -> DeviceError {
         DutyError::NotFound(_) => "steward_not_found",
         DutyError::Closed(_) => "steward_closed",
         DutyError::StaleRevision { .. } => "steward_stale_revision",
-        DutyError::NeedsYouRequiresCall | DutyError::CloseRequiresCloseDuty => "steward_phase_refused",
+        DutyError::NeedsYouRequiresCall | DutyError::CloseRequiresCloseDuty => {
+            "steward_phase_refused"
+        }
         DutyError::InvalidPhase(_) | DutyError::Invalid(_) => "steward_invalid",
         DutyError::Corrupt(_) | DutyError::Db(_) | DutyError::Sqlite(_) => "steward_store",
     };
@@ -1909,7 +1911,10 @@ fn revision_field(fields: &std::collections::BTreeMap<String, String>) -> Result
 }
 
 /// `GET /v1/steward` - the steward's settings, its duties and its latest notes.
-pub async fn steward_overview(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+pub async fn steward_overview(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(error) = authenticate(&service, &headers) {
         return error.into_response();
     }
@@ -1958,7 +1963,12 @@ pub async fn steward_duties_list(
     if let Err(error) = authenticate(&service, &headers) {
         return error.into_response();
     }
-    let phase = match params.phase.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    let phase = match params
+        .phase
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         None => None,
         Some(raw) => match raw.parse::<crate::steward::Phase>() {
             Ok(phase) => Some(phase),
@@ -1994,13 +2004,18 @@ pub async fn steward_duty_create(
         raw => match raw.parse::<i64>() {
             Ok(seconds) => Some(seconds),
             Err(_) => {
-                return DeviceError::bad_request("steward_invalid", "every_seconds is a whole number")
-                    .into_response();
+                return DeviceError::bad_request(
+                    "steward_invalid",
+                    "every_seconds is a whole number",
+                )
+                .into_response();
             }
         },
     };
     match crate::steward::create_duty(service.engine().db(), field(&fields, "statement"), every) {
-        Ok(duty) => axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response(),
+        Ok(duty) => {
+            axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response()
+        }
         Err(error) => steward_refusal(error).into_response(),
     }
 }
@@ -2036,20 +2051,22 @@ pub async fn steward_duty_patch(
         raw => match raw.parse::<i64>() {
             Ok(seconds) => Some(Some(seconds)),
             Err(_) => {
-                return DeviceError::bad_request("steward_invalid", "every_seconds is a whole number")
-                    .into_response();
+                return DeviceError::bad_request(
+                    "steward_invalid",
+                    "every_seconds is a whole number",
+                )
+                .into_response();
             }
         },
     };
     let code = field(&fields, "blocker_code").trim().to_owned();
     let detail = field(&fields, "blocker_detail").trim().to_owned();
-    let blocker = (!code.is_empty() || !detail.is_empty()).then(|| {
-        Some(crate::steward::Blocker {
-            code,
-            detail,
-        })
-    });
-    let statement = fields.get("statement").map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
+    let blocker = (!code.is_empty() || !detail.is_empty())
+        .then(|| Some(crate::steward::Blocker { code, detail }));
+    let statement = fields
+        .get("statement")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
     let patch = crate::steward::DutyPatch {
         statement,
         phase,
@@ -2058,7 +2075,9 @@ pub async fn steward_duty_patch(
         ..crate::steward::DutyPatch::default()
     };
     match crate::steward::update_duty(service.engine().db(), &id, revision, &patch) {
-        Ok(duty) => axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response(),
+        Ok(duty) => {
+            axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response()
+        }
         Err(error) => steward_refusal(error).into_response(),
     }
 }
@@ -2081,8 +2100,15 @@ pub async fn steward_duty_close(
         Ok(revision) => revision,
         Err(error) => return error.into_response(),
     };
-    match crate::steward::close_duty(service.engine().db(), &id, revision, field(&fields, "outcome")) {
-        Ok(duty) => axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response(),
+    match crate::steward::close_duty(
+        service.engine().db(),
+        &id,
+        revision,
+        field(&fields, "outcome"),
+    ) {
+        Ok(duty) => {
+            axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response()
+        }
         Err(error) => steward_refusal(error).into_response(),
     }
 }
@@ -2107,7 +2133,9 @@ pub async fn steward_call_answer(
         Err(error) => return error.into_response(),
     };
     match crate::steward::answer_call(service.engine().db(), &id, revision) {
-        Ok(duty) => axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response(),
+        Ok(duty) => {
+            axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response()
+        }
         Err(error) => steward_refusal(error).into_response(),
     }
 }

@@ -1277,7 +1277,10 @@ pub fn router(service: DeviceService) -> Router {
         )
         .route(ROUTE_STEWARD_DUTY, patch(control::steward_duty_patch))
         .route(ROUTE_STEWARD_DUTY_CLOSE, post(control::steward_duty_close))
-        .route(ROUTE_STEWARD_DUTY_ANSWER, post(control::steward_call_answer))
+        .route(
+            ROUTE_STEWARD_DUTY_ANSWER,
+            post(control::steward_call_answer),
+        )
         .route(ROUTE_STEWARD_NOTES, get(control::steward_notes_list))
         .route(ROUTE_STEWARD_SEED, post(control::steward_seed))
         .route(

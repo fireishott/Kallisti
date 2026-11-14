@@ -1765,20 +1765,40 @@ mod call_tests {
     fn an_open_call_is_pending_until_delivered_and_answering_clears_it() {
         let db = db();
         let duty = create_duty(&db, "renew the lease", Some(60)).expect("create");
-        let raised = raise_call(&db, &duty.id, 1, "Sign the renewal?", &["yes".to_owned(), "no".to_owned()], "normal")
-            .expect("call");
+        let raised = raise_call(
+            &db,
+            &duty.id,
+            1,
+            "Sign the renewal?",
+            &["yes".to_owned(), "no".to_owned()],
+            "normal",
+        )
+        .expect("call");
         assert_eq!(raised.phase, Phase::NeedsYou);
         assert_eq!(raised.next_wake_at, None, "an open call does not wake");
         let pending = pending_calls(&db).expect("pending");
         assert_eq!(pending.len(), 1);
         assert!(pending[0].note.text.contains("Choices: yes / no"));
-        let again = raise_call(&db, &duty.id, raised.revision, "Again?", &[], "normal").expect_err("second call");
+        let again = raise_call(&db, &duty.id, raised.revision, "Again?", &[], "normal")
+            .expect_err("second call");
         assert!(again.to_string().contains("already open"), "{again}");
-        append_note(&db, Some(&duty.id), "call delivered: push", &["delivered".to_owned()]).expect("mark");
-        assert!(pending_calls(&db).expect("pending").is_empty(), "delivered calls are not sent twice");
+        append_note(
+            &db,
+            Some(&duty.id),
+            "call delivered: push",
+            &["delivered".to_owned()],
+        )
+        .expect("mark");
+        assert!(
+            pending_calls(&db).expect("pending").is_empty(),
+            "delivered calls are not sent twice"
+        );
         let answered = answer_call(&db, &duty.id, raised.revision).expect("answer");
         assert_eq!(answered.phase, Phase::Watching);
-        assert!(answered.next_wake_at.is_some(), "an answered duty is armed again");
+        assert!(
+            answered.next_wake_at.is_some(),
+            "an answered duty is armed again"
+        );
         assert_eq!(answered.watch_rounds, 0);
     }
 
@@ -1787,22 +1807,44 @@ mod call_tests {
         let db = db();
         let duty = create_duty(&db, "watch the vendor", None).expect("create");
         let stale = raise_call(&db, &duty.id, 9, "Q?", &[], "normal").expect_err("stale");
-        assert!(matches!(stale, DutyError::StaleRevision { current: 1 }), "{stale:?}");
+        assert!(
+            matches!(stale, DutyError::StaleRevision { current: 1 }),
+            "{stale:?}"
+        );
         let no_call = answer_call(&db, &duty.id, 1).expect_err("nothing to answer");
         assert!(no_call.to_string().contains("no call is open"), "{no_call}");
-        assert!(raise_call(&db, &duty.id, 1, "Q?", &[], "loud").is_err(), "urgency is closed");
+        assert!(
+            raise_call(&db, &duty.id, 1, "Q?", &[], "loud").is_err(),
+            "urgency is closed"
+        );
     }
 
     #[test]
     fn mail_goes_only_to_the_two_permitted_addresses() {
         let db = db();
-        assert_eq!(channel_for(&db, "email"), "inbox", "no recipient configured");
-        crate::web::store::settings_put(&db, crate::delivery::SETTING_EMAIL_TO, "stranger@example.test")
-            .expect("store");
+        assert_eq!(
+            channel_for(&db, "email"),
+            "inbox",
+            "no recipient configured"
+        );
+        crate::web::store::settings_put(
+            &db,
+            crate::delivery::SETTING_EMAIL_TO,
+            "stranger@example.test",
+        )
+        .expect("store");
         assert_eq!(channel_for(&db, "email"), "inbox");
-        crate::web::store::settings_put(&db, crate::delivery::SETTING_EMAIL_TO, "CURTIS.FREEMAN@wewin.com")
-            .expect("store");
+        crate::web::store::settings_put(
+            &db,
+            crate::delivery::SETTING_EMAIL_TO,
+            "CURTIS.FREEMAN@wewin.com",
+        )
+        .expect("store");
         assert_eq!(channel_for(&db, "email"), "email");
-        assert_eq!(channel_for(&db, "push"), "push", "other channels are untouched");
+        assert_eq!(
+            channel_for(&db, "push"),
+            "push",
+            "other channels are untouched"
+        );
     }
 }
