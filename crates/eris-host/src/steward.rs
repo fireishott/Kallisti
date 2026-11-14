@@ -412,7 +412,7 @@ pub fn mail_recipients(db: &Db) -> Vec<String> {
 pub fn mail_permitted(db: &Db) -> bool {
     crate::delivery::allowed_recipient(db).is_some_and(|to| {
         let to = to.trim().to_ascii_lowercase();
-        mail_recipients(db).iter().any(|allowed| *allowed == to)
+        mail_recipients(db).contains(&to)
     })
 }
 
