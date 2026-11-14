@@ -973,6 +973,26 @@ fn has_live_entries(db: &Db) -> Result<bool, DbError> {
 /// called. `Some(Err(..))` is a database failure for the tick to log; the sweep's
 /// own refusals are outcomes inside `SweepOutcome`, not errors.
 fn sweep_memory(db: &Db, now: &str) -> Option<Result<SweepOutcome, DbError>> {
+    // The dry run comes first, every time: it is one read and it is the line that
+    // says what is about to happen before it happens. With the switch off the
+    // preview is the whole pass, which is how an operator decides to turn it on.
+    match crate::memconsolidate::preview(db) {
+        Ok(preview) => {
+            tracing::info!(
+                retire = preview.retired,
+                propose = preview.proposed,
+                refused = preview.refused,
+                enabled = crate::memconsolidate::nightly(db),
+                "scheduler: memory consolidation preview"
+            );
+            if !crate::memconsolidate::nightly(db) {
+                return None;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "scheduler: cannot preview consolidation");
+        }
+    }
     match has_live_entries(db) {
         Ok(true) => Some(crate::memconsolidate::sweep(db, now)),
         Ok(false) => None,
@@ -1011,6 +1031,9 @@ pub async fn tick(state: crate::admin::AppState) {
     loop {
         interval.tick().await;
         let db = state.engine.db();
+        // Standing orders are not schedules and do not stop when schedules are
+        // switched off, so they are evaluated before that gate.
+        crate::standing::pass(&state, &now_utc()).await;
         let enabled = enabled(
             state
                 .engine
@@ -1460,6 +1483,11 @@ mod tests {
     fn a_sweep_runs_once_there_is_something_live() {
         let db = db();
         seed(&db, "kept", true);
+        // A preview with the switch off writes nothing and answers nothing, which
+        // is the whole difference the switch makes.
+        assert!(sweep_memory(&db, "2026-10-22T00:00:00Z").is_none());
+        crate::web::store::settings_put(&db, crate::memconsolidate::SETTING_NIGHTLY, "true")
+            .expect("switch");
         match sweep_memory(&db, "2026-10-22T00:00:00Z") {
             Some(Ok(SweepOutcome::Completed { .. })) => {}
             other => panic!("expected a completed sweep, got {other:?}"),

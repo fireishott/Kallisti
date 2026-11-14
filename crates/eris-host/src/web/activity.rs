@@ -136,3 +136,69 @@ fn the_activity_page_caps_the_list_at_one_hundred_rows() {
         "the page listed {listed} activity rows, more than one hundred"
     );
 }
+
+/// Seed answers with durations, tokens and one failure, then read the page.
+fn seed_answers(engine: &crate::onboarding::SetupEngine) {
+    let db = engine.db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO chat_conversations (id, title) VALUES ('conv-m', 'Metrics')",
+            [],
+        )?;
+        for (id, duration, prompt, cached, state) in [
+            ("a1", 1000i64, 100i64, 40i64, "complete"),
+            ("a2", 2000, 200, 80, "complete"),
+            ("a3", 4000, 300, 0, "failed"),
+        ] {
+            conn.execute(
+                "INSERT INTO chat_messages
+                   (id, conversation_id, role, body, state, model, duration_ms,
+                    prompt_tokens, completion_tokens, cached_tokens)
+                 VALUES (?1, 'conv-m', 'assistant', 'x', ?2, 'proof-model', ?3, ?4, 10, ?5)",
+                rusqlite::params![id, state, duration, prompt, cached],
+            )?;
+        }
+        Ok(())
+    })
+    .expect("seed");
+}
+
+#[test]
+fn the_cost_panel_matches_the_library_and_the_stored_window() {
+    let (_dir, engine, app, cookie) = ready_app();
+    seed_answers(&engine);
+    crate::web::store::settings_put(engine.db(), crate::metrics::SETTING_WINDOW_HOURS, "2")
+        .expect("window");
+
+    // The library, called directly, is the number the page must show.
+    let direct = crate::metrics::summary_in_hours(engine.db(), 2, None).expect("summary");
+    assert_eq!(direct.calls, 3);
+    assert_eq!(direct.failed, 1);
+
+    let reply = block_on(send(
+        &app,
+        Call::get(ROUTE_ACTIVITY).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let page = &reply.body;
+    assert!(page.contains("Cost and latency"), "{page}");
+    assert!(page.contains("3 answer(s) in the last 2 hour(s)"), "{page}");
+    assert!(page.contains("1 failed"), "{page}");
+    assert!(page.contains("proof-model"), "{page}");
+    // p95 over 1000/2000/4000 is the nearest rank at 4000, not an interpolation.
+    assert!(page.contains("4000 ms"), "{page}");
+    // Cache hit rate: 120 cached of 600 prompt tokens.
+    assert!(page.contains("20.0%"), "{page}");
+}
+
+#[test]
+fn an_empty_window_draws_the_panel_rather_than_nothing() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let reply = block_on(send(
+        &app,
+        Call::get(ROUTE_ACTIVITY).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("Cost and latency"), "{}", reply.body);
+    assert!(reply.body.contains("Nothing measured"), "{}", reply.body);
+}

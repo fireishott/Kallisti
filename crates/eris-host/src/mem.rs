@@ -575,6 +575,43 @@ pub fn unsuppressed_fires_since(db: &Db, intent_id: &str, since: &str) -> Result
     })
 }
 
+/// One intent's name, for a log line or a conversation title.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn intent_name(db: &Db, intent_id: &str) -> Result<Option<String>, DbError> {
+    db.with_conn(|conn| {
+        use rusqlite::OptionalExtension;
+        conn.query_row(
+            "SELECT name FROM mem_intents WHERE id = ?1",
+            params![intent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+    })
+}
+
+/// Put a delivery outcome on the newest fire row of one intent.
+///
+/// A standing order has no run row: the fire is the record, so the sentence about
+/// where the answer went belongs on it rather than in a second table.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn note_fire_delivery(db: &Db, intent_id: &str, note: &str) -> Result<(), DbError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE mem_intents_fires SET reason = ?2 \
+              WHERE id = (SELECT id FROM mem_intents_fires WHERE intent_id = ?1 \
+                           ORDER BY fired_at DESC, rowid DESC LIMIT 1)",
+            params![intent_id, note],
+        )?;
+        Ok(())
+    })
+}
+
 /// Record one fire. Suppressed rows are recorded too: the cooldown gate reads
 /// them, and an intent that keeps refusing is a fact worth having in the table.
 ///

@@ -47,6 +47,26 @@ pub const MEMORY_LIMIT: usize = 2_200;
 /// The character cap on `USER.md`.
 pub const USER_LIMIT: usize = 1_375;
 
+/// The `settings` row that overrides both caps.
+///
+/// One row for both files: an operator who raises it is saying "this session may
+/// spend more prompt on memory", and the number only means anything as a ceiling.
+/// Unset keeps the per-file defaults above.
+pub const SETTING_CAP_CHARS: &str = "memory.cap_chars";
+
+/// The narrowest cap the record offers.
+pub const MIN_CAP_CHARS: u32 = 2_000;
+
+/// The widest.
+pub const MAX_CAP_CHARS: u32 = 200_000;
+
+/// The most entries a session's frozen block carries.
+///
+/// A cap on the file bounds characters and not entry count, and a thousand
+/// one-line entries under a large cap is a thousand bullets in every prompt. Past
+/// this, the block says how many it left out and the tool can read them.
+pub const MAX_BLOCK_ENTRIES: usize = 200;
+
 /// The directory under the state directory.
 pub const DIR: &str = "memory";
 
@@ -127,6 +147,24 @@ impl Target {
         }
     }
 
+    /// The cap in force, which is the operator's setting when one is stored.
+    ///
+    /// A stored value outside the record's own bounds is ignored rather than
+    /// clamped: a cap of twelve characters would make the file unusable, and
+    /// silently using a clamped number the page never showed is worse than using
+    /// the default the page does show.
+    pub fn cap_for(self, stored: Option<&str>) -> usize {
+        self.cap(stored)
+    }
+
+    fn cap(self, stored: Option<&str>) -> usize {
+        stored
+            .map(str::trim)
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| (MIN_CAP_CHARS..=MAX_CAP_CHARS).contains(value))
+            .map_or_else(|| self.limit(), |value| value as usize)
+    }
+
     /// The name the block and the errors use.
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -149,6 +187,8 @@ impl Target {
 pub struct Access {
     dir: PathBuf,
     mirror: Option<Db>,
+    /// The turn writing, when one is. It is the provenance a row carries back.
+    turn_id: Option<String>,
 }
 
 /// Printed by hand because the mirror is a live connection handle: the useful
@@ -171,7 +211,27 @@ impl Access {
         Self {
             dir: state_dir.join(DIR),
             mirror: None,
+            turn_id: None,
         }
+    }
+
+    /// Name the turn that is writing.
+    ///
+    /// The id rides into each mirrored row's `source_ref`, so an entry can be
+    /// traced back to the turn that claimed it instead of to "a model, at some
+    /// point". Nothing else about the write changes.
+    #[must_use]
+    pub fn with_turn(mut self, turn_id: Option<&str>) -> Self {
+        self.turn_id = turn_id.map(str::to_owned);
+        self
+    }
+
+    /// The stored cap, when a database is attached to read one.
+    fn cap_setting(&self) -> Option<String> {
+        let db = self.mirror.as_ref()?;
+        crate::web::store::settings_get(db, SETTING_CAP_CHARS)
+            .ok()
+            .flatten()
     }
 
     /// Attach the database that records provenance for what the files hold.
@@ -216,10 +276,16 @@ impl Access {
                 continue;
             }
             text.push_str(&format!("\n\n## {}\n", target.label()));
-            for entry in entries {
+            for entry in entries.iter().take(MAX_BLOCK_ENTRIES) {
                 text.push_str("- ");
                 text.push_str(entry);
                 text.push('\n');
+            }
+            if entries.len() > MAX_BLOCK_ENTRIES {
+                text.push_str(&format!(
+                    "- (and {} more; read them with `memory_manage` action `show`)\n",
+                    entries.len() - MAX_BLOCK_ENTRIES
+                ));
             }
         }
         Some(text.trim_end().to_owned())
@@ -405,7 +471,7 @@ impl Access {
     ) -> ToolResult {
         let body = render(entries);
         let used = body.chars().count();
-        let limit = target.limit();
+        let limit = target.cap(self.cap_setting().as_deref());
         if used > limit {
             let over = used - limit;
             let current = if entries.is_empty() {
@@ -479,7 +545,7 @@ impl Access {
                     target: target.label(),
                     entry,
                     origin,
-                    source_ref: None,
+                    source_ref: self.turn_id.as_deref(),
                 },
             );
         }
@@ -547,8 +613,10 @@ impl Access {
             "target": target.label(),
             "file": target.file(),
             "used": self.usage(target),
-            "limit": target.limit(),
-            "remaining": target.limit().saturating_sub(self.usage(target)),
+            "limit": target.cap(self.cap_setting().as_deref()),
+            "remaining": target
+                .cap(self.cap_setting().as_deref())
+                .saturating_sub(self.usage(target)),
             "entries": entries,
             "note": "This is the live file. The block in your prompt is the snapshot \
                      from when this session started.",
@@ -726,6 +794,78 @@ mod tests {
         );
         assert!(!result.is_error, "{}", result.content);
         assert_eq!(access.usage(Target::User), USER_LIMIT);
+    }
+
+    /// The cap is a setting, and an overflow names the cap it broke rather than
+    /// silently dropping the entry.
+    #[test]
+    fn the_stored_cap_is_the_cap_and_an_overflow_names_it() {
+        let (_dir, access) = access();
+        let db = crate::db::Db::open_in_memory().expect("database");
+        crate::web::store::settings_put(&db, SETTING_CAP_CHARS, "2000").expect("store");
+        let access = access.with_db(db);
+
+        let over = "x".repeat(2_500);
+        let result = call(
+            &access,
+            serde_json::json!({"target": "memory", "action": "add", "text": over}),
+        );
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("2000 character cap"),
+            "the refusal names the cap: {}",
+            result.content
+        );
+        assert_eq!(access.usage(Target::Memory), 0, "nothing was written");
+
+        // A higher stored cap takes an entry the default one would refuse.
+        crate::web::store::settings_put(
+            access.mirror.as_ref().expect("db"),
+            SETTING_CAP_CHARS,
+            "3000",
+        )
+        .expect("store");
+        let fits = "y".repeat(2_500);
+        const { assert!(2_500 > MEMORY_LIMIT) };
+        let stored = call(
+            &access,
+            serde_json::json!({"target": "memory", "action": "add", "text": fits}),
+        );
+        assert!(!stored.is_error, "{}", stored.content);
+        let body: serde_json::Value = serde_json::from_str(&stored.content).expect("json");
+        assert_eq!(body["limit"], 3_000, "the stored cap is the one in force");
+    }
+
+    #[test]
+    fn a_stamped_entry_reads_back_with_its_turn() {
+        let (_dir, access) = access();
+        let db = crate::db::Db::open_in_memory().expect("database");
+        let access = access.with_db(db.clone()).with_turn(Some("turn-42"));
+        let result = call(
+            &access,
+            serde_json::json!({"target": "memory", "action": "add", "text": "the lane needs the guard"}),
+        );
+        assert!(!result.is_error, "{}", result.content);
+        let live = crate::mem::live_entries(&db, "memory", false, 10).expect("live");
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].origin, "model");
+        assert_eq!(live[0].source_ref.as_deref(), Some("turn-42"));
+        assert!(!live[0].created_at.is_empty(), "the row carries when");
+    }
+
+    #[test]
+    fn the_block_stops_at_the_entry_cap_and_says_how_many_are_left() {
+        let (_dir, access) = access();
+        let mut entries = Vec::new();
+        for index in 0..(MAX_BLOCK_ENTRIES + 3) {
+            entries.push(format!("note {index}"));
+        }
+        std::fs::create_dir_all(&access.dir).expect("dir");
+        std::fs::write(access.path(Target::Memory), render(&entries)).expect("write");
+        let block = access.block().expect("a block");
+        assert_eq!(block.matches("\n- note").count(), MAX_BLOCK_ENTRIES);
+        assert!(block.contains("and 3 more"), "{block}");
+        assert!(block.contains("`memory_manage`"), "{block}");
     }
 
     #[test]

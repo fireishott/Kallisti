@@ -43,11 +43,12 @@ use crate::admin::{
     ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
     ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SEARCH, ROUTE_SETTINGS_SKILLS,
-    ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
-    ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE,
-    ROUTE_SKILLS_RESTORE, ROUTE_SKILLS_SAVE, ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE,
-    ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION, session_path,
+    ROUTE_SETTINGS_STANDING, ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE,
+    ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE, ROUTE_SETTINGS_UPDATE_APPLY,
+    ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS, ROUTE_SETTINGS_WORKSPACE,
+    ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_RESTORE, ROUTE_SKILLS_SAVE,
+    ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE, ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION,
+    session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -167,6 +168,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_LEARNING, post(save_learning_repair))
         .route(ROUTE_SETTINGS_JOBS, post(save_jobs))
         .route(ROUTE_SETTINGS_DELIVERY, post(save_delivery))
+        .route(ROUTE_SETTINGS_STANDING, post(save_standing))
         .route(ROUTE_ACCOUNTS_CONNECT, post(connect_account))
         .route(ROUTE_ACCOUNTS_VERIFY, post(verify_account))
         .route(ROUTE_ACCOUNTS_DISCONNECT, post(disconnect_account))
@@ -1022,6 +1024,8 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     .as_str();
     // The clock shape and the time zone are one question to the operator - what
     // time is it - so they are read together and answered on one form.
+    view.consolidate_nightly = crate::memconsolidate::nightly(state.engine.db());
+    view.metrics_window_hours = crate::metrics::window_hours(state.engine.db()).to_string();
     view.clock_format = crate::zone::ClockFormat::parse(
         engine
             .setting(crate::zone::SETTING_CLOCK_FORMAT)
@@ -1102,6 +1106,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     // would use rather than a second copy of the same clamp.
     view.learning_repair = crate::learning::review_repair(engine.db());
     view.curator_archive_days = crate::learning::unused_days(engine.db()).to_string();
+    view.standing_orders_enabled = crate::standing::enabled(engine.db());
     view.schedule_delivery_default = crate::delivery::default_channel(engine.db());
     view.schedule_email_enabled = crate::delivery::email_enabled(engine.db());
     view.jobs_notify_on_complete = crate::process::notify_on_complete(engine.db());
@@ -1243,6 +1248,16 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .ok()
         .flatten()
         .unwrap_or_default();
+    view.memory_cap_chars = crate::selfmemory::Target::Memory
+        .cap_for(
+            state
+                .engine
+                .setting(crate::selfmemory::SETTING_CAP_CHARS)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
+        .to_string();
     view.reply_state = chat::reply_state(
         state
             .engine
@@ -1363,6 +1378,10 @@ fn build_activity_view(state: &AppState) -> Result<ActivityView, FormError> {
         .cloned()
         .unwrap_or_default();
     view.receipts = crate::process::receipts(&workspace.join(".processes"), 20);
+    // The same numbers the phone's chat footer reads, over the operator's window.
+    view.metrics_hours = crate::metrics::window_hours(engine.db());
+    view.metrics = crate::metrics::summary_in_hours(engine.db(), view.metrics_hours, None)
+        .map_err(|error| db_error(&error))?;
     Ok(view)
 }
 
@@ -5807,6 +5826,48 @@ async fn save_memory(
         "off" => "off",
         _ => "gbrain",
     };
+    let nightly = matches!(
+        field(&fields, "consolidate_nightly").trim(),
+        "true" | "on" | "1"
+    );
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::memconsolidate::SETTING_NIGHTLY,
+        if nightly { "true" } else { "false" },
+    ) {
+        return store_failure(&request_id.0, "the consolidation switch", error);
+    }
+    let cap = field(&fields, "memory_cap_chars").trim().to_owned();
+    let cap: u32 = match cap.parse::<u32>() {
+        Ok(number)
+            if (crate::selfmemory::MIN_CAP_CHARS..=crate::selfmemory::MAX_CAP_CHARS)
+                .contains(&number) =>
+        {
+            number
+        }
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("memory_cap_chars"),
+                    "memory_cap_invalid",
+                    format!(
+                        "a whole number from {} to {} characters",
+                        crate::selfmemory::MIN_CAP_CHARS,
+                        crate::selfmemory::MAX_CAP_CHARS
+                    ),
+                ),
+            );
+        }
+    };
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::selfmemory::SETTING_CAP_CHARS,
+        &cap.to_string(),
+    ) {
+        return store_failure(&request_id.0, "the memory cap", error);
+    }
     let vault = field(&fields, "memory_vault").trim().to_owned();
     // A path that does not exist is refused here rather than at recall time: a
     // backend that silently returns nothing looks exactly like a brain that is
@@ -5885,6 +5946,41 @@ async fn save_timezone(
         store::settings_put(state.engine.db(), crate::zone::SETTING_TIMEZONE, &stored)
     {
         return store_failure(&request_id.0, crate::zone::SETTING_TIMEZONE, error);
+    }
+    // The metrics window rides the same form for the same reason: how far back a
+    // read looks is the same question as which clock it reads. Also only read when
+    // present, so an older client keeps working.
+    if let Some(raw) = fields.get("metrics_window_hours") {
+        let hours: u32 = match raw.trim().parse::<u32>() {
+            Ok(number)
+                if (crate::metrics::MIN_WINDOW_HOURS..=crate::metrics::MAX_WINDOW_HOURS)
+                    .contains(&number) =>
+            {
+                number
+            }
+            _ => {
+                return fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(
+                        Some("metrics_window_hours"),
+                        "metrics_window_invalid",
+                        format!(
+                            "a whole number from {} to {} hours",
+                            crate::metrics::MIN_WINDOW_HOURS,
+                            crate::metrics::MAX_WINDOW_HOURS
+                        ),
+                    ),
+                );
+            }
+        };
+        if let Err(error) = store::settings_put(
+            state.engine.db(),
+            crate::metrics::SETTING_WINDOW_HOURS,
+            &hours.to_string(),
+        ) {
+            return store_failure(&request_id.0, "the metrics window", error);
+        }
     }
     // The clock shape rides the same form and the same route, because the two are
     // one question to the operator. It is read only when the field is present, so
@@ -7893,6 +7989,43 @@ async fn save_delivery(
         return audit_failure(&request_id.0, "settings.delivery", error);
     }
     see_other(SAVED_DELIVERY)
+}
+
+const SAVED_STANDING: &str = "/dashboard/settings?saved=standing";
+
+/// `POST /dashboard/settings/standing` - the proactive-cadence switch.
+async fn save_standing(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let on = matches!(
+        field(&fields, "standing_orders_enabled").trim(),
+        "true" | "on" | "1"
+    );
+    let stored = if on { "true" } else { "false" };
+    if let Err(error) =
+        store::settings_put(state.engine.db(), crate::standing::SETTING_ENABLED, stored)
+    {
+        return store_failure(&request_id.0, "the standing orders switch", error);
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.standing",
+        Some(&format!("enabled={stored}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.standing", error);
+    }
+    see_other(SAVED_STANDING)
 }
 
 /// `POST /dashboard/settings/mcp` - the configured MCP server list.
@@ -11041,7 +11174,8 @@ fn spawn_turn(
         // workspace, so a restore of the workspace cannot lose them.
         memory = std::sync::Arc::new(
             crate::selfmemory::Access::new(&state.engine.paths().state_dir)
-                .with_db(state.engine.db().clone()),
+                .with_db(state.engine.db().clone())
+                .with_turn(Some(&answer_id)),
         );
         crate::tools::Sandbox::new(workspace, mode)
             .with_processes(desk)

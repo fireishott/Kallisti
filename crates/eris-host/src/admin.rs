@@ -276,6 +276,9 @@ pub const ROUTE_SETTINGS_JOBS: &str = "/dashboard/settings/jobs";
 
 /// The schedule-delivery card (Automation tab): default channel and the mail gate.
 pub const ROUTE_SETTINGS_DELIVERY: &str = "/dashboard/settings/delivery";
+
+/// The standing-orders card (Automation tab): the cadence switch.
+pub const ROUTE_SETTINGS_STANDING: &str = "/dashboard/settings/standing";
 /// `POST /dashboard/settings/accounts/connect` - start a browser login for one
 /// account. The form names which, and the answer is a redirect to the provider.
 pub const ROUTE_ACCOUNTS_CONNECT: &str = "/dashboard/settings/accounts/connect";
@@ -529,6 +532,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_LEARNING,
     ROUTE_SETTINGS_JOBS,
     ROUTE_SETTINGS_DELIVERY,
+    ROUTE_SETTINGS_STANDING,
     ROUTE_ACCOUNTS_CONNECT,
     ROUTE_ACCOUNTS_VERIFY,
     ROUTE_ACCOUNTS_DISCONNECT,

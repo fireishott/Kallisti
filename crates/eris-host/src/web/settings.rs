@@ -1779,6 +1779,7 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         "greeting_refresh",
     ),
     (crate::learning::SETTING_REVIEW_REPAIR, "learning_repair"),
+    (crate::standing::SETTING_ENABLED, "standing_orders_enabled"),
     (
         crate::delivery::SETTING_DELIVERY_DEFAULT,
         "schedule_delivery_default",
@@ -1799,6 +1800,11 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         "search_scope_default",
     ),
     (crate::memory::SETTING_BACKEND, "memory_backend"),
+    (crate::selfmemory::SETTING_CAP_CHARS, "memory_cap_chars"),
+    (
+        crate::memconsolidate::SETTING_NIGHTLY,
+        "consolidate_nightly",
+    ),
     (crate::push::SETTING_NOTIFY_ON_REPLY, "notify_on_reply"),
     (crate::push::SETTING_NOTIFY_SCOPE, "notify_scope"),
     (crate::push::SETTING_NOTIFY_DEVICES, "notify_devices"),
@@ -1811,6 +1817,7 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
     ),
     (crate::zone::SETTING_TIMEZONE, "timezone"),
     (crate::zone::SETTING_CLOCK_FORMAT, "clock_format"),
+    (crate::metrics::SETTING_WINDOW_HOURS, "metrics_window_hours"),
     // The rail owns this one: the control sits beside the conversation list, not
     // in the settings page, because that is where the order is being changed.
     (crate::web::chat::SETTING_CONVERSATION_SORT, "sort"),

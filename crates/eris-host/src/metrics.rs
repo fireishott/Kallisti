@@ -17,6 +17,27 @@
 
 use crate::db::{Db, DbError};
 
+/// The `settings` row holding how many hours the panel looks back.
+pub const SETTING_WINDOW_HOURS: &str = "metrics.window_hours";
+
+/// The narrowest window the record offers.
+pub const MIN_WINDOW_HOURS: u32 = 1;
+
+/// The widest: a week.
+pub const MAX_WINDOW_HOURS: u32 = 168;
+
+/// The stored window in hours, clamped to the bounds the record publishes.
+#[must_use]
+pub fn window_hours(db: &Db) -> i64 {
+    crate::web::store::settings_get(db, SETTING_WINDOW_HOURS)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_owned())
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|hours| (MIN_WINDOW_HOURS..=MAX_WINDOW_HOURS).contains(hours))
+        .map_or(24, i64::from)
+}
+
 /// One window of history the panel shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window {
@@ -159,6 +180,23 @@ pub fn summary(db: &Db, window: Window) -> Result<Summary, DbError> {
 /// percentile the settings panel would have shown, or the two surfaces disagree
 /// about a number that is supposed to be a measurement.
 pub fn summary_in(db: &Db, window: Window, conversation: Option<&str>) -> Result<Summary, DbError> {
+    summary_in_hours(db, window.hours(), conversation)
+}
+
+/// The same numbers over an arbitrary number of hours.
+///
+/// The settings panel's window is a stored number of hours rather than one of the
+/// three named spans, and a fourth `Window` variant would have made every match on
+/// it a place to forget one.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn summary_in_hours(
+    db: &Db,
+    hours: i64,
+    conversation: Option<&str>,
+) -> Result<Summary, DbError> {
     const SQL: &str = "
         SELECT COALESCE(model, 'unknown') AS model,
                duration_ms,
@@ -171,7 +209,7 @@ pub fn summary_in(db: &Db, window: Window, conversation: Option<&str>) -> Result
            AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)
            AND (?2 IS NULL OR conversation_id = ?2)
          ORDER BY created_at DESC";
-    let cutoff = format!("-{} hours", window.hours());
+    let cutoff = format!("-{} hours", hours.max(1));
     let rows: Vec<(String, Option<i64>, i64, i64, i64, i64)> = db.with_conn(|conn| {
         let mut statement = conn.prepare(SQL)?;
         let mapped = statement.query_map(rusqlite::params![cutoff, conversation], |row| {
