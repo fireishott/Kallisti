@@ -1024,6 +1024,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     .as_str();
     // The clock shape and the time zone are one question to the operator - what
     // time is it - so they are read together and answered on one form.
+    view.metrics_window_hours = crate::metrics::window_hours(state.engine.db()).to_string();
     view.clock_format = crate::zone::ClockFormat::parse(
         engine
             .setting(crate::zone::SETTING_CLOCK_FORMAT)
@@ -1376,6 +1377,10 @@ fn build_activity_view(state: &AppState) -> Result<ActivityView, FormError> {
         .cloned()
         .unwrap_or_default();
     view.receipts = crate::process::receipts(&workspace.join(".processes"), 20);
+    // The same numbers the phone's chat footer reads, over the operator's window.
+    view.metrics_hours = crate::metrics::window_hours(engine.db());
+    view.metrics = crate::metrics::summary_in_hours(engine.db(), view.metrics_hours, None)
+        .map_err(|error| db_error(&error))?;
     Ok(view)
 }
 
@@ -5929,6 +5934,41 @@ async fn save_timezone(
         store::settings_put(state.engine.db(), crate::zone::SETTING_TIMEZONE, &stored)
     {
         return store_failure(&request_id.0, crate::zone::SETTING_TIMEZONE, error);
+    }
+    // The metrics window rides the same form for the same reason: how far back a
+    // read looks is the same question as which clock it reads. Also only read when
+    // present, so an older client keeps working.
+    if let Some(raw) = fields.get("metrics_window_hours") {
+        let hours: u32 = match raw.trim().parse::<u32>() {
+            Ok(number)
+                if (crate::metrics::MIN_WINDOW_HOURS..=crate::metrics::MAX_WINDOW_HOURS)
+                    .contains(&number) =>
+            {
+                number
+            }
+            _ => {
+                return fail_settings(
+                    &state,
+                    as_html,
+                    FormError::new(
+                        Some("metrics_window_hours"),
+                        "metrics_window_invalid",
+                        format!(
+                            "a whole number from {} to {} hours",
+                            crate::metrics::MIN_WINDOW_HOURS,
+                            crate::metrics::MAX_WINDOW_HOURS
+                        ),
+                    ),
+                );
+            }
+        };
+        if let Err(error) = store::settings_put(
+            state.engine.db(),
+            crate::metrics::SETTING_WINDOW_HOURS,
+            &hours.to_string(),
+        ) {
+            return store_failure(&request_id.0, "the metrics window", error);
+        }
     }
     // The clock shape rides the same form and the same route, because the two are
     // one question to the operator. It is read only when the field is present, so

@@ -2542,6 +2542,10 @@ fn read_schedule_email_enabled(engine: &SetupEngine) -> Result<String, DeviceErr
     Ok(crate::delivery::email_enabled(engine.db()).to_string())
 }
 
+fn read_metrics_window_hours(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::metrics::window_hours(engine.db()).to_string())
+}
+
 fn read_memory_cap_chars(engine: &SetupEngine) -> Result<String, DeviceError> {
     let stored = engine
         .setting(crate::selfmemory::SETTING_CAP_CHARS)
@@ -2984,6 +2988,19 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::web::chat::SETTING_CONVERSATION_SORT,
         writable: true,
         read: read_conversation_sort,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "metrics_window_hours",
+        label: "Metrics window",
+        group: "system",
+        kind: SettingKind::Int(
+            crate::metrics::MIN_WINDOW_HOURS,
+            crate::metrics::MAX_WINDOW_HOURS,
+        ),
+        row: crate::metrics::SETTING_WINDOW_HOURS,
+        writable: true,
+        read: read_metrics_window_hours,
         normalize: None,
     },
     SettingSpec {

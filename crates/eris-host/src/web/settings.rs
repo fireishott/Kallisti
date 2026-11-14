@@ -1813,6 +1813,7 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
     ),
     (crate::zone::SETTING_TIMEZONE, "timezone"),
     (crate::zone::SETTING_CLOCK_FORMAT, "clock_format"),
+    (crate::metrics::SETTING_WINDOW_HOURS, "metrics_window_hours"),
     // The rail owns this one: the control sits beside the conversation list, not
     // in the settings page, because that is where the order is being changed.
     (crate::web::chat::SETTING_CONVERSATION_SORT, "sort"),

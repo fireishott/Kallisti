@@ -2392,6 +2392,8 @@ pub struct SettingsView {
     pub learning_repair: bool,
     /// How long a skill nothing has ever read may stay in the catalog.
     pub curator_archive_days: String,
+    /// How many hours the cost and latency panel looks back.
+    pub metrics_window_hours: String,
     /// The character cap on each self-memory file.
     pub memory_cap_chars: String,
     /// Whether interval intents fire on their own cadence.
@@ -2512,6 +2514,7 @@ impl SettingsView {
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
             learning_repair: true,
             curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
+            metrics_window_hours: "24".to_owned(),
             memory_cap_chars: crate::selfmemory::MEMORY_LIMIT.to_string(),
             standing_orders_enabled: true,
             schedule_delivery_default: crate::delivery::DEFAULT_CHANNEL.to_owned(),
@@ -3656,6 +3659,20 @@ fn clock_group(view: &SettingsView) -> Markup {
                 span .hint {
                     "Every stamp in the product follows this: the transcript, the rail, "
                     "the admin listings. The shape is the same clock the line above sets."
+                }
+            }
+            div .field {
+                label for="metrics_window_hours" { "Metrics window" }
+                input type="number" id="metrics_window_hours" name="metrics_window_hours"
+                    min=(crate::metrics::MIN_WINDOW_HOURS) max=(crate::metrics::MAX_WINDOW_HOURS)
+                    value=(view.metrics_window_hours);
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("metrics_window_hours")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Hours, 1 to 168. How far back the cost and latency panel on the activity page "
+                    "counts. The panel is drawn from the transcript, so a narrow window is a fast "
+                    "read of the recent shape rather than a different measurement."
                 }
             }
             div .actions {
@@ -5261,6 +5278,10 @@ pub struct ActivityView {
     pub processes: Vec<serde_json::Value>,
     /// The retained receipts, newest first.
     pub receipts: Vec<serde_json::Value>,
+    /// Cost and latency for the stored window.
+    pub metrics: crate::metrics::Summary,
+    /// The window the metrics cover, in hours.
+    pub metrics_hours: i64,
 }
 
 impl ActivityView {
@@ -5276,6 +5297,8 @@ impl ActivityView {
             notice: None,
             processes: Vec::new(),
             receipts: Vec::new(),
+            metrics: crate::metrics::Summary::default(),
+            metrics_hours: 24,
         }
     }
 }
@@ -5306,8 +5329,9 @@ pub fn activity_page(view: &ActivityView) -> Markup {
     let body = html! {
         h1 { "Activity" }
         p .lede {
-            "The last hundred rows of the audit log, newest first. Every settings save, every "
-            "sign-in, every device change lands here, and nothing in the log can be edited from a page."
+            "Cost and latency for the stored window, the background processes this daemon is "
+            "running with their receipts, then the last hundred rows of the audit log. Nothing "
+            "here can be edited from a page."
         }
         (alert_region(error, view.notice.as_deref()))
         section .card aria-labelledby="processes-heading" {
@@ -5359,6 +5383,59 @@ pub fn activity_page(view: &ActivityView) -> Markup {
             p .small {
                 "Started through the process tool by a turn. A job outlives the command cap; its "
                 "receipt below outlives the job."
+            }
+        }
+        section .card aria-labelledby="metrics-heading" {
+            h2 id="metrics-heading" { "Cost and latency" }
+            @if view.metrics.is_empty() {
+                p .empty {
+                    strong { "Nothing measured" }
+                    "No answer was recorded in the last " (view.metrics_hours) " hour(s)."
+                }
+            } @else {
+                p .small {
+                    (view.metrics.calls) " answer(s) in the last " (view.metrics_hours)
+                    " hour(s), " (view.metrics.failed) " failed"
+                    @if view.metrics.unmeasured > 0 {
+                        ", " (view.metrics.unmeasured) " with no duration recorded"
+                    }
+                    "."
+                }
+                p .small .mono {
+                    "tokens in " (view.metrics.prompt_tokens)
+                    " · out " (view.metrics.completion_tokens)
+                    " · cache hit " (format!("{:.1}%", view.metrics.cache_rate() * 100.0))
+                }
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Model" }
+                            th scope="col" { "Calls" }
+                            th scope="col" { "p50" }
+                            th scope="col" { "p95" }
+                            th scope="col" { "Failed" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.metrics.rows {
+                            tr {
+                                td .mono .small { (row.model) }
+                                td .mono .small { (row.calls) }
+                                td .mono .small {
+                                    @if let Some(ms) = row.median_ms { (ms) " ms" } @else { "-" }
+                                }
+                                td .mono .small {
+                                    @if let Some(ms) = row.p95_ms { (ms) " ms" } @else { "-" }
+                                }
+                                td .mono .small { (row.failed) }
+                            }
+                        }
+                    }
+                }
+                p .small {
+                    "Nearest-rank percentiles over recorded durations, so a p95 is a turn that "
+                    "happened. The window is a setting on the System tab."
+                }
             }
         }
         section .card aria-labelledby="receipts-heading" {
