@@ -845,7 +845,7 @@ struct AppStoresTests {
             case "https://relay.example.com/v1/jobs/\(jobID.uuidString.lowercased())/events":
                 let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!
                 let data = """
-                event: text_delta
+                event: text.delta
                 data: {"jobId":"\(jobID.uuidString.lowercased())","delta":"Recovered ","kind":"text_delta"}
 
                 event: done
