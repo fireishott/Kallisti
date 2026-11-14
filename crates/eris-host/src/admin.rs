@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 186;
+pub const BUILD: u32 = 187;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -418,6 +418,18 @@ pub const ROUTE_WORKBOARD_ADD: &str = "/dashboard/workboard/add";
 /// Move, retitle or drop one task from the page.
 pub const ROUTE_WORKBOARD_ITEM: &str = "/dashboard/workboard/item";
 
+/// The Steward page: duties, their phases, the notes tail and the forms.
+pub const ROUTE_STEWARD: &str = "/dashboard/steward";
+
+/// Add one duty from the Steward page.
+pub const ROUTE_STEWARD_DUTY_ADD: &str = "/dashboard/steward/duties";
+
+/// Change one duty from the Steward page: phase, cadence, close or answer.
+pub const ROUTE_STEWARD_DUTY: &str = "/dashboard/steward/duty";
+
+/// Seed duties from the stored charter.
+pub const ROUTE_STEWARD_SEED: &str = "/dashboard/steward/seed";
+
 /// `GET /dashboard/sessions` - every device session, newest first.
 pub const ROUTE_SESSIONS: &str = "/dashboard/sessions";
 
@@ -493,6 +505,7 @@ pub const ALL_GET_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_UPDATE_PROGRESS,
     ROUTE_ACTIVITY,
     ROUTE_WORKBOARD,
+    ROUTE_STEWARD,
     ROUTE_BACKUPS,
     ROUTE_ROSTER,
     ROUTE_TRIGGERS,
@@ -548,6 +561,9 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_AUX,
     ROUTE_WORKBOARD_ADD,
     ROUTE_WORKBOARD_ITEM,
+    ROUTE_STEWARD_DUTY_ADD,
+    ROUTE_STEWARD_DUTY,
+    ROUTE_STEWARD_SEED,
     ROUTE_SETTINGS_MCP,
     ROUTE_SETTINGS_GREETING,
     ROUTE_SETTINGS_SEARCH,

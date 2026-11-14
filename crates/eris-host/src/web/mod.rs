@@ -24,6 +24,9 @@ pub mod templates;
 pub mod term;
 pub mod wallpaper;
 
+/// The Steward page: the duty board, its notes and its forms.
+pub mod steward_page;
+
 /// The workboard page, and the proof that a task outlives a session.
 #[cfg(test)]
 mod workboard_page;
