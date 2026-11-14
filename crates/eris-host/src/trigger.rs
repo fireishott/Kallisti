@@ -659,7 +659,11 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 33);
+        assert_eq!(
+            db.schema_version().expect("version"),
+            crate::db::SCHEMA_VERSION,
+            "the database sits at the current schema, not at the one this migration added"
+        );
     }
 
     #[test]
