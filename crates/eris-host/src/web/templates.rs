@@ -1966,6 +1966,8 @@ pub enum SettingsGroup {
     Greeting,
     /// The transcript search defaults: how many hits, and what scope it starts on.
     Search,
+    /// Background jobs: the finish notice and the receipt window.
+    Jobs,
     /// Cron schedules and their run history.
     Schedules,
     /// The operator's skill library and its per-skill switches.
@@ -1978,7 +1980,7 @@ pub enum SettingsGroup {
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Provider,
         Self::Accounts,
         Self::Workspace,
@@ -1987,6 +1989,7 @@ impl SettingsGroup {
         Self::Goal,
         Self::Greeting,
         Self::Search,
+        Self::Jobs,
         Self::Schedules,
         Self::Skills,
         Self::Update,
@@ -2003,6 +2006,7 @@ impl SettingsGroup {
             Self::Goal => "goal",
             Self::Greeting => "greeting",
             Self::Search => "search",
+            Self::Jobs => "jobs",
             Self::Schedules => "schedules",
             Self::Skills => "skills",
             Self::Accounts => "accounts",
@@ -2035,6 +2039,7 @@ impl SettingsGroup {
                 "greeting_enabled" | "greeting_model" | "greeting_refresh"
             ),
             Self::Search => matches!(field, "search_limit" | "search_scope_default"),
+            Self::Jobs => matches!(field, "jobs_notify_on_complete" | "jobs_receipt_days"),
             Self::Schedules => matches!(
                 field,
                 "schedule_name"
@@ -2069,6 +2074,7 @@ impl SettingsGroup {
             Self::Goal => "objective saved",
             Self::Greeting => "greeting saved",
             Self::Search => "search defaults saved",
+            Self::Jobs => "job settings saved",
             Self::Schedules => "schedules saved",
             Self::Skills => "skills saved",
             Self::Accounts => "account updated",
@@ -2371,6 +2377,10 @@ pub struct SettingsView {
     pub learning_repair: bool,
     /// How long a skill nothing has ever read may stay in the catalog.
     pub curator_archive_days: String,
+    /// Whether a finished background job announces itself.
+    pub jobs_notify_on_complete: bool,
+    /// How many days a finished job's receipt is kept.
+    pub jobs_receipt_days: String,
     /// How many hits a search returns when the caller does not say.
     pub search_limit: String,
     /// `all` or `conversation`: the scope a search starts on.
@@ -2479,6 +2489,8 @@ impl SettingsView {
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
             learning_repair: true,
             curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
+            jobs_notify_on_complete: true,
+            jobs_receipt_days: "7".to_owned(),
             search_limit: crate::search::DEFAULT_LIMIT.to_string(),
             search_scope_default: "all".to_owned(),
             chat_hint: crate::greeting::DEFAULT_HINT.to_owned(),
@@ -2649,6 +2661,7 @@ impl SettingsTab {
             | SettingsGroup::Goal
             | SettingsGroup::Greeting
             | SettingsGroup::Search => Self::Assistant,
+            SettingsGroup::Jobs => Self::Automation,
             SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
             SettingsGroup::Workspace | SettingsGroup::Permissions | SettingsGroup::Update => {
                 Self::System
@@ -4646,6 +4659,43 @@ fn tab_automation(view: &SettingsView) -> Markup {
             (schedules_group(view))
         }
 
+        section .card aria-labelledby="jobs-heading" {
+            h2 id="jobs-heading" { "Background jobs" }
+            p .small {
+                "Work started with the background flag outlives the thirty-second command cap. "
+                "These are how it reports and how long its receipt survives: a job that ends on "
+                "its own arrives as its own turn instead of costing a poll."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_JOBS) novalidate {
+                div .field {
+                    label for="jobs_notify_on_complete" {
+                        input type="checkbox" id="jobs_notify_on_complete"
+                            name="jobs_notify_on_complete" value="true"
+                            checked[view.jobs_notify_on_complete];
+                        " Report a finish instead of polling"
+                    }
+                    span .hint {
+                        "Two quiet checks arm it, and the turn is told to stop asking. Off, every "
+                        "job is polled until it is done."
+                    }
+                }
+                div .field {
+                    label for="jobs_receipt_days" { "Keep receipts for" }
+                    input type="number" id="jobs_receipt_days" name="jobs_receipt_days"
+                        min=(crate::process::MIN_RECEIPT_DAYS)
+                        max=(crate::process::MAX_RECEIPT_DAYS) value=(view.jobs_receipt_days);
+                    span .hint {
+                        "Days, 1 to 30, newest sixty-four kept whatever the age. A receipt carries "
+                        "the exit code and the tail, so a crash is readable afterwards."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save jobs" }
+                    a .button href=(crate::admin::ROUTE_ACTIVITY) { "Open activity" }
+                }
+            }
+        }
+
         section .card aria-labelledby="learning-heading" {
             h2 id="learning-heading" { "Learning" }
             p .small {
@@ -5079,6 +5129,10 @@ pub struct ActivityView {
     pub error: Option<FormError>,
     /// A success line, unused today but the page shares the shell's contract.
     pub notice: Option<String>,
+    /// Live background processes, newest first.
+    pub processes: Vec<serde_json::Value>,
+    /// The retained receipts, newest first.
+    pub receipts: Vec<serde_json::Value>,
 }
 
 impl ActivityView {
@@ -5092,6 +5146,8 @@ impl ActivityView {
             total: 0,
             error: None,
             notice: None,
+            processes: Vec::new(),
+            receipts: Vec::new(),
         }
     }
 }
@@ -5126,6 +5182,81 @@ pub fn activity_page(view: &ActivityView) -> Markup {
             "sign-in, every device change lands here, and nothing in the log can be edited from a page."
         }
         (alert_region(error, view.notice.as_deref()))
+        section .card aria-labelledby="processes-heading" {
+            h2 id="processes-heading" { "Background processes" }
+            @if view.processes.is_empty() {
+                p .empty {
+                    strong { "Nothing running" }
+                    "No background job belongs to this daemon right now."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Started" }
+                            th scope="col" { "Command" }
+                            th scope="col" { "Status" }
+                            th scope="col" { "Bytes" }
+                            th scope="col" { "Control" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.processes {
+                            tr {
+                                td .mono .small { (row["started_at"].as_str().unwrap_or_default()) }
+                                td .mono .small {
+                                    (row["command"].as_str().unwrap_or_default())
+                                    @if let Some(id) = row["process_id"].as_str() {
+                                        p .small .mono {
+                                            "pid " (row["pid"]) " · " (id)
+                                        }
+                                    }
+                                }
+                                td { (row["status"].as_str().unwrap_or_default()) }
+                                td .mono .small { (row["bytes"]) }
+                                td {
+                                    @if row["status"] == "running" {
+                                        form .inline-form method="post"
+                                            action=(format!("{}/{}", crate::admin::ROUTE_DASHBOARD_PROCESS_KILL,
+                                                row["process_id"].as_str().unwrap_or_default())) novalidate {
+                                            button type="submit" { "Stop" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p .small {
+                "Started through the process tool by a turn. A job outlives the command cap; its "
+                "receipt below outlives the job."
+            }
+        }
+        section .card aria-labelledby="receipts-heading" {
+            h2 id="receipts-heading" { "Receipts" }
+            @if view.receipts.is_empty() {
+                p .empty { "No receipt is retained." }
+            } @else {
+                @for row in &view.receipts {
+                    article .receipt {
+                        p .mono .small {
+                            (row["finished_at"].as_str().unwrap_or_default()) " · "
+                            (row["status"].as_str().unwrap_or_default())
+                            @if let Some(code) = row["exit_code"].as_i64() { " · exit " (code) }
+                            @if let Some(signal) = row["signal"].as_i64() { " · signal " (signal) }
+                        }
+                        p .mono .small { (row["command"].as_str().unwrap_or_default()) }
+                        @if let Some(note) = row["signal_note"].as_str() {
+                            p .small { (note) }
+                        }
+                        @if let Some(output) = row["output"].as_str().filter(|text| !text.is_empty()) {
+                            pre .tail { (output) }
+                        }
+                    }
+                }
+            }
+        }
         section .card aria-labelledby="audit-heading" {
             h2 id="audit-heading" { "Audit log" }
             @if view.rows.is_empty() {

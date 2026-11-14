@@ -37,11 +37,11 @@ use crate::admin::{
     ROUTE_ROSTER, ROUTE_ROSTER_DELETE, ROUTE_ROSTER_SAVE, ROUTE_ROSTER_TOGGLE, ROUTE_SEARCH,
     ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
     ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_GOAL,
-    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_LEARNING, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
-    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
-    ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD, ROUTE_SETTINGS_PROVIDERS_DELETE,
-    ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE, ROUTE_SETTINGS_PUSH,
-    ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
+    ROUTE_SETTINGS_GREETING, ROUTE_SETTINGS_JOBS, ROUTE_SETTINGS_LEARNING, ROUTE_SETTINGS_MCP,
+    ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_PROVIDERS_ADD,
+    ROUTE_SETTINGS_PROVIDERS_DELETE, ROUTE_SETTINGS_PROVIDERS_EDIT, ROUTE_SETTINGS_PROVIDERS_PROBE,
+    ROUTE_SETTINGS_PUSH, ROUTE_SETTINGS_QUOTA, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_RESTART,
     ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SEARCH, ROUTE_SETTINGS_SKILLS,
     ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
     ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS,
@@ -165,6 +165,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_GREETING, post(save_greeting))
         .route(ROUTE_SETTINGS_SEARCH, post(save_search))
         .route(ROUTE_SETTINGS_LEARNING, post(save_learning_repair))
+        .route(ROUTE_SETTINGS_JOBS, post(save_jobs))
         .route(ROUTE_ACCOUNTS_CONNECT, post(connect_account))
         .route(ROUTE_ACCOUNTS_VERIFY, post(verify_account))
         .route(ROUTE_ACCOUNTS_DISCONNECT, post(disconnect_account))
@@ -1100,6 +1101,8 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     // would use rather than a second copy of the same clamp.
     view.learning_repair = crate::learning::review_repair(engine.db());
     view.curator_archive_days = crate::learning::unused_days(engine.db()).to_string();
+    view.jobs_notify_on_complete = crate::process::notify_on_complete(engine.db());
+    view.jobs_receipt_days = crate::process::receipt_days(engine.db()).to_string();
     view.search_limit = crate::search::stored_limit(engine.db()).to_string();
     view.search_scope_default = crate::search::stored_scope(engine.db());
     // The objective every turn carries until it is cleared. Read through
@@ -1346,6 +1349,17 @@ fn build_activity_view(state: &AppState) -> Result<ActivityView, FormError> {
     view.rows =
         store::audit_recent(engine.db(), AUDIT_PAGE_SIZE).map_err(|error| db_error(&error))?;
     view.total = store::audit_count(engine.db()).map_err(|error| db_error(&error))?;
+    // The one handle table the tool, the device route and the dashboard all read,
+    // so this card cannot disagree with any of them.
+    let workspace = engine
+        .workspace_path()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let desk = crate::process::Desk::new(engine.db().clone(), &workspace);
+    view.processes = desk.snapshot()["processes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    view.receipts = crate::process::receipts(&workspace.join(".processes"), 20);
     Ok(view)
 }
 
@@ -7754,6 +7768,72 @@ async fn save_learning_repair(
         return audit_failure(&request_id.0, "settings.learning", error);
     }
     see_other(SAVED_LEARNING_REPAIR)
+}
+
+const SAVED_JOBS: &str = "/dashboard/settings?saved=jobs";
+
+/// `POST /dashboard/settings/jobs` - finish notices and receipt retention.
+async fn save_jobs(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let notify = matches!(
+        field(&fields, "jobs_notify_on_complete").trim(),
+        "true" | "on" | "1"
+    );
+    let days = field(&fields, "jobs_receipt_days").trim().to_owned();
+    let days: u32 = match days.parse::<u32>() {
+        Ok(number)
+            if (crate::process::MIN_RECEIPT_DAYS..=crate::process::MAX_RECEIPT_DAYS)
+                .contains(&number) =>
+        {
+            number
+        }
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("jobs_receipt_days"),
+                    "jobs_receipt_days_invalid",
+                    format!(
+                        "a whole number from {} to {} days",
+                        crate::process::MIN_RECEIPT_DAYS,
+                        crate::process::MAX_RECEIPT_DAYS
+                    ),
+                ),
+            );
+        }
+    };
+    for (key, value) in [
+        (
+            crate::process::SETTING_NOTIFY_ON_COMPLETE,
+            if notify { "true" } else { "false" }.to_owned(),
+        ),
+        (crate::process::SETTING_RECEIPT_DAYS, days.to_string()),
+    ] {
+        if let Err(error) = store::settings_put(state.engine.db(), key, &value) {
+            return store_failure(&request_id.0, "a job setting", error);
+        }
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.jobs",
+        Some(&format!("notify_on_complete={notify}; receipt_days={days}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.jobs", error);
+    }
+    see_other(SAVED_JOBS)
 }
 
 /// `POST /dashboard/settings/mcp` - the configured MCP server list.

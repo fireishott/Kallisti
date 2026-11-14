@@ -1407,7 +1407,10 @@ pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
     let store = TurnStore::from_env(db.clone());
     let interrupted = db.with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT id FROM jobs WHERE status IN ('queued', 'running') ORDER BY created_at, id",
+            // Kind `tool` is a background process, not a chat turn: it has its own
+            // sweep, which knows to check whether the pid survived the restart.
+            "SELECT id FROM jobs WHERE status IN ('queued', 'running') AND kind != 'tool' \
+              ORDER BY created_at, id",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()

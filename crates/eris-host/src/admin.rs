@@ -270,6 +270,9 @@ pub const ROUTE_SETTINGS_GREETING: &str = "/dashboard/settings/greeting";
 pub const ROUTE_SETTINGS_SEARCH: &str = "/dashboard/settings/search";
 /// The learning card (Automation tab): repair a refused review, or drop it.
 pub const ROUTE_SETTINGS_LEARNING: &str = "/dashboard/settings/learning";
+
+/// The background-job card (Automation tab): finish notices and receipts.
+pub const ROUTE_SETTINGS_JOBS: &str = "/dashboard/settings/jobs";
 /// `POST /dashboard/settings/accounts/connect` - start a browser login for one
 /// account. The form names which, and the answer is a redirect to the provider.
 pub const ROUTE_ACCOUNTS_CONNECT: &str = "/dashboard/settings/accounts/connect";
@@ -521,6 +524,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_GREETING,
     ROUTE_SETTINGS_SEARCH,
     ROUTE_SETTINGS_LEARNING,
+    ROUTE_SETTINGS_JOBS,
     ROUTE_ACCOUNTS_CONNECT,
     ROUTE_ACCOUNTS_VERIFY,
     ROUTE_ACCOUNTS_DISCONNECT,

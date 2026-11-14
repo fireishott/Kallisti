@@ -873,6 +873,20 @@ fn run_serve(
         Err(error) => eprintln!("eris serve: could not settle interrupted scheduled runs: {error}"),
     }
 
+    // Background processes are `jobs` rows of kind `tool`. Nothing in this
+    // process holds their children at boot, so a row still `running` is a job
+    // whose pid either survived the restart or did not. A dead pid is settled as
+    // lost with a receipt, because `running` is the one status a page cannot
+    // tell from healthy.
+    {
+        let workspace = loaded.toml().workspace_path();
+        let desk_dir = workspace.join(".processes");
+        let lost = eris_host::process::reconcile_orphans(&db, &desk_dir);
+        if lost > 0 {
+            eprintln!("eris serve: settled {lost} background job(s) with no live pid");
+        }
+    }
+
     // Every retired token verifier is one more Argon2 hash on every device
     // request, because verification scans the rows to answer "revoked" rather
     // than "unknown". A device that refreshes hourly retires two rows each

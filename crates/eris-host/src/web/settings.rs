@@ -1779,6 +1779,11 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         "greeting_refresh",
     ),
     (crate::learning::SETTING_REVIEW_REPAIR, "learning_repair"),
+    (
+        crate::process::SETTING_NOTIFY_ON_COMPLETE,
+        "jobs_notify_on_complete",
+    ),
+    (crate::process::SETTING_RECEIPT_DAYS, "jobs_receipt_days"),
     (crate::learning::SETTING_UNUSED_DAYS, "curator_archive_days"),
     (crate::search::SETTING_SEARCH_LIMIT, "search_limit"),
     (

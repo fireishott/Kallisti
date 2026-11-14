@@ -2530,6 +2530,14 @@ fn read_skills_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
 
 /// The workspace a turn may write in. Read-only here: it is set by the wizard and
 /// moving it from a phone is a different decision with a different card.
+fn read_jobs_notify_on_complete(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::process::notify_on_complete(engine.db()).to_string())
+}
+
+fn read_jobs_receipt_days(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::process::receipt_days(engine.db()).to_string())
+}
+
 fn read_curator_unused_days(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::learning::unused_days(engine.db()).to_string())
 }
@@ -2826,6 +2834,29 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::learning::SETTING_REVIEW_REPAIR,
         writable: true,
         read: read_learning_repair,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "jobs_notify_on_complete",
+        label: "Job finish notice",
+        group: "automation",
+        kind: SettingKind::Bool,
+        row: crate::process::SETTING_NOTIFY_ON_COMPLETE,
+        writable: true,
+        read: read_jobs_notify_on_complete,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "jobs_receipt_days",
+        label: "Job receipts",
+        group: "automation",
+        kind: SettingKind::Int(
+            crate::process::MIN_RECEIPT_DAYS,
+            crate::process::MAX_RECEIPT_DAYS,
+        ),
+        row: crate::process::SETTING_RECEIPT_DAYS,
+        writable: true,
+        read: read_jobs_receipt_days,
         normalize: None,
     },
     SettingSpec {

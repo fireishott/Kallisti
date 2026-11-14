@@ -55,11 +55,67 @@ pub const MAX_HANDLES: usize = 16;
 /// How many quiet checks arm the notify flag.
 const QUIET_CHECKS_TO_NOTIFY: u32 = 2;
 
+/// The `settings` row that arms notify-on-complete.
+pub const SETTING_NOTIFY_ON_COMPLETE: &str = "process.notify_on_complete";
+
+/// The `settings` row holding how many days a finished receipt is kept.
+pub const SETTING_RECEIPT_DAYS: &str = "process.receipt_days";
+
+/// The fewest and most days the record offers for a receipt.
+pub const MIN_RECEIPT_DAYS: u32 = 1;
+/// The widest.
+pub const MAX_RECEIPT_DAYS: u32 = 30;
+
+/// How many finished receipts are kept regardless of age.
+pub const MAX_RECEIPTS: usize = 64;
+
+/// How much of a finished log a receipt carries. Enough to see how it ended,
+/// short enough that sixty-four of them fit in a page read.
+pub const LOG_TAIL_BYTES: u64 = 4 * 1024;
+
+/// Where receipts live: a subdirectory of the process directory.
+pub const RECEIPT_DIR: &str = "receipts";
+
 /// How long a kill waits for a polite exit before insisting.
 const KILL_GRACE: Duration = Duration::from_secs(5);
 
 /// How often a poll, wait or monitor looks at the child.
 const TICK: Duration = Duration::from_millis(100);
+
+/// The `settings` row value, or `None`.
+fn stored(db: &Db, row: &str) -> Option<String> {
+    db.with_conn(|conn| {
+        use rusqlite::OptionalExtension;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            rusqlite::params![row],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+    })
+    .ok()
+    .flatten()
+}
+
+/// Whether a finish is announced instead of polled for.
+#[must_use]
+pub fn notify_on_complete(db: &Db) -> bool {
+    !matches!(
+        stored(db, SETTING_NOTIFY_ON_COMPLETE)
+            .as_deref()
+            .map(str::trim),
+        Some("false")
+    )
+}
+
+/// How many days a receipt is kept, clamped to the record's own bounds.
+#[must_use]
+pub fn receipt_days(db: &Db) -> u32 {
+    stored(db, SETTING_RECEIPT_DAYS)
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|days| (MIN_RECEIPT_DAYS..=MAX_RECEIPT_DAYS).contains(days))
+        .unwrap_or(7)
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     // A poisoned lock means another thread panicked while holding it. The data is
@@ -128,6 +184,14 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// The directory this handle's log and pid live in.
+    fn dir(&self) -> PathBuf {
+        self.log
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
     fn status(&self) -> Option<ExitStatus> {
         lock(&self.inner).finished
     }
@@ -146,6 +210,11 @@ impl Handle {
     /// them armed notify-on-complete before a caller had asked once, which is a
     /// promise the tool had no way to keep.
     fn check(&self, observed: bool) -> (Option<ExitStatus>, bool) {
+        self.check_gated(observed, true)
+    }
+
+    /// [`Self::check`], with the setting able to withhold the arm.
+    fn check_gated(&self, observed: bool, notify_allowed: bool) -> (Option<ExitStatus>, bool) {
         let length = self.length();
         let mut inner = lock(&self.inner);
         if inner.finished.is_none()
@@ -161,7 +230,7 @@ impl Handle {
         if length == inner.last_seen {
             if observed {
                 inner.quiet = inner.quiet.saturating_add(1);
-                if inner.quiet >= QUIET_CHECKS_TO_NOTIFY {
+                if inner.quiet >= QUIET_CHECKS_TO_NOTIFY && notify_allowed {
                     inner.notify = true;
                 }
             }
@@ -251,6 +320,9 @@ impl Desk {
         let pid = child.id();
         let started_at = crate::learning::now();
         self.record_start(&id, command, &started_at)?;
+        // The pid is written beside the log so a receipt and a boot-time liveness
+        // check can both read it after this process is gone.
+        let _ = std::fs::write(self.dir.join(format!("{id}.pid")), pid.to_string());
         let handle = Arc::new(Handle {
             id: id.clone(),
             pid,
@@ -287,7 +359,13 @@ impl Desk {
                     std::thread::sleep(TICK);
                     continue;
                 };
-                settle_row(&db, &handle.id, status);
+                settle_receipt(
+                    &db,
+                    &handle.dir(),
+                    &handle.id,
+                    status,
+                    handle.tail(LOG_TAIL_BYTES),
+                );
                 return;
             }
         });
@@ -388,11 +466,17 @@ impl Desk {
     }
 
     fn report(&self, handle: &Arc<Handle>, tail_bytes: u64) -> ToolResult {
-        let (status, notify) = handle.check(true);
+        let (status, notify) = handle.check_gated(true, notify_on_complete(&self.db));
         if let Some(status) = status {
             // Whoever observes the end writes it down, so the row is correct even
             // when the monitor thread is descheduled behind a busy turn.
-            settle_row(&self.db, &handle.id, status);
+            settle_receipt(
+                &self.db,
+                &self.dir,
+                &handle.id,
+                status,
+                handle.tail(LOG_TAIL_BYTES),
+            );
         }
         let mut body = info(handle, status, notify);
         body["output"] = serde_json::Value::String(handle.tail(tail_bytes));
@@ -409,9 +493,15 @@ impl Desk {
     fn block(&self, handle: &Arc<Handle>, timeout_ms: u64) -> ToolResult {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            let (status, notify) = handle.check(true);
+            let (status, notify) = handle.check_gated(true, notify_on_complete(&self.db));
             if let Some(status) = status {
-                settle_row(&self.db, &handle.id, status);
+                settle_receipt(
+                    &self.db,
+                    &self.dir,
+                    &handle.id,
+                    status,
+                    handle.tail(POLL_TAIL_BYTES),
+                );
                 return ToolResult::ok(finished_body(handle, status, handle.tail(POLL_TAIL_BYTES)));
             }
             if Instant::now() >= deadline {
@@ -446,7 +536,13 @@ impl Desk {
         let deadline = Instant::now() + KILL_GRACE;
         loop {
             if let Some(status) = handle.check(true).0 {
-                settle_row(&self.db, &handle.id, status);
+                settle_receipt(
+                    &self.db,
+                    &self.dir,
+                    &handle.id,
+                    status,
+                    handle.tail(LOG_TAIL_BYTES),
+                );
                 let mut body = finished_body(handle, status, String::new());
                 body["killed"] = serde_json::Value::Bool(true);
                 body["note"] = serde_json::Value::String(
@@ -480,7 +576,13 @@ impl Desk {
             "The process could not be signalled; it may already be gone.".to_owned()
         });
         if let Some(status) = status {
-            settle_row(&self.db, &handle.id, status);
+            settle_receipt(
+                &self.db,
+                &self.dir,
+                &handle.id,
+                status,
+                handle.tail(POLL_TAIL_BYTES),
+            );
         }
         ToolResult::ok(body)
     }
@@ -596,24 +698,204 @@ pub fn explain(status: ExitStatus) -> Option<String> {
 }
 
 /// Write the terminal state of one handle into its `jobs` row.
-fn settle_row(db: &Db, id: &str, status: ExitStatus) {
+/// Settle one row and write its receipt.
+///
+/// The receipt is a file, not a column, for one reason: a crash between the exit
+/// and the next boot must not be able to take the record with it. It is written
+/// before the row is updated, so a receipt can exist for a row that never settled
+/// and never the other way round.
+fn settle_receipt(db: &Db, dir: &Path, id: &str, status: ExitStatus, tail: String) {
+    // Two observers can reach the same finish: the monitor thread and whichever
+    // poll or wait noticed first. The row is settled conditionally, so only the
+    // caller whose update actually changed the row writes the receipt - one job
+    // is one receipt.
+    if settle_row_if_live(db, id, status) {
+        write_receipt(db, dir, id, status, &tail);
+    }
+    let _ = std::fs::remove_file(dir.join(format!("{id}.pid")));
+}
+
+/// Settle a row only when it is still live, and say whether it was.
+fn settle_row_if_live(db: &Db, id: &str, status: ExitStatus) -> bool {
+    let (state, error_code, error_message) = outcome(status);
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE jobs SET status = ?2, finished_at = ?3, error_code = ?4, error_message = ?5 \
+              WHERE id = ?1 AND status IN ('queued', 'running')",
+            rusqlite::params![id, state, crate::learning::now(), error_code, error_message],
+        )
+        .map(|changed| changed > 0)
+    })
+    .unwrap_or(false)
+}
+
+/// The row's status, error code and message for one exit.
+fn outcome(status: ExitStatus) -> (&'static str, Option<String>, Option<String>) {
     let code = status.code();
     let note = explain(status);
-    let (state, error_code, error_message) = if status.success() {
+    if status.success() {
         ("succeeded", None, None)
     } else if let Some(signal) = signal_of(status) {
         ("failed", Some(format!("signal_{signal}")), note)
     } else {
         ("failed", Some(format!("exit_{}", code.unwrap_or(-1))), note)
-    };
-    let _ = db.with_conn(|conn| {
-        conn.execute(
-            "UPDATE jobs SET status = ?2, finished_at = ?3, error_code = ?4, error_message = ?5 \
-              WHERE id = ?1",
-            rusqlite::params![id, state, crate::learning::now(), error_code, error_message],
-        )?;
-        Ok(())
+    }
+}
+
+/// Write one receipt and prune the rest.
+fn write_receipt(db: &Db, dir: &Path, id: &str, status: ExitStatus, tail: &str) {
+    let receipts = dir.join(RECEIPT_DIR);
+    if std::fs::create_dir_all(&receipts).is_err() {
+        return;
+    }
+    let body = serde_json::json!({
+        "process_id": id,
+        "command": command_of(db, id),
+        "status": if status.success() { "succeeded" } else { "failed" },
+        "exit_code": status.code(),
+        "signal": signal_of(status),
+        "signal_note": explain(status),
+        "finished_at": crate::learning::now(),
+        "output": tail,
     });
+    let stamp = crate::learning::now().replace([':', '.'], "-");
+    let _ = std::fs::write(
+        receipts.join(format!("{stamp}-{id}.json")),
+        body.to_string(),
+    );
+    prune_receipts(db, &receipts);
+}
+
+/// The command a job row carries, for a receipt written after the fact.
+fn command_of(db: &Db, id: &str) -> String {
+    db.with_conn(|conn| {
+        use rusqlite::OptionalExtension;
+        conn.query_row(
+            "SELECT request_text FROM jobs WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+    })
+    .ok()
+    .flatten()
+    .unwrap_or_default()
+}
+
+/// Keep the newest [`MAX_RECEIPTS`] and nothing older than the retention window.
+fn prune_receipts(db: &Db, receipts: &Path) {
+    let Ok(entries) = std::fs::read_dir(receipts) else {
+        return;
+    };
+    // The name starts with a sortable stamp, so newest-last after a sort.
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    names.sort();
+    let keep_from = names.len().saturating_sub(MAX_RECEIPTS);
+    let cutoff =
+        time::OffsetDateTime::now_utc() - time::Duration::days(i64::from(receipt_days(db)));
+    for (index, name) in names.iter().enumerate() {
+        let path = receipts.join(name);
+        let stale = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|since| {
+                time::OffsetDateTime::from_unix_timestamp(since.as_secs() as i64).ok()
+            })
+            .is_some_and(|when| when < cutoff);
+        if index < keep_from || stale {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Every retained receipt, newest first, for the page.
+///
+/// # Errors
+///
+/// [`DbError`] is never returned today: a directory that cannot be read is an
+/// empty list, because a receipts pane must not stop a page drawing.
+#[must_use]
+pub fn receipts(dir: &Path, limit: usize) -> Vec<serde_json::Value> {
+    let receipts = dir.join(RECEIPT_DIR);
+    let Ok(entries) = std::fs::read_dir(&receipts) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    names.sort();
+    names.reverse();
+    names
+        .into_iter()
+        .take(limit)
+        .filter_map(|name| std::fs::read_to_string(receipts.join(name)).ok())
+        .filter_map(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .collect()
+}
+
+/// Settle jobs a restart orphaned, and say how many.
+///
+/// A `running` row whose recorded pid is gone cannot be running: nothing is
+/// looking after it, and leaving it `running` is the one status a page cannot
+/// tell from healthy. `lost` is carried in `error_code` rather than in `status`
+/// because `jobs.status` is a CHECK list and adding a word to it is a migration
+/// this package does not own.
+pub fn reconcile_orphans(db: &Db, dir: &Path) -> usize {
+    let ids: Vec<String> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT id FROM jobs WHERE kind = 'tool' AND status IN ('queued', 'running')",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap_or_default();
+    let mut lost = 0usize;
+    for id in ids {
+        let alive = std::fs::read_to_string(dir.join(format!("{id}.pid")))
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+            .is_some_and(pid_alive);
+        if alive {
+            continue;
+        }
+        let note = "no live pid after a restart, so the job is gone".to_owned();
+        {
+            use std::os::unix::process::ExitStatusExt;
+            write_receipt(
+                db,
+                dir,
+                &id,
+                ExitStatus::from_raw(0),
+                &format!("(lost)\n{note}"),
+            );
+        }
+        let _ = db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE jobs SET status = 'failed', finished_at = ?2, \
+                        error_code = 'lost', error_message = ?3 WHERE id = ?1",
+                rusqlite::params![id, crate::learning::now(), note],
+            )?;
+            Ok(())
+        });
+        lost += 1;
+    }
+    lost
+}
+
+/// Whether a pid is a live process this user can see.
+fn pid_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    Path::new(&format!("/proc/{pid}")).exists()
 }
 
 #[cfg(test)]
@@ -704,6 +986,114 @@ mod tests {
         let (status, code) = job_row(&desk, &id);
         assert_eq!(status, "failed");
         assert_eq!(code.as_deref(), Some("exit_3"));
+    }
+
+    #[test]
+    fn a_finished_job_leaves_a_receipt_that_outlives_its_log() {
+        let (dir, desk) = desk();
+        let body = desk
+            .start("echo receipt-tail; exit 2", dir.path())
+            .expect("started");
+        let id = id_of(&body);
+        let waited = desk.call(&serde_json::json!({
+            "action": "wait",
+            "process_id": id,
+            "timeout_ms": 20_000
+        }));
+        assert!(!waited.is_error, "{}", waited.content);
+
+        let written = receipts(&dir.path().join(".processes"), 10);
+        assert_eq!(written.len(), 1, "one receipt for one job");
+        assert_eq!(written[0]["exit_code"], 2);
+        assert_eq!(written[0]["status"], "failed");
+        assert!(
+            written[0]["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("receipt-tail"),
+            "the receipt carries the tail: {}",
+            written[0]
+        );
+        // The pid sidecar is gone and the row is settled, so a boot sweep has
+        // nothing to mistake for running work.
+        assert!(
+            !dir.path()
+                .join(".processes")
+                .join(format!("{id}.pid"))
+                .exists()
+        );
+        let (status, code) = job_row(&desk, &id);
+        assert_eq!(status, "failed");
+        assert_eq!(code.as_deref(), Some("exit_2"));
+    }
+
+    #[test]
+    fn a_boot_sweep_settles_a_running_row_with_no_live_pid_as_lost() {
+        let (dir, desk) = desk();
+        let desk_dir = dir.path().join(".processes");
+        std::fs::create_dir_all(&desk_dir).expect("dir");
+        // A row this process never started, with a pid nothing owns.
+        desk.db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO jobs (id, kind, status, request_text) \
+                     VALUES ('orphan', 'tool', 'running', 'sleep 900')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("row");
+        std::fs::write(desk_dir.join("orphan.pid"), "999999").expect("pid");
+
+        assert_eq!(reconcile_orphans(&desk.db, &desk_dir), 1);
+        let (status, code) = job_row(&desk, "orphan");
+        assert_eq!(status, "failed", "never left running");
+        assert_eq!(code.as_deref(), Some("lost"));
+        let written = receipts(&desk_dir, 10);
+        assert_eq!(written.len(), 1);
+        assert!(
+            written[0]["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("lost"),
+            "{}",
+            written[0]
+        );
+        // A second sweep is not a second receipt.
+        assert_eq!(reconcile_orphans(&desk.db, &desk_dir), 0);
+    }
+
+    #[test]
+    fn the_receipt_window_keeps_the_newest_and_drops_the_days_old() {
+        let (dir, desk) = desk();
+        let receipts_dir = dir.path().join(".processes").join(RECEIPT_DIR);
+        std::fs::create_dir_all(&receipts_dir).expect("dir");
+        for index in 0..MAX_RECEIPTS + 5 {
+            std::fs::write(
+                receipts_dir.join(format!("2026-01-01T00-00-00-000Z-{index:03}.json")),
+                "{}",
+            )
+            .expect("file");
+        }
+        prune_receipts(&desk.db, &receipts_dir);
+        let left = std::fs::read_dir(&receipts_dir).expect("dir").count();
+        assert_eq!(left, MAX_RECEIPTS, "the cap is the cap");
+    }
+
+    #[test]
+    fn the_notify_switch_withholds_the_arm() {
+        let (dir, desk) = desk();
+        crate::web::store::settings_put(&desk.db, SETTING_NOTIFY_ON_COMPLETE, "false")
+            .expect("store");
+        let body = desk.start("sleep 30", dir.path()).expect("started");
+        let id = id_of(&body);
+        for _ in 0..3 {
+            let payload = parse(&desk.call(&serde_json::json!({
+                "action": "poll",
+                "process_id": id
+            })));
+            assert_eq!(payload["notify_on_complete"], false, "{payload}");
+        }
     }
 
     #[test]
