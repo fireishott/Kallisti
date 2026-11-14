@@ -1118,6 +1118,15 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     view.schedule_email_enabled = crate::delivery::email_enabled(engine.db());
     view.jobs_notify_on_complete = crate::process::notify_on_complete(engine.db());
     view.jobs_receipt_days = crate::process::receipt_days(engine.db()).to_string();
+    view.steward_enabled = crate::steward::enabled(engine.db());
+    view.steward_watch_seconds = crate::steward::watch_seconds(engine.db()).to_string();
+    view.steward_max_rounds = crate::steward::max_rounds(engine.db()).to_string();
+    view.steward_note_window = crate::steward::note_window(engine.db()).to_string();
+    view.steward_field_note_days = crate::steward::field_note_days(engine.db()).to_string();
+    view.steward_delivery_default = crate::steward::delivery_default(engine.db());
+    view.steward_call_urgency_default = crate::steward::call_urgency_default(engine.db());
+    view.steward_charter = crate::steward::charter(engine.db());
+    view.steward_board_columns = crate::steward::board_columns(engine.db());
     view.search_limit = crate::search::stored_limit(engine.db()).to_string();
     view.workboard_default_project =
         crate::workboard::default_project(engine.db()).unwrap_or_default();

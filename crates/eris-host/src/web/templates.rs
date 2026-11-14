@@ -2419,6 +2419,24 @@ pub struct SettingsView {
     pub jobs_notify_on_complete: bool,
     /// How many days a finished job's receipt is kept.
     pub jobs_receipt_days: String,
+    /// Whether the steward watch loop is armed.
+    pub steward_enabled: bool,
+    /// Seconds between steward watch rounds.
+    pub steward_watch_seconds: String,
+    /// Most watch rounds one steward duty may take.
+    pub steward_max_rounds: String,
+    /// How many recent field notes a turn carries.
+    pub steward_note_window: String,
+    /// How many days a steward field note is kept.
+    pub steward_field_note_days: String,
+    /// Where a steward message goes by default.
+    pub steward_delivery_default: String,
+    /// The urgency a steward call is placed at by default.
+    pub steward_call_urgency_default: String,
+    /// The operator's charter for the steward.
+    pub steward_charter: String,
+    /// The steward board's column set.
+    pub steward_board_columns: String,
     /// The project a new board row starts on.
     pub workboard_default_project: String,
     /// How many hits a search returns when the caller does not say.
@@ -2540,6 +2558,15 @@ impl SettingsView {
             schedule_email_enabled: true,
             jobs_notify_on_complete: true,
             jobs_receipt_days: "7".to_owned(),
+            steward_enabled: true,
+            steward_watch_seconds: "300".to_owned(),
+            steward_max_rounds: "24".to_owned(),
+            steward_note_window: "8".to_owned(),
+            steward_field_note_days: "30".to_owned(),
+            steward_delivery_default: "push".to_owned(),
+            steward_call_urgency_default: "normal".to_owned(),
+            steward_charter: String::new(),
+            steward_board_columns: "compact".to_owned(),
             workboard_default_project: String::new(),
             search_limit: crate::search::DEFAULT_LIMIT.to_string(),
             search_scope_default: "all".to_owned(),
@@ -4636,6 +4663,34 @@ fn tab_assistant(view: &SettingsView) -> Markup {
             }
             (greeting_group(view))
         }
+
+        section .card aria-labelledby="steward-assistant-heading" {
+            h2 id="steward-assistant-heading" { "Steward" }
+            p .small {
+                "The charter is the standing instruction the steward works under, one line per "
+                "duty seed. The urgency and board columns are its defaults."
+            }
+            div .field {
+                label for="steward_charter" { "Charter" }
+                textarea id="steward_charter" name="steward_charter" rows="8" spellcheck="false" {
+                    (view.steward_charter)
+                }
+            }
+            div .field {
+                label for="steward_call_urgency_default" { "Call urgency" }
+                select id="steward_call_urgency_default" name="steward_call_urgency_default" {
+                    option value="normal" selected[view.steward_call_urgency_default == "normal"] { "Normal" }
+                    option value="high" selected[view.steward_call_urgency_default == "high"] { "High" }
+                }
+            }
+            div .field {
+                label for="steward_board_columns" { "Board columns" }
+                select id="steward_board_columns" name="steward_board_columns" {
+                    option value="compact" selected[view.steward_board_columns == "compact"] { "Compact" }
+                    option value="full" selected[view.steward_board_columns == "full"] { "Full" }
+                }
+            }
+        }
     }
 }
 
@@ -4649,6 +4704,24 @@ fn tab_memory(view: &SettingsView) -> Markup {
                 "date. A backend that cannot answer is recorded and the turn goes on without it."
             }
             (memory_group(view))
+        }
+
+        section .card aria-labelledby="steward-memory-heading" {
+            h2 id="steward-memory-heading" { "Steward notes" }
+            p .small {
+                "The steward's field notes are its scratch memory. The window is how many recent "
+                "notes a turn carries; the days are how long a note is kept."
+            }
+            div .field {
+                label for="steward_note_window" { "Notes per turn" }
+                input type="number" id="steward_note_window" name="steward_note_window"
+                    min="1" max="64" value=(view.steward_note_window);
+            }
+            div .field {
+                label for="steward_field_note_days" { "Keep field notes for, days" }
+                input type="number" id="steward_field_note_days" name="steward_field_note_days"
+                    min="1" max="365" value=(view.steward_field_note_days);
+            }
         }
     }
 }
@@ -4915,6 +4988,40 @@ fn tab_automation(view: &SettingsView) -> Markup {
                 div .actions {
                     button type="submit" { "Save jobs" }
                     a .button href=(crate::admin::ROUTE_ACTIVITY) { "Open activity" }
+                }
+            }
+        }
+
+        section .card aria-labelledby="steward-automation-heading" {
+            h2 id="steward-automation-heading" { "Steward" }
+            p .small {
+                "The steward watches the duties you hand it on a cadence, without being spoken to. "
+                "Off, no duty is watched."
+            }
+            div .field {
+                label for="steward_enabled" {
+                    input type="checkbox" id="steward_enabled" name="steward_enabled"
+                        value="true" checked[view.steward_enabled];
+                    " Let the steward watch duties"
+                }
+            }
+            div .field {
+                label for="steward_watch_seconds" { "Watch interval, seconds" }
+                input type="number" id="steward_watch_seconds" name="steward_watch_seconds"
+                    min="30" max="3600" value=(view.steward_watch_seconds);
+            }
+            div .field {
+                label for="steward_max_rounds" { "Round cap per duty" }
+                input type="number" id="steward_max_rounds" name="steward_max_rounds"
+                    min="1" max="200" value=(view.steward_max_rounds);
+            }
+            div .field {
+                label for="steward_delivery_default" { "Steward delivery" }
+                select id="steward_delivery_default" name="steward_delivery_default" {
+                    option value="push" selected[view.steward_delivery_default == "push"] { "Push" }
+                    option value="inbox" selected[view.steward_delivery_default == "inbox"] { "Inbox" }
+                    option value="email" selected[view.steward_delivery_default == "email"] { "Email" }
+                    option value="off" selected[view.steward_delivery_default == "off"] { "Off" }
                 }
             }
         }

@@ -627,6 +627,172 @@ fn transact<T>(
     .map_err(DutyError::Db)?
 }
 
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+/// Whether the steward watch loop is armed at all.
+pub const SETTING_ENABLED: &str = "steward.enabled";
+/// Seconds between watch rounds for a due duty.
+pub const SETTING_WATCH_SECONDS: &str = "steward.watch_seconds";
+/// Most watch rounds one duty may take before it is handed back.
+pub const SETTING_MAX_ROUNDS: &str = "steward.max_rounds";
+/// How many recent field notes a turn carries into its prompt.
+pub const SETTING_NOTE_WINDOW: &str = "steward.note_window";
+/// How many days a field note is kept.
+pub const SETTING_FIELD_NOTE_DAYS: &str = "steward.field_note_days";
+/// Where a steward message goes when the duty names no channel.
+pub const SETTING_DELIVERY_DEFAULT: &str = "steward.delivery_default";
+/// The urgency a steward call is placed at when it names none.
+pub const SETTING_CALL_URGENCY_DEFAULT: &str = "steward.call_urgency_default";
+/// The operator's own standing instructions to the steward.
+pub const SETTING_CHARTER: &str = "steward.charter";
+/// Whether the board shows the compact or the full column set.
+pub const SETTING_BOARD_COLUMNS: &str = "steward.board_columns";
+
+/// The watch cadence bounds the loop honours.
+pub const MIN_WATCH_SECONDS: u32 = 30;
+pub const MAX_WATCH_SECONDS: u32 = 3600;
+/// The round cap bounds the loop honours.
+pub const MIN_MAX_ROUNDS: u32 = 1;
+pub const MAX_MAX_ROUNDS: u32 = 200;
+/// The prompt window bounds.
+pub const MIN_NOTE_WINDOW: u32 = 1;
+pub const MAX_NOTE_WINDOW: u32 = 64;
+/// The field-note retention bounds.
+pub const MIN_FIELD_NOTE_DAYS: u32 = 1;
+pub const MAX_FIELD_NOTE_DAYS: u32 = 365;
+
+/// Schema defaults for each steward setting when no row is stored.
+pub const DEFAULT_WATCH_SECONDS: u32 = 300;
+pub const DEFAULT_MAX_ROUNDS: u32 = 24;
+pub const DEFAULT_NOTE_WINDOW: u32 = 8;
+pub const DEFAULT_FIELD_NOTE_DAYS: u32 = 30;
+pub const DEFAULT_DELIVERY: &str = "push";
+pub const DEFAULT_CALL_URGENCY: &str = "normal";
+pub const DEFAULT_BOARD_COLUMNS: &str = "compact";
+
+/// The stored value for one steward row, or `None` when it has none.
+fn stored_setting(db: &Db, row: &str) -> Option<String> {
+    crate::web::store::settings_get(db, row)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// An integer row, clamped to its bounds; anything unreadable is the default.
+fn bounded_setting(db: &Db, row: &str, min: u32, max: u32, default: u32) -> u32 {
+    stored_setting(db, row)
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|number| (min..=max).contains(number))
+        .unwrap_or(default)
+}
+
+/// A closed-list row; anything not in the list is the default.
+fn enum_setting(db: &Db, row: &str, values: &[&str], default: &str) -> String {
+    stored_setting(db, row)
+        .map(|value| value.to_ascii_lowercase())
+        .filter(|value| values.contains(&value.as_str()))
+        .unwrap_or_else(|| default.to_owned())
+}
+
+/// Whether the watch loop is armed. A row with no value is on.
+#[must_use]
+pub fn enabled(db: &Db) -> bool {
+    !matches!(
+        stored_setting(db, SETTING_ENABLED).as_deref(),
+        Some("false")
+    )
+}
+
+/// Seconds between watch rounds, read at each use.
+#[must_use]
+pub fn watch_seconds(db: &Db) -> u32 {
+    bounded_setting(
+        db,
+        SETTING_WATCH_SECONDS,
+        MIN_WATCH_SECONDS,
+        MAX_WATCH_SECONDS,
+        DEFAULT_WATCH_SECONDS,
+    )
+}
+
+/// The watch-round cap, read at each use.
+#[must_use]
+pub fn max_rounds(db: &Db) -> u32 {
+    bounded_setting(
+        db,
+        SETTING_MAX_ROUNDS,
+        MIN_MAX_ROUNDS,
+        MAX_MAX_ROUNDS,
+        DEFAULT_MAX_ROUNDS,
+    )
+}
+
+/// How many recent field notes a turn carries, read at each use.
+#[must_use]
+pub fn note_window(db: &Db) -> u32 {
+    bounded_setting(
+        db,
+        SETTING_NOTE_WINDOW,
+        MIN_NOTE_WINDOW,
+        MAX_NOTE_WINDOW,
+        DEFAULT_NOTE_WINDOW,
+    )
+}
+
+/// How many days a field note is kept, read at each use.
+#[must_use]
+pub fn field_note_days(db: &Db) -> u32 {
+    bounded_setting(
+        db,
+        SETTING_FIELD_NOTE_DAYS,
+        MIN_FIELD_NOTE_DAYS,
+        MAX_FIELD_NOTE_DAYS,
+        DEFAULT_FIELD_NOTE_DAYS,
+    )
+}
+
+/// The default delivery channel for a steward message.
+#[must_use]
+pub fn delivery_default(db: &Db) -> String {
+    enum_setting(
+        db,
+        SETTING_DELIVERY_DEFAULT,
+        crate::delivery::DEFAULT_VALUES,
+        DEFAULT_DELIVERY,
+    )
+}
+
+/// The default urgency for a steward call.
+#[must_use]
+pub fn call_urgency_default(db: &Db) -> String {
+    enum_setting(
+        db,
+        SETTING_CALL_URGENCY_DEFAULT,
+        &["normal", "high"],
+        DEFAULT_CALL_URGENCY,
+    )
+}
+
+/// The operator's charter text; empty when none is set.
+#[must_use]
+pub fn charter(db: &Db) -> String {
+    stored_setting(db, SETTING_CHARTER).unwrap_or_default()
+}
+
+/// The board's column set.
+#[must_use]
+pub fn board_columns(db: &Db) -> String {
+    enum_setting(
+        db,
+        SETTING_BOARD_COLUMNS,
+        &["compact", "full"],
+        DEFAULT_BOARD_COLUMNS,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
