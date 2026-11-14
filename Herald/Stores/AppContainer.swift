@@ -636,6 +636,10 @@ final class AppContainer {
             }
         )
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+        // The setting defaults to on, but the store defaults to off and was only
+        // ever synced by the Settings toggle — so a fresh launch ran the whole
+        // app non-streaming until the user touched that switch.
+        chatStore.useStreaming = settingsStore.settings.useStreaming
         chatStore.hapticFeedbackEnabled = { [settingsStore] in settingsStore.settings.hapticFeedbackEnabled }
         // Build 104: route out-of-band self-improvement / memory review
         // summaries to a faint in-transcript system line.

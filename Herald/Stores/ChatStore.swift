@@ -295,7 +295,7 @@ final class ChatStore {
     /// Placeholders created before the gateway returns a job ID. Transcript
     /// polling can run during session provisioning, so these need explicit
     /// ownership before they can move into `activeStreams`.
-    private var pendingStreamPlaceholders: Set<UUID> = []
+    var pendingStreamPlaceholders: Set<UUID> = []
     var streamingMessageID: UUID? {
         activeStreams.values.first ?? pendingStreamPlaceholders.first
     }
@@ -538,19 +538,22 @@ final class ChatStore {
     // Build 78.7: cached connection status avoids a Swift exclusivity
     // violation (TF4 crash) when SettingsScreen reads connectionStatus
     // while updateConnectionStatus is writing via heraldClient. The
-    // getter now reads from the local cache; the setter updates both.
-    private var _cachedConnectionStatus: ConnectionStatus = .disconnected
+    // getter reads the client; the setter writes it.
 
     /// Connection status, overridden by an in-flight gateway restart: the
     /// underlying transport's status is meaningless while the gateway is
     /// being replaced, and the UI must say so instead of flapping.
+    ///
+    /// Reads through to the client instead of caching. The client owns the
+    /// socket, so a cached copy goes stale whenever the socket changes state
+    /// without the store being told (launch connect, background recovery,
+    /// reconnect backoff) and the composer stays disabled on a live link.
     var connectionStatus: ConnectionStatus {
         if restartInProgress { return .restarting }
-        return _cachedConnectionStatus
+        return heraldClient.connectionStatus
     }
 
     func updateConnectionStatus(_ status: ConnectionStatus) {
-        _cachedConnectionStatus = status
         // Build 94: only write back when the value actually differs. Writing
         // back unconditionally re-entered the client's didSet ->
         // onConnectionStatusChanged -> handler -> updateConnectionStatus cycle
@@ -1876,6 +1879,27 @@ final class ChatStore {
                     chatLiveActivity.endActivity()
                     return
                 }
+            }
+
+            // The refresh can supersede the local placeholder with the server's
+            // own row id, so the placeholder-id lookup above misses even though
+            // the turn resolved. The job identity is authoritative: a delivered
+            // row carrying it means this attempt is done.
+            if let jobID = outboxItems.first(where: { $0.clientMessageID == clientMessageID })?.jobID,
+               let twin = conversation?.messages.first(where: {
+                   $0.jobID == jobID && $0.sender == .herald && $0.status == .delivered
+               }) {
+                if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }),
+                   outboxItems[idx].state == .accepted {
+                    terminalizeOutboxItem(
+                        outboxItems[idx],
+                        canonicalUserMessageID: clientMessageID,
+                        terminalMessageID: twin.id
+                    )
+                }
+                streamingPhase = .idle
+                chatLiveActivity.endActivity()
+                return
             }
 
             // Check whether the original user message was marked failed
