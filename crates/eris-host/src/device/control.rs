@@ -1858,3 +1858,308 @@ mod tests {
         assert_eq!(rows[1]["primary"], true);
     }
 }
+
+// ---------------------------------------------------------------------------
+// /v1/steward - durable duties, field notes and the charter seed
+// ---------------------------------------------------------------------------
+
+/// Map a steward refusal to the device surface: a missing duty is 404, a stale
+/// revision or a closed duty is 409 naming what to do next, a broken rule is 400.
+fn steward_refusal(error: crate::steward::DutyError) -> DeviceError {
+    use crate::steward::DutyError;
+    let status = match &error {
+        DutyError::NotFound(_) => axum::http::StatusCode::NOT_FOUND,
+        DutyError::Closed(_) | DutyError::StaleRevision { .. } => axum::http::StatusCode::CONFLICT,
+        DutyError::NeedsYouRequiresCall
+        | DutyError::CloseRequiresCloseDuty
+        | DutyError::InvalidPhase(_)
+        | DutyError::Invalid(_) => axum::http::StatusCode::BAD_REQUEST,
+        DutyError::Corrupt(_) | DutyError::Db(_) | DutyError::Sqlite(_) => {
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        }
+    };
+    let code = match &error {
+        DutyError::NotFound(_) => "steward_not_found",
+        DutyError::Closed(_) => "steward_closed",
+        DutyError::StaleRevision { .. } => "steward_stale_revision",
+        DutyError::NeedsYouRequiresCall | DutyError::CloseRequiresCloseDuty => "steward_phase_refused",
+        DutyError::InvalidPhase(_) | DutyError::Invalid(_) => "steward_invalid",
+        DutyError::Corrupt(_) | DutyError::Db(_) | DutyError::Sqlite(_) => "steward_store",
+    };
+    let message = match &error {
+        DutyError::StaleRevision { current } => format!(
+            "stale revision: the duty is at revision {current}. Re-read it, then retry at revision {current}."
+        ),
+        other => other.to_string(),
+    };
+    DeviceError::new(status, code, message)
+}
+
+/// A revision from a form or body field. Every mutation names the revision it read.
+fn revision_field(fields: &std::collections::BTreeMap<String, String>) -> Result<i64, DeviceError> {
+    field(fields, "revision")
+        .trim()
+        .parse::<i64>()
+        .map_err(|_| {
+            DeviceError::bad_request(
+                "steward_revision_required",
+                "name the revision you read: `revision` is a whole number",
+            )
+        })
+}
+
+/// `GET /v1/steward` - the steward's settings, its duties and its latest notes.
+pub async fn steward_overview(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let db = service.engine().db();
+    let duties = match crate::steward::list_duties(db, None) {
+        Ok(duties) => duties,
+        Err(error) => return steward_refusal(error).into_response(),
+    };
+    let notes = match crate::steward::list_notes(db, 8, None) {
+        Ok(notes) => notes,
+        Err(error) => return steward_refusal(error).into_response(),
+    };
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "settings": {
+            "enabled": crate::steward::enabled(db),
+            "watch_seconds": crate::steward::watch_seconds(db),
+            "max_rounds": crate::steward::max_rounds(db),
+            "note_window": crate::steward::note_window(db),
+            "field_note_days": crate::steward::field_note_days(db),
+            "delivery_default": crate::steward::delivery_default(db),
+            "call_urgency_default": crate::steward::call_urgency_default(db),
+            "charter": crate::steward::charter(db),
+            "board_columns": crate::steward::board_columns(db),
+        },
+        "duties": duties.iter().map(crate::steward::Duty::json).collect::<Vec<_>>(),
+        "notes": notes.iter().map(crate::steward::FieldNote::json).collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+/// What the duty list accepts.
+#[derive(Debug, serde::Deserialize)]
+pub struct DutyQuery {
+    /// One phase, or every phase when absent.
+    #[serde(default)]
+    phase: Option<String>,
+}
+
+/// `GET /v1/steward/duties` - every duty, optionally in one phase.
+pub async fn steward_duties_list(
+    State(service): State<DeviceService>,
+    Query(params): Query<DutyQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let phase = match params.phase.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        None => None,
+        Some(raw) => match raw.parse::<crate::steward::Phase>() {
+            Ok(phase) => Some(phase),
+            Err(error) => return steward_refusal(error).into_response(),
+        },
+    };
+    match crate::steward::list_duties(service.engine().db(), phase) {
+        Ok(duties) => axum::Json(serde_json::json!({
+            "ok": true,
+            "count": duties.len(),
+            "duties": duties.iter().map(crate::steward::Duty::json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(error) => steward_refusal(error).into_response(),
+    }
+}
+
+/// `POST /v1/steward/duties` - add one duty, optionally with its own cadence.
+pub async fn steward_duty_create(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let every = match field(&fields, "every_seconds").trim() {
+        "" => None,
+        raw => match raw.parse::<i64>() {
+            Ok(seconds) => Some(seconds),
+            Err(_) => {
+                return DeviceError::bad_request("steward_invalid", "every_seconds is a whole number")
+                    .into_response();
+            }
+        },
+    };
+    match crate::steward::create_duty(service.engine().db(), field(&fields, "statement"), every) {
+        Ok(duty) => axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response(),
+        Err(error) => steward_refusal(error).into_response(),
+    }
+}
+
+/// `PATCH /v1/steward/duties/{id}` - one compare-and-set change. The body names
+/// the revision the change was read at.
+pub async fn steward_duty_patch(
+    State(service): State<DeviceService>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let revision = match revision_field(&fields) {
+        Ok(revision) => revision,
+        Err(error) => return error.into_response(),
+    };
+    let phase = match field(&fields, "phase").trim() {
+        "" => None,
+        raw => match raw.parse::<crate::steward::Phase>() {
+            Ok(phase) => Some(phase),
+            Err(error) => return steward_refusal(error).into_response(),
+        },
+    };
+    let every_seconds = match field(&fields, "every_seconds").trim() {
+        "" => None,
+        raw => match raw.parse::<i64>() {
+            Ok(seconds) => Some(Some(seconds)),
+            Err(_) => {
+                return DeviceError::bad_request("steward_invalid", "every_seconds is a whole number")
+                    .into_response();
+            }
+        },
+    };
+    let code = field(&fields, "blocker_code").trim().to_owned();
+    let detail = field(&fields, "blocker_detail").trim().to_owned();
+    let blocker = (!code.is_empty() || !detail.is_empty()).then(|| {
+        Some(crate::steward::Blocker {
+            code,
+            detail,
+        })
+    });
+    let statement = fields.get("statement").map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
+    let patch = crate::steward::DutyPatch {
+        statement,
+        phase,
+        every_seconds,
+        blocker,
+        ..crate::steward::DutyPatch::default()
+    };
+    match crate::steward::update_duty(service.engine().db(), &id, revision, &patch) {
+        Ok(duty) => axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response(),
+        Err(error) => steward_refusal(error).into_response(),
+    }
+}
+
+/// `POST /v1/steward/duties/{id}/close` - close one duty. Terminal.
+pub async fn steward_duty_close(
+    State(service): State<DeviceService>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let revision = match revision_field(&fields) {
+        Ok(revision) => revision,
+        Err(error) => return error.into_response(),
+    };
+    match crate::steward::close_duty(service.engine().db(), &id, revision, field(&fields, "outcome")) {
+        Ok(duty) => axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response(),
+        Err(error) => steward_refusal(error).into_response(),
+    }
+}
+
+/// `POST /v1/steward/duties/{id}/answer` - a person answers the open call, which
+/// clears `needs_you` and arms the duty again. Only a person's request reaches here.
+pub async fn steward_call_answer(
+    State(service): State<DeviceService>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let revision = match revision_field(&fields) {
+        Ok(revision) => revision,
+        Err(error) => return error.into_response(),
+    };
+    match crate::steward::answer_call(service.engine().db(), &id, revision) {
+        Ok(duty) => axum::Json(serde_json::json!({"ok": true, "duty": duty.json()})).into_response(),
+        Err(error) => steward_refusal(error).into_response(),
+    }
+}
+
+/// What the notes list accepts.
+#[derive(Debug, serde::Deserialize)]
+pub struct NoteQuery {
+    /// One duty's notes and the steward-wide ones; every note when absent.
+    #[serde(default)]
+    duty: Option<String>,
+    /// How many notes, clamped here.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// `GET /v1/steward/notes` - field notes, newest first.
+pub async fn steward_notes_list(
+    State(service): State<DeviceService>,
+    Query(params): Query<NoteQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    match crate::steward::list_notes(service.engine().db(), limit, params.duty.as_deref()) {
+        Ok(notes) => axum::Json(serde_json::json!({
+            "ok": true,
+            "count": notes.len(),
+            "notes": notes.iter().map(crate::steward::FieldNote::json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(error) => steward_refusal(error).into_response(),
+    }
+}
+
+/// `POST /v1/steward/seed` - one duty per non-empty line of the stored charter.
+/// Returns what it created, what it skipped, and what it refused.
+pub async fn steward_seed(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    if let Err(error) = authenticate(&service, &headers) {
+        return error.into_response();
+    }
+    let db = service.engine().db();
+    let charter = crate::steward::charter(db);
+    match crate::steward::seed_from_text(db, &charter) {
+        Ok(seeded) => axum::Json(serde_json::json!({
+            "ok": true,
+            "created": seeded.created.iter().map(crate::steward::Duty::json).collect::<Vec<_>>(),
+            "skipped": seeded.skipped,
+            "refused": seeded.refused,
+        }))
+        .into_response(),
+        Err(error) => steward_refusal(error).into_response(),
+    }
+}

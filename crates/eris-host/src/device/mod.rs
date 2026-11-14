@@ -169,6 +169,27 @@ pub const ROUTE_WORKBOARD: &str = "/v1/workboard";
 /// `PATCH /v1/workboard/{id}` - move, retitle or re-date one task.
 pub const ROUTE_WORKBOARD_ITEM: &str = "/v1/workboard/{id}";
 
+/// `GET /v1/steward` - settings, duties and the latest field notes.
+pub const ROUTE_STEWARD: &str = "/v1/steward";
+
+/// `GET` and `POST /v1/steward/duties` - list duties, or add one.
+pub const ROUTE_STEWARD_DUTIES: &str = "/v1/steward/duties";
+
+/// `PATCH /v1/steward/duties/{id}` - one compare-and-set change to a duty.
+pub const ROUTE_STEWARD_DUTY: &str = "/v1/steward/duties/{id}";
+
+/// `POST /v1/steward/duties/{id}/close` - close a duty. Terminal.
+pub const ROUTE_STEWARD_DUTY_CLOSE: &str = "/v1/steward/duties/{id}/close";
+
+/// `POST /v1/steward/duties/{id}/answer` - a person answers the open call.
+pub const ROUTE_STEWARD_DUTY_ANSWER: &str = "/v1/steward/duties/{id}/answer";
+
+/// `GET /v1/steward/notes` - field notes, newest first.
+pub const ROUTE_STEWARD_NOTES: &str = "/v1/steward/notes";
+
+/// `POST /v1/steward/seed` - seed duties from the stored charter.
+pub const ROUTE_STEWARD_SEED: &str = "/v1/steward/seed";
+
 /// `GET /v1/version` - which daemon a client is talking to, without a token.
 ///
 /// A client that has just scanned a pairing code has no bearer yet, and the first
@@ -1249,6 +1270,16 @@ pub fn router(service: DeviceService) -> Router {
             ROUTE_WORKBOARD,
             get(control::workboard).post(control::create_work),
         )
+        .route(ROUTE_STEWARD, get(control::steward_overview))
+        .route(
+            ROUTE_STEWARD_DUTIES,
+            get(control::steward_duties_list).post(control::steward_duty_create),
+        )
+        .route(ROUTE_STEWARD_DUTY, patch(control::steward_duty_patch))
+        .route(ROUTE_STEWARD_DUTY_CLOSE, post(control::steward_duty_close))
+        .route(ROUTE_STEWARD_DUTY_ANSWER, post(control::steward_call_answer))
+        .route(ROUTE_STEWARD_NOTES, get(control::steward_notes_list))
+        .route(ROUTE_STEWARD_SEED, post(control::steward_seed))
         .route(
             ROUTE_WORKBOARD_ITEM,
             patch(control::patch_work).delete(control::delete_work),
