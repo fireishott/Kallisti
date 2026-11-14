@@ -920,6 +920,8 @@ pub enum Nav {
     Activity,
     /// Tasks that survive the session that named them.
     Workboard,
+    /// Duties the steward keeps between conversations.
+    Steward,
     /// The archive list, the create button, and the restore form.
     Backups,
     /// The environment file the daemon reads at start, and the form that writes it.
@@ -929,7 +931,7 @@ pub enum Nav {
 impl Nav {
     /// Every entry, in display order. Every one of them is a page: the nav has
     /// no placeholder in it.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Chat,
         Self::Dashboard,
         Self::Sessions,
@@ -942,6 +944,7 @@ impl Nav {
         Self::Triggers,
         Self::Activity,
         Self::Workboard,
+        Self::Steward,
         Self::Backups,
         Self::Environment,
     ];
@@ -962,6 +965,7 @@ impl Nav {
             Self::Triggers => crate::admin::ROUTE_TRIGGERS,
             Self::Activity => crate::admin::ROUTE_ACTIVITY,
             Self::Workboard => crate::admin::ROUTE_WORKBOARD,
+            Self::Steward => crate::admin::ROUTE_STEWARD,
             Self::Backups => crate::admin::ROUTE_BACKUPS,
             Self::Environment => crate::admin::ROUTE_ENV,
         }
@@ -983,6 +987,7 @@ impl Nav {
             Self::Triggers => "Triggers",
             Self::Activity => "Activity",
             Self::Workboard => "Workboard",
+            Self::Steward => "Steward",
             Self::Backups => "Backups",
             Self::Environment => "Environment",
         }
@@ -1088,7 +1093,7 @@ fn rail(wizard: &Wizard) -> Markup {
 
 /// The validation region. `role="status"` plus `aria-live` is the whole
 /// announcement mechanism: no script is involved.
-fn alert_region(error: Option<&FormError>, notice: Option<&str>) -> Markup {
+pub(crate) fn alert_region(error: Option<&FormError>, notice: Option<&str>) -> Markup {
     html! {
         div id="form-error" role="status" aria-live="polite" {
             @if let Some(error) = error {
