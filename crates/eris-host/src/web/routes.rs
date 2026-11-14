@@ -13428,7 +13428,9 @@ fn steward_form_error(error: crate::steward::DutyError) -> FormError {
         DutyError::NotFound(_) => "steward_not_found",
         DutyError::Closed(_) => "steward_closed",
         DutyError::StaleRevision { .. } => "steward_stale_revision",
-        DutyError::NeedsYouRequiresCall | DutyError::CloseRequiresCloseDuty => "steward_phase_refused",
+        DutyError::NeedsYouRequiresCall | DutyError::CloseRequiresCloseDuty => {
+            "steward_phase_refused"
+        }
         DutyError::InvalidPhase(_) | DutyError::Invalid(_) => "steward_invalid",
         DutyError::Corrupt(_) | DutyError::Db(_) | DutyError::Sqlite(_) => "steward_store",
     };
@@ -13442,7 +13444,9 @@ fn steward_form_error(error: crate::steward::DutyError) -> FormError {
     FormError::new(None, code, message)
 }
 
-fn build_steward_view(state: &AppState) -> Result<crate::web::steward_page::StewardView, FormError> {
+fn build_steward_view(
+    state: &AppState,
+) -> Result<crate::web::steward_page::StewardView, FormError> {
     let engine = &state.engine;
     let db = engine.db();
     let mut view = crate::web::steward_page::StewardView::new(
@@ -13524,7 +13528,11 @@ async fn steward_duty_add(
                 return fail_steward(
                     &state,
                     as_html,
-                    FormError::new(Some("every_seconds"), "steward_invalid", "every_seconds is a whole number"),
+                    FormError::new(
+                        Some("every_seconds"),
+                        "steward_invalid",
+                        "every_seconds is a whole number",
+                    ),
                 );
             }
         },
@@ -13563,50 +13571,60 @@ async fn steward_duty_change(
         return fail_steward(
             &state,
             as_html,
-            FormError::new(None, "steward_revision_required", "the form lost the revision it was drawn at; reload and retry"),
+            FormError::new(
+                None,
+                "steward_revision_required",
+                "the form lost the revision it was drawn at; reload and retry",
+            ),
         );
     };
     let db = state.engine.db();
-    let outcome: Result<&'static str, crate::steward::DutyError> = match field(&fields, "action").trim() {
-        "phase" => field(&fields, "phase")
-            .trim()
-            .parse::<crate::steward::Phase>()
-            .and_then(|phase| {
+    let outcome: Result<&'static str, crate::steward::DutyError> =
+        match field(&fields, "action").trim() {
+            "phase" => field(&fields, "phase")
+                .trim()
+                .parse::<crate::steward::Phase>()
+                .and_then(|phase| {
+                    crate::steward::update_duty(
+                        db,
+                        &id,
+                        revision,
+                        &crate::steward::DutyPatch {
+                            phase: Some(phase),
+                            ..crate::steward::DutyPatch::default()
+                        },
+                    )
+                })
+                .map(|_| "change"),
+            "cadence" => crate::steward::get_duty(db, &id).and_then(|duty| {
+                let base = duty
+                    .every_seconds
+                    .unwrap_or(i64::from(crate::steward::watch_seconds(db)));
+                let next = match field(&fields, "delta").trim() {
+                    "default" => None,
+                    raw => Some((base + raw.parse::<i64>().unwrap_or(0)).clamp(
+                        i64::from(crate::steward::MIN_WATCH_SECONDS),
+                        i64::from(crate::steward::MAX_WATCH_SECONDS),
+                    )),
+                };
                 crate::steward::update_duty(
                     db,
                     &id,
                     revision,
                     &crate::steward::DutyPatch {
-                        phase: Some(phase),
+                        every_seconds: Some(next),
                         ..crate::steward::DutyPatch::default()
                     },
                 )
-            })
-            .map(|_| "change"),
-        "cadence" => crate::steward::get_duty(db, &id).and_then(|duty| {
-            let base = duty.every_seconds.unwrap_or(i64::from(crate::steward::watch_seconds(db)));
-            let next = match field(&fields, "delta").trim() {
-                "default" => None,
-                raw => Some(
-                    (base + raw.parse::<i64>().unwrap_or(0))
-                        .clamp(i64::from(crate::steward::MIN_WATCH_SECONDS), i64::from(crate::steward::MAX_WATCH_SECONDS)),
-                ),
-            };
-            crate::steward::update_duty(
-                db,
-                &id,
-                revision,
-                &crate::steward::DutyPatch {
-                    every_seconds: Some(next),
-                    ..crate::steward::DutyPatch::default()
-                },
-            )
-            .map(|_| "change")
-        }),
-        "close" => crate::steward::close_duty(db, &id, revision, field(&fields, "outcome")).map(|_| "close"),
-        "answer" => crate::steward::answer_call(db, &id, revision).map(|_| "answer"),
-        other => Err(crate::steward::DutyError::Invalid(format!("`{other}` is not a steward action"))),
-    };
+                .map(|_| "change")
+            }),
+            "close" => crate::steward::close_duty(db, &id, revision, field(&fields, "outcome"))
+                .map(|_| "close"),
+            "answer" => crate::steward::answer_call(db, &id, revision).map(|_| "answer"),
+            other => Err(crate::steward::DutyError::Invalid(format!(
+                "`{other}` is not a steward action"
+            ))),
+        };
     match outcome {
         Ok(saved) => {
             let _ = state.engine.auth().audit(

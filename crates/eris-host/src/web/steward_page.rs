@@ -52,7 +52,12 @@ impl StewardView {
 
 /// The phases a person may move a duty to from the board. `needs_you` is raised
 /// only by a call, and `closed` only through the close form.
-const MOVABLE: [Phase; 4] = [Phase::Watching, Phase::Working, Phase::Waiting, Phase::Paused];
+const MOVABLE: [Phase; 4] = [
+    Phase::Watching,
+    Phase::Working,
+    Phase::Waiting,
+    Phase::Paused,
+];
 
 /// The step a cadence button adds or removes, in seconds.
 const CADENCE_STEP: i64 = 300;
@@ -141,7 +146,13 @@ pub fn steward_page(view: &StewardView) -> Markup {
             a href=(SettingsTab::Automation.path()) { "Open settings" }
         }
     };
-    shell("Steward", view.state, Some(Nav::Steward), body, &view.chrome)
+    shell(
+        "Steward",
+        view.state,
+        Some(Nav::Steward),
+        body,
+        &view.chrome,
+    )
 }
 
 /// One row of the board: what the duty says, where it stands, and the forms that
@@ -220,66 +231,155 @@ fn duty_row(view: &StewardView, duty: &Duty) -> Markup {
 mod tests {
     use axum::http::StatusCode;
 
-    use crate::admin::{ROUTE_STEWARD, ROUTE_STEWARD_DUTY, ROUTE_STEWARD_DUTY_ADD, ROUTE_STEWARD_SEED};
+    use crate::admin::{
+        ROUTE_STEWARD, ROUTE_STEWARD_DUTY, ROUTE_STEWARD_DUTY_ADD, ROUTE_STEWARD_SEED,
+    };
     use crate::web::harness::{Call, block_on, encode, ready_app, send};
 
-    fn post(app: &axum::Router, cookie: &str, uri: &'static str, body: &str) -> crate::web::harness::Reply {
+    fn post(
+        app: &axum::Router,
+        cookie: &str,
+        uri: &'static str,
+        body: &str,
+    ) -> crate::web::harness::Reply {
         block_on(send(app, Call::post(uri, body).cookie(Some(cookie))))
     }
 
     #[test]
     fn the_page_is_in_the_nav_and_lists_a_duty_with_its_forms() {
         let (_dir, _engine, app, cookie) = ready_app();
-        let added = post(&app, &cookie, ROUTE_STEWARD_DUTY_ADD, &format!("statement={}", encode("watch the backups")));
+        let added = post(
+            &app,
+            &cookie,
+            ROUTE_STEWARD_DUTY_ADD,
+            &format!("statement={}", encode("watch the backups")),
+        );
         assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
-        let reply = block_on(send(&app, Call::get(ROUTE_STEWARD).html().cookie(Some(&cookie))));
+        let reply = block_on(send(
+            &app,
+            Call::get(ROUTE_STEWARD).html().cookie(Some(&cookie)),
+        ));
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
         let page = &reply.body;
-        assert!(page.contains(&format!("href=\"{ROUTE_STEWARD}\"")), "the nav links the page");
+        assert!(
+            page.contains(&format!("href=\"{ROUTE_STEWARD}\"")),
+            "the nav links the page"
+        );
         assert!(page.contains("watch the backups"), "{page}");
-        assert!(page.contains("name=\"action\" value=\"phase\""), "a phase form per row");
-        assert!(page.contains("name=\"action\" value=\"cadence\""), "a cadence stepper per row");
-        assert!(page.contains("name=\"revision\" value=\"1\""), "every form carries the revision it was drawn at");
+        assert!(
+            page.contains("name=\"action\" value=\"phase\""),
+            "a phase form per row"
+        );
+        assert!(
+            page.contains("name=\"action\" value=\"cadence\""),
+            "a cadence stepper per row"
+        );
+        assert!(
+            page.contains("name=\"revision\" value=\"1\""),
+            "every form carries the revision it was drawn at"
+        );
     }
 
     #[test]
     fn a_stale_revision_is_refused_on_the_page_not_on_a_blank_screen() {
         let (_dir, engine, app, cookie) = ready_app();
-        post(&app, &cookie, ROUTE_STEWARD_DUTY_ADD, &format!("statement={}", encode("hold steady")));
-        let id = crate::steward::list_duties(engine.db(), None).expect("list")[0].id.clone();
+        post(
+            &app,
+            &cookie,
+            ROUTE_STEWARD_DUTY_ADD,
+            &format!("statement={}", encode("hold steady")),
+        );
+        let id = crate::steward::list_duties(engine.db(), None).expect("list")[0]
+            .id
+            .clone();
         // The first change lands at revision 1 -> 2.
-        let first = post(&app, &cookie, ROUTE_STEWARD_DUTY, &format!("id={id}&revision=1&action=phase&phase=working"));
+        let first = post(
+            &app,
+            &cookie,
+            ROUTE_STEWARD_DUTY,
+            &format!("id={id}&revision=1&action=phase&phase=working"),
+        );
         assert_eq!(first.status, StatusCode::SEE_OTHER, "{}", first.body);
         // A form drawn before that change still says revision 1.
-        let stale = post(&app, &cookie, ROUTE_STEWARD_DUTY, &format!("id={id}&revision=1&action=phase&phase=paused"));
-        assert_ne!(stale.status, StatusCode::SEE_OTHER, "a stale write is not accepted");
-        assert!(stale.body.contains("changed since this page was drawn"), "{}", stale.body);
+        let stale = post(
+            &app,
+            &cookie,
+            ROUTE_STEWARD_DUTY,
+            &format!("id={id}&revision=1&action=phase&phase=paused"),
+        );
+        assert_ne!(
+            stale.status,
+            StatusCode::SEE_OTHER,
+            "a stale write is not accepted"
+        );
+        assert!(
+            stale.body.contains("changed since this page was drawn"),
+            "{}",
+            stale.body
+        );
         assert!(stale.body.contains("revision 2"), "{}", stale.body);
     }
 
     #[test]
     fn closing_names_the_duty_and_a_closed_duty_refuses_a_second_close() {
         let (_dir, engine, app, cookie) = ready_app();
-        post(&app, &cookie, ROUTE_STEWARD_DUTY_ADD, &format!("statement={}", encode("rotate the keys")));
-        let id = crate::steward::list_duties(engine.db(), None).expect("list")[0].id.clone();
-        let page = block_on(send(&app, Call::get(ROUTE_STEWARD).html().cookie(Some(&cookie)))).body;
-        assert!(page.contains("Close rotate the keys"), "the confirmation names the duty");
-        let closed = post(&app, &cookie, ROUTE_STEWARD_DUTY, &format!("id={id}&revision=1&action=close&outcome=done"));
+        post(
+            &app,
+            &cookie,
+            ROUTE_STEWARD_DUTY_ADD,
+            &format!("statement={}", encode("rotate the keys")),
+        );
+        let id = crate::steward::list_duties(engine.db(), None).expect("list")[0]
+            .id
+            .clone();
+        let page = block_on(send(
+            &app,
+            Call::get(ROUTE_STEWARD).html().cookie(Some(&cookie)),
+        ))
+        .body;
+        assert!(
+            page.contains("Close rotate the keys"),
+            "the confirmation names the duty"
+        );
+        let closed = post(
+            &app,
+            &cookie,
+            ROUTE_STEWARD_DUTY,
+            &format!("id={id}&revision=1&action=close&outcome=done"),
+        );
         assert_eq!(closed.status, StatusCode::SEE_OTHER, "{}", closed.body);
-        let again = post(&app, &cookie, ROUTE_STEWARD_DUTY, &format!("id={id}&revision=2&action=close&outcome=again"));
+        let again = post(
+            &app,
+            &cookie,
+            ROUTE_STEWARD_DUTY,
+            &format!("id={id}&revision=2&action=close&outcome=again"),
+        );
         assert_ne!(again.status, StatusCode::SEE_OTHER);
-        assert!(again.body.contains("closing is final") || again.body.contains("closed"), "{}", again.body);
+        assert!(
+            again.body.contains("closing is final") || again.body.contains("closed"),
+            "{}",
+            again.body
+        );
     }
 
     #[test]
     fn seeding_from_the_charter_redirects_with_the_counts() {
         let (_dir, engine, app, cookie) = ready_app();
-        crate::web::store::settings_put(engine.db(), crate::steward::SETTING_CHARTER, "Watch backups\nChase vendor\n")
-            .expect("charter");
+        crate::web::store::settings_put(
+            engine.db(),
+            crate::steward::SETTING_CHARTER,
+            "Watch backups\nChase vendor\n",
+        )
+        .expect("charter");
         let seeded = post(&app, &cookie, ROUTE_STEWARD_SEED, "");
         assert_eq!(seeded.status, StatusCode::SEE_OTHER, "{}", seeded.body);
         let location = seeded.location().unwrap_or_default();
         assert!(location.contains("created=2"), "{location}");
-        assert_eq!(crate::steward::list_duties(engine.db(), None).expect("list").len(), 2);
+        assert_eq!(
+            crate::steward::list_duties(engine.db(), None)
+                .expect("list")
+                .len(),
+            2
+        );
     }
 }
