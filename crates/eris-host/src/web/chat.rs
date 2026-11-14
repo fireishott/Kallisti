@@ -3147,6 +3147,11 @@ pub struct TurnSettings {
     /// child turn be built with both switches off, which is the whole guarantee
     /// that a subagent can neither use a tool nor dispatch another subagent.
     pub agents: bool,
+    /// Whether the tool list is compressed behind the index.
+    ///
+    /// Off is the pre-index payload, byte for byte, so the feature can be turned
+    /// off if it hurts.
+    pub index: bool,
     /// How many tokens this turn's prompt may occupy before the loop cuts tool
     /// results to fit, from the window the model declared at the configured
     /// share. `None` when nobody could resolve a window, which leaves the loop
@@ -4140,7 +4145,8 @@ pub fn run_turn_with_key(
                 // them again to answer the result it just received. Withheld on the
                 // last round so the turn ends in an answer instead of a refusal.
                 tools: if tools_allowed && settings.tools {
-                    let mut offered = crate::tools::specs_offering(sandbox.mode(), settings.agents);
+                    let mut offered =
+                        crate::tools::specs_shaped(sandbox.mode(), settings.agents, settings.index);
                     // A tool this turn cannot honour must never reach the
                     // model's list. The sandbox decides the write, and the
                     // turn's own accesses decide the notes and the transcript,

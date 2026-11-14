@@ -2388,6 +2388,8 @@ pub struct SettingsView {
     pub greeting_model: String,
     /// `hour`, `day` or `week`: how old the stored line may get.
     pub greeting_refresh: String,
+    /// Whether the compressed tool list is on.
+    pub tool_index_enabled: bool,
     /// Whether an over-long review is repaired instead of dropped.
     pub learning_repair: bool,
     /// How long a skill nothing has ever read may stay in the catalog.
@@ -2514,6 +2516,7 @@ impl SettingsView {
             greeting_enabled: false,
             greeting_model: crate::greeting::INHERIT.to_owned(),
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
+            tool_index_enabled: true,
             learning_repair: true,
             curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
             consolidate_nightly: false,
@@ -4007,6 +4010,19 @@ fn tools_group(view: &SettingsView) -> Markup {
                 span .hint {
                     "Off means the model is offered nothing and answers from the prompt alone. "
                     "On, it can read, write and run commands within the sandbox mode above."
+                }
+            }
+            div .field {
+                label for="tool_index_enabled" {
+                    input type="checkbox" id="tool_index_enabled" name="tool_index_enabled"
+                        value="true" checked[view.tool_index_enabled];
+                    " Compress the tool list behind an index"
+                }
+                span .hint {
+                    "Only engages at " (crate::tools::TOOL_INDEX_MIN) " tools or more; below that "
+                    "the catalogue costs more than it saves and the payload is unchanged. Engaged, "
+                    "the frequent tools keep their schemas, the rest are one line each behind "
+                    "`tool_index`, and every one of them is still callable by name."
                 }
             }
             div .field {

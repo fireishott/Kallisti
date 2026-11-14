@@ -2584,6 +2584,17 @@ impl TurnHub {
                 None => Some(crate::web::chat::budget_notice(max_rounds)),
             };
             let system = crate::goal::with_objective(system, goal.as_deref());
+            let index_enabled = !matches!(
+                crate::web::store::settings_get(
+                    &budget_db,
+                    crate::tools::SETTING_TOOL_INDEX_ENABLED
+                )
+                .ok()
+                .flatten()
+                .as_deref()
+                .map(str::trim),
+                Some("false")
+            );
             let settings = crate::web::chat::TurnSettings {
                 tools,
                 max_rounds,
@@ -2593,6 +2604,7 @@ impl TurnHub {
                 // exactly when the desk exists, so a surface that cannot run a
                 // child never sees the tool.
                 agents: dispatch_target.is_some(),
+                index: index_enabled,
                 context_budget,
                 // The database the turn already writes to, and the conversation it
                 // is writing into: a bare `budget` call reports this chat.

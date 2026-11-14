@@ -2542,6 +2542,22 @@ fn read_schedule_email_enabled(engine: &SetupEngine) -> Result<String, DeviceErr
     Ok(crate::delivery::email_enabled(engine.db()).to_string())
 }
 
+fn read_tool_index(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(tool_index_enabled(engine).to_string())
+}
+
+fn tool_index_enabled(engine: &SetupEngine) -> bool {
+    !matches!(
+        engine
+            .setting(crate::tools::SETTING_TOOL_INDEX_ENABLED)
+            .ok()
+            .flatten()
+            .as_deref()
+            .map(str::trim),
+        Some("false")
+    )
+}
+
 fn read_consolidate_nightly(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::memconsolidate::nightly(engine.db()).to_string())
 }
@@ -2674,6 +2690,16 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::subagents::SETTING_AGENTS_ENABLED,
         writable: true,
         read: read_agents_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "tool_index_enabled",
+        label: "Tool index",
+        group: "models",
+        kind: SettingKind::Bool,
+        row: crate::tools::SETTING_TOOL_INDEX_ENABLED,
+        writable: true,
+        read: read_tool_index,
         normalize: None,
     },
     SettingSpec {

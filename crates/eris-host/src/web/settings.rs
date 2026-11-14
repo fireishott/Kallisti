@@ -1763,6 +1763,10 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
         "goal_rounds_ceiling",
     ),
     (crate::subagents::SETTING_AGENTS_ENABLED, "agents_enabled"),
+    (
+        crate::tools::SETTING_TOOL_INDEX_ENABLED,
+        "tool_index_enabled",
+    ),
     (crate::persona::SETTING_ASSISTANT_NAME, "assistant_name"),
     (crate::persona::SETTING_PERSONA_ENABLED, "persona_enabled"),
     (crate::web::chat::SETTING_SHOW_REASONING, "show_reasoning"),

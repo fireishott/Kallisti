@@ -1090,6 +1090,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .as_deref(),
     )
     .to_string();
+    view.tool_index_enabled = tool_index_enabled(engine.db());
     view.agents_enabled = crate::subagents::enabled(
         engine
             .setting(crate::subagents::SETTING_AGENTS_ENABLED)
@@ -1387,6 +1388,18 @@ fn build_activity_view(state: &AppState) -> Result<ActivityView, FormError> {
 
 /// How many audit rows the activity page shows.
 const AUDIT_PAGE_SIZE: i64 = 100;
+
+/// Whether the compressed tool list is on, from the stored row.
+fn tool_index_enabled(db: &crate::db::Db) -> bool {
+    !matches!(
+        store::settings_get(db, crate::tools::SETTING_TOOL_INDEX_ENABLED)
+            .ok()
+            .flatten()
+            .as_deref()
+            .map(str::trim),
+        Some("false")
+    )
+}
 
 /// A database failure as a form error, so a page is never replaced by a blank
 /// 200: the caller gets a 500 with a rendered message.
@@ -6375,12 +6388,26 @@ async fn save_tools(
             error,
         );
     }
+    // The index is the third tool-list decision: it changes what the model is
+    // handed, so it belongs on the form that owns exactly that.
+    let index = flag(&fields, "tool_index_enabled");
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::tools::SETTING_TOOL_INDEX_ENABLED,
+        if index { "true" } else { "false" },
+    ) {
+        return store_failure(
+            &request_id.0,
+            crate::tools::SETTING_TOOL_INDEX_ENABLED,
+            error,
+        );
+    }
     if let Err(error) = state.engine.auth().audit(
         "loopback",
         "settings.tools",
         Some(&format!(
             "enabled={enabled}; max_rounds={rounds}; goal_ceiling={goal_ceiling}; \
-             run_log={mode}; agents={agents}"
+             run_log={mode}; agents={agents}; tool_index={index}"
         )),
     ) {
         return audit_failure(&request_id.0, "settings.tools", error);
@@ -11352,6 +11379,7 @@ fn spawn_turn(
             .flatten()
             .as_deref(),
     );
+    let index_enabled = tool_index_enabled(state.engine.db());
     // The parent's stream hears about every status change, so a live page can
     // recount the bar without polling. A plain form post has no channel and needs
     // none: the row in the database is the answer, and the next page load reads
@@ -11879,6 +11907,7 @@ fn spawn_turn(
                 tools: tools_enabled,
                 max_rounds: tool_rounds,
                 agents: agents_enabled,
+                index: index_enabled,
                 // The same window this route already sized the history against,
                 // so the loop cuts results at the boundary the transcript was
                 // built to. Resolved from the model the composer picked, not the

@@ -668,6 +668,7 @@ pub fn child_settings() -> TurnSettings {
         tools: false,
         max_rounds: 1,
         agents: false,
+        index: true,
         // A child turn carries one prompt and no history, so its prompt cannot
         // grow past a window by itself. The budget the parent resolved does not
         // apply here, and inventing one would cut a result for no reason.
@@ -694,6 +695,7 @@ pub fn agent_settings() -> TurnSettings {
         // backstop for the whole child.
         max_rounds: 8,
         agents: false,
+        index: true,
         context_budget: None,
         // No database and no conversation: a child turn is not offered the
         // `budget` tool, so there is nothing for it to read.
