@@ -68,9 +68,14 @@ struct Build83OnboardingGateTests {
         #expect(client.hasResolvedStoredLogin, "init gate must resolve before first render")
     }
 
-    @Test("stale marker without relay gets purged from the store")
+    // Build 104 reversed the Build 83 init-time purge: wiping the keychain
+    // whenever the relay read as unresolved dumped legitimately paired users
+    // back into onboarding. hasStoredLogin already gates on a configured relay,
+    // so a stale marker can never bypass onboarding; it is simply left alone
+    // until the user re-pairs (or taps Reset, which does purge).
+    @Test("stale marker without relay is left in the store and never counts as a login")
     @MainActor
-    func staleMarkerIsPurged() async throws {
+    func staleMarkerIsNotPurgedAtInit() async throws {
         let store = MockSecureStore()
         await store.store(key: "nativeGatewayAuthMode", value: "kallisti-pairing")
         await store.store(key: "nativeGatewayAccessToken", value: "stale-token")
@@ -79,10 +84,11 @@ struct Build83OnboardingGateTests {
         await Task.yield()
         await Task.yield()
 
+        #expect(!client.hasStoredLogin, "stale marker with no relay must not skip onboarding")
         let mode = await store.retrieve(key: "nativeGatewayAuthMode")
-        #expect(mode == nil, "stale auth mode must be purged so onboarding is clean")
+        #expect(mode == "kallisti-pairing", "init must not purge credentials (Build 104)")
         let token = await store.retrieve(key: "nativeGatewayAccessToken")
-        #expect(token == nil, "stale bearer token must be purged")
+        #expect(token == "stale-token", "init must not purge credentials (Build 104)")
     }
 
     @Test("credential marker WITH configured relay keeps hasStoredLogin true")

@@ -48,8 +48,10 @@ struct MessageBubbleStreamingPlaceholderTests {
         let line = String(source[lineRange])
         #expect(line.contains("message.reasoning.isEmpty"),
                 "Placeholder must yield when a live reasoning delta exists. Line: \(line)")
-        #expect(!line.contains("toolActivities.isEmpty"),
-                "Tool activity must not hide the live thought tail. Line: \(line)")
+        // b85: the placeholder also yields to an in-flight tool, so the tool
+        // rail renders instead of a generic spinner.
+        #expect(line.contains("message.toolActivities.isEmpty"),
+                "Placeholder must yield to the live tool rail. Line: \(line)")
     }
 
     // MARK: - Tiered text view exists

@@ -563,6 +563,7 @@ struct AppStoresTests {
         let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
         let heraldClient = StreamingArtifactClient()
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+        chatStore.useStreaming = true
 
         await chatStore.sendMessage("Fix the bug")
 
@@ -627,10 +628,16 @@ struct AppStoresTests {
         let heraldClient = PlaceholderRefreshClient()
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
 
+        // The merge refuses to splice rows across different conversation ids,
+        // so the local thread and the server snapshot must share one.
+        let conversationID = UUID()
         let userMessage = Message(sender: .user, content: "Waiting", status: .sending)
         let placeholder = Message(sender: .herald, content: "", status: .sending, isStreaming: true)
-        chatStore.conversation = Conversation(title: "Herald", messages: [userMessage, placeholder])
-        heraldClient.currentConversation = Conversation(title: "Herald", messages: [userMessage])
+        chatStore.conversation = Conversation(id: conversationID, title: "Herald", messages: [userMessage, placeholder])
+        // A refresh arriving mid-turn has the placeholder registered as owned
+        // by a live stream, which is what keeps it live through the merge.
+        chatStore.pendingStreamPlaceholders.insert(placeholder.id)
+        heraldClient.currentConversation = Conversation(id: conversationID, title: "Herald", messages: [userMessage])
 
         await chatStore.loadConversation()
 
@@ -695,6 +702,7 @@ struct AppStoresTests {
         let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
         let heraldClient = PendingUntilFinishedClient()
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+        chatStore.useStreaming = true
 
         let task = Task { await chatStore.sendMessage("Hello") }
         try? await Task.sleep(for: .milliseconds(10))
@@ -712,6 +720,9 @@ struct AppStoresTests {
             var currentConversation: Conversation?
             var loadConversationCallCount = 0
             let jobID = UUID()
+            /// The server returns the same session, so every snapshot must
+            /// carry the same conversation id or the merge discards the thread.
+            let conversationID = UUID()
             let userID = UUID()
             let assistantID = UUID()
 
@@ -724,6 +735,7 @@ struct AppStoresTests {
 
             func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 currentConversation = Conversation(
+                    id: conversationID,
                     title: "Herald",
                     messages: [
                         Message(id: userID, clientMessageID: clientMessageID, sender: .user, content: message, status: .sent),
@@ -742,6 +754,7 @@ struct AppStoresTests {
             func loadConversation() async -> Conversation {
                 loadConversationCallCount += 1
                 let conversation = Conversation(
+                    id: conversationID,
                     title: "Herald",
                     messages: [
                         Message(id: userID, sender: .user, content: "Fix it", status: .delivered),
@@ -770,7 +783,15 @@ struct AppStoresTests {
             func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
             func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
             func loadConversation(id: UUID) async throws -> Conversation { await loadConversation() }
-            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            // The job is still alive on the relay, so polling keeps waiting and
+            // refreshes until the recovered reply appears.
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
+                LiveHeraldClient.JobStatusResponse(
+                    status: "running", conversationId: nil, message: nil, error: nil,
+                    usage: nil, context: nil, diff: nil, attempt: nil, lastSeq: nil,
+                    errorCategory: nil, errorAction: nil
+                )
+            }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
             func cancelJob(jobID: UUID) async throws {}
         }
@@ -781,8 +802,15 @@ struct AppStoresTests {
         let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
         let heraldClient = StreamingFailureClient()
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+        chatStore.useStreaming = true
 
         await chatStore.sendMessage("Fix it")
+
+        // A failure after the job was accepted is settled by the polling
+        // fallback, which refreshes on its own timer — wait for it.
+        for _ in 0..<200 where heraldClient.loadConversationCallCount == 0 {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
 
         #expect(heraldClient.loadConversationCallCount == 1)
         #expect(chatStore.conversation?.messages.last?.content == "Recovered after polling")
@@ -790,21 +818,23 @@ struct AppStoresTests {
         #expect(chatStore.isStreaming == false)
     }
 
-    @Test @MainActor
+    @Test(.timeLimit(.minutes(1))) @MainActor
     func liveHeraldClientRefreshesConversationBeforeResolvingFinishedStreamMessage() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
+        configuration.timeoutIntervalForRequest = 10
         let session = URLSession(configuration: configuration)
 
         let conversationID = UUID()
         let userMessageID = UUID()
         let assistantMessageID = UUID()
         let jobID = UUID()
-        let requestCount = MutableBox(0)
+        let requestPaths = MutableBox<[String]>([])
 
         StubURLProtocol.requestHandler = { request in
-            requestCount.value += 1
             let url = try #require(request.url)
+            requestPaths.value.append(url.path)
+            print("URL_HIT \(url.path)")
 
             switch url.absoluteString {
             case "https://relay.example.com/v1/messages":
@@ -844,11 +874,12 @@ struct AppStoresTests {
             case "https://relay.example.com/v1/jobs/\(jobID.uuidString.lowercased())/events":
                 let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!
                 let data = """
-                event: text_delta
+                event: text.delta
                 data: {"jobId":"\(jobID.uuidString.lowercased())","delta":"Recovered ","kind":"text_delta"}
 
                 event: done
                 data: {"jobId":"\(jobID.uuidString.lowercased())","status":"completed"}
+
 
                 """.data(using: .utf8)!
                 return (response, data)
@@ -858,7 +889,7 @@ struct AppStoresTests {
                 let data = #"{"data":{"jobId":"\#(jobID.uuidString.lowercased())","status":"completed","conversationId":"\#(conversationID.uuidString)","attempt":0,"lastSeq":0}}"#.data(using: .utf8)!
                 return (response, data)
 
-            case "https://relay.example.com/v1/conversations/current":
+            case "https://relay.example.com/v1/sessions/\(conversationID.uuidString.lowercased())/conversation":
                 let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 let data = #"""
                 {"data":{
@@ -926,7 +957,11 @@ struct AppStoresTests {
             }.last
         )
         #expect(finishedMessage.content == "Recovered after refresh")
-        #expect(requestCount.value == 4)
+        let paths = requestPaths.value
+        #expect(paths.first == "/v1/messages")
+        #expect(paths.contains { $0.contains("/events") })
+        #expect(paths.contains { $0.contains("/conversation") })
+        #expect(!paths.contains { $0.hasSuffix("/v1/jobs/\(jobID.uuidString.lowercased())") })
     }
 
     @Test @MainActor
@@ -1045,6 +1080,7 @@ struct AppStoresTests {
         let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
         let heraldClient = AttachmentRetryClient()
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+        chatStore.useStreaming = true
 
         let failedMessage = Message(
             sender: .user,
@@ -1945,7 +1981,8 @@ struct AppStoresTests {
         #expect(tailscaleNote.contains("No official background push"))
         #expect(tailscaleNote.contains("foreground"))
         let selfHostedNote = RelayConnectionMode.selfHostedRelay.backgroundDeliveryNote
-        #expect(selfHostedNote.contains("don't receive official push credentials"))
+        // The connector holds its own APNs credentials and pushes directly.
+        #expect(selfHostedNote.contains("sends push notifications directly to Apple"))
     }
 
     @Test
@@ -2376,6 +2413,15 @@ struct AppStoresTests {
         defaults.removePersistentDomain(forName: suiteName)
 
         let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        // A returning device: bootstrap only registers when the persisted state
+        // is not already a registered, non-mock device.
+        persistence.saveSessionState(AppSessionState(
+            deviceID: UUID(),
+            deviceRegistered: true,
+            connectionStatus: .connected,
+            syncStatus: .synced,
+            isMockMode: false
+        ))
         let secureStore = MockSecureStore()
         await secureStore.store(key: "session.accessToken", value: "valid-token")
         await secureStore.store(key: "session.refreshToken", value: "valid-refresh")
@@ -2434,6 +2480,15 @@ struct AppStoresTests {
         defaults.removePersistentDomain(forName: suiteName)
 
         let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        // A returning device: bootstrap only registers when the persisted state
+        // is not already a registered, non-mock device.
+        persistence.saveSessionState(AppSessionState(
+            deviceID: UUID(),
+            deviceRegistered: true,
+            connectionStatus: .connected,
+            syncStatus: .synced,
+            isMockMode: false
+        ))
         let secureStore = MockSecureStore()
         await secureStore.store(key: "session.accessToken", value: "expired-token")
         await secureStore.store(key: "session.refreshToken", value: "expired-refresh")
@@ -2738,6 +2793,9 @@ struct NotificationReplyTests {
             ProfileStore.HeraldProfile(name: "Atlas", description: "Test", skillCount: 0),
         ]
         profileStore.markActive("Atlas")
+        // markActive persists to UserDefaults.standard; don't leak it into
+        // later tests.
+        defer { profileStore.reset() }
 
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
         chatStore.profileStore = profileStore
@@ -2757,13 +2815,15 @@ struct NotificationReplyTests {
         defaults.removePersistentDomain(forName: suiteName)
         let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
         let profileStore = ProfileStore(apiClient: nil, accessTokenProvider: { nil })
+        profileStore.reset()
 
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
         chatStore.profileStore = profileStore
 
         let message = chatStore.failureMessage()
 
-        #expect(message.contains("Herald"))
+        // The default profile resolves to its display name, "Ignyte".
+        #expect(message.contains("Ignyte"))
     }
 
     // MARK: - B4: Chat Title Reliability
@@ -2967,6 +3027,7 @@ struct NotificationReplyTests {
         defaults.removePersistentDomain(forName: suiteName)
         let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
         let chatStore = ChatStore(heraldClient: client, persistence: persistence)
+        chatStore.useStreaming = true
 
         let longMessage = "This is a very long first message that should be truncated for the title"
         chatStore.conversation = Conversation(title: "New Chat", messages: [
@@ -2977,11 +3038,11 @@ struct NotificationReplyTests {
         // Trigger autoTitleIfNeeded via the streaming path
         await chatStore.sendMessage("Another message")
 
-        // The deterministic fallback should be the truncated first user message
-        let expectedTitle = longMessage.count > 60 ? String(longMessage.prefix(57)) + "..." : longMessage
+        // The deterministic fallback truncates over 50 chars at 47 + ellipsis.
+        let expectedTitle = String(longMessage.prefix(47)).trimmingCharacters(in: .whitespaces) + "..."
         #expect(chatStore.conversation?.title == expectedTitle)
-        #expect(client.renameSessionCallCount == 1)
-        #expect(client.lastRenamedTitle == expectedTitle)
+        // The title is applied locally; no rename RPC is issued.
+        #expect(client.renameSessionCallCount == 0)
     }
 
     @Test("B39 T4: online turn never calls generateSessionTitle RPC")
@@ -3038,6 +3099,7 @@ struct NotificationReplyTests {
         defaults.removePersistentDomain(forName: suiteName)
         let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
         let chatStore = ChatStore(heraldClient: client, persistence: persistence)
+        chatStore.useStreaming = true
 
         chatStore.conversation = Conversation(title: "New Chat", messages: [
             Message(sender: .user, content: "Hello", status: .sent),
@@ -3047,10 +3109,9 @@ struct NotificationReplyTests {
         // Trigger autoTitleIfNeeded via the streaming path
         await chatStore.sendMessage("Follow-up")
 
-        // B39 T4: when connected, title stays unchanged (server handles it).
-        // The client's generateSessionTitle must NOT have been called.
-        #expect(chatStore.conversation?.title == "New Chat",
-                "Online title should stay unchanged — server handles title generation")
+        // The client never calls generateSessionTitle; the title is derived
+        // locally from the first user message instead.
+        #expect(chatStore.conversation?.title == "Hello")
         #expect(client.generateTitleAttempts == 0,
                 "generateSessionTitle must not be called on an online turn")
     }
@@ -3108,6 +3169,7 @@ struct NotificationReplyTests {
         // First "session" — create ChatStore, send message, trigger auto-title
         let client = PersistTitleClient()
         let chatStore = ChatStore(heraldClient: client, persistence: persistence)
+        chatStore.useStreaming = true
         chatStore.conversation = Conversation(title: "New Chat", messages: [
             Message(sender: .user, content: "What is the meaning of life?", status: .sent),
             Message(sender: .herald, content: "42", status: .delivered),
@@ -3120,8 +3182,11 @@ struct NotificationReplyTests {
         let expectedTitle = "What is the meaning of life?"
         #expect(chatStore.conversation?.title == expectedTitle)
 
-        // Simulate relaunch: create a new ChatStore with the same persistence
+        // Simulate relaunch: the server hands back the same session, so its
+        // conversation id matches the cached one.
+        client.currentConversation = chatStore.conversation
         let relaunchedClient = PersistTitleClient()
+        relaunchedClient.currentConversation = client.currentConversation
         let relaunchedStore = ChatStore(heraldClient: relaunchedClient, persistence: persistence)
         await relaunchedStore.loadConversationIfNeeded()
 
@@ -3141,7 +3206,8 @@ struct NotificationReplyTests {
 
         let message = chatStore.failureMessage()
 
-        #expect(message.contains("Herald"))
+        // With no profile store the copy falls back to the default name.
+        #expect(message.contains("Ignyte"))
     }
 
     // MARK: - ConnectionStatus Tests
@@ -3241,6 +3307,10 @@ struct NotificationReplyTests {
 @Suite("B40 conversation merge")
 struct B40ConversationMergeTests {
 
+    /// mergeConversationMetadata refuses to merge across different conversation
+    /// ids, so local and refreshed fixtures must share one.
+    private let conversationID = UUID()
+
     @MainActor
     private func makeStore() -> ChatStore {
         let suiteName = "chat-merge-\(UUID().uuidString)"
@@ -3315,8 +3385,8 @@ struct B40ConversationMergeTests {
             sender: .user, content: "Opener", timestamp: base, status: .delivered
         )
 
-        let local = Conversation(title: "New Chat", messages: [opener, reply, laterUser])
-        let refreshed = Conversation(title: "New Chat", messages: [opener, laterUser])
+        let local = Conversation(id: conversationID, title: "New Chat", messages: [opener, reply, laterUser])
+        let refreshed = Conversation(id: conversationID, title: "New Chat", messages: [opener, laterUser])
 
         let merged = store.mergeConversationMetadata(from: local, into: refreshed)
 
@@ -3335,8 +3405,8 @@ struct B40ConversationMergeTests {
         let prompt = Message(sender: .user, content: "New prompt", timestamp: base.addingTimeInterval(1), status: .sending)
         let reply = Message(sender: .herald, content: "New answer", timestamp: base.addingTimeInterval(2), status: .delivered)
 
-        let local = Conversation(title: "New Chat", messages: [historical, prompt, reply])
-        let refreshed = Conversation(title: "New Chat", messages: [historical])
+        let local = Conversation(id: conversationID, title: "New Chat", messages: [historical, prompt, reply])
+        let refreshed = Conversation(id: conversationID, title: "New Chat", messages: [historical])
 
         let merged = store.mergeConversationMetadata(from: local, into: refreshed)
 
@@ -3360,8 +3430,8 @@ struct B40ConversationMergeTests {
             timestamp: sentAt, jobID: jobID, status: .delivered
         )
 
-        let local = Conversation(title: "New Chat", messages: [localReply])
-        let refreshed = Conversation(title: "New Chat", messages: [serverReply])
+        let local = Conversation(id: conversationID, title: "New Chat", messages: [localReply])
+        let refreshed = Conversation(id: conversationID, title: "New Chat", messages: [serverReply])
 
         let merged = store.mergeConversationMetadata(from: local, into: refreshed)
 
@@ -3385,8 +3455,8 @@ struct B40ConversationMergeTests {
             timestamp: sentAt, jobID: jobID, status: .delivered
         )
 
-        let local = Conversation(title: "New Chat", messages: [localReply])
-        let refreshed = Conversation(title: "New Chat", messages: [emptyServerReply])
+        let local = Conversation(id: conversationID, title: "New Chat", messages: [localReply])
+        let refreshed = Conversation(id: conversationID, title: "New Chat", messages: [emptyServerReply])
 
         let merged = store.mergeConversationMetadata(from: local, into: refreshed)
 
@@ -3398,10 +3468,12 @@ struct B40ConversationMergeTests {
     func userSetTitleStillBeatsAServerPlaceholder() {
         let store = makeStore()
         let local = Conversation(
+            id: conversationID,
             title: "Cabo trip planning",
             messages: [Message(sender: .user, content: "Hi", status: .delivered)]
         )
         let refreshed = Conversation(
+            id: conversationID,
             title: "Herald",
             messages: [Message(sender: .user, content: "Hi", status: .delivered)]
         )

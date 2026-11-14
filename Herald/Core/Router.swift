@@ -8,6 +8,10 @@ enum Route: Hashable {
     case gatewayStatus
     case gatewayLogs
     case configEditor
+    /// One daemon settings group, drawn from the daemon's own record.
+    case daemonGroup(DaemonGroup)
+    /// The steward's own settings, gathered from every group they live in.
+    case daemonSteward
 }
 
 // MARK: - Sheet Destinations

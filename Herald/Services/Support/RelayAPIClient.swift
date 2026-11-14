@@ -256,6 +256,10 @@ final class RelayAPIClient {
         }
     }
 
+    /// SSE requests run for the life of a job. The coordinator watchdog (60 s)
+    /// is the real keepalive guard; this is only the transport ceiling.
+    nonisolated private static let sseIdleTimeoutSeconds: TimeInterval = 600
+
     private let baseURLProvider: @MainActor () -> String
     private let session: URLSession
     private let encoder: JSONEncoder
@@ -425,7 +429,7 @@ final class RelayAPIClient {
                     if let lastEventID, !lastEventID.isEmpty {
                         request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
                     }
-                    request.timeoutInterval = TimeInterval(Int.max)
+                    request.timeoutInterval = Self.sseIdleTimeoutSeconds
 
                     // Build the delegate-driven pipeline: chunks → lines → SSE events
                     var chunkContinuation: AsyncStream<Data>.Continuation!
@@ -438,14 +442,22 @@ final class RelayAPIClient {
                         chunkContinuation: chunkContinuation,
                         completionContinuation: completionContinuation
                     )
-                    let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
-                    let dataTask = session.dataTask(with: request)
+                    // Derive from the injected session's configuration so protocolClasses,
+                    // timeouts and TLS policy carry over. Never reuse `session` itself:
+                    // a session created with a delegate cannot be a task factory for another.
+                    let streamConfiguration = session.configuration
+                    let streamSession = URLSession(
+                        configuration: streamConfiguration,
+                        delegate: delegate,
+                        delegateQueue: nil
+                    )
+                    let dataTask = streamSession.dataTask(with: request)
                     dataTask.resume()
 
                     // Ensure cleanup when the stream is cancelled
                     continuation.onTermination = { _ in
                         dataTask.cancel()
-                        session.invalidateAndCancel()
+                        streamSession.invalidateAndCancel()
                     }
 
                     var currentEvent = "message"

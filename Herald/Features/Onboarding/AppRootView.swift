@@ -175,8 +175,11 @@ struct AppRootView: View {
             // The resolution is a cheap keychain read but it lives on a Task
             // hop, so the first render races it - this gate is the splash
             // glimpse fix.
+            // Until the init Task resolves the credential state, keep the loading
+            // surface for both a fresh install and a returning user. Showing the
+            // body here let a returning user glimpse onboarding (Build 76).
             if !hasResolvedStoredLogin {
-                return !hasStoredLogin
+                return true
             }
             if !isLaunchReady {
                 // Before the first verified connect, show the launch surface

@@ -144,7 +144,7 @@ struct ReconnectTests {
 
         // Process seq 1
         let event1 = SSEEvent(
-            event: "text_delta",
+            event: "text.delta",
             data: "{\"delta\": \"Hello\"}",
             id: "1"
         )
@@ -154,7 +154,7 @@ struct ReconnectTests {
 
         // Process seq 1 again — should be parseable but the caller should skip it
         let event1dup = SSEEvent(
-            event: "text_delta",
+            event: "text.delta",
             data: "{\"delta\": \"Hello\"}",
             id: "1"
         )
@@ -166,24 +166,28 @@ struct ReconnectTests {
         // This test verifies parseEnvelope produces the envelope; dedup is in run()
     }
 
-    @Test("Events without id auto-increment seq")
+    @Test("Events without id take the next seq after the applied cursor")
     func eventsWithoutIdAutoIncrement() async {
         let coordinator = makeCoordinator()
 
-        let event1 = SSEEvent(event: "text_delta", data: "{\"delta\": \"A\"}", id: nil)
+        // parseEnvelope is pure: the cursor (lastAppliedSeq) only advances in
+        // run() once an envelope is applied. An id-less event is therefore
+        // numbered lastAppliedSeq + 1, and re-parsing before applying yields
+        // the same number.
+        let event1 = SSEEvent(event: "text.delta", data: "{\"delta\": \"A\"}", id: nil)
         let envelope1 = await coordinator.parseEnvelope(from: event1)
         #expect(envelope1?.seq == 1)
 
-        let event2 = SSEEvent(event: "text_delta", data: "{\"delta\": \"B\"}", id: nil)
+        let event2 = SSEEvent(event: "text.delta", data: "{\"delta\": \"B\"}", id: nil)
         let envelope2 = await coordinator.parseEnvelope(from: event2)
-        #expect(envelope2?.seq == 2)
+        #expect(envelope2?.seq == 1)
     }
 
     @Test("Events with explicit id use that id as seq")
     func eventsWithExplicitIdUseThatId() async {
         let coordinator = makeCoordinator()
 
-        let event = SSEEvent(event: "text_delta", data: "{\"delta\": \"X\"}", id: "42")
+        let event = SSEEvent(event: "text.delta", data: "{\"delta\": \"X\"}", id: "42")
         let envelope = await coordinator.parseEnvelope(from: event)
         #expect(envelope?.seq == 42)
     }
@@ -212,8 +216,8 @@ struct DeltaFlushTests {
         let coordinator = makeCoordinator()
 
         // Simulate: text_delta, text_delta, then terminal with object message
-        let delta1 = SSEEvent(event: "text_delta", data: "{\"delta\": \"Hello \"}", id: "1")
-        let delta2 = SSEEvent(event: "text_delta", data: "{\"delta\": \"world\"}", id: "2")
+        let delta1 = SSEEvent(event: "text.delta", data: "{\"delta\": \"Hello \"}", id: "1")
+        let delta2 = SSEEvent(event: "text.delta", data: "{\"delta\": \"world\"}", id: "2")
         let terminal = SSEEvent(
             event: "done",
             data: "{\"status\": \"completed\", \"message\": {\"content\": \"Hello world\", \"role\": \"assistant\"}}",
@@ -584,9 +588,9 @@ struct V3TerminalEventParsingTests {
     func runCompletedExemptFromDedup() async {
         let coordinator = makeCoordinator()
         // Simulate: process some events, then a reconnect replays the terminal
-        let e1 = SSEEvent(event: "text_delta", data: "{\"delta\": \"Hi\"}", id: "1")
+        let e1 = SSEEvent(event: "text.delta", data: "{\"delta\": \"Hi\"}", id: "1")
         _ = await coordinator.parseEnvelope(from: e1)
-        let e2 = SSEEvent(event: "text_delta", data: "{\"delta\": \" there\"}", id: "2")
+        let e2 = SSEEvent(event: "text.delta", data: "{\"delta\": \" there\"}", id: "2")
         _ = await coordinator.parseEnvelope(from: e2)
 
         // Terminal arrives at seq=1 (replay) — should still apply

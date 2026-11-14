@@ -1,4 +1,4 @@
-name: Kallisti
+name: Herald
 options:
   # Public-safe defaults. Replace locally if you regenerate the project
   # for a private deployment with your own signing/bundle identifiers.
@@ -68,7 +68,7 @@ targets:
     type: application
     platform: iOS
     entitlements:
-      path: Kallisti/Kallisti.entitlements
+      path: Herald/Kallisti.entitlements
       properties:
         com.apple.developer.siri: true
         com.apple.developer.healthkit: true
@@ -80,9 +80,11 @@ targets:
         keychain-access-groups:
           - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     sources:
-      - path: Kallisti
+      - path: Herald
         excludes:
           - "**/.DS_Store"
+          # Editor backups that regeneration must never pick up as sources.
+          - "**/*.bak*"
           # Build 108: exclude Watch WIP files until Task 10 finishes them.
           # These reference types defined in the Watch target that are not
           # yet integrated into the iOS build.
@@ -93,7 +95,7 @@ targets:
       - path: KallistiWidgets/KallistiActivityAttributes.swift
       - path: Herald/Services/Protocols/NotificationCategories.swift
     resources:
-      - path: Kallisti/Resources
+      - path: Herald/Resources
         optional: true
     dependencies:
       - target: KallistiSupport
@@ -104,15 +106,15 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti
         PRODUCT_NAME: Kallisti
-        MARKETING_VERSION: "0.2.6"
-        CURRENT_PROJECT_VERSION: "128.93"
+        MARKETING_VERSION: "1.6.0"
+        CURRENT_PROJECT_VERSION: "162"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
         INFOPLIST_KEY_CFBundleDisplayName: Kallisti
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     info:
-      path: Kallisti/Resources/Info.plist
+      path: Herald/Resources/Info.plist
       properties:
         CFBundleDisplayName: Kallisti
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -188,8 +190,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
         PRODUCT_NAME: KallistiWidgets
-        MARKETING_VERSION: "0.2.6"
-        CURRENT_PROJECT_VERSION: "128.93"
+        MARKETING_VERSION: "1.6.0"
+        CURRENT_PROJECT_VERSION: "162"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
@@ -227,8 +229,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
         PRODUCT_NAME: KallistiNotificationService
-        MARKETING_VERSION: "0.2.6"
-        CURRENT_PROJECT_VERSION: "128.93"
+        MARKETING_VERSION: "1.6.0"
+        CURRENT_PROJECT_VERSION: "162"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -268,8 +270,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
         PRODUCT_NAME: KallistiIntents
-        MARKETING_VERSION: "0.2.6"
-        CURRENT_PROJECT_VERSION: "128.93"
+        MARKETING_VERSION: "1.6.0"
+        CURRENT_PROJECT_VERSION: "162"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -296,8 +298,8 @@ targets:
         INFOPLIST_FILE: KallistiControls/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
         PRODUCT_NAME: KallistiControls
-        MARKETING_VERSION: "0.2.6"
-        CURRENT_PROJECT_VERSION: "128.93"
+        MARKETING_VERSION: "1.6.0"
+        CURRENT_PROJECT_VERSION: "162"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -352,8 +354,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
         PRODUCT_NAME: KallistiWatch
-        MARKETING_VERSION: "0.2.6"
-        CURRENT_PROJECT_VERSION: "128.93"
+        MARKETING_VERSION: "1.6.0"
+        CURRENT_PROJECT_VERSION: "162"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53

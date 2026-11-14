@@ -39,7 +39,8 @@ struct CodeDiffParserLiveTests {
         #expect(parsed != nil, "raw unified diff should parse")
         #expect(parsed?.fileCount == 1)
         #expect(parsed?.files.first?.path == "F.swift")
-        #expect(parsed?.files.first?.additions == 1)
+        // The hunk adds "let a" and "let b" and removes one "let a": 2 / 1.
+        #expect(parsed?.files.first?.additions == 2)
         #expect(parsed?.files.first?.deletions == 1)
     }
 
@@ -59,7 +60,7 @@ struct CodeDiffParserLiveTests {
             + "--- a/B.swift\n+++ b/B.swift\n@@ -1 +1 @@\n-oldB\n+newB\n"
         let parsed = CodeDiffParser.parse(single: diff)
         #expect(parsed?.fileCount == 2)
-        #expect(parsed?.files.map(\\.path).sorted() == ["A.swift", "B.swift"])
+        #expect(parsed?.files.map(\.path).sorted() == ["A.swift", "B.swift"])
     }
 
     @Test("NativeToolCompletePayload resultDiff falls back to result.diff")

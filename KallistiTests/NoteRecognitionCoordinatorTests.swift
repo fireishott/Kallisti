@@ -1,4 +1,5 @@
 import Foundation
+import PencilKit
 import Testing
 @testable import Kallisti
 
@@ -15,6 +16,22 @@ struct NoteRecognitionCoordinatorTests {
         return (repo, tempDir)
     }
 
+    /// Recognition renders the stored blob through PencilKit, so the blob must
+    /// be a real serialized PKDrawing with at least one stroke.
+    private static func makeDrawingData() -> Data {
+        let stroke = PKStroke(
+            ink: PKInk(.pen, color: .black),
+            path: PKStrokePath(
+                controlPoints: [
+                    PKStrokePoint(location: CGPoint(x: 10, y: 10), timeOffset: 0, size: CGSize(width: 5, height: 5), opacity: 1, force: 1, azimuth: 0, altitude: 0),
+                    PKStrokePoint(location: CGPoint(x: 100, y: 10), timeOffset: 0.1, size: CGSize(width: 5, height: 5), opacity: 1, force: 1, azimuth: 0, altitude: 0),
+                ],
+                creationDate: .now
+            )
+        )
+        return PKDrawing(strokes: [stroke]).dataRepresentation()
+    }
+
     // MARK: - Debounce
 
     @Test("Recognition fires after settled debounce, not for every call")
@@ -25,7 +42,7 @@ struct NoteRecognitionCoordinatorTests {
         let (repo, _) = try makeRepo()
         try await repo.ensureDirectories()
         let note = try await repo.createNote(title: "Debounce Test")
-        let data = Data("drawing".utf8)
+        let data = Self.makeDrawingData()
         try await repo.saveDrawingBlob(noteId: note.id, data: data, revision: 1, pageStyle: .linesMedium)
 
         let coordinator = NoteRecognitionCoordinator(
@@ -34,15 +51,21 @@ struct NoteRecognitionCoordinatorTests {
             debounceDuration: 0.5
         )
 
-        // Fire 5 rapid calls — only the last one should produce recognition
+        // Fire 5 overlapping calls, 40ms apart (well inside the 0.5s debounce).
+        // Each call supersedes the previous one; only the last should recognize.
         var results: [NoteRecognition?] = []
-        for _ in 1...5 {
-            let result = await coordinator.scheduleRecognition(
-                noteId: note.id,
-                drawingRevision: 1,
-                languages: ["en-US"]
-            )
-            results.append(result)
+        await withTaskGroup(of: NoteRecognition?.self) { group in
+            for index in 0..<5 {
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: UInt64(index) * 40_000_000)
+                    return await coordinator.scheduleRecognition(
+                        noteId: note.id,
+                        drawingRevision: 1,
+                        languages: ["en-US"]
+                    )
+                }
+            }
+            for await result in group { results.append(result) }
         }
 
         // The first 4 should return nil (cancelled by debounce); the last one succeeds
@@ -62,7 +85,7 @@ struct NoteRecognitionCoordinatorTests {
         let (repo, _) = try makeRepo()
         try await repo.ensureDirectories()
         let note = try await repo.createNote(title: "Version Refresh Test")
-        let data = Data("drawing".utf8)
+        let data = Self.makeDrawingData()
         try await repo.saveDrawingBlob(noteId: note.id, data: data, revision: 1, pageStyle: .linesMedium)
 
         // First recognition with version 1.0

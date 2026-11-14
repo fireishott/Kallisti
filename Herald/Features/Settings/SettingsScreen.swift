@@ -27,6 +27,10 @@ struct SettingsScreen: View {
     private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.kallisti.session")
     @Environment(ThemeManager.self) private var themeManager
     @Environment(GatewayControlService.self) private var gatewayControl
+    // Build 135.110: the daemon's own settings, grouped into the six the daemon
+    // publishes. The record is server-driven, so a field added to the daemon
+    // appears here with no client change.
+    @Environment(DaemonSettingsStore.self) private var daemonStore
 
     var body: some View {
         ZStack {
@@ -37,6 +41,7 @@ struct SettingsScreen: View {
                 ScrollView(.vertical) {
                     VStack(spacing: Design.Spacing.lg) {
                         connectionSection
+                        daemonSection
                         relaySection
                         gatewaySection
                         infrastructureSection
@@ -161,6 +166,15 @@ struct SettingsScreen: View {
             return relayStatus
         }
         return sessionStore.state.connectionStatus
+    }
+
+    /// The daemon's own settings, one row per group.
+    ///
+    /// Beside Connection because that is the section a person opens to reach the
+    /// daemon; every other section here is about this app.
+    @ViewBuilder
+    private var daemonSection: some View {
+        DaemonSettingsSection()
     }
 
     private var connectionSection: some View {

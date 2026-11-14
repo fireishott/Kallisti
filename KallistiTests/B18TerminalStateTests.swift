@@ -59,8 +59,11 @@ struct B18TerminalStateTests {
         if let placeholder = merged.first(where: { $0.id == placeholderID }) {
             #expect(!placeholder.isStreaming,
                     "Preserved streaming placeholder must have isStreaming=false")
-            #expect(placeholder.status == .failed,
-                    "Empty streaming placeholder should be marked failed, got \(placeholder.status)")
+            // Build 108 WS-D: stream ownership and server state, not empty text,
+            // decide whether a response failed. Without a proven-ended job the
+            // placeholder stays in progress for the polling fallback to resolve.
+            #expect(placeholder.status != .failed,
+                    "Empty placeholder must not be failed without a proven-ended job, got \(placeholder.status)")
         }
     }
 

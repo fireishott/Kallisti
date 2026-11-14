@@ -339,6 +339,7 @@ actor NotesRepository: NotesRepositoryProtocol {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(recognitions)
+        try ensureNoteDirectory(for: noteId)
         try data.write(to: recognitionsMetadataURL(for: noteId), options: .atomic)
     }
 
@@ -363,10 +364,17 @@ actor NotesRepository: NotesRepositoryProtocol {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(result)
+        try ensureNoteDirectory(for: noteId)
         try data.write(to: enrichmentResultURL(for: noteId), options: .atomic)
     }
 
     // MARK: - Helpers
+
+    /// A note's per-note directory is created lazily by the blob writer; any
+    /// other per-note write must not assume it already exists.
+    private func ensureNoteDirectory(for noteId: UUID) throws {
+        try fileManager.createDirectory(at: noteDirectory(for: noteId), withIntermediateDirectories: true, attributes: nil)
+    }
 
     private func noteDirectory(for noteId: UUID) -> URL {
         notesDirectory.appendingPathComponent(noteId.uuidString, isDirectory: true)

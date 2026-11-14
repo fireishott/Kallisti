@@ -1,0 +1,142 @@
+{
+  "tokens": {
+    "hd_AAd0R3rPViYQ3NM5WrOk0Ox3wsqJN24B": {
+      "installationId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "pairedAt": "2026-08-01T17:43:08.296447+00:00"
+    },
+    "hd_9_7SQWbGAfzARGdabgT02pTONKzxjT_O": {
+      "installationId": "build103-canary-1785608060",
+      "pairedAt": "2026-08-01T18:14:20.012415+00:00"
+    },
+    "hd_jszABhttbAZGIr2ShpjbgL9JbKV3s4vV": {
+      "installationId": "build103-canary-1785608076",
+      "pairedAt": "2026-08-01T18:14:36.608795+00:00"
+    },
+    "hd__r7iER-XQq6gomksngqRSKZUvl2kyLQB": {
+      "installationId": "build103-canary-1785608174",
+      "pairedAt": "2026-08-01T18:16:14.390019+00:00"
+    },
+    "hd_aUnwsvfmFAfBVzAB4PmB97_9HMmyH03I": {
+      "installationId": "build103-canary-1785608182",
+      "pairedAt": "2026-08-01T18:16:22.680722+00:00"
+    },
+    "hd_8sAYXHktsbDWT3YmC4jbC2_sQec6x2yW": {
+      "installationId": "build103-canary-1785608305",
+      "pairedAt": "2026-08-01T18:18:25.194559+00:00"
+    },
+    "hd_p9M8wD4XJqmYcm4E3MhuEHbRxsODxk82": {
+      "installationId": "build103-evidence-1785608325",
+      "pairedAt": "2026-08-01T18:18:45.673793+00:00"
+    },
+    "hd_h4YWtiLLUGCCQ9-AkvHRZti45YGDHff-": {
+      "installationId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "pairedAt": "2026-08-01T18:30:00.496387+00:00"
+    },
+    "hd_Il5RWZHrSMtkEjAqAe0buHvhTnir1IoV": {
+      "installationId": "build104-canary-04f17fe5862e4480ab80d556f8918dbe",
+      "pairedAt": "2026-08-01T19:59:07.826076+00:00"
+    },
+    "hd_PawXsY28ysR_U3flX4Tq4jCKmAkUPDEH": {
+      "installationId": "build104-status-c1068a18d079445783e6184f769ec638",
+      "pairedAt": "2026-08-01T20:05:24.846422+00:00"
+    },
+    "hd_UlMdAniCOZkgrdGNt2S2YBYHRobm2IFl": {
+      "installationId": "build104-status-e4ee195d9dc1433eab8b89b2b6d8a27d",
+      "pairedAt": "2026-08-01T20:06:44.374876+00:00"
+    },
+    "hd_NMssd5TyPb09X3gDUm1nLKlivq9Q4sKt": {
+      "installationId": "status-0defcda1b5e8416c86440004462db595",
+      "pairedAt": "2026-08-01T20:07:11.224191+00:00"
+    },
+    "hd_tLXmKo3Chs3ukKo--BDev2_s5l67hPHj": {
+      "installationId": "acceptance-27a6e197-f3c2-4f42-8e56-51aaed357d55",
+      "pairedAt": "2026-08-01T20:16:23.960085+00:00"
+    },
+    "hd_Hw8JvhipHXVscAkzQWPW7uOfrXneqtm0": {
+      "installationId": "acceptance-eb37cdf8-a996-4c84-85da-f150a606b80a",
+      "pairedAt": "2026-08-01T20:16:59.957742+00:00"
+    },
+    "hd_--XmeyT6ZOMR0HH89lo3jwNyTu7bnJDb": {
+      "installationId": "key-header-4a1a2365-c276-4c5b-8ea1-754ca334b764",
+      "pairedAt": "2026-08-01T20:30:22.550179+00:00"
+    },
+    "hd_VfpqIyLD7u0pTcNCqQt76K_6ti3aGat2": {
+      "installationId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "pairedAt": "2026-08-01T20:39:20.693916+00:00"
+    },
+    "hd_M2ljjGTXdFvwpfTQgtZetZbzOmDg9DJU": {
+      "installationId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "pairedAt": "2026-08-01T21:25:35.020333+00:00"
+    },
+    "hd_UpV9cH2cOIyvZpntFzTmka7rwriskZSf": {
+      "installationId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "pairedAt": "2026-08-02T00:25:11.518977+00:00"
+    }
+  },
+  "sessions": {
+    "5203b84b-8125-5e54-8179-97f77c766fb4": {
+      "deviceId": "build103-canary-1785608305",
+      "recordedAt": "2026-08-01T18:18:25.263071+00:00"
+    },
+    "5e812b9a-c8a9-5287-94ef-8d6106c28e81": {
+      "deviceId": "build103-evidence-1785608325",
+      "recordedAt": "2026-08-01T18:18:45.743066+00:00"
+    },
+    "635b652c-0fb9-50d4-99b1-2a96f4cc7829": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-01T18:30:03.947792+00:00"
+    },
+    "7ce44bed-fbaf-506c-b739-0efd7ff2b0fe": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-01T18:30:14.947018+00:00"
+    },
+    "cee720db-45a8-421f-a64c-bb118ee69d42": {
+      "deviceId": "build104-canary-04f17fe5862e4480ab80d556f8918dbe",
+      "recordedAt": "2026-08-01T19:59:07.840259+00:00"
+    },
+    "dc86af18-c88d-5370-8f29-0fc6c5aa7d04": {
+      "deviceId": "build104-canary-04f17fe5862e4480ab80d556f8918dbe",
+      "recordedAt": "2026-08-01T19:59:15.120744+00:00"
+    },
+    "982380d4-2115-49d9-9ed7-43e7233aaf0d": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-01T20:40:18.911527+00:00"
+    },
+    "95feca9d-f66f-5359-9737-087dea5fa473": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-01T21:02:25.211270+00:00"
+    },
+    "b22aba85-c039-4b2f-b207-6e5fb90c0d71": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-01T21:26:00.077191+00:00"
+    },
+    "201bc104-f769-5e03-a8e9-5c90949dbe7f": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-01T21:30:51.855294+00:00"
+    },
+    "472d8405-4000-4f85-bd0c-1c34c1857487": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-02T00:25:40.484037+00:00"
+    },
+    "5e52631f-51f7-5205-b4b0-23e9ca1a76e0": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-02T00:25:48.610158+00:00"
+    },
+    "73a2dba8-6f87-4013-9b35-3ea30b444556": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-02T00:26:12.303628+00:00"
+    },
+    "6dc1d296-a31b-5520-92bb-582f673555c9": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-02T00:26:17.175147+00:00"
+    },
+    "42f01d60-df3b-4cba-af96-e4afead93162": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-02T16:52:00.501537+00:00"
+    },
+    "d8812017-e53c-52bd-8b72-f8fcda37c655": {
+      "deviceId": "2C351960-F308-41D8-AE58-28691A989AF2",
+      "recordedAt": "2026-08-02T16:55:10.094916+00:00"
+    }
+  }
+}

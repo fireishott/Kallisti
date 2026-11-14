@@ -274,11 +274,17 @@ struct OutboxManifestStore: Sendable {
 
     /// Strip the `<stableID>-` prefix from a staged relativePath to recover
     /// the original file name.
+    /// Staged bytes are written as "<stable-uuid>-<sanitized name>". Strip
+    /// exactly that prefix: the original name almost always contains dashes
+    /// itself, so splitting on the FIRST dash mangles every restored name.
     static func fileName(from relativePath: String) -> String {
-        if let firstDash = relativePath.firstIndex(of: "-") {
-            return String(relativePath[relativePath.index(after: firstDash)...])
+        guard relativePath.count > 37 else { return relativePath }
+        let prefix = relativePath.prefix(36)
+        guard UUID(uuidString: String(prefix)) != nil,
+              relativePath[relativePath.index(relativePath.startIndex, offsetBy: 36)] == "-" else {
+            return relativePath
         }
-        return relativePath
+        return String(relativePath.dropFirst(37))
     }
 }
 
