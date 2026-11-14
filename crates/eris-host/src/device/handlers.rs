@@ -2530,6 +2530,10 @@ fn read_skills_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
 
 /// The workspace a turn may write in. Read-only here: it is set by the wizard and
 /// moving it from a phone is a different decision with a different card.
+fn read_curator_unused_days(engine: &SetupEngine) -> Result<String, DeviceError> {
+    Ok(crate::learning::unused_days(engine.db()).to_string())
+}
+
 fn read_learning_repair(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::learning::review_repair(engine.db()).to_string())
 }
@@ -2795,6 +2799,21 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
         row: crate::scheduler::SETTING_ENABLED,
         writable: true,
         read: read_schedules_enabled,
+        normalize: None,
+    },
+    SettingSpec {
+        key: "curator_archive_days",
+        label: "Curator window",
+        group: "automation",
+        // The bounds are `learning::unused_days`'s own clamp, so the form and the
+        // curator refuse the same numbers.
+        kind: SettingKind::Int(
+            crate::learning::MIN_UNUSED_DAYS,
+            crate::learning::MAX_UNUSED_DAYS,
+        ),
+        row: crate::learning::SETTING_UNUSED_DAYS,
+        writable: true,
+        read: read_curator_unused_days,
         normalize: None,
     },
     SettingSpec {

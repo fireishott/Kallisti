@@ -182,6 +182,10 @@ pub struct Skill {
     pub use_count: i64,
     /// When a turn last read it, from the ledger, ISO 8601 UTC.
     pub last_used: Option<String>,
+    /// When the curator archived it, and why. Both `None` on a live row.
+    pub archived_at: Option<String>,
+    /// The curator's own sentence for taking it out of the catalog.
+    pub archived_reason: Option<String>,
 }
 
 /// Whether the feature is on at all.
@@ -362,6 +366,8 @@ fn describe(dir: &Path, key: &str, enabled: bool) -> Option<Skill> {
         editable: true,
         use_count: 0,
         last_used: None,
+        archived_at: None,
+        archived_reason: None,
     })
 }
 
@@ -421,6 +427,8 @@ pub fn list(db: &Db, stored_dir: Option<&str>) -> Result<(Vec<Skill>, PathBuf), 
             skill.pinned = row.pinned;
             skill.use_count = row.use_count;
             skill.last_used = row.last_used_at.clone();
+            skill.archived_at = row.archived_at.clone();
+            skill.archived_reason = row.reason.clone();
         }
     }
     out.sort_by(|a, b| a.key.cmp(&b.key));
@@ -1068,6 +1076,41 @@ mod tests {
         let raw = library.display().to_string();
         assert!(catalog_for(&db, false, Some(&raw)).is_none());
         assert!(catalog_for(&db, true, Some(&raw)).is_some());
+    }
+
+    /// The archive claim, from the skill side: a row the ledger archived leaves
+    /// the catalog, stays in the listing, and the file is still where it was.
+    #[test]
+    fn an_archived_skill_leaves_the_catalog_and_stays_in_the_library() {
+        let (_dir, library) = scratch();
+        write_skill(&library, "unused", "description: Never read", "steps");
+        write_skill(&library, "kept", "description: Read often", "steps");
+        let db = db();
+        let raw = library.display().to_string();
+        crate::learning::record_created(&db, "unused", Some("Never read"), None).expect("row");
+        crate::learning::mark_archived_because(&db, "unused", "nothing ever read it in 30 days")
+            .expect("archive");
+
+        let catalog = catalog_for(&db, true, Some(&raw)).expect("the other skill is still listed");
+        assert!(catalog.contains("kept"), "{catalog}");
+        assert!(
+            !catalog.contains("unused"),
+            "an archived skill is not listed"
+        );
+
+        // Still on disk and still in the listing, flagged.
+        assert!(library.join("unused").join(FILE_NAME).is_file());
+        let (listed, _) = list(&db, Some(&raw)).expect("list");
+        let row = listed
+            .iter()
+            .find(|skill| skill.key == "unused")
+            .expect("kept in the list");
+        assert_eq!(row.state, crate::learning::State::Archived);
+        assert!(row.archived_at.is_some());
+        assert_eq!(
+            row.archived_reason.as_deref(),
+            Some("nothing ever read it in 30 days")
+        );
     }
 
     #[test]

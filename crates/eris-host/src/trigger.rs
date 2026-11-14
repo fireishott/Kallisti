@@ -659,7 +659,7 @@ mod tests {
                 "{table} was not created by the migration"
             );
         }
-        assert_eq!(db.schema_version().expect("version"), 31);
+        assert_eq!(db.schema_version().expect("version"), 32);
     }
 
     #[test]

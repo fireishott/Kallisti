@@ -338,6 +338,8 @@ pub const ROUTE_SKILLS_SAVE: &str = "/dashboard/skills/save";
 /// `POST /dashboard/skills/delete` - archive one skill into `.archive/`. Two
 /// posts: the first asks, the second carries `confirm=true`.
 pub const ROUTE_SKILLS_DELETE: &str = "/dashboard/skills/delete";
+/// Put one archived skill back in the catalog. The file never moved.
+pub const ROUTE_SKILLS_RESTORE: &str = "/dashboard/skills/restore";
 
 /// `GET /dashboard/roster` - the standing agents the model may hand work to.
 ///
@@ -527,6 +529,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_SKILLS,
     ROUTE_SKILLS_SAVE,
     ROUTE_SKILLS_DELETE,
+    ROUTE_SKILLS_RESTORE,
     ROUTE_ROSTER_SAVE,
     ROUTE_ROSTER_TOGGLE,
     ROUTE_ROSTER_DELETE,

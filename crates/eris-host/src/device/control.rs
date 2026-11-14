@@ -653,6 +653,8 @@ pub async fn skills_list(State(service): State<DeviceService>, headers: HeaderMa
                         // the library apart from the part of it a prompt carries.
                         "use_count": skill.use_count,
                         "last_used": skill.last_used,
+                        "archived_at": skill.archived_at,
+                        "reason": skill.archived_reason,
                     })
                 })
                 .collect();

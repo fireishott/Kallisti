@@ -45,9 +45,9 @@ use crate::admin::{
     ROUTE_SETTINGS_SCHEDULES, ROUTE_SETTINGS_SEARCH, ROUTE_SETTINGS_SKILLS,
     ROUTE_SETTINGS_STREAMING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_UPDATE,
     ROUTE_SETTINGS_UPDATE_APPLY, ROUTE_SETTINGS_UPDATE_CHECK, ROUTE_SETTINGS_UPDATE_PROGRESS,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE, ROUTE_SKILLS_SAVE,
-    ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE, ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION,
-    session_path,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, ROUTE_SKILLS, ROUTE_SKILLS_DELETE,
+    ROUTE_SKILLS_RESTORE, ROUTE_SKILLS_SAVE, ROUTE_TRIGGERS, ROUTE_TRIGGERS_DELETE,
+    ROUTE_TRIGGERS_SAVE, ROUTE_TRIGGERS_TOGGLE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -181,6 +181,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SEARCH, get(search))
         .route(ROUTE_DASHBOARD_PROCESS_KILL, post(kill_background_process))
         .route(ROUTE_SKILLS, get(skills_page_handler))
+        .route(ROUTE_SKILLS_RESTORE, post(restore_skill))
         // The editor carries a whole file, which is far larger than the 16 KiB
         // the other forms allow, so this one route states its own ceiling.
         .route(
@@ -1098,6 +1099,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     // Read through `crate::search` so the form shows exactly what a search
     // would use rather than a second copy of the same clamp.
     view.learning_repair = crate::learning::review_repair(engine.db());
+    view.curator_archive_days = crate::learning::unused_days(engine.db()).to_string();
     view.search_limit = crate::search::stored_limit(engine.db()).to_string();
     view.search_scope_default = crate::search::stored_scope(engine.db());
     // The objective every turn carries until it is cleared. Read through
@@ -1948,10 +1950,78 @@ async fn skills_page_handler(
     // the Learning page sends a learned skill here instead of growing a second
     // delete of its own.
     let confirming = query.get("delete").cloned();
-    match build_skills_view(&state, notice, edit, confirming, None) {
+    let archived_only = matches!(
+        query.get("archived").map(String::as_str),
+        Some("1" | "true")
+    );
+    match build_skills_view(&state, notice, edit, confirming, None, archived_only) {
         Ok(view) => page(skills_page(&view)),
         Err(error) => refusal(error),
     }
+}
+
+/// `POST /dashboard/skills/restore` - put an archived skill back.
+///
+/// Archiving is a ledger state now: the file never moved, so this clears the
+/// state and nothing else. A directory an older build moved into `.archive/` is
+/// renamed back by [`crate::learning::restore`], so both shapes restore.
+async fn restore_skill(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_skills(&state, as_html, error, None),
+    };
+    let key = field(&fields, "key").to_owned();
+    if !crate::skills::valid_key(&key) {
+        return fail_skills(
+            &state,
+            as_html,
+            FormError::new(Some("key"), "key_invalid", "that is not a skill key"),
+            None,
+        );
+    }
+    let Some(shelf) = crate::learning::Shelf::for_engine(&state.engine) else {
+        return fail_skills(
+            &state,
+            as_html,
+            FormError::new(
+                None,
+                "no_library",
+                "there is no skill library to restore into",
+            ),
+            None,
+        );
+    };
+    if let Err(error) = crate::learning::restore(&shelf, &key) {
+        return fail_skills(
+            &state,
+            as_html,
+            FormError::new(Some("key"), "restore_failed", error.to_string()),
+            None,
+        );
+    }
+    if let Err(error) =
+        crate::learning::set_state(state.engine.db(), &key, crate::learning::State::Active)
+    {
+        return store_failure(&request_id.0, "the skill row", error);
+    }
+    if let Err(error) =
+        state
+            .engine
+            .auth()
+            .audit("loopback", "skills.restore", Some(&format!("key={key}")))
+    {
+        return audit_failure(&request_id.0, "skills.restore", error);
+    }
+    see_other(ROUTE_SKILLS)
 }
 
 /// `POST /dashboard/skills/save` - replace one skill's whole file.
@@ -2027,7 +2097,7 @@ async fn delete_skill(
     };
     let key = field(&fields, "key").to_owned();
     if !flag(&fields, "confirm") {
-        return match build_skills_view(&state, None, Some(&key), Some(key.clone()), None) {
+        return match build_skills_view(&state, None, Some(&key), Some(key.clone()), None, false) {
             Ok(view) => page(skills_page(&view)),
             Err(error) => refusal(error),
         };
@@ -2652,6 +2722,7 @@ fn build_skills_view(
     edit: Option<&str>,
     confirming: Option<String>,
     draft: Option<(&str, &str)>,
+    archived_only: bool,
 ) -> Result<SkillsView, FormError> {
     let engine = &state.engine;
     let db = engine.db();
@@ -2670,7 +2741,7 @@ fn build_skills_view(
         .unwrap_or_default();
     view.notice = notice;
     view.confirming = confirming;
-    let (skills, _library) = match crate::skills::list(db, stored.as_deref()) {
+    let (mut skills, _library) = match crate::skills::list(db, stored.as_deref()) {
         Ok(found) => found,
         Err(error) => {
             view.error = Some(FormError::new(
@@ -2681,6 +2752,15 @@ fn build_skills_view(
             return Ok(view);
         }
     };
+    view.archived_only = archived_only;
+    if archived_only {
+        // The filter narrows the table, not the editor: a skill opened by key is
+        // still editable after the filter was switched on.
+        skills.retain(|skill| {
+            matches!(skill.state, crate::learning::State::Archived)
+                || edit.is_some_and(|key| key == skill.key)
+        });
+    }
     // The named skill, else the first one. `draft` is what a failed save tried to
     // write, so the box keeps the operator's text and not the file they replaced.
     let selected = match draft {
@@ -2724,7 +2804,7 @@ fn fail_skills(
     let status = failure_status(&error.code);
     if as_html {
         let edit = draft.map(|(key, _)| key);
-        match build_skills_view(state, None, edit, None, draft) {
+        match build_skills_view(state, None, edit, None, draft, false) {
             Ok(mut view) => {
                 view.error = Some(error);
                 page_with_status(skills_page(&view), status)
@@ -7634,17 +7714,42 @@ async fn save_learning_repair(
         "true" | "on" | "1"
     );
     let stored = if on { "true" } else { "false" };
-    if let Err(error) = store::settings_put(
-        state.engine.db(),
-        crate::learning::SETTING_REVIEW_REPAIR,
-        stored,
-    ) {
-        return store_failure(&request_id.0, "the learning repair switch", error);
+    let days = field(&fields, "curator_archive_days").trim().to_owned();
+    let days: u32 = match days.parse::<u32>() {
+        Ok(number)
+            if (crate::learning::MIN_UNUSED_DAYS..=crate::learning::MAX_UNUSED_DAYS)
+                .contains(&number) =>
+        {
+            number
+        }
+        _ => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("curator_archive_days"),
+                    "curator_archive_days_invalid",
+                    format!(
+                        "a whole number from {} to {} days",
+                        crate::learning::MIN_UNUSED_DAYS,
+                        crate::learning::MAX_UNUSED_DAYS
+                    ),
+                ),
+            );
+        }
+    };
+    for (key, value) in [
+        (crate::learning::SETTING_REVIEW_REPAIR, stored.to_owned()),
+        (crate::learning::SETTING_UNUSED_DAYS, days.to_string()),
+    ] {
+        if let Err(error) = store::settings_put(state.engine.db(), key, &value) {
+            return store_failure(&request_id.0, "the learning switch", error);
+        }
     }
     if let Err(error) = state.engine.auth().audit(
         "loopback",
         "settings.learning",
-        Some(&format!("repair={stored}")),
+        Some(&format!("repair={stored}; curator_unused_days={days}")),
     ) {
         return audit_failure(&request_id.0, "settings.learning", error);
     }

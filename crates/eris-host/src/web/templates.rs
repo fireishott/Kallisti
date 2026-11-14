@@ -2369,6 +2369,8 @@ pub struct SettingsView {
     pub greeting_refresh: String,
     /// Whether an over-long review is repaired instead of dropped.
     pub learning_repair: bool,
+    /// How long a skill nothing has ever read may stay in the catalog.
+    pub curator_archive_days: String,
     /// How many hits a search returns when the caller does not say.
     pub search_limit: String,
     /// `all` or `conversation`: the scope a search starts on.
@@ -2476,6 +2478,7 @@ impl SettingsView {
             greeting_model: crate::greeting::INHERIT.to_owned(),
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
             learning_repair: true,
+            curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
             search_limit: crate::search::DEFAULT_LIMIT.to_string(),
             search_scope_default: "all".to_owned(),
             chat_hint: crate::greeting::DEFAULT_HINT.to_owned(),
@@ -4663,6 +4666,18 @@ fn tab_automation(view: &SettingsView) -> Markup {
                         "run fails on the first refusal."
                     }
                 }
+                div .field {
+                    label for="curator_archive_days" { "Archive a never-read skill after" }
+                    input type="number" id="curator_archive_days" name="curator_archive_days"
+                        min=(crate::learning::MIN_UNUSED_DAYS)
+                        max=(crate::learning::MAX_UNUSED_DAYS)
+                        value=(view.curator_archive_days);
+                    span .hint {
+                        "Days, 7 to 365. A skill nothing has ever opened leaves the catalog when it "
+                        "is that old, stays on disk, and is reachable again with one un-archive. A "
+                        "pinned skill is never archived."
+                    }
+                }
                 div .actions {
                     button type="submit" { "Save learning" }
                     a .button href=(crate::admin::ROUTE_LEARNING) { "Open the loop" }
@@ -5578,6 +5593,8 @@ pub struct SkillsView {
     pub library: String,
     /// Whether the catalog is switched on for turns.
     pub enabled: bool,
+    /// Whether the table is showing only archived skills.
+    pub archived_only: bool,
     /// The skill whose file is in the editor, when one is selected.
     pub editing: Option<SkillEditor>,
     /// The key waiting for a second press before it is archived.
@@ -5598,6 +5615,7 @@ impl SkillsView {
             skills: Vec::new(),
             library: String::new(),
             enabled: true,
+            archived_only: false,
             editing: None,
             confirming: None,
             notice: None,
@@ -5626,6 +5644,14 @@ pub fn skills_page(view: &SkillsView) -> Markup {
             "loses its ledger row with it, so the loop cannot write it back."
         }
         (alert_region(error, view.notice.as_deref()))
+        p .small .filters {
+            @if view.archived_only {
+                a href=(crate::admin::ROUTE_SKILLS) { "Show every skill" }
+                " · showing archived only"
+            } @else {
+                a href=(format!("{}?archived=1", crate::admin::ROUTE_SKILLS)) { "Show archived only" }
+            }
+        }
         @if let Some(key) = &view.confirming {
             section .card aria-labelledby="skills-confirm" {
                 h2 id="skills-confirm" { "Delete " code { (key) } "?" }
@@ -5693,6 +5719,9 @@ pub fn skills_page(view: &SkillsView) -> Markup {
                                 td {
                                     (skill.state.as_str())
                                     @if skill.pinned { " " span .tag { "pinned" } }
+                                    @if let Some(reason) = &skill.archived_reason {
+                                        p .small { (reason) }
+                                    }
                                 }
                                 td .mono .small {
                                     (skill.bytes) " bytes · " (skill.use_count) " read"
@@ -5702,6 +5731,13 @@ pub fn skills_page(view: &SkillsView) -> Markup {
                                     a .button.secondary
                                         href=(format!("{}?edit={}", crate::admin::ROUTE_SKILLS, skill.key)) {
                                         "Edit"
+                                    }
+                                    @if matches!(skill.state, crate::learning::State::Archived) {
+                                        form .inline-form method="post"
+                                            action=(crate::admin::ROUTE_SKILLS_RESTORE) novalidate {
+                                            input type="hidden" name="key" value=(skill.key);
+                                            button type="submit" { "Un-archive" }
+                                        }
                                     }
                                     form .inline-form method="post"
                                         action=(crate::admin::ROUTE_SKILLS_DELETE) novalidate {
@@ -11857,6 +11893,8 @@ mod tests {
             editable: true,
             use_count: 3,
             last_used: Some("2026-11-01T00:00:00.000Z".to_owned()),
+            archived_at: None,
+            archived_reason: None,
         }];
         view.editing = Some(SkillEditor {
             key: "deploy".to_owned(),
