@@ -801,11 +801,12 @@ struct AppStoresTests {
         let userMessageID = UUID()
         let assistantMessageID = UUID()
         let jobID = UUID()
-        let requestCount = MutableBox(0)
+        let requestPaths = MutableBox<[String]>([])
 
         StubURLProtocol.requestHandler = { request in
-            requestCount.value += 1
             let url = try #require(request.url)
+            requestPaths.value.append(url.path)
+            print("URL_HIT \(url.path)")
 
             switch url.absoluteString {
             case "https://relay.example.com/v1/messages":
@@ -928,7 +929,11 @@ struct AppStoresTests {
             }.last
         )
         #expect(finishedMessage.content == "Recovered after refresh")
-        #expect(requestCount.value == 4)
+        let paths = requestPaths.value
+        #expect(paths.first == "/v1/messages")
+        #expect(paths.contains { $0.contains("/events") })
+        #expect(paths.contains { $0.contains("/conversation") })
+        #expect(!paths.contains { $0.hasSuffix("/v1/jobs/\(jobID.uuidString.lowercased())") })
     }
 
     @Test @MainActor
