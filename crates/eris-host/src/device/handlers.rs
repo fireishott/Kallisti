@@ -8938,6 +8938,19 @@ pub(crate) async fn create_turn_with(
         }
     };
 
+    // A turn with no conversation is streamed but never stored, so the answer
+    // exists only until the socket closes. That is a legitimate mode - a client
+    // that wants a stream and no transcript - but it is also exactly what a
+    // client with a broken conversation bind does by accident, and the difference
+    // is invisible from the phone. Say it in the log so the next report can be
+    // answered from evidence instead of from the code.
+    if conversation.is_none() {
+        tracing::warn!(
+            device = %token.device_id(),
+            "turn created without a conversation: it will stream but not be stored"
+        );
+    }
+
     if conversation.is_none() && !attachment_ids.is_empty() {
         return DeviceError::bad_request(
             "conversation_required",
