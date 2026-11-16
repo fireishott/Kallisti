@@ -103,6 +103,8 @@ pub enum FrameKind {
     StepResult,
     /// Files a step changed, in the shape the phone draws.
     Diff,
+    /// A page a step wrote, ready for the phone to render.
+    Page,
     /// One assistant text fragment.
     Delta,
     /// One fragment of the model's own reasoning, when the provider streams one.
@@ -157,11 +159,12 @@ pub enum FrameKind {
 impl FrameKind {
     /// Every kind, so a client can learn the vocabulary from `/v1/version`
     /// instead of pinning a build number.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Start,
         Self::Step,
         Self::StepResult,
         Self::Diff,
+        Self::Page,
         Self::Delta,
         Self::Reasoning,
         Self::Tool,
@@ -183,6 +186,7 @@ impl FrameKind {
             Self::Step => "turn.step",
             Self::StepResult => "turn.step.result",
             Self::Diff => "turn.artifact.diff",
+            Self::Page => "turn.artifact.page",
             Self::Delta => "delta",
             Self::Reasoning => "reasoning",
             Self::Tool => "tool",
@@ -205,6 +209,7 @@ impl FrameKind {
             "turn.step" => Some(Self::Step),
             "turn.step.result" => Some(Self::StepResult),
             "turn.artifact.diff" => Some(Self::Diff),
+            "turn.artifact.page" => Some(Self::Page),
             "delta" => Some(Self::Delta),
             "reasoning" => Some(Self::Reasoning),
             "tool" => Some(Self::Tool),
@@ -230,6 +235,7 @@ impl FrameKind {
                 | Self::Step
                 | Self::StepResult
                 | Self::Diff
+                | Self::Page
                 | Self::Delta
                 | Self::Reasoning
                 | Self::Tool
@@ -248,6 +254,7 @@ impl FrameKind {
             | Self::Step
             | Self::StepResult
             | Self::Diff
+            | Self::Page
             | Self::Delta
             | Self::Reasoning
             | Self::Tool
@@ -2382,6 +2389,29 @@ impl TurnHub {
                                     store.append(&writer_job, FrameKind::Diff, &artifact)
                                 {
                                     publish(&sender, seq, FrameKind::Diff, artifact);
+                                }
+                            }
+                            // A page the step wrote, in the same read of the same
+                            // result. Only an HTML file publishes one, and its
+                            // height cap rides along so the phone never has to
+                            // guess how tall a card may grow.
+                            if name == "write_file"
+                                && let Some(page) = serde_json::from_str::<serde_json::Value>(&full_output)
+                                    .ok()
+                                    .and_then(|value| {
+                                        let page = value.get("page")?;
+                                        if page.is_null() { None } else { Some(page.clone()) }
+                                    })
+                            {
+                                let artifact = serde_json::json!({
+                                    "turn_id": writer_job,
+                                    "html": page.get("html").cloned().unwrap_or(serde_json::Value::Null),
+                                    "height_cap": page.get("height_cap").cloned().unwrap_or(serde_json::Value::Null),
+                                });
+                                if let Ok(Some(seq)) =
+                                    store.append(&writer_job, FrameKind::Page, &artifact)
+                                {
+                                    publish(&sender, seq, FrameKind::Page, artifact);
                                 }
                             }
                         }

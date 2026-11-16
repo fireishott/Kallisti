@@ -888,6 +888,11 @@ fn write_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
             // exist yet diffs against empty, which reads as all additions rather
             // than as "no previous version".
             "diff": crate::diff::file(&requested, before.as_deref().unwrap_or(""), content),
+            // A written page is a page the phone can draw. The content rides in
+            // the result rather than being re-read from disk, so the frame the
+            // turn publishes is exactly what was written, and only for a file
+            // that is HTML and small enough to render.
+            "page": page_payload(&requested, content),
         })),
         Err(error) => ToolResult::error(format!("{requested}: {error}")),
     }
@@ -931,6 +936,28 @@ fn count_removed(old: &str, new: &str) -> usize {
     }
     removed
 }
+
+/// What a written HTML file publishes as a page artifact, or `None`.
+///
+/// `height_cap` is the phone's rendering ceiling: a page taller than this is
+/// scrolled inside the card instead of growing the transcript without bound.
+#[must_use]
+pub fn page_payload(path: &str, content: &str) -> serde_json::Value {
+    let is_html = path
+        .rsplit('.')
+        .next()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"));
+    if !is_html || content.len() > MAX_FETCH_BYTES {
+        return serde_json::Value::Null;
+    }
+    serde_json::json!({
+        "html": content,
+        "height_cap": PAGE_HEIGHT_CAP,
+    })
+}
+
+/// The tallest a card renders before the phone scrolls inside it.
+pub const PAGE_HEIGHT_CAP: i64 = 2000;
 
 /// The most of a page that is fetched or handed back.
 pub const MAX_FETCH_BYTES: usize = 512 * 1024;
@@ -1983,5 +2010,20 @@ mod change_count_tests {
         assert_eq!(count_added("x\nx\n", "x\nx\n"), 0);
         assert_eq!(count_removed("x\nx\n", "x\nx\n"), 0);
         assert_eq!(count_added("x\n", "x\nx\n"), 1);
+    }
+}
+
+#[cfg(test)]
+mod page_payload_tests {
+    use super::page_payload;
+
+    /// Only an HTML file publishes a page, and it carries the cap with it.
+    #[test]
+    fn an_html_write_publishes_a_page_and_anything_else_does_not() {
+        let page = page_payload("report.html", "<h1>hi</h1>");
+        assert_eq!(page["html"], "<h1>hi</h1>");
+        assert_eq!(page["height_cap"], 2000);
+        assert!(page_payload("notes.txt", "text").is_null());
+        assert!(page_payload("page.HTM", "<p>x</p>").is_null() == false);
     }
 }

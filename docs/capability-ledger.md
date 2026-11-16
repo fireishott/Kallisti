@@ -19,7 +19,7 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 03 | `turn.step` / `turn.step.result` | carried | emitted beside `tool_start`/`tool`: step_type, step_id, label, started_at, status, summary, duration_ms. Proven live: job 01a1e281 wrote turn.start(1), tool_start(3), turn.step(4), tool(5), turn.step.result(6), done(9) |
 | 03 | `turn.end` with status | carried | frame `done` carries `status: ok` beside text + usage |
 | 05 | Diff artifact | partial | `crate::diff::file` builds the contract shape (path, added, removed, hunks with old/new starts and context/add/remove lines, 3 tests) and `write_file` attaches it to its result; the `turn.artifact.diff` frame is emitted beside the step result when a `write_file` result carries a diff |
-| 05 | Page artifact | absent | - |
+| 05 | Page artifact | carried | an HTML `write_file` result carries `page` (html + height_cap 2000); the writer emits `turn.artifact.page`; tested by an_html_write_publishes_a_page_and_anything_else_does_not |
 | 06 | `turn.ask` blocking the turn | carried | frame `asked` + answer route |
 | 06 | `turn.approval` as a stream frame | partial | `GET /v1/approvals`, `POST /v1/approvals/{id}/decide` |
 | 04 | Job lease, heartbeat, reclaim | partial | lease + heartbeat carried; `lease_expired_jobs` names the dead; the sweep settles a dead worker's turn as `lease_expired` and a restart's as `interrupted` (proved by `the_boot_sweep_tells_a_dead_worker_from_a_restart`). Reclaim is a requeue, not a resume: `requeue_reclaimed` puts the dead turn's request back as a task bounded by `chain_depth`, and `a_dead_turn_is_requeued_and_a_capped_one_is_not` proves one requeue and none at the cap |
