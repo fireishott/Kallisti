@@ -8905,10 +8905,6 @@ pub(crate) async fn create_turn_with(
     idempotency_key: Option<&str>,
 ) -> Response {
     let text: String = field(&fields, "text").to_owned();
-    if text.is_empty() {
-        return DeviceError::bad_request("text_required", "the turn text must not be empty")
-            .into_response();
-    }
     // Files this turn carries. Ids only: the bytes were uploaded first and are
     // already rows, so a turn never carries a body that can fail halfway.
     let attachment_ids =
@@ -8918,6 +8914,14 @@ pub(crate) async fn create_turn_with(
                 return DeviceError::bad_request("attachments_invalid", message).into_response();
             }
         };
+    // A turn that carries files does not need words. The operator who drops a
+    // screenshot and presses send has said everything with the picture, and
+    // refusing it with text_required taught the app nothing: it answered 400 and
+    // nothing reached the host at all.
+    if text.is_empty() && attachment_ids.is_empty() {
+        return DeviceError::bad_request("text_required", "the turn text must not be empty")
+            .into_response();
+    }
 
     // A conversation is optional. Naming one makes this turn a transcript row
     // pair, so a client can read history after the stream closes; leaving it out
