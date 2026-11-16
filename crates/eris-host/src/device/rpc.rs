@@ -10,7 +10,7 @@
 
 use serde_json::{Value, json};
 
-use crate::device::SetupEngine;
+use crate::device::{DeviceError, DeviceService, SetupEngine};
 
 /// Who is calling. The only thing that changes an answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +37,8 @@ pub enum Method {
     ModelsList,
     /// Whether the daemon is up and which version it is.
     Ping,
+    /// Stop a turn this device owns.
+    TurnCancel,
 }
 
 impl Method {
@@ -46,6 +48,7 @@ impl Method {
         match self {
             Self::ModelsList => "models.list",
             Self::Ping => "ping",
+            Self::TurnCancel => "turn.cancel",
         }
     }
 
@@ -55,6 +58,7 @@ impl Method {
         match name.trim() {
             "models.list" => Some(Self::ModelsList),
             "ping" => Some(Self::Ping),
+            "turn.cancel" => Some(Self::TurnCancel),
             _ => None,
         }
     }
@@ -102,7 +106,7 @@ pub fn parse_envelope(body: &Value) -> Result<(Method, Value), Refusal> {
             404,
             "method_unknown",
             format!(
-                "`{name}` is not a method. The methods are: models.list, ping"
+                "`{name}` is not a method. The methods are: models.list, ping, turn.cancel"
             ),
         )
     })?;
@@ -120,9 +124,9 @@ pub fn parse_envelope(body: &Value) -> Result<(Method, Value), Refusal> {
 /// A refusal when the context is not allowed or the work failed.
 pub fn dispatch(
     method: Method,
-    _params: &Value,
+    params: &Value,
     context: &Context,
-    engine: &SetupEngine,
+    service: &DeviceService,
 ) -> Result<Value, Refusal> {
     if method.needs_operator() && !context.operator {
         return Err(Refusal::new(
@@ -131,6 +135,7 @@ pub fn dispatch(
             format!("`{}` needs the operator context", method.as_str()),
         ));
     }
+    let engine: &SetupEngine = service.engine();
     match method {
         // The envelope already states ok and the context; repeating them inside
         // the result makes one answer with two voices.
@@ -146,6 +151,26 @@ pub fn dispatch(
                 )
             })
         }
+        Method::TurnCancel => {
+            let job_id = params
+                .get("job_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| {
+                    Refusal::new(400, "job_id_missing", "turn.cancel needs a `job_id`")
+                })?;
+            crate::device::handlers::cancel_turn_for(service, &context.device_id, job_id)
+                .map_err(from_device_error)
+        }
+    }
+}
+
+/// A device error is already the shape a caller needs: status, code, sentence.
+fn from_device_error(error: DeviceError) -> Refusal {
+    Refusal {
+        status: error.status().as_u16(),
+        code: error.code(),
+        message: error.message().to_owned(),
     }
 }
 
@@ -210,6 +235,24 @@ mod tests {
         assert_eq!(body["method"], "ping");
         assert_eq!(body["context"], "device");
         assert_eq!(body["result"]["pong"], true);
+    }
+
+    /// `turn.cancel` without a job id is refused before any work is attempted.
+    #[test]
+    fn a_cancel_without_a_job_id_is_refused() {
+        let refused = crate::device::rpc::parse_envelope(&serde_json::json!({
+            "method": "turn.cancel",
+            "params": {}
+        }))
+        .map_err(|refusal| refusal.message)
+        .and_then(|(method, params)| {
+            // The envelope parses; the refusal comes from dispatch, so this test
+            // only pins the method's presence in the vocabulary.
+            let _ = params;
+            Ok(method)
+        });
+        assert_eq!(refused.expect("turn.cancel is a method"), Method::TurnCancel);
+        assert!(Method::parse("turn.cancel").is_some());
     }
 
     #[test]

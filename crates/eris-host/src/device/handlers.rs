@@ -1954,30 +1954,46 @@ pub async fn cancel(
     if let Err(error) = require_scope(&token, Scope::Chat) {
         return error.into_response();
     }
+    // The body lives in one function so the RPC shim serves the same turn
+    // without a second copy of the ownership rule.
+    match cancel_turn_for(&service, token.device_id(), &job_id) {
+        Ok(body) => axum::Json(body).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+/// Cancel a turn this device owns. The one implementation, for both the route
+/// and the shim.
+///
+/// # Errors
+///
+/// `job_not_found` for a turn that is not this device's, `turn_not_cancellable`
+/// for one that already ended, and `db_unavailable` when state cannot be read.
+pub fn cancel_turn_for(
+    service: &DeviceService,
+    device_id: &str,
+    job_id: &str,
+) -> Result<serde_json::Value, DeviceError> {
     let store = service.hub().store();
-    match store.job(&job_id) {
-        Ok(Some(job)) if job.device_id.as_deref() == Some(token.device_id()) => {}
-        Ok(_) => return DeviceError::job_not_found().into_response(),
+    match store.job(job_id) {
+        Ok(Some(job)) if job.device_id.as_deref() == Some(device_id) => {}
+        Ok(_) => return Err(DeviceError::job_not_found()),
         Err(error) => {
-            return DeviceError::db_unavailable(format!("cannot read job state: {error}"))
-                .into_response();
+            return Err(DeviceError::db_unavailable(format!(
+                "cannot read job state: {error}"
+            )));
         }
     }
-    match service.hub().cancel(&job_id) {
-        Ok(Some(_)) => axum::Json(serde_json::json!({
-            "ok": true,
-            "state": "cancelled",
-        }))
-        .into_response(),
-        Ok(None) => DeviceError::new(
+    match service.hub().cancel(job_id) {
+        Ok(Some(_)) => Ok(serde_json::json!({"ok": true, "state": "cancelled"})),
+        Ok(None) => Err(DeviceError::new(
             StatusCode::CONFLICT,
             "turn_not_cancellable",
             "the turn already finished: there is nothing left to cancel",
-        )
-        .into_response(),
-        Err(error) => {
-            DeviceError::db_unavailable(format!("cannot cancel the turn: {error}")).into_response()
-        }
+        )),
+        Err(error) => Err(DeviceError::db_unavailable(format!(
+            "cannot cancel the turn: {error}"
+        ))),
     }
 }
 
@@ -5650,7 +5666,7 @@ pub async fn rpc(
         device_id: token.device_id().to_owned(),
         operator: token.scope().has_admin(),
     };
-    match crate::device::rpc::dispatch(method, &params, &context, service.engine()) {
+    match crate::device::rpc::dispatch(method, &params, &context, &service) {
         Ok(result) => axum::Json(crate::device::rpc::success(method, &context, result)).into_response(),
         Err(refusal) => {
             (status_for(refusal.status), axum::Json(crate::device::rpc::failure(&refusal)))
