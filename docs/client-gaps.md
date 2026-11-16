@@ -142,3 +142,24 @@ plumbing and a view, not a protocol.
 Until it exists, `turn.approval` shows as a run-log line naming the tool and its
 arguments. That is honest: it says what is waiting, and it does not offer a button
 that cannot work.
+
+## Build 170
+
+Uploaded 2026-11-16 01:05, 1.6.0 build 170. Carries everything in 169 plus:
+
+- `turn.ask` rendered by the clarify card the app already had,
+- an approvals sheet reachable from the chat toolbar (checkmark.shield), which
+  lists what the daemon is holding, decides with Allow or Deny, and keeps a row on
+  screen with the daemon reason when a decision is refused.
+
+What to check on the phone:
+
+1. A turn that asks a question shows the clarify card with its choices.
+2. The shield button opens Approvals; with nothing parked it says so.
+3. A parked command shows its tool, arguments and advice; Allow runs it, Deny
+   does not, and a refusal leaves the row visible with the reason.
+
+With this build the app can do every interaction the daemon contract defines. What
+is still missing is not a frame: it is the browser install path (WP-20), the local
+engine flag (WP-23), and the WP-06 daemon-side proof that waits on a permission
+change.
