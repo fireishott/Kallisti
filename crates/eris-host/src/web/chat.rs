@@ -3875,6 +3875,16 @@ pub fn run_turn_with_key(
                      asked. Ask in your answer instead and end the turn.",
                 );
             };
+            // One open ask per turn: a second card in the same turn is a question
+            // the client cannot lay out and a model that cannot tell which answer
+            // belongs to which call. Refused here, before it is parked, so the
+            // model gets a result it can act on instead of a card nobody reads.
+            if ask.registry.waiting_for(&ask.conversation).is_some() {
+                return crate::tools::ToolResult::refused(
+                    "a question from this turn is still open, and one turn asks one question at \
+                     a time. Wait for the answer already on screen, or ask again in a later turn.",
+                );
+            }
             let gate = ask.registry.park_for(&ask.conversation, request.clone());
             let stopped = gate.wait(crate::web::clarify::DEFAULT_TIMEOUT, || match poll() {
                 TurnSignal::Stop => crate::web::clarify::WaitPoll::Stop,
