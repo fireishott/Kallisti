@@ -239,3 +239,24 @@ Still open, and next:
 
 Verified on the daemon: the newest page of a 26-message conversation came back as
 26 rows, and `x-before` the oldest of those returned the 4 older messages.
+
+## Build 172
+
+Uploaded 2026-11-16 01:28. Carries every transcript fix that exists in the app so
+far:
+
+- the local-to-Eris conversation map is persisted (171),
+- a conversation is bound before the first send (171),
+- one prompt cannot render three times: user rows sharing a clientMessageID are
+  collapsed (this build),
+- `conversation(id:before:)` can ask for an older page, and `has_more` decodes
+  (this build; nothing triggers it yet).
+
+What to check on the phone:
+
+1. Open a chat you have used before: its messages are there.
+2. Send a message in a brand-new chat, leave, come back - the reply is still there.
+3. Send the same prompt twice in a row on purpose: two bubbles, not four.
+
+Still missing: the scroll-to-top trigger for older pages. The transport can ask;
+the transcript does not ask yet.
