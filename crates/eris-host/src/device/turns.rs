@@ -1541,7 +1541,13 @@ fn ask_frames(turn_id: &str, request: &crate::web::clarify::Request) -> Vec<serd
                 // carry one; `multi` is what changes the control.
                 "allow_text": true,
                 "multi": question.multi,
-                "deadline": serde_json::Value::Null,
+                // The wait is the same deadline the turn itself blocks on, stated
+                // rather than discovered: a phone can render "expires in 58m"
+                // instead of a card that looks like it will sit there forever.
+                "deadline": (time::OffsetDateTime::now_utc()
+                    + crate::web::clarify::DEFAULT_TIMEOUT)
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default(),
             })
         })
         .collect()
@@ -3568,7 +3574,11 @@ mod tests {
         assert_eq!(frames[1]["ask_id"], "turn-1.1");
         assert_eq!(frames[1]["multi"], true);
         assert_eq!(frames[1]["choices"].as_array().expect("choices").len(), 2);
-        assert!(frames[0]["deadline"].is_null(), "no deadline is set yet");
+        let deadline = frames[0]["deadline"].as_str().expect("a stated deadline");
+        assert!(
+            time::OffsetDateTime::parse(deadline, &time::format_description::well_known::Rfc3339).is_ok(),
+            "the deadline is RFC 3339: {deadline}"
+        );
     }
 
     /// A turn whose worker died is put back in its conversation as a task, at the
