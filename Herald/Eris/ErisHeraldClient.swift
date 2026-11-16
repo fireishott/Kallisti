@@ -30,10 +30,45 @@ final class ErisHeraldClient: HeraldClientProtocol {
     private let store = ErisDaemonStore()
 
     /// Local conversation UUID <-> Eris conversation id (opaque string).
-    private var conversationIDByLocalID: [UUID: String] = [:]
+    ///
+    /// Persisted. This map is the only thing that knows which daemon
+    /// conversation a chat on this phone refers to, so keeping it in memory meant
+    /// a relaunch could not ask for its own history: the transcript came back as
+    /// an empty New Chat while the daemon still held every message. It also meant
+    /// a first send could go out with no conversation at all, which is why the
+    /// first reply vanished.
+    private var conversationIDByLocalID: [UUID: String] = [:] {
+        didSet { persistConversationMap() }
+    }
     private var localIDByConversationID: [String: UUID] = [:]
 
+    private static let conversationMapKey = "eris.conversationMap.v1"
+
+    /// Write the map through. Called from the `didSet` above, so every insertion
+    /// persists without the callers having to remember.
+    private func persistConversationMap() {
+        let encoded = conversationIDByLocalID.reduce(into: [String: String]()) { out, pair in
+            out[pair.key.uuidString] = pair.value
+        }
+        UserDefaults.standard.set(encoded, forKey: Self.conversationMapKey)
+    }
+
+    /// Read the map back, rebuilding both directions.
+    private func loadConversationMap() {
+        guard let encoded = UserDefaults.standard.dictionary(forKey: Self.conversationMapKey)
+                as? [String: String] else { return }
+        for (local, conversation) in encoded {
+            guard let uuid = UUID(uuidString: local) else { continue }
+            conversationIDByLocalID[uuid] = conversation
+            localIDByConversationID[conversation] = uuid
+        }
+    }
+
     // MARK: - Connection
+
+    init() {
+        loadConversationMap()
+    }
 
     func connect() async {
         connectionStatus = .connecting
@@ -195,6 +230,22 @@ final class ErisHeraldClient: HeraldClientProtocol {
         return conversation
     }
 
+    /// The page of transcript before `before`, for a transcript scrolled to the top.
+    ///
+    /// Returns the older messages oldest-first and whether another page exists. An
+    /// unknown conversation or a daemon without the cursor answers nothing rather
+    /// than throwing into the view: a transcript that cannot page is a transcript
+    /// that shows what it has.
+    func loadOlder(conversationID: UUID, before: UUID) async -> (messages: [Message], hasMore: Bool) {
+        guard let client = await pairedClient(),
+              let erisID = conversationIDByLocalID[conversationID],
+              let detail = try? await client.conversation(id: erisID, before: before.uuidString)
+        else {
+            return ([], false)
+        }
+        return (detail.messages.map { Self.message(from: $0) }, detail.hasMore ?? false)
+    }
+
     func loadConversation(id: UUID) async throws -> Conversation {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
         guard let conversationID = conversationIDByLocalID[id] else {
@@ -302,6 +353,14 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        // A turn with no conversation is a turn with no transcript row: the reply
+        // streams once and then exists nowhere. Bind first, and refuse to send
+        // rather than send into the void.
+        if conversationIDByLocalID[conversationID] == nil {
+            guard await ensureConversation(id: conversationID) else {
+                throw ErisHeraldError.notConnected
+            }
+        }
         let erisConversationID = conversationIDByLocalID[conversationID]
         let turn = try await client.createTurn(text: text, conversation: erisConversationID)
         // Drain the stream to completion to collect the final text.
