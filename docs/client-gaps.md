@@ -288,3 +288,33 @@ What only the phone can settle:
 1. does a reply survive leaving the chat and coming back,
 2. does a long chat load older messages when scrolled to the top,
 3. is the order right, and is each prompt shown once.
+
+## Build 177: paging actually calls the daemon
+
+Uploaded 2026-11-16 02:03. The one line this build exists for:
+
+`loadOlder` is a `HeraldClientProtocol` requirement, not an extension method.
+
+It shipped in 173 as an extension method only. `ChatStore` holds the client as
+`any HeraldClientProtocol`, so that call dispatched statically to the extension
+default that answers nothing: the real implementation never ran and no test double
+could override it. Scroll-up paging would have done nothing on the phone, and it
+would have looked exactly like "there are no older messages".
+
+The three paging tests now pass, and they failed before the change with
+`pagesAsked == 0`, which is how the cause was found: `xcrun xcresulttool
+get test-results tests --path <xcresult>` prints the expectation text that
+`xcodebuild`'s console does not.
+
+What is verified now, by running code:
+
+| Behaviour | Tests |
+|---|---|
+| transcript order | 3 |
+| conversation map + open chat persistence | 3 |
+| one prompt, one bubble | 3 |
+| older page prepend, exhaustion, empty page | 3 |
+
+Twelve tests, all passing. Still unproven: the bind itself, for the same dispatch
+reason - `ErisHeraldClient` builds its own transport, so the send path cannot be
+driven by a test double until it is injectable.

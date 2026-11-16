@@ -565,10 +565,18 @@ pub fn conversations_sorted(
 ) -> Result<Vec<Conversation>, DbError> {
     // The order clause is a constant chosen by a match on the enum, never
     // interpolated from input.
+    // A conversation nothing was ever said in is not history, and it must not
+    // outrank one that is. The client mints a conversation when a chat is opened;
+    // leave without sending and the empty row stays behind carrying the newest
+    // `updated_at` in the store, so it took the top of the rail and a reopen that
+    // resumes the newest row landed on a blank chat, which reads as the transcript
+    // having been lost. Empties sink below every conversation that has a message,
+    // and keep their own order among themselves.
     let sql = format!(
-        "SELECT id, title, updated_at, created_at, project_id, model
-           FROM chat_conversations
-          ORDER BY {}
+        "SELECT c.id, c.title, c.updated_at, c.created_at, c.project_id, c.model
+           FROM chat_conversations c
+          ORDER BY EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id) DESC,
+                   {}
           LIMIT ?1",
         sort.order_by()
     );
