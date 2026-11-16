@@ -818,6 +818,52 @@ impl TurnStore {
         })
     }
 
+    /// Record how far a client has consumed this turn, and release what it saw.
+    ///
+    /// An acknowledgement is the client's promise that every frame at or below
+    /// `acked_seq` arrived and was rendered, which is what lets the daemon drop
+    /// those journal rows instead of holding a whole turn's history for a phone
+    /// that may never come back. It only moves forward: a replayed older ack is
+    /// ignored rather than rewinding the mark and re-pruning what is gone.
+    ///
+    /// `Ok(None)` means the job is not this device's. The caller refuses that by
+    /// name instead of pretending to have acknowledged something.
+    pub fn acknowledge(
+        &self,
+        job_id: &str,
+        device_id: &str,
+        acked_seq: i64,
+    ) -> Result<Option<i64>, DbError> {
+        self.db.with_conn(|conn| {
+            let owned: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM jobs WHERE id = ?1 AND device_id = ?2",
+                    params![job_id, device_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if owned.is_none() {
+                return Ok(None);
+            }
+            conn.execute(
+                "UPDATE jobs SET acked_seq = MAX(acked_seq, ?2), \
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1",
+                params![job_id, acked_seq.max(0)],
+            )?;
+            conn.execute(
+                "DELETE FROM job_events WHERE job_id = ?1 AND seq <= ?2",
+                params![job_id, acked_seq.max(0)],
+            )?;
+            conn.query_row(
+                "SELECT acked_seq FROM jobs WHERE id = ?1",
+                params![job_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(Option::flatten)
+        })
+    }
+
     /// Every retained event with `seq > after`, ascending.
     pub fn events_after(&self, job_id: &str, after: i64) -> Result<Vec<TurnFrame>, DbError> {
         self.db.with_conn(|conn| {
@@ -3142,6 +3188,39 @@ mod tests {
             .create_job(device, &session, None, "reply with the single word: ok")
             .expect("job");
         (job, session)
+    }
+
+    /// An ack is a promise, so it must prune exactly what it names and nothing
+    /// past it, and another device must not be able to move it at all.
+    #[test]
+    fn an_ack_releases_what_the_client_saw_and_no_more() {
+        let (store, device) = store(64);
+        let (job, _session) = queued(&store, &device);
+        for text in ["one", "two", "three", "four"] {
+            store
+                .append(&job, FrameKind::Delta, &serde_json::json!({ "text": text }))
+                .expect("append")
+                .expect("a running job accepts a delta");
+        }
+        assert_eq!(store.max_seq(&job).expect("max seq"), Some(4));
+
+        let mark = store.acknowledge(&job, &device, 2).expect("ack");
+        assert_eq!(mark, Some(2), "the mark is the acked sequence");
+        let retained = store.events_after(&job, 0).expect("events");
+        assert_eq!(retained.len(), 2, "seq 1 and 2 were released");
+        assert_eq!(retained[0].seq, 3, "the first retained frame is the next one");
+
+        // A replayed older ack never rewinds the mark.
+        let mark = store.acknowledge(&job, &device, 1).expect("ack");
+        assert_eq!(mark, Some(2));
+        assert_eq!(store.events_after(&job, 0).expect("events").len(), 2);
+
+        // Another device cannot ack this turn.
+        let other = crate::auth::AuthStore::new(store.db().clone())
+            .register_device("other", "ios")
+            .expect("device row");
+        assert_eq!(store.acknowledge(&job, &other, 4).expect("ack"), None);
+        assert_eq!(store.events_after(&job, 0).expect("events").len(), 2);
     }
 
     #[test]

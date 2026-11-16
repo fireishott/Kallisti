@@ -149,6 +149,8 @@ pub const ROUTE_EVENTS: &str = "/v1/turns/{id}/events";
 
 /// `POST /v1/turns/{id}/cancel` - stop a running turn.
 pub const ROUTE_CANCEL: &str = "/v1/turns/{id}/cancel";
+/// `POST /v1/turns/{id}/ack` - how far the client has consumed this turn.
+pub const ROUTE_ACK: &str = "/v1/turns/{id}/ack";
 
 /// `GET /v1/sessions/{id}` - the snapshot a buffer miss points at.
 ///
@@ -536,6 +538,8 @@ mod legacy_routes {
     pub const DEVICE_REGISTER: &str = "/v1/device/register";
     /// `GET` and `POST /v1/device/app-state` - the daemon's own state row.
     pub const DEVICE_APP_STATE: &str = "/v1/device/app-state";
+    /// `GET /v1/session` - the presenting device's session, in the connector shape.
+    pub const SESSION: &str = "/v1/session";
     /// `GET /v1/hosts/current` - this host, because this host is the only one.
     pub const HOSTS_CURRENT: &str = "/v1/hosts/current";
     /// `POST /v1/hosts/current/revoke` - refused: there is no host to revoke.
@@ -551,7 +555,7 @@ mod legacy_routes {
 }
 
 /// Every legacy-parity path, for the test that keeps them all under `/v1`.
-pub const LEGACY_ROUTES: [&str; 16] = [
+pub const LEGACY_ROUTES: [&str; 17] = [
     legacy_routes::HEALTH,
     legacy_routes::CONFIG,
     legacy_routes::CONFIG_VALIDATE,
@@ -562,6 +566,7 @@ pub const LEGACY_ROUTES: [&str; 16] = [
     legacy_routes::AUTH_REVOKE,
     legacy_routes::DEVICE_REGISTER,
     legacy_routes::DEVICE_APP_STATE,
+    legacy_routes::SESSION,
     legacy_routes::HOSTS_CURRENT,
     legacy_routes::HOSTS_CURRENT_REVOKE,
     legacy_routes::CONNECTOR_EVENTS,
@@ -1170,6 +1175,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_PROCESS_KILL, post(control::kill_process))
         .route(ROUTE_EVENTS, get(handlers::events))
         .route(ROUTE_CANCEL, post(handlers::cancel))
+        .route(ROUTE_ACK, post(handlers::ack_turn))
         .route(ROUTE_ASKED, get(handlers::asked))
         .route(ROUTE_ANSWER, post(handlers::answer_asked))
         .route(
@@ -1321,6 +1327,7 @@ pub fn router(service: DeviceService) -> Router {
             legacy_routes::DEVICE_REGISTER,
             post(legacy::device_register),
         )
+        .route(legacy_routes::SESSION, get(legacy::session))
         .route(
             legacy_routes::DEVICE_APP_STATE,
             get(legacy::app_state_get).post(legacy::app_state_post),

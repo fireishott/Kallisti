@@ -13,7 +13,7 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 02 | Ring buffer per turn | carried | `DEFAULT_SSE_BUFFER`, `DEFAULT_REASONING_BUFFER` |
 | 02 | Resume from a position | carried | `Last-Event-ID` -> `resume_from` in `device/handlers.rs` |
 | 02 | `buffer_miss` with snapshot fallback | carried | 409 + snapshot route, same handler |
-| 02 | `resume.ack` / release of retained frames | absent | - |
+| 02 | `resume.ack` / release of retained frames | carried | `POST /v1/turns/{id}/ack`; `jobs.acked_seq` (migration 0036); `TurnStore::acknowledge` |
 | 03 | `turn.delta` | carried | frame `delta` |
 | 03 | `turn.start` | absent | first frame is `round` |
 | 03 | `turn.step` / `turn.step.result` | partial | `tool_start` + `tool` cover tool calls only |

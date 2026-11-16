@@ -1876,6 +1876,65 @@ pub async fn events(
 
 /// Stop a running turn. Idempotent in the sense that matters: a second cancel is
 /// a `409 turn_not_cancellable`, not a second `cancelled` frame.
+/// `POST /v1/turns/{id}/ack` - how far the client has consumed this turn.
+///
+/// The body is `{"acked_seq": n}`. The answer is the mark the daemon now holds,
+/// which may be higher than the one presented: an ack only ever moves forward,
+/// and a phone that reconnects and replays an older one is told the truth rather
+/// than silently ignored.
+pub async fn ack_turn(
+    State(service): State<DeviceService>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let Some(raw) = fields.get("acked_seq") else {
+        return DeviceError::bad_request(
+            "acked_seq_missing",
+            "the body named no `acked_seq`: an acknowledgement needs the sequence it covers"
+                .to_owned(),
+        )
+        .into_response();
+    };
+    let acked_seq = match raw.trim().parse::<i64>() {
+        Ok(seq) if seq >= 0 => seq,
+        _ => {
+            return DeviceError::bad_request(
+                "acked_seq_invalid",
+                "`acked_seq` must be a non-negative sequence number".to_owned(),
+            )
+            .into_response();
+        }
+    };
+    match service
+        .hub()
+        .store()
+        .acknowledge(&job_id, token.device_id(), acked_seq)
+    {
+        Ok(Some(mark)) => axum::Json(serde_json::json!({
+            "ok": true,
+            "acked_seq": mark,
+        }))
+        .into_response(),
+        Ok(None) => DeviceError::job_not_found().into_response(),
+        Err(error) => DeviceError::db_unavailable(format!(
+            "the acknowledgement could not be recorded: {error}"
+        ))
+        .into_response(),
+    }
+}
+
 pub async fn cancel(
     State(service): State<DeviceService>,
     Path(job_id): Path<String>,

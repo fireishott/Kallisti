@@ -263,6 +263,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0035_steward_watch_rounds",
         sql: MIGRATION_0035,
     },
+    Migration {
+        version: 36,
+        name: "0036_turn_ack",
+        sql: MIGRATION_0036,
+    },
 ];
 
 /// Migration 0001: the whole P5 schema in one transaction.
@@ -1218,6 +1223,12 @@ CREATE INDEX IF NOT EXISTS idx_steward_notes_duty ON steward_field_notes (duty_i
 /// them and pauses the duty at `steward_max_rounds`.
 const MIGRATION_0035: &str = r"
 ALTER TABLE steward_duties ADD COLUMN watch_rounds INTEGER NOT NULL DEFAULT 0;
+";
+
+/// WP-02: how far a client has consumed each turn. Absent means zero, which is
+/// the same state as "paired a moment ago and heard nothing yet".
+const MIGRATION_0036: &str = r"
+ALTER TABLE jobs ADD COLUMN acked_seq INTEGER NOT NULL DEFAULT 0;
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.
