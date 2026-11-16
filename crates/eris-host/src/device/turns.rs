@@ -105,6 +105,8 @@ pub enum FrameKind {
     Diff,
     /// A page a step wrote, ready for the phone to render.
     Page,
+    /// The turn is waiting on the operator's answer to one question.
+    Ask,
     /// One assistant text fragment.
     Delta,
     /// One fragment of the model's own reasoning, when the provider streams one.
@@ -159,12 +161,13 @@ pub enum FrameKind {
 impl FrameKind {
     /// Every kind, so a client can learn the vocabulary from `/v1/version`
     /// instead of pinning a build number.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Start,
         Self::Step,
         Self::StepResult,
         Self::Diff,
         Self::Page,
+        Self::Ask,
         Self::Delta,
         Self::Reasoning,
         Self::Tool,
@@ -187,6 +190,7 @@ impl FrameKind {
             Self::StepResult => "turn.step.result",
             Self::Diff => "turn.artifact.diff",
             Self::Page => "turn.artifact.page",
+            Self::Ask => "turn.ask",
             Self::Delta => "delta",
             Self::Reasoning => "reasoning",
             Self::Tool => "tool",
@@ -210,6 +214,7 @@ impl FrameKind {
             "turn.step.result" => Some(Self::StepResult),
             "turn.artifact.diff" => Some(Self::Diff),
             "turn.artifact.page" => Some(Self::Page),
+            "turn.ask" => Some(Self::Ask),
             "delta" => Some(Self::Delta),
             "reasoning" => Some(Self::Reasoning),
             "tool" => Some(Self::Tool),
@@ -236,6 +241,7 @@ impl FrameKind {
                 | Self::StepResult
                 | Self::Diff
                 | Self::Page
+                | Self::Ask
                 | Self::Delta
                 | Self::Reasoning
                 | Self::Tool
@@ -255,6 +261,7 @@ impl FrameKind {
             | Self::StepResult
             | Self::Diff
             | Self::Page
+            | Self::Ask
             | Self::Delta
             | Self::Reasoning
             | Self::Tool
@@ -1507,6 +1514,39 @@ fn finish_transaction(
 /// A `queued` or `running` job at boot belongs to a worker this process never
 /// started, and nothing will ever claim it. Left alone it is worse than a stale
 /// row: `GET /v1/turns/{id}/events` replays the frames that exist, finds no
+/// The contract's `turn.ask` frames for one clarify request.
+///
+/// The daemon's own frame is a single `asked` carrying `{request, answer}`,
+/// because a clarify call may ask several questions and the browser draws them
+/// as one card. The contract speaks one question per frame, so the same request
+/// is published that way too and a phone can render a tappable list. `ask_id` is
+/// the turn id plus the question's index, which stays stable for the life of the
+/// parked call.
+fn ask_frames(turn_id: &str, request: &crate::web::clarify::Request) -> Vec<serde_json::Value> {
+    request
+        .questions
+        .iter()
+        .enumerate()
+        .map(|(index, question)| {
+            serde_json::json!({
+                "turn_id": turn_id,
+                "ask_id": format!("{turn_id}.{index}"),
+                "question": question.question,
+                "choices": question
+                    .choices
+                    .iter()
+                    .map(|choice| choice.label.clone())
+                    .collect::<Vec<_>>(),
+                // The schema always accepts free text, so the card can always
+                // carry one; `multi` is what changes the control.
+                "allow_text": true,
+                "multi": question.multi,
+                "deadline": serde_json::Value::Null,
+            })
+        })
+        .collect()
+}
+
 /// Put a dead turn's request back in its conversation, or say why not.
 ///
 /// `false` for a row with no conversation (nothing to rejoin), a row already at
@@ -2488,6 +2528,16 @@ impl TurnHub {
                                 store.append(&writer_job, FrameKind::Asked, &data)
                             {
                                 publish(&sender, seq, FrameKind::Asked, data);
+                            }
+                            // The same question in the contract's vocabulary, one
+                            // frame per question so a phone can draw a tappable
+                            // list instead of parsing the browser's card shape.
+                            for ask in ask_frames(&writer_job, &request) {
+                                if let Ok(Some(seq)) =
+                                    store.append(&writer_job, FrameKind::Ask, &ask)
+                                {
+                                    publish(&sender, seq, FrameKind::Ask, ask);
+                                }
                             }
                         }
                         // The same kind again, now carrying the decision. Written
@@ -3476,6 +3526,49 @@ mod tests {
                 "a cancelled turn takes no further {kind:?} frames"
             );
         }
+    }
+
+    /// The contract's ask is one frame per question, with a stable id and the
+    /// choices as labels. A request with two questions makes two frames, not one
+    /// card the phone cannot lay out.
+    #[test]
+    fn a_clarify_request_becomes_one_ask_frame_per_question() {
+        let request = crate::web::clarify::Request {
+            title: Some("Pick".to_owned()),
+            questions: vec![
+                crate::web::clarify::Question {
+                    question: "Which one?".to_owned(),
+                    choices: vec![crate::web::clarify::Choice {
+                        label: "first".to_owned(),
+                        detail: None,
+                    }],
+                    multi: false,
+                },
+                crate::web::clarify::Question {
+                    question: "And also?".to_owned(),
+                    choices: vec![
+                        crate::web::clarify::Choice {
+                            label: "a".to_owned(),
+                            detail: None,
+                        },
+                        crate::web::clarify::Choice {
+                            label: "b".to_owned(),
+                            detail: None,
+                        },
+                    ],
+                    multi: true,
+                },
+            ],
+        };
+        let frames = super::ask_frames("turn-1", &request);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0]["ask_id"], "turn-1.0");
+        assert_eq!(frames[0]["question"], "Which one?");
+        assert_eq!(frames[0]["choices"][0], "first");
+        assert_eq!(frames[1]["ask_id"], "turn-1.1");
+        assert_eq!(frames[1]["multi"], true);
+        assert_eq!(frames[1]["choices"].as_array().expect("choices").len(), 2);
+        assert!(frames[0]["deadline"].is_null(), "no deadline is set yet");
     }
 
     /// A turn whose worker died is put back in its conversation as a task, at the

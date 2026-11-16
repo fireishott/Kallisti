@@ -303,6 +303,7 @@ fn synthetic_terminal(kind: FrameKind, text: String) -> serde_json::Value {
         | FrameKind::StepResult
         | FrameKind::Diff
         | FrameKind::Page
+        | FrameKind::Ask
         | FrameKind::Delta
         | FrameKind::Reasoning
         | FrameKind::Tool
