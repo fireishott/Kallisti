@@ -15,8 +15,24 @@
 #   scripts/deploy.sh --dry-run       say what would happen and stop
 #
 # Exit codes: 0 deployed (or dry run), 2 nothing to install, 3 the daemon stayed
-# busy for the whole wait and nothing was touched.
+# busy for the whole wait and nothing was touched, 4 untracked source files.
 set -euo pipefail
+
+# A working tree with untracked source files is a tree git has never seen. The
+# build would succeed and the deploy would install code nobody can reproduce from
+# HEAD. That happened twice on 2026-11-16: diff.rs and sensitivity.rs both shipped
+# in binaries while sitting untracked, and both broke a clone at HEAD without
+# breaking a single build.
+if [ "${KALLISTI_ALLOW_UNTRACKED:-0}" != "1" ]; then
+  untracked="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" \
+    status --porcelain --untracked-files=normal 2>/dev/null \
+    | awk '$1 == "??" && $2 ~ /\.(rs|toml)$/ { print $2 }')"
+  if [ -n "$untracked" ]; then
+    echo "ABORT: untracked source files; add them first or set KALLISTI_ALLOW_UNTRACKED=1" >&2
+    printf '  %s\n' $untracked >&2
+    exit 4
+  fi
+fi
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${KALLISTI_BIN:-$HOME/.local/opt/kallisti/bin/eris}"
