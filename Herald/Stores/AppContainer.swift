@@ -44,6 +44,10 @@ final class APIKeyHolder {
 @MainActor
 @Observable
 final class AppContainer {
+    /// The live container, so a store built before the daemon is known can find it.
+    /// Weak: the stores must not keep the container alive.
+    static weak var shared: AppContainer?
+
     // Pre-1.1.1 releases stored the raw APNs token in UserDefaults.standard under
     // this key. We now keep the token in Keychain (ThisDeviceOnly). The legacy
     // key is read once on first launch after upgrade to migrate + delete.
@@ -405,10 +409,12 @@ final class AppContainer {
         var activePairingStore: PairingStore?
         var nativeGatewayClient: NativeKallistiClient?
 
+        let erisHeraldClient = ErisHeraldClient()
+
         if processEnvironment["UITEST_PAIRING_MODE"] == "mock" {
             pairingService = MockPairingService()
         } else {
-            pairingService = LivePairingService()
+            pairingService = ErisPairingService()
         }
 
         let apiClient = RelayAPIClient {
@@ -447,7 +453,7 @@ final class AppContainer {
         )
 
         let inboxService = ResilientInboxService(
-            primary: LiveInboxService(apiClient: apiClient),
+            primary: ErisInboxService(clientProvider: { @MainActor in await erisHeraldClient.client() }),
             fallback: MockInboxService(),
             allowsFallback: { allowMockFallbacks && (activePairingStore?.isPaired != true || usesMockPairingService) }
         )
@@ -460,6 +466,13 @@ final class AppContainer {
             notificationService: notificationService,
             environmentProvider: { settingsStore.settings.environment }
         )
+
+        // One bearer for every relay-shaped call the app still makes. Set once:
+        // the instance-level provider only covers the clients this function
+        // builds, and the Settings panels build their own.
+        RelayAPIClient.processAccessToken = { [weak sessionStore] in
+            await sessionStore?.currentAccessToken()
+        }
 
         let runtimePairingStore = PairingStore(
             pairingService: pairingService,
@@ -492,119 +505,15 @@ final class AppContainer {
         let heraldClient: any HeraldClientProtocol
         if usesMockPairingService {
             heraldClient = MockHeraldClient()
-        } else if UserDefaults.standard.object(forKey: "useNativeGateway") == nil
-                   || UserDefaults.standard.bool(forKey: "useNativeGateway") {
-            // Not hardcoded: derived from the same relay-URL setting the
-            // legacy connector path already uses (settingsStore.settings
-            // .relayConfiguration -- user-editable in Settings, same field
-            // RelayStepView writes during onboarding), falling back to the
-            // build-configured default (APP_HOSTED_RELAY_URL in Info.plist)
-            // only when the user hasn't set anything -- never a literal
-            // string baked into this branch.
-            // Resolve the gateway host LIVE from settings on every call, never
-            // once at construction: a fresh install has no relay (localhost
-            // fallback) but the user types their real server during onboarding,
-            // and only lazy resolution honors that updated relay. Baking it at
-            // construction made every login/connect keep hitting the stale
-            // launch-time localhost regardless of the address the user entered.
-            let auth = NativeAuthCoordinator(
-                baseURLProvider: { @MainActor in
-                    Self.resolveNativeGatewayHost(
-                        from: activePairingStore?.pairedRelayConfiguration?.baseURLString
-                        ?? settingsStore.settings.relayConfiguration.activeBaseURLString
-                    ).baseURL
-                },
-                secureStore: secureStore
-            )
-            let nativeClient = NativeKallistiClient(
-                gatewayBaseURLProvider: { @MainActor in
-                    Self.resolveNativeGatewayHost(
-                        from: activePairingStore?.pairedRelayConfiguration?.baseURLString
-                        ?? settingsStore.settings.relayConfiguration.activeBaseURLString
-                    ).baseURL
-                },
-                authCoordinator: auth,
-                secureStore: secureStore
-            )
-            // Build 68: only auto-connect when a relay URL is actually
-            // configured. On a fresh install (UserDefaults wiped, Keychain
-            // may still hold an old authMode from a previous install),
-            // resolveNativeGatewayHost falls back to http://localhost:9119
-            // and connect() loops "Connection struggling" forever against
-            // the device itself - the loading surface never releases to
-            // onboarding because hasConnectedOnce stays false. Skip the
-            // silent connect; onboarding's startPairingLogin / startBasicLogin
-            // / startInteractiveLogin all call connect() themselves after the
-            // user enters a real relay URL.
-            if settingsStore.settings.relayConfiguration.activeBaseURLString != nil {
-                Task { @MainActor in
-                    await nativeClient.connect()
-                }
-            }
-            // Build 128.45: Config Editor fallback credential. In cookie-auth
-            // mode the keychain bearer is deleted and the session cookie rides
-            // URLSession.shared, but the cookie expires after 12h. The relay
-            // session token survives in the keychain and the connector accepts
-            // it as a paired credential, so wire it as the fallback.
-            nativeClient.configFallbackTokenProvider = { @MainActor in
-                await sessionStore.currentAccessToken()
-            }
-            heraldClient = nativeClient
-            nativeGatewayClient = nativeClient
         } else {
-            let liveClient = LiveHeraldClient(
-                apiClient: apiClient,
-                accessTokenProvider: { await sessionStore.currentAccessToken() },
-                accessTokenRefresher: {
-                    await sessionStore.refreshAccessTokenIfNeeded()
-                    return await sessionStore.currentAccessToken()
-                },
-                allowDemoFallback: false
-            )
-            liveClient.reasoningEffortProvider = { settingsStore.settings.reasoningEffort }
-            heraldClient = liveClient
+            heraldClient = erisHeraldClient
         }
 
         let liveLocationService = LiveLocationService()
         liveLocationService.updateSyncPreference(settingsStore.settings.locationSyncPreference)
         let liveHealthService = LiveHealthService(persistence: persistence)
         let liveMotionService = LiveMotionService()
-        let sensorUploadService: SensorUploadService? = usesMockPairingService ? nil : SensorUploadService(
-            apiClient: apiClient,
-            accessTokenProvider: { [nativeGatewayClient] in
-                // Native mode never sets the legacy relay session token, so the
-                // sensor upload path 401'd with a nil bearer. Present the native
-                // gateway bearer when it exists; fall back to the relay session
-                // token for basic/pairing auth modes (same pattern as
-                // AttachmentService / HostStatusStreamService / GatewayControlService).
-                if let nativeGatewayClient,
-                   let nativeToken = await nativeGatewayClient.nativeAccessToken(),
-                   !nativeToken.isEmpty {
-                    return nativeToken
-                }
-                return await sessionStore.currentAccessToken()
-            },
-            accessTokenRefresher: { [nativeGatewayClient] in
-                if let nativeGatewayClient {
-                    await nativeGatewayClient.refreshAccessToken()
-                }
-                await sessionStore.refreshAccessTokenIfNeeded()
-                if let nativeGatewayClient,
-                   let nativeToken = await nativeGatewayClient.nativeAccessToken(),
-                   !nativeToken.isEmpty {
-                    return nativeToken
-                }
-                return await sessionStore.currentAccessToken()
-            },
-            persistence: persistence,
-            isPairedProvider: {
-                nativeGatewayClient?.hasResolvedStoredLogin == true
-                    || activePairingStore?.isPaired == true
-            },
-            locationService: liveLocationService,
-            healthService: liveHealthService,
-            motionService: liveMotionService
-        )
+        let sensorUploadService: SensorUploadService? = nil
         let dashboardLogService = DashboardLogService(
             baseURLProvider: {
                 // Derive dashboard URL from the relay host when paired,
@@ -712,14 +621,14 @@ final class AppContainer {
                     let base = settingsStore.settings.relayConfiguration.activeBaseURLString
                         ?? activePairingStore?.pairedRelayConfiguration?.baseURLString
                     guard let base, URL(string: base) != nil else {
-                        return (ready: false, blockedReason: "No relay configured.")
+                        return (ready: false, blockedReason: "No daemon configured.")
                     }
                     let token = await sessionStore.currentAccessToken()
                     guard let apiKey = apiKeyHolder.get(), !apiKey.isEmpty else {
                         return (ready: false, blockedReason: "Mimo API key required — add it in Settings → Voice")
                     }
                     guard let url = URL(string: base)?.appendingPathComponent("talk/readiness") else {
-                        return (ready: false, blockedReason: "Invalid relay URL.")
+                        return (ready: false, blockedReason: "Invalid daemon address.")
                     }
                     struct Readiness: Decodable {
                         let ready: Bool
@@ -802,6 +711,7 @@ final class AppContainer {
             pushRegistrationCoordinator: pushRegistrationCoordinator,
             secureStore: secureStore
         )
+        AppContainer.shared = container
 
         // Build 70: hoist the aux model service so Infrastructure loads at
         // connection time (Settings previously created it lazily on appear).
@@ -811,6 +721,79 @@ final class AppContainer {
                 accessTokenProvider: { await sessionStore.currentAccessToken() },
                 nativeFeatureClientProvider: { nativeGatewayClient?.featureClient }
             )
+        }
+
+        // Kallisti-Eris is the backend this build talks to, so the pickers read
+        // the paired daemon's own control plane over the transport chat and the
+        // inbox already use. Nothing here opens a second connection: a model
+        // ticked on the phone is a row the daemon stored, not a copy.
+        //
+        // The aux panel needs its service to exist before it has hooks, and the
+        // relay-backed instance above is built only when a relay base URL is
+        // configured. On Eris there is exactly one daemon, so this is the
+        // instance the Infrastructure screen gets.
+        if container.auxService == nil {
+            container.auxService = AuxModelService(
+                apiClient: RelayAPIClient { "" },
+                accessTokenProvider: { nil },
+                nativeFeatureClientProvider: { nil }
+            )
+        }
+
+        container.modelStore.erisCatalogProvider = { [erisHeraldClient] in
+            guard let client = await erisHeraldClient.client() else {
+                throw ErisError.server(
+                    status: 503,
+                    code: "not_paired",
+                    message: "No daemon is paired yet."
+                )
+            }
+            return ErisControlMapping.catalog(try await client.controlModels())
+        }
+        container.modelStore.erisSwitchProvider = { [erisHeraldClient] name, provider in
+            guard let client = await erisHeraldClient.client() else {
+                throw ErisError.server(
+                    status: 503,
+                    code: "not_paired",
+                    message: "No daemon is paired yet."
+                )
+            }
+            // The daemon decides which provider publishes an id, and its answer is
+            // the only one that matters: a bare id is accepted when exactly one
+            // catalogue carries it, and `provider/model` is required only when two
+            // do. Ask for the bare id the daemon lists, and name a provider only
+            // when it says the id is ambiguous.
+            let slug = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !slug.isEmpty, !name.contains("/") else {
+                try await client.setControlModel(name)
+                return
+            }
+            do {
+                try await client.setControlModel(name)
+            } catch let error as ErisError where error.code == "model_invalid" {
+                try await client.setControlModel("\(slug)/\(name)")
+            }
+        }
+
+        container.auxService?.erisProvider = { [erisHeraldClient] in
+            guard let client = await erisHeraldClient.client() else {
+                throw ErisError.server(
+                    status: 503,
+                    code: "not_paired",
+                    message: "No daemon is paired yet."
+                )
+            }
+            return ErisControlMapping.auxTasks(try await client.controlAux())
+        }
+        container.auxService?.erisSetter = { [erisHeraldClient] role, provider, model in
+            guard let client = await erisHeraldClient.client() else {
+                throw ErisError.server(
+                    status: 503,
+                    code: "not_paired",
+                    message: "No daemon is paired yet."
+                )
+            }
+            try await client.setControlAux(role: role, provider: provider, model: model)
         }
 
         chatStore.profileStore = container.profileStore

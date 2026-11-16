@@ -39,15 +39,64 @@ final class CronStore {
     private(set) var isLoading = false
     private(set) var errorMessage: String?
 
+    /// The daemon, when this phone is paired with one. The relay path is gone in
+    /// this architecture, so without this the list is always empty.
+    private(set) var herald: (any HeraldClientProtocol)?
+
     private let apiClient: RelayAPIClient?
+
+    /// The daemon, found through the container when the store was built before it.
+    private var resolvedHerald: (any HeraldClientProtocol)? {
+        if let herald = resolvedHerald { return herald }
+        return AppContainer.shared?.chatStore.heraldClient
+    }
+
+    /// Give the store the daemon once the container has built one.
+    func attach(herald: any HeraldClientProtocol) {
+        self.herald = herald
+    }
     private let accessTokenProvider: () async -> String?
 
-    init(apiClient: RelayAPIClient?, accessTokenProvider: @escaping () async -> String?) {
+    init(
+        apiClient: RelayAPIClient?,
+        accessTokenProvider: @escaping () async -> String?,
+        herald: (any HeraldClientProtocol)? = nil
+    ) {
+        self.herald = herald
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
     }
 
     func loadJobs() async {
+        // A paired daemon is the source of truth. The relay path below stays for a
+        // build that still carries one, but an Eris phone must never be told it is
+        // "not connected to a relay" - there is no relay.
+        if let herald {
+            isLoading = true
+            errorMessage = nil
+            defer { isLoading = false }
+            do {
+                let rows = try await herald.cronJobs()
+                jobs = rows.map { row in
+                    CronJob(
+                        id: row.id,
+                        name: row.name,
+                        schedule: row.schedule,
+                        prompt: row.prompt,
+                        enabled: row.enabled,
+                        lastRun: row.lastRun.flatMap { ErisTimestamp.date(from: $0) },
+                        nextRun: row.nextRun.flatMap { ErisTimestamp.date(from: $0) },
+                        lastResult: row.lastStatus
+                    )
+                }
+            } catch {
+                // The daemon's own sentence: a phone paired without administration
+                // is refused with an explanation, and that explanation is the
+                // useful thing on screen.
+                errorMessage = (error as? ErisError)?.message ?? error.localizedDescription
+            }
+            return
+        }
         guard let apiClient, let token = await accessTokenProvider() else {
             errorMessage = "Not connected to a relay."
             return

@@ -15,6 +15,10 @@ protocol HeraldClientProtocol {
     /// statically to the default that answers nothing. That is exactly what
     /// happened - paging compiled, shipped, and was never called.
     func loadOlder(conversationID: UUID, before: String) async -> (messages: [Message], hasMore: Bool)
+    /// The daemon's schedules. A transport without the concept throws.
+    func cronJobs() async throws -> [ErisCronJob]
+    /// The daemon's skill catalogue. A transport without the concept throws.
+    func skillCatalog() async throws -> [ErisSkill]
     /// Whether this transport has only a streaming form.
     ///
     /// The Eris daemon answers a turn as a stream of frames, so a request/response
@@ -272,4 +276,9 @@ extension HeraldClientProtocol {
 extension HeraldClientProtocol {
     /// A transport that also has a request/response form is not stream-only.
     var streamsOnly: Bool { false }
+}
+
+extension HeraldClientProtocol {
+    func cronJobs() async throws -> [ErisCronJob] { [] }
+    func skillCatalog() async throws -> [ErisSkill] { [] }
 }

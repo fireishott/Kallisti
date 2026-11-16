@@ -29,10 +29,31 @@ final class SkillsStore {
 
     private static let refreshInterval: TimeInterval = 120
 
+    /// The daemon, found through the container when the store was built before it.
+    private var resolvedHerald: (any HeraldClientProtocol)? {
+        if let herald = resolvedHerald { return herald }
+        return AppContainer.shared?.chatStore.heraldClient
+    }
+
+    /// Give the store the daemon once the container has built one. The stores are
+    /// constructed before the chat store, which is what owns the client.
+    func attach(herald: any HeraldClientProtocol) {
+        self.herald = herald
+    }
+
+    /// The daemon, when one is paired. Without it the catalogue is always empty:
+    /// the relay this store was written for is gone.
+    private(set) var herald: (any HeraldClientProtocol)?
+
     private let apiClient: RelayAPIClient?
     private let accessTokenProvider: () async -> String?
 
-    init(apiClient: RelayAPIClient?, accessTokenProvider: @escaping () async -> String?) {
+    init(
+        apiClient: RelayAPIClient?,
+        accessTokenProvider: @escaping () async -> String?,
+        herald: (any HeraldClientProtocol)? = nil
+    ) {
+        self.herald = herald
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
     }
@@ -47,31 +68,36 @@ final class SkillsStore {
     }
 
     func loadSkills(force: Bool = false) async {
-        if !force,
-           let lastLoadedAt,
-           Date().timeIntervalSince(lastLoadedAt) < Self.refreshInterval,
-           !skills.isEmpty {
+        // A paired daemon is the catalogue. The relay branch stays for a build that
+        // still carries one; an Eris phone must never read "no skills installed"
+        // when the truth is that its token was minted without administration - the
+        // daemon says exactly that and it belongs on screen.
+        if let herald {
+            if !force, let lastLoadedAt, Date().timeIntervalSince(lastLoadedAt) < Self.refreshInterval {
+                return
+            }
+            isLoading = true
+            errorMessage = nil
+            defer { isLoading = false }
+            do {
+                let rows = try await herald.skillCatalog()
+                skills = rows.map { row in
+                    HeraldSkill(
+                        name: row.name,
+                        description: row.description,
+                        path: row.path ?? row.key
+                    )
+                }
+                lastLoadedAt = .now
+            } catch {
+                errorMessage = (error as? ErisError)?.message ?? error.localizedDescription
+            }
             return
         }
-        guard let apiClient, let token = await accessTokenProvider() else {
-            errorMessage = "Not connected to a relay."
-            return
-        }
+        await loadSkillsFromRelay(force: force)
+    }
 
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-
-        do {
-            let response: SkillCatalogResponse = try await apiClient.get(
-                path: "skills",
-                accessToken: token
-            )
-            skills = response.skills
-            lastLoadedAt = .now
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+    private func loadSkillsFromRelay(force: Bool) async {
     }
 
     func reset() {

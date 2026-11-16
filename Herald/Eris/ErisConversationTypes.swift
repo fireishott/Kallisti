@@ -428,3 +428,38 @@ struct ErisProjectList: Equatable, Sendable, Decodable {
         return names
     }
 }
+
+
+// MARK: - Schedules and skills
+
+/// One schedule as the daemon states it.
+struct ErisCronJob: Decodable, Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+    /// The five-field expression.
+    let schedule: String
+    let prompt: String
+    let enabled: Bool
+    let nextRun: String?
+    let lastRun: String?
+    let lastStatus: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, schedule, prompt, enabled
+        case nextRun = "next_run"
+        case lastRun = "last_run"
+        case lastStatus = "last_status"
+    }
+}
+
+/// One skill as the daemon states it.
+struct ErisSkill: Decodable, Identifiable, Equatable, Sendable {
+    let key: String
+    let name: String
+    let description: String
+    let enabled: Bool
+    let state: String?
+    let path: String?
+
+    var id: String { key }
+}

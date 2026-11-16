@@ -36,6 +36,10 @@ enum ErisRoute: Equatable, Sendable {
     case attachment(attachmentID: String)
     /// `POST /v1/attachments` - take the bytes, hand back an id.
     case uploadAttachment
+    /// `GET /v1/cron` - the daemon's schedules. Admin scope.
+    case cron
+    /// `GET /v1/skills` - the daemon's skill catalogue. Admin scope.
+    case skills
     /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
     case clearConversation(conversationID: String)
     /// `GET /v1/settings` - the operator-facing settings snapshot.
@@ -105,6 +109,10 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/attachments/\(Self.segment(attachmentID))"
         case .uploadAttachment:
             return "/v1/attachments"
+        case .cron:
+            return "/v1/cron"
+        case .skills:
+            return "/v1/skills"
         case .clearConversation(let conversationID):
             return "/v1/conversations/\(Self.segment(conversationID))/clear"
         case .settings, .updateSettings:
@@ -147,7 +155,8 @@ enum ErisRoute: Equatable, Sendable {
     /// The HTTP method the daemon's router binds this path to.
     var method: String {
         switch self {
-        case .events, .session, .conversations, .conversation, .settings, .projects, .approvals, .attachment,
+        case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
+             .cron, .skills, .attachment,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .aux:
             return "GET"
@@ -281,6 +290,23 @@ actor ErisClient {
     /// transcript row pair instead of a session of its own. A conversation id the
     /// daemon does not hold is refused here, before anything is written, so a
     /// refused turn never leaves half a conversation behind.
+    /// The daemon's schedules.
+    ///
+    /// Admin scope: a phone paired without administration is refused, and the
+    /// refusal is the daemon's own sentence rather than an empty list.
+    func cronJobs() async throws -> [ErisCronJob] {
+        let data = try await send(route: .cron, form: nil)
+        struct Body: Decodable { let jobs: [ErisCronJob] }
+        return try decode(Body.self, from: data).jobs
+    }
+
+    /// The daemon's skill catalogue. Admin scope, same rule.
+    func skillCatalog() async throws -> [ErisSkill] {
+        let data = try await send(route: .skills, form: nil)
+        struct Body: Decodable { let skills: [ErisSkill] }
+        return try decode(Body.self, from: data).skills
+    }
+
     /// Take the bytes, hand back the id a turn names them by.
     ///
     /// The body is the file itself, not a multipart form: the daemon's route says
