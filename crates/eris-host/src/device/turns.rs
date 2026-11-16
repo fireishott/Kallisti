@@ -222,6 +222,8 @@ impl FrameKind {
         !matches!(
             self,
             Self::Start
+                | Self::Step
+                | Self::StepResult
                 | Self::Delta
                 | Self::Reasoning
                 | Self::Tool
@@ -3276,6 +3278,30 @@ mod tests {
             .create_job(device, &session, None, "reply with the single word: ok")
             .expect("job");
         (job, session)
+    }
+
+    /// A step frame is an ordinary append: if this ever returns `None` on a
+    /// running job, the emission is dead code that a green build will not catch.
+    #[test]
+    fn a_step_frame_is_written_to_job_events() {
+        let (store, device) = store(64);
+        let (job, _session) = queued(&store, &device);
+        let step = serde_json::json!({
+            "turn_id": job,
+            "step_id": "run_command",
+            "step_type": "tool_call",
+            "label": "run_command",
+            "started_at": "2026-11-16T03:00:00Z",
+        });
+        let seq = store
+            .append(&job, FrameKind::Step, &step)
+            .expect("append")
+            .expect("a queued job accepts a step");
+        assert_eq!(seq, 1);
+        let rows = store.events_after(&job, 0).expect("events");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, FrameKind::Step);
+        assert_eq!(rows[0].data["step_id"], "run_command");
     }
 
     /// The opening frame is spelled with a dot, so it cannot be confused with a
