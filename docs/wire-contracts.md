@@ -62,6 +62,32 @@ contract requirements are not met:
 command is invisible to a stream that is already open. That is the next piece of
 WP-06 and it is why the package is `partial`.
 
+### 2.2 Rotation: the ack gate, and why it is not enforced
+
+The contract says a rotated token is valid only after the first acked frame. This
+daemon does not enforce that, and the reason is a failure mode rather than an
+omission.
+
+Today a refresh retires the presented row before minting a new pair, so the old
+token cannot be replayed and the new one is live immediately. Making the new one
+live only on an ack adds a state to every bearer: *minted but not yet usable*.
+The phone would have to present a token it cannot yet use, receive a frame,
+acknowledge it, and only then be authenticated - or wait for a grace period. If
+the ack is lost (app backgrounded, connection dropped at the wrong moment, a
+phone that crashes mid-rotate), the phone has a token it cannot use and no way to
+get another without pairing again.
+
+The threat the gate would close is narrow: an attacker who observes the rotation
+response in the same instant, on the same connection, and races the phone to
+acknowledge first. The controls that do close real threats are already in place -
+retire-before-mint, single-use pairing codes, and the machine-id contrast test
+that refuses a token minted by another install.
+
+So the rule is recorded as a deliberate deviation, with its alternative named. If
+the operator wants it anyway, the shape that does not lock the phone out is a
+short grace period (30 seconds) before the token becomes usable, not an
+indefinite wait for an ack.
+
 ## 3. Device upload
 
 | Route | Payload | Notes |
