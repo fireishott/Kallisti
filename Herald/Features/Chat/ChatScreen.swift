@@ -1292,12 +1292,12 @@ struct ChatScreen: View {
     /// keep their array-relative order.
     nonisolated static func transcriptRows(_ messages: [Message]) -> [Message] {
         let active = messages.last(where: { $0.isStreaming })
-        let sorted = messages.enumerated().sorted { lhs, rhs in
-            let lTime = lhs.element.timestamp.timeIntervalSince1970
-            let rTime = rhs.element.timestamp.timeIntervalSince1970
-            if lTime != rTime { return lTime < rTime }
-            return lhs.offset < rhs.offset
-        }.map(\.element)
+        // Array order, not timestamps. Sorting here re-derived an order the merge
+        // had already decided, and the two clocks differ: an optimistic row carries
+        // the phone clock, a fetched row carries the daemon clock. A prompt stored
+        // a few hundred milliseconds before the phone's own timestamp sorted below
+        // the reply it produced, which reads as a transcript out of order.
+        let sorted = messages
         // The live placeholder stays pinned at the bottom of the visible
         // transcript even though its creation timestamp is the OLDEST part of
         // the turn - it is the current activity and must not jump through the
