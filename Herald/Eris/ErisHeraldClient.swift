@@ -341,7 +341,18 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     func loadConversation(id: UUID) async throws -> Conversation {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
-        guard let conversationID = conversationIDByLocalID[id] else {
+        var conversationID = conversationIDByLocalID[id]
+        if conversationID == nil {
+            // The id may be a stable id derived from a conversation the map has
+            // never seen - every chat created before the id scheme was unified.
+            // Ask the daemon which one it is, then bind it.
+            if let page = try? await client.conversations() {
+                conversationID = page.conversations
+                    .first(where: { Self.stableUUID(from: $0.id) == id })?
+                    .id
+            }
+        }
+        guard let conversationID else {
             return Conversation(id: id, title: "New Chat")
         }
         let detail = try await client.conversation(id: conversationID)
@@ -537,7 +548,10 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     private func localID(forConversation conversationID: String) -> UUID {
         if let existing = localIDByConversationID[conversationID] { return existing }
-        let local = UUID()
+        // The same id the session list derives, so a row in the drawer and a chat
+        // in the map are the same chat. A random UUID here meant opening an old
+        // chat asked the map for an id it had never stored.
+        let local = Self.stableUUID(from: conversationID)
         localIDByConversationID[conversationID] = local
         conversationIDByLocalID[local] = conversationID
         return local
