@@ -52,7 +52,11 @@ struct SettingsScreen: View {
                         preferencesSection
                         agentToolsSection
                         voiceSection
-                        notesSection
+                        // Notes Sync is an iPad feature: on the phone every control in it
+                        // points at a host-side sync that has no phone counterpart.
+                        if DeviceClass.isPad {
+                            notesSection
+                        }
                         locationSection
                         privacySection
                         aboutSection
@@ -103,12 +107,12 @@ struct SettingsScreen: View {
         // .awaitingConfirmation state; Cancel is a pure state reset with
         // zero network calls.
         .alert(
-            "Restart Hermes Agent?",
+            "Restart the agent?",
             isPresented: restartConfirmationBinding,
             presenting: awaitingPreflight
         ) { preflight in
             Button("Cancel", role: .cancel) { cancelHermesRestart() }
-            Button("Restart Hermes", role: .destructive) {
+            Button("Restart Agent", role: .destructive) {
                 Task { await confirmHermesRestart(preflight: preflight) }
             }
         } message: { preflight in
@@ -116,7 +120,7 @@ struct SettingsScreen: View {
                 Text("Profile: \(preflight.profile)")
                 Text("Service unit: \(preflight.unit)")
                 if preflight.activeRequestCount > 0 {
-                    Text("Hermes is handling \(preflight.activeRequestCount) active request\(preflight.activeRequestCount == 1 ? "" : "s"). Restarting will interrupt them.")
+                    Text("The daemon is handling \(preflight.activeRequestCount) active request\(preflight.activeRequestCount == 1 ? "" : "s"). Restarting will interrupt them.")
                 }
                 Text("Active chat, voice, tool activity, and streams will be interrupted.")
                 if let notice = stalePreflightNotice {
@@ -210,7 +214,7 @@ struct SettingsScreen: View {
                                 .foregroundStyle(hostStatusRowColor)
                                 .frame(width: 20, alignment: .center)
 
-                            Text("Hermes Host")
+                            Text("Agent Host")
                                 .font(Design.Typography.callout)
                                 .foregroundStyle(Design.Colors.foreground)
 
@@ -310,80 +314,51 @@ struct SettingsScreen: View {
     // MARK: - Environment
 
     private var relaySection: some View {
-        SettingsSectionView(title: "Relay") {
+        SettingsSectionView(title: "Daemon") {
             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
                 if pairingStore.isPaired {
                     settingsRow(
-                        icon: "point.3.connected.trianglepath.dotted",
+                        icon: "server.rack",
                         iconColor: Design.Colors.foreground,
-                        title: "Active Relay",
-                        value: pairingStore.pairedRelayConfiguration?.hostDisplayName ?? relayConfiguration.relayOriginLabel
+                        title: "Paired to",
+                        value: pairingStore.pairedRelayConfiguration?.hostDisplayName
+                            ?? pairingStore.pairedRelayConfiguration?.baseURLString
+                            ?? "Unknown"
                     )
                     sectionDivider
                     settingsRow(
                         icon: "link",
                         iconColor: Design.Colors.secondaryForeground,
-                        title: "Base URL",
-                        value: pairingStore.pairedRelayConfiguration?.baseURLString ?? relayConfiguration.activeBaseURLString ?? "Not configured"
+                        title: "Address",
+                        value: pairingStore.pairedRelayConfiguration?.baseURLString
+                            ?? settingsStore.settings.relayConfiguration.activeBaseURLString
+                            ?? "Not configured"
                     )
-                    Text("Disconnect Kallisti before changing the relay configuration.")
+                    Text("Disconnect Kallisti before changing the daemon address.")
                         .font(Design.Typography.caption)
                         .foregroundStyle(Design.Colors.secondaryForeground)
                         .padding(.top, Design.Spacing.xs)
                 } else {
                     VStack(alignment: .leading, spacing: Design.Spacing.xs) {
-                        Text("CONNECTION MODE").brandEyebrow()
+                        TextField(customRelayURLPlaceholder, text: customRelayURLBinding)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
+                            .autocorrectionDisabled()
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                            .padding(Design.Spacing.md)
+                            .background(Design.Colors.background)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                                    .stroke(Design.Colors.border, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
 
-                        Picker("Connection Mode", selection: connectionModeBinding) {
-                            ForEach(relayConfiguration.selectableConnectionModes, id: \.self) { mode in
-                                Text(mode.compactLabel).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.segmented)
+                        Text("The address of your Kallisti daemon, like https://host.tailnet.ts.net. Pairing happens on the Connect screen.")
+                            .font(Design.Typography.helper)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-
-                    sectionDivider
-
-                    if relayConfiguration.connectionMode.usesCustomRelayURL {
-                        VStack(alignment: .leading, spacing: Design.Spacing.xs) {
-                            TextField(customRelayURLPlaceholder, text: customRelayURLBinding)
-                                .textInputAutocapitalization(.never)
-                                .keyboardType(.URL)
-                                .autocorrectionDisabled()
-                                .font(Design.Typography.callout)
-                                .foregroundStyle(Design.Colors.foreground)
-                                .padding(Design.Spacing.md)
-                                .background(Design.Colors.background)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
-                                        .stroke(Design.Colors.border, lineWidth: 1)
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
-
-                            if let hint = relayConfiguration.connectionMode.relayURLHint {
-                                Text(hint)
-                                    .font(Design.Typography.helper)
-                                    .foregroundStyle(Design.Colors.secondaryForeground)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Text(relayConfiguration.connectionMode.shortDescription)
-                                .font(Design.Typography.caption)
-                                .foregroundStyle(Design.Colors.secondaryForeground)
-                        }
-                    } else if let hostedRelayBaseURL = relayConfiguration.hostedRelayBaseURL {
-                        settingsRow(
-                            icon: "cloud",
-                            iconColor: Design.Colors.foreground,
-                            title: "Hosted Relay",
-                            value: hostedRelayBaseURL
-                        )
-                    }
-
-                    Text(backgroundDeliveryNote)
-                        .font(Design.Typography.caption)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                        .fixedSize(horizontal: false, vertical: true)
 
                     if let relayValidationMessage {
                         Text(relayValidationMessage)
@@ -447,7 +422,7 @@ struct SettingsScreen: View {
     private var hostStatusRowValue: String {
         switch hostStore.connectionState {
         case .online, .offline:
-            return hostStore.currentHost?.resolvedDisplayName ?? "Hermes Host"
+            return hostStore.currentHost?.resolvedDisplayName ?? "Agent Host"
         case .unreachable:
             return "Status unavailable"
         case .notConnected:
@@ -491,7 +466,7 @@ struct SettingsScreen: View {
                 // Restart connector — legacy flow. The facade only allowlists
                 // `hermes|connector`, so there is deliberately NO "Restart
                 // Relay" row: the relay is embedded in the connector.
-                gatewayRestartButton(label: "Restart Connector", target: "connector")
+                gatewayRestartButton(label: "Restart Daemon", target: "connector")
 
                 sectionDivider
 
@@ -591,7 +566,7 @@ struct SettingsScreen: View {
                             Text("New version available")
                                 .font(Design.Typography.callout)
                                 .foregroundStyle(Design.Colors.foreground)
-                            Text("Hermes Agent \(latest)")
+                            Text("Agent \(latest)")
                                 .font(Design.Typography.caption)
                                 .foregroundStyle(Design.Colors.secondaryForeground)
                         }
@@ -922,7 +897,7 @@ struct SettingsScreen: View {
                 let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
                     ?? pairingStore.pairedRelayConfiguration?.baseURLString
                 guard let relayBase else {
-                    gwRestartResult = "No relay configured."
+                    gwRestartResult = "No daemon configured."
                     return
                 }
                 let token = await sessionStore.currentAccessToken()
@@ -999,7 +974,7 @@ struct SettingsScreen: View {
         }
         .buttonStyle(.plain)
         .disabled(isHermesRestartBusy)
-        .accessibilityIdentifier("settings.restartHermes")
+        .accessibilityIdentifier("settings.restartAgent")
     }
 
     @ViewBuilder
@@ -1030,7 +1005,7 @@ struct SettingsScreen: View {
     private var restartRowLabel: String {
         switch restartState {
         case .idle, .awaitingConfirmation, .healthy, .failed:
-            return "Restart Hermes Agent"
+            return "Restart Agent"
         case .loadingPreflight:
             return "Loading…"
         case .inProgress:
@@ -1093,10 +1068,10 @@ struct SettingsScreen: View {
     private func phaseDisplayLabel(_ phase: RestartPhase?) -> String {
         switch phase {
         case .accepted: return "Queued…"
-        case .stopping: return "Stopping Hermes…"
-        case .starting: return "Starting Hermes…"
-        case .verifying: return "Verifying Hermes…"
-        case .healthy: return "Hermes is ready"
+        case .stopping: return "Stopping the daemon…"
+        case .starting: return "Starting the daemon…"
+        case .verifying: return "Verifying the daemon…"
+        case .healthy: return "The daemon is ready"
         case .failed: return "Restart failed"
         case nil: return "Restarting…"
         }
@@ -1108,7 +1083,7 @@ struct SettingsScreen: View {
                 .font(.system(size: 14))
                 .foregroundStyle(Design.Colors.success)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Hermes is ready")
+                Text("The daemon is ready")
                     .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.foreground)
                 Text("Conversation, models, and logs reloaded.")
@@ -1262,7 +1237,7 @@ struct SettingsScreen: View {
         await chatStore.reloadConversationAfterRestart()
         await modelStore.loadModels(force: true)
         await hostStore.refresh()
-        chatStore.appendLog(level: .info, "Hermes gateway restart verified healthy — state reloaded")
+        chatStore.appendLog(level: .info, "Daemon restart verified healthy — state reloaded")
 
         // Auto-clear the ready card after a moment.
         try? await Task.sleep(for: .seconds(4))
@@ -1277,7 +1252,7 @@ struct SettingsScreen: View {
 
     private static func describeRestartError(_ error: Error) -> String {
         if error is TimeoutError {
-            return "The gateway did not respond in time. Check that the connector is reachable, then try again."
+            return "The daemon did not respond in time. Try again."
         }
         if let clientError = error as? RelayAPIClient.ClientError {
             return clientError.errorDescription
@@ -1285,7 +1260,7 @@ struct SettingsScreen: View {
         }
         if error is DecodingError {
             // Never surface DecodingError text or raw server payloads.
-            return "The gateway returned an unexpected response. Try again, or check the connector version."
+            return "The daemon returned an unexpected response. Try again."
         }
         return error.localizedDescription
     }
@@ -1326,7 +1301,7 @@ struct SettingsScreen: View {
                         .frame(width: 20, alignment: .center)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Hermes Host")
+                        Text("Agent Host")
                             .font(Design.Typography.callout)
                             .foregroundStyle(Design.Colors.foreground)
                         if let host = hostStore.currentHost {
@@ -1346,11 +1321,12 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
-                // Connector Version
+                // The daemon's own version. Eris is the whole backend: there is
+                // no separate connector process to name here.
                 settingsRow(
-                    icon: "arrow.triangle.swap",
+                    icon: "server.rack",
                     iconColor: .blue,
-                    title: "Connector",
+                    title: "Daemon",
                     value: hostStore.currentHost?.connectorVersion ?? "—"
                 )
 
@@ -1359,8 +1335,8 @@ struct SettingsScreen: View {
                 // Hermes Agent Version
                 settingsRow(
                     icon: "brain.head.profile",
-                    iconColor: .purple,
-                    title: "Hermes Agent",
+                    iconColor: Design.Colors.accent,
+                    title: "Agent",
                     value: hostStore.currentHost?.heraldVersion ?? "—"
                 )
 
@@ -1454,13 +1430,15 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
-                // Relay URL
+                // The daemon this phone is paired to. One address, one daemon:
+                // there is no relay in front of it any more.
                 settingsRow(
-                    icon: "point.3.connected.trianglepath.dotted",
+                    icon: "network",
                     iconColor: Design.Colors.foreground,
-                    title: "Relay",
-                    value: pairingStore.pairedRelayConfiguration?.hostDisplayName
-                        ?? settingsStore.settings.relayConfiguration.relayOriginLabel
+                    title: "Address",
+                    value: pairingStore.pairedRelayConfiguration?.baseURLString
+                        ?? settingsStore.settings.relayConfiguration.activeBaseURLString
+                        ?? "Not configured"
                 )
 
                 sectionDivider
@@ -1955,10 +1933,6 @@ struct SettingsScreen: View {
                     title: "Streaming",
                     isOn: useStreamingBinding
                 )
-
-                sectionDivider
-
-                chatDisplayModePicker
 
                 sectionDivider
 
