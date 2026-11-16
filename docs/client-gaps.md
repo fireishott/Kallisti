@@ -163,3 +163,58 @@ With this build the app can do every interaction the daemon contract defines. Wh
 is still missing is not a frame: it is the browser install path (WP-20), the local
 engine flag (WP-23), and the WP-06 daemon-side proof that waits on a permission
 change.
+
+## Build 170 bug report: transcript loses history, repeats, and reorders
+
+Reported by the operator on 2026-11-16 while using build 170. Five symptoms, and
+the code says why.
+
+### 1. Messages gone when you leave the chat and come back
+
+`ErisHeraldClient.conversationIDByLocalID` is a **plain in-memory dictionary**.
+The mapping from a local chat id to an Eris conversation id lives only in RAM, so
+after a relaunch - or whenever the client object is recreated - the map is empty,
+`loadConversation(id:)` hits its `guard let conversationID ... else` branch and
+returns `Conversation(title: "New Chat")` with no messages at all.
+
+The daemon has the history the whole time (`GET /v1/conversations/{id}`). The app
+forgets which conversation to ask for.
+
+### 2. The first reply disappears
+
+`sendMessage` reads `conversationIDByLocalID[conversationID]` and passes whatever it
+finds to `createTurn(text:conversation:)`. When the mapping is missing the turn goes
+out with **no conversation**, so the daemon writes a job and an answer with no
+transcript row: the reply arrives on the stream and exists nowhere afterwards. That
+is a disappearing reply, and it is the same root cause as 1.
+
+`ensureConversation(id:)` exists and does the right thing, but nothing guarantees it
+ran before the first send.
+
+### 3. The same message appears three times
+
+The same local message is rendered repeatedly, which is what an optimistic insert
+plus a stream echo plus a history merge looks like when no row carries a stable id
+the three views can be matched on. The daemon already returns `id`, `job_id` and
+`client_message_id`; the transcript merge has to key on them.
+
+### 4. Messages out of order
+
+Order is whatever the merge produced rather than `created_at` with a stable
+tiebreak. Two messages in the same second need `id` as the second key.
+
+### 5. No way to load older messages by scrolling up
+
+The daemon's `GET /v1/conversations/{id}` returns a bounded window and **takes no
+cursor**, so the app cannot ask for what came before. That needs a `before` query
+parameter (and the reply should say whether more exists), then the app asks for the
+next page when the transcript reaches the top.
+
+### The order to fix them
+
+1. Persist the conversation map (UserDefaults, keyed by local id, with the reverse
+   map rebuilt on load). This alone fixes 1 and 2.
+2. `sendMessage` awaits `ensureConversation(id:)` and fails loudly if it cannot, so
+   a turn never goes out without a conversation.
+3. Merge on `id`/`job_id`/`client_message_id`, sort by `(created_at, id)`.
+4. Daemon: `before` cursor on the conversation route; app: page on scroll to top.
