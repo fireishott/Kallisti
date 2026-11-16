@@ -39,6 +39,8 @@ pub enum Method {
     Ping,
     /// Stop a turn this device owns.
     TurnCancel,
+    /// Where a turn this device owns has got to.
+    TurnState,
 }
 
 impl Method {
@@ -49,6 +51,7 @@ impl Method {
             Self::ModelsList => "models.list",
             Self::Ping => "ping",
             Self::TurnCancel => "turn.cancel",
+            Self::TurnState => "turn.state",
         }
     }
 
@@ -59,6 +62,7 @@ impl Method {
             "models.list" => Some(Self::ModelsList),
             "ping" => Some(Self::Ping),
             "turn.cancel" => Some(Self::TurnCancel),
+            "turn.state" => Some(Self::TurnState),
             _ => None,
         }
     }
@@ -106,7 +110,7 @@ pub fn parse_envelope(body: &Value) -> Result<(Method, Value), Refusal> {
             404,
             "method_unknown",
             format!(
-                "`{name}` is not a method. The methods are: models.list, ping, turn.cancel"
+                "`{name}` is not a method. The methods are: models.list, ping, turn.cancel, turn.state"
             ),
         )
     })?;
@@ -150,6 +154,32 @@ pub fn dispatch(
                     format!("the model catalogue could not be read: {}", error.message()),
                 )
             })
+        }
+        Method::TurnState => {
+            let job_id = params
+                .get("job_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| {
+                    Refusal::new(400, "job_id_missing", "turn.state needs a `job_id`")
+                })?;
+            let store = service.hub().store();
+            let job = match store.job(job_id) {
+                Ok(Some(job)) if job.device_id.as_deref() == Some(context.device_id.as_str()) => job,
+                Ok(_) => return Err(from_device_error(DeviceError::job_not_found())),
+                Err(error) => {
+                    return Err(Refusal::new(
+                        503,
+                        "db_unavailable",
+                        format!("cannot read job state: {error}"),
+                    ));
+                }
+            };
+            Ok(json!({
+                "job_id": job.id,
+                "state": job.status,
+                "conversation_id": job.conversation_id,
+            }))
         }
         Method::TurnCancel => {
             let job_id = params
@@ -238,6 +268,14 @@ mod tests {
     }
 
     /// `turn.cancel` without a job id is refused before any work is attempted.
+    /// turn.state is in the vocabulary, so a phone can poll one method instead of
+    /// inventing a route for "is it done".
+    #[test]
+    fn turn_state_is_a_method() {
+        assert_eq!(Method::parse("turn.state"), Some(Method::TurnState));
+        assert_eq!(Method::TurnState.as_str(), "turn.state");
+    }
+
     #[test]
     fn a_cancel_without_a_job_id_is_refused() {
         let refused = crate::device::rpc::parse_envelope(&serde_json::json!({
