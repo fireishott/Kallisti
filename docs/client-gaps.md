@@ -69,3 +69,16 @@ answers fourteen.
 
 What is still uncommitted in that tree is someone else's in-flight work - the
 project file, ChatScreen, the Notes screens - and it was left alone on purpose.
+
+## Build 168
+
+Uploaded 2026-11-16 00:50 (delivery 817b1054), 1.6.0 build 168, carrying the
+`turn.step` decode: a step now lands in the Thought process row as an activity
+line. Scripts `tf-168-oneshot.sh` / `release-168.sh` and the build number were
+bumped in `project.yml` and in `Herald.xcodeproj/project.pbxproj` (xcodegen is not
+installed on that Mac, so the pbxproj is the file that counts).
+
+What to check on the phone: a turn whose model emits no reasoning should still
+show step lines in the Thought process row. If it stays empty, the decode is not
+the last link and the next place to look is the view that consumes
+`toolActivity`.
