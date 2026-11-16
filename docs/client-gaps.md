@@ -218,3 +218,24 @@ next page when the transcript reaches the top.
    a turn never goes out without a conversation.
 3. Merge on `id`/`job_id`/`client_message_id`, sort by `(created_at, id)`.
 4. Daemon: `before` cursor on the conversation route; app: page on scroll to top.
+
+## Build 171: the transcript fixes, part one
+
+Uploaded 2026-11-16 01:23. What changed, and what it addresses:
+
+| Symptom | Fix | Where |
+|---|---|---|
+| Messages gone when you come back | the local-to-Eris conversation map is persisted in UserDefaults and rebuilt on launch | `ErisHeraldClient` |
+| The first reply disappears | `sendMessage` binds a conversation before creating the turn and refuses to send without one | `ErisHeraldClient` |
+| No way to load older messages | `GET /v1/conversations/{id}` now reads from the newest end and accepts `x-before: <message id>`, answering `has_more` | daemon, `chat::load_page` |
+
+Still open, and next:
+
+- **the same message rendered three times** - the transcript merge needs to key on
+  `id` / `job_id` / `client_message_id`;
+- **order** - sort by `(created_at, id)`;
+- **the app does not use the cursor yet**: the daemon can page, the phone still asks
+  for one page only.
+
+Verified on the daemon: the newest page of a 26-message conversation came back as
+26 rows, and `x-before` the oldest of those returned the 4 older messages.
