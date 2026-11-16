@@ -17,6 +17,8 @@ struct MessageAttachmentsView: View {
     @Environment(AttachmentService.self) private var attachmentService
 
     @State private var previewURL: IdentifiableURL?
+    /// The attachment open in the PDF editor, when the operator tapped one.
+    @State private var editingPDF: ErisPDFTarget?
     @State private var fullScreenImage: FullScreenImagePayload?
 
     private var images: [MessageAttachment] { attachments.filter(\.isImage) }
@@ -52,6 +54,9 @@ struct MessageAttachmentsView: View {
             )
         }
         .quickLookPreview($previewURL)
+        .sheet(item: $editingPDF) { target in
+            ErisPDFEditor(erisID: target.id, fileName: target.fileName)
+        }
     }
 
     /// Whether this file came from the paired daemon rather than a relay.
@@ -110,6 +115,12 @@ struct MessageAttachmentsView: View {
             data = await attachmentService.data(for: attachment)
         }
         guard let data else { return }
+        // A PDF that came from the daemon opens where it can be filled in; Quick
+        // Look shows a form but will not let a field be typed into.
+        if attachment.mimeType == "application/pdf", let id = erisID(of: attachment) {
+            editingPDF = ErisPDFTarget(id: id, fileName: attachment.fileName)
+            return
+        }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("KallistiPreview", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(sanitized(attachment.fileName))
@@ -784,3 +795,137 @@ struct ErisAttachmentImage: View {
         }
     }
 }
+
+
+// MARK: - A PDF a turn attached, opened for filling in
+
+/// Which file the editor is showing.
+struct ErisPDFTarget: Identifiable {
+    let id: String
+    let fileName: String
+}
+
+/// A PDF from a turn, with live form fields and a way to share what you typed.
+///
+/// PDFKit renders AcroForm fields as editable controls, so a form can be filled in
+/// without a field editor of our own. "Save" writes the edited document - the
+/// annotations PDFKit made are part of the file once written - and hands it to the
+/// share sheet, where Save to Files, Mail and everything else lives.
+struct ErisPDFEditor: View {
+    let erisID: String
+    let fileName: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var document: PDFDocument?
+    @State private var failure: String?
+    @State private var shareURL: URL?
+    @State private var filling = false
+
+    /// How many form fields the document carries, so the toolbar can say the form
+    /// is fillable instead of leaving the operator to discover it.
+    private var filledFieldCount: Int {
+        guard let document else { return 0 }
+        var count = 0
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations where annotation.widgetFieldType != nil {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let document {
+                    PDFKitView(document: document)
+                } else if let failure {
+                    ContentUnavailableView("Could not open this PDF", systemImage: "doc", description: Text(failure))
+                } else {
+                    ProgressView()
+                }
+            }
+            .navigationTitle(fileName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if filledFieldCount > 0 {
+                        Label("\(filledFieldCount) fields", systemImage: "square.and.pencil")
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        Task { await prepareShare() }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .disabled(document == nil || filling)
+                }
+            }
+            .task { await load() }
+            .sheet(item: Binding(
+                get: { shareURL.map(IdentifiableURL.init) },
+                set: { _ in shareURL = nil }
+            )) { wrapped in
+                ShareSheet(items: [wrapped.url])
+            }
+        }
+    }
+
+    private func load() async {
+        guard let client = ErisDaemonStore.shared.clientForPairedDaemon() else {
+            failure = "this phone is not paired with a daemon"
+            return
+        }
+        do {
+            let data = try await client.attachmentBytes(id: erisID)
+            guard let pdf = PDFDocument(data: data) else {
+                failure = "the bytes were not a PDF this phone can read"
+                return
+            }
+            document = pdf
+        } catch {
+            failure = (error as? ErisError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Write what has been typed, then offer it to the share sheet.
+    private func prepareShare() async {
+        guard let document else { return }
+        filling = true
+        defer { filling = false }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("KallistiPreview", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(fileName.isEmpty ? "document.pdf" : fileName)
+        guard document.write(to: url) else {
+            failure = "the edited PDF could not be written"
+            return
+        }
+        shareURL = url
+    }
+}
+
+/// PDFKit's view, with form fields live and pages fitted.
+struct PDFKitView: UIViewRepresentable {
+    let document: PDFDocument
+
+    func makeUIView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.document = document
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        return view
+    }
+
+    func updateUIView(_ view: PDFView, context: Context) {
+        if view.document !== document { view.document = document }
+    }
+}
+
+
