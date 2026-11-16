@@ -129,6 +129,11 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     continuation.yield(.artifactDiff(diff.codeDiff))
                 case .artifactPage(let html, let cap):
                     continuation.yield(.artifactPage(html: html, heightCap: cap))
+                case .approval(let approval):
+                    // Visible now; the decide card is its own commit.
+                    continuation.yield(.toolActivity(
+                        "approval needed: " + approval.tool + " " + approval.arguments
+                    ))
                 case .ask(let question, let choices, let requestID, let multi):
                     // The app already draws a clarify card for this exact shape.
                     continuation.yield(.clarifyRequest(

@@ -282,11 +282,13 @@ enum ErisFrame: Equatable, Sendable {
     case artifactPage(html: String, heightCap: Int?)
     /// The turn is waiting on the operator: turn.ask.
     case ask(question: String, choices: [String]?, requestID: String, multi: Bool)
+    /// A command is parked until a person allows or denies it: turn.approval.
+    case approval(ErisApproval)
 
     /// Whether this frame ends the stream. Matches `FrameKind::is_terminal`.
     var isTerminal: Bool {
         switch self {
-        case .delta, .reasoning, .step, .artifactDiff, .artifactPage, .ask: return false
+        case .delta, .reasoning, .step, .artifactDiff, .artifactPage, .ask, .approval: return false
         case .done, .error, .cancelled: return true
         }
     }
@@ -296,7 +298,7 @@ enum ErisFrame: Equatable, Sendable {
         switch self {
         case .delta(let text): return text
         case .done(let text, _): return text
-        case .reasoning, .step, .artifactDiff, .artifactPage, .ask, .error, .cancelled: return nil
+        case .reasoning, .step, .artifactDiff, .artifactPage, .ask, .approval, .error, .cancelled: return nil
         }
     }
 
@@ -350,6 +352,16 @@ enum ErisFrame: Equatable, Sendable {
                 requestID: object["ask_id"] as? String ?? "",
                 multi: object["multi"] as? Bool ?? false
             )
+        case "turn.approval":
+            let object = try ErisJSON.object(data)
+            return .approval(ErisApproval(
+                id: object["approval_id"] as? String ?? "",
+                tool: object["scope"] as? String ?? "tool",
+                arguments: object["command"] as? String ?? "",
+                reason: object["reason"] as? String,
+                createdAt: object["created_at"] as? String ?? "",
+                expiresAt: object["deadline"] as? String
+            ))
         case "cancelled":
             let object = (try? ErisJSON.object(data)) ?? [:]
             return .cancelled(reason: object["reason"] as? String)
