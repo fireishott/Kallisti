@@ -5584,6 +5584,26 @@ pub async fn upload_sensor_batch(
         Ok(rows) => rows,
         Err(message) => return DeviceError::bad_request("sensor_batch_invalid", message).into_response(),
     };
+    // The contract's `off` is applied here, before the write: a value that
+    // reached the table has already leaked into every backup of it. The mapping
+    // is read once per distinct key rather than once per row.
+    let mut rows = rows;
+    let mut levels: std::collections::HashMap<String, crate::sensitivity::Level> =
+        std::collections::HashMap::new();
+    for row in &rows {
+        let key = row.key.clone().unwrap_or_else(|| row.kind.clone());
+        if !levels.contains_key(&key) {
+            let level = crate::sensitivity::level_for(service.engine().db(), &key)
+                .unwrap_or(crate::sensitivity::Level::Ask);
+            levels.insert(key, level);
+        }
+    }
+    crate::sensitivity::apply_to_batch(&mut rows, |key| {
+        levels
+            .get(key)
+            .copied()
+            .unwrap_or_else(|| crate::sensitivity::default_for(key))
+    });
     let oldest = rows.iter().map(|row| row.recorded_at.clone()).min();
     let newest = rows.iter().map(|row| row.recorded_at.clone()).max();
     match store.record_batch(&rows) {

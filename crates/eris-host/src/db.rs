@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 37;
+pub const SCHEMA_VERSION: i64 = 38;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -272,6 +272,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 37,
         name: "0037_token_minted_for",
         sql: MIGRATION_0037,
+    },
+    Migration {
+        version: 38,
+        name: "0038_sensitivity_map",
+        sql: MIGRATION_0038,
     },
 ];
 
@@ -1230,38 +1235,6 @@ const MIGRATION_0035: &str = r"
 ALTER TABLE steward_duties ADD COLUMN watch_rounds INTEGER NOT NULL DEFAULT 0;
 ";
 
-/// WP-02: how far a client has consumed each turn. Absent means zero, which is
-/// the same state as "paired a moment ago and heard nothing yet".
-///
-/// WP-07: the daemon instance a token was minted by, so a token lifted from
-/// another install is refused here. Null means a row written before this column
-/// existed, which is treated as "minted here" so a live phone is never locked out
-/// by an upgrade.
-///
-/// WP-07: the daemon instance a token was minted by, so a token lifted from
-/// another install is refused here. Null means a row written before this column
-/// existed, which is treated as "minted here" so a live phone is never locked out
-/// by an upgrade.
-///
-/// WP-09: every sensor kind the phone reports, in one table, so a batch is one
-/// transaction. Location and health keep their own projections; this is the
-/// record of what arrived.
-///
-/// Down path: `DROP TABLE device_events;`.
-const MIGRATION_0038: &str = r"
-CREATE TABLE device_events (
-    id           TEXT PRIMARY KEY NOT NULL,
-    kind         TEXT NOT NULL,
-    key          TEXT,
-    value        REAL,
-    unit         TEXT,
-    sensitivity  TEXT,
-    recorded_at  TEXT NOT NULL,
-    received_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-CREATE INDEX idx_device_events_kind ON device_events (kind, recorded_at DESC);
-";
-
 /// WP-07: the daemon instance a token was minted by, so a token lifted from
 /// another install is refused here. Null means a row written before this column
 /// existed, which is treated as "minted here" so a live phone is never locked out
@@ -1270,6 +1243,18 @@ CREATE INDEX idx_device_events_kind ON device_events (kind, recorded_at DESC);
 /// Down path: `ALTER TABLE auth_tokens DROP COLUMN minted_for;`.
 const MIGRATION_0037: &str = r"
 ALTER TABLE auth_tokens ADD COLUMN minted_for TEXT;
+";
+
+/// WP-10: the operator's own answer about a context key, cached so the daemon
+/// stops asking. A mapping change arrives as an ordinary upload.
+///
+/// Down path: `DROP TABLE sensitivity_map;`.
+const MIGRATION_0038: &str = r"
+CREATE TABLE sensitivity_map (
+    key        TEXT PRIMARY KEY NOT NULL,
+    level      TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 ";
 
 /// Down path: `ALTER TABLE jobs DROP COLUMN acked_seq;`. Nothing else reads the
