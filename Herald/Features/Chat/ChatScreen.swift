@@ -197,6 +197,8 @@ struct ChatScreen: View {
     @Binding var isSessionDrawerOpen: Bool
 
     @State private var pendingAttachments: [PendingAttachment] = []
+    /// Build 170: approvals the daemon is holding.
+    @State private var showingApprovals = false
 
     /// Backed by ChatStore so the draft survives view recreation during reconnects.
     private var messageTextBinding: Binding<String> {
@@ -381,6 +383,9 @@ struct ChatScreen: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        .sheet(isPresented: $showingApprovals) {
+            ErisApprovalsSheet()
+        }
         .toolbarBackground(.hidden, for: .navigationBar)
         }
 
@@ -603,6 +608,20 @@ struct ChatScreen: View {
 
     // MARK: - Toolbar
 
+    /// The daemon holds commands until a person decides. This is the way in.
+    private var approvalsButton: some View {
+        Button {
+            showingApprovals = true
+        } label: {
+            Image(systemName: "checkmark.shield")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Design.Colors.foreground)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Approvals")
+    }
+
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if DeviceClass.isPhone {
@@ -660,6 +679,7 @@ struct ChatScreen: View {
             HStack(spacing: Design.Spacing.sm) {
                 catchUpButton
                 canvasButton
+                approvalsButton
             }
         }
     }
@@ -1560,7 +1580,7 @@ struct ChatScreen: View {
             ProgressView()
                 .scaleEffect(0.6)
                 .tint(Design.Colors.warning)
-            Text("Hermes is restarting — your message will send when it's back.")
+            Text("The daemon is restarting — your message will send when it's back.")
                 .font(Design.Typography.caption)
                 .foregroundStyle(Design.Colors.warning)
             Spacer()
@@ -1643,25 +1663,25 @@ struct ChatScreen: View {
     private var connectionBannerTitle: String {
         switch hostStore.connectionState {
         case .online:
-            return "Hermes host online"
+            return "daemon online"
         case .offline:
-            return "Hermes host offline"
+            return "daemon offline"
         case .unreachable:
             switch settingsStore.settings.relayConfiguration.connectionMode {
             case .tailscale:
-                return "Tailnet relay unreachable"
+                return "Daemon unreachable"
             case .selfHostedRelay:
-                return "Relay URL unreachable"
+                return "Daemon address unreachable"
             }
         case .notConnected:
-            return "No Hermes host connected"
+            return "No daemon connected"
         }
     }
 
     private var connectionBannerMessage: String {
         switch hostStore.connectionState {
         case .online:
-            return "Your Hermes host is connected."
+            return "Your daemon is connected."
         case .offline:
             return settingsStore.settings.relayConfiguration.connectionMode.hostOfflineMessage
         case .unreachable:
