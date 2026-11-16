@@ -277,9 +277,9 @@ enum ErisFrame: Equatable, Sendable {
     /// row stayed empty on a turn whose model emitted no reasoning.
     case step(label: String, stepType: String?)
     /// Files a step changed, summarised: `path +added -removed`, comma separated.
-    case artifactDiff(summary: String, files: Int)
+    case artifactDiff(ErisDiff)
     /// A page a step wrote, with the height cap the daemon set.
-    case artifactPage(bytes: Int, heightCap: Int?)
+    case artifactPage(html: String, heightCap: Int?)
 
     /// Whether this frame ends the stream. Matches `FrameKind::is_terminal`.
     var isTerminal: Bool {
@@ -332,18 +332,13 @@ enum ErisFrame: Equatable, Sendable {
             return .step(label: label, stepType: object["step_type"] as? String)
         case "turn.artifact.diff":
             let object = try ErisJSON.object(data)
-            let files = object["files"] as? [[String: Any]] ?? []
-            let summary = files.map { file in
-                let path = file["path"] as? String ?? "file"
-                let added = file["added"] as? Int ?? 0
-                let removed = file["removed"] as? Int ?? 0
-                return "\(path) +\(added) -\(removed)"
-            }.joined(separator: ", ")
-            return .artifactDiff(summary: summary, files: files.count)
+            return .artifactDiff(ErisDiff(json: object))
         case "turn.artifact.page":
             let object = try ErisJSON.object(data)
-            let html = object["html"] as? String ?? ""
-            return .artifactPage(bytes: html.utf8.count, heightCap: object["height_cap"] as? Int)
+            return .artifactPage(
+                html: object["html"] as? String ?? "",
+                heightCap: object["height_cap"] as? Int
+            )
         case "cancelled":
             let object = (try? ErisJSON.object(data)) ?? [:]
             return .cancelled(reason: object["reason"] as? String)
@@ -783,6 +778,79 @@ enum ErisControlMapping {
                 model: role.model,
                 isAuto: role.inherits
             )
+        }
+    }
+}
+
+
+// MARK: - Turn artifacts
+
+/// One changed file, as turn.artifact.diff states it.
+struct ErisDiffFile: Sendable, Hashable {
+    let path: String
+    let added: Int
+    let removed: Int
+    let hunks: [ErisHunk]
+
+    /// The one-line form a card header shows.
+    var summary: String { path + " +" + String(added) + " -" + String(removed) }
+}
+
+/// One hunk: where it starts on each side, and the lines with their kind.
+struct ErisHunk: Sendable, Hashable {
+    let oldStart: Int
+    let oldLines: Int
+    let newStart: Int
+    let newLines: Int
+    let lines: [ErisDiffLine]
+}
+
+/// One line of a hunk, tagged the way the daemon tags it.
+struct ErisDiffLine: Sendable, Hashable {
+    enum Kind: String, Sendable { case context, add, remove }
+    let kind: Kind
+    let text: String
+}
+
+/// A whole turn.artifact.diff payload.
+struct ErisDiff: Sendable, Hashable {
+    let files: [ErisDiffFile]
+
+    /// Read the JSON the frame carries. An unknown shape becomes an empty diff
+    /// rather than a thrown error: a frame this client half understands must not
+    /// fail the stream that carries the answer.
+    init(json: [String: Any]) {
+        let raw = json["files"] as? [[String: Any]] ?? []
+        files = raw.map { file in
+            let hunks = (file["hunks"] as? [[String: Any]] ?? []).map { hunk in
+                let lines = (hunk["lines"] as? [[String: Any]] ?? []).map { line in
+                    ErisDiffLine(
+                        kind: ErisDiffLine.Kind(rawValue: line["kind"] as? String ?? "context") ?? .context,
+                        text: line["text"] as? String ?? ""
+                    )
+                }
+                return ErisHunk(
+                    oldStart: hunk["old_start"] as? Int ?? 0,
+                    oldLines: hunk["old_lines"] as? Int ?? 0,
+                    newStart: hunk["new_start"] as? Int ?? 0,
+                    newLines: hunk["new_lines"] as? Int ?? 0,
+                    lines: lines
+                )
+            }
+            return ErisDiffFile(
+                path: file["path"] as? String ?? "file",
+                added: file["added"] as? Int ?? 0,
+                removed: file["removed"] as? Int ?? 0,
+                hunks: hunks
+            )
+        }
+    }
+
+    /// Added and removed totals across every file.
+    var totals: (added: Int, removed: Int) {
+        files.reduce(into: (0, 0)) { totals, file in
+            totals.0 += file.added
+            totals.1 += file.removed
         }
     }
 }
