@@ -46,6 +46,22 @@ Rules:
 `resume.ack` is what lets the daemon release retained frames. A client that never
 acks keeps its frames until the turn is evicted, which is correct and expensive.
 
+### 2.1 What WP-06 still needs
+
+`turn.ask` exists as the `asked` frame and it does block the turn, but three
+contract requirements are not met:
+
+1. **Field names.** The frame carries `{request, answer}` rather than the flat
+   `ask_id`, `question`, `choices`, `allow_text`, `deadline`.
+2. **Deadline.** Nothing expires an unanswered question; a turn waits forever.
+3. **One open ask per turn.** Two `clarify` calls in one turn park two
+   questions, and a client that renders one card has no rule for the second.
+
+`turn.approval` does not exist as a frame at all: approvals are read from
+`GET /v1/approvals` and settled by `POST /v1/approvals/{id}/decide`, so a parked
+command is invisible to a stream that is already open. That is the next piece of
+WP-06 and it is why the package is `partial`.
+
 ## 3. Device upload
 
 | Route | Payload | Notes |
