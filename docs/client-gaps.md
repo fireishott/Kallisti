@@ -82,3 +82,15 @@ What to check on the phone: a turn whose model emits no reasoning should still
 show step lines in the Thought process row. If it stays empty, the decode is not
 the last link and the next place to look is the view that consumes
 `toolActivity`.
+
+## After build 168: the artifact decoders
+
+`cdddc210` on the MBP decodes `turn.artifact.diff` and `turn.artifact.page`, which
+WP-05 proved on the wire and no surface drew. Each lands as one run-log line: a
+diff names its files with `+added -removed`, a page names its size and height cap.
+Simulator build succeeded.
+
+Deliberately not uploaded as build 169 yet: the frames carry hunks and html, and
+shipping two TestFlight builds to watch a line of text is churn. The upload waits
+for the rendering piece - hunks behind a tap, the page in a capped WebView - so
+one build shows both.
