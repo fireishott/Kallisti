@@ -605,9 +605,22 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     isError: $0.isError
                 )
             },
-            reasoning: m.displayReasoning ?? ""
-        
-            , erisID: m.id)
+            attachments: m.attachments.map { file in
+                MessageAttachment(
+                    id: Self.stableUUID(from: file.id),
+                    kind: (file.mediaType ?? "").hasPrefix("image/") ? "image" : "file",
+                    fileName: file.name,
+                    mimeType: file.mediaType ?? "application/octet-stream",
+                    thumbnailBase64: nil,
+                    localStoragePath: nil,
+                    // A scheme of our own, so the view fetches the bytes from the
+                    // paired daemon instead of a relay that never had them.
+                    mediaURL: URL(string: "eris-attachment://" + file.id)
+                )
+            },
+            reasoning: m.displayReasoning ?? "",
+            erisID: m.id
+        )
     }
 
     static func summary(from s: ErisConversationSummary) -> SessionSummary {

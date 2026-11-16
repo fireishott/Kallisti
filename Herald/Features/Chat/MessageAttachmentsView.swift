@@ -54,9 +54,22 @@ struct MessageAttachmentsView: View {
         .quickLookPreview($previewURL)
     }
 
+    /// Whether this file came from the paired daemon rather than a relay.
+    private func erisID(of attachment: MessageAttachment) -> String? {
+        guard attachment.mediaURL?.scheme == "eris-attachment" else { return nil }
+        return attachment.mediaURL?.host
+    }
+
     @ViewBuilder
     private var imageLayout: some View {
-        if images.count == 1 {
+        if images.count == 1, let id = erisID(of: images[0]) {
+            // The daemon holds the bytes and serves them with the paired bearer,
+            // so the file opens here instead of failing against a relay that never
+            // had it.
+            ErisAttachmentImage(erisID: id)
+                .frame(maxWidth: 260, maxHeight: 320)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+        } else if images.count == 1 {
             AttachmentImageView(attachment: images[0], maxWidth: 260, maxHeight: 320) { uiImage, data, mime in
                 fullScreenImage = FullScreenImagePayload(
                     image: uiImage, fileName: images[0].fileName,
@@ -68,11 +81,17 @@ struct MessageAttachmentsView: View {
                            GridItem(.flexible(), spacing: Design.Spacing.xxs)]
             LazyVGrid(columns: columns, spacing: Design.Spacing.xxs) {
                 ForEach(images) { image in
+                    if let id = erisID(of: image) {
+                        ErisAttachmentImage(erisID: id)
+                            .frame(maxWidth: 150, maxHeight: 150)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    } else {
                     AttachmentImageView(attachment: image, maxWidth: 150, maxHeight: 150) { uiImage, data, mime in
                         fullScreenImage = FullScreenImagePayload(
                             image: uiImage, fileName: image.fileName,
                             imageData: data, mimeType: mime
                         )
+                    }
                     }
                 }
             }
@@ -713,6 +732,46 @@ private struct QuickLookPreview: UIViewControllerRepresentable {
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
         func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
             url as NSURL
+        }
+    }
+}
+
+
+// MARK: - Files a turn attached
+
+/// One file from an Eris turn, fetched over the device API.
+///
+/// The daemon holds the bytes and serves them with the paired bearer; the phone has
+/// never needed a dashboard session for its own files. The message carries
+/// eris-attachment://<id> as the handle.
+struct ErisAttachmentImage: View {
+    let erisID: String
+    @State private var image: UIImage?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else if failed {
+                Label("This file could not be opened", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .task(id: erisID) {
+            guard let client = ErisDaemonStore.shared.clientForPairedDaemon(),
+                  let data = try? await client.attachmentBytes(id: erisID)
+            else {
+                failed = true
+                return
+            }
+            image = UIImage(data: data)
+            failed = image == nil
         }
     }
 }

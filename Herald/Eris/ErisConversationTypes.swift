@@ -73,6 +73,24 @@ extension ErisConversationSummary: Decodable {
     }
 }
 
+/// One file a turn attached, as the daemon states it.
+///
+/// The bytes are not here: `GET /v1/attachments/{id}` serves them with the paired
+/// bearer. Carrying the id is what lets a phone open the file at all.
+struct ErisAttachmentRef: Equatable, Sendable, Decodable, Identifiable {
+    let id: String
+    let name: String
+    let size: Int
+    let mediaType: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case size
+        case mediaType = "media_type"
+    }
+}
+
 /// The `GET /v1/conversations` body.
 struct ErisConversationPage: Equatable, Sendable, Decodable {
     /// How many rows this page carries.
@@ -221,6 +239,8 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
     let jobID: String?
     /// The client message id the phone minted for its own row, echoed back.
     let clientMessageID: String?
+    /// Files this turn attached, in the order the daemon lists them.
+    let attachments: [ErisAttachmentRef]
 
     init(
         id: String,
@@ -231,7 +251,8 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
         reasoning: String?,
         tools: [ErisToolCall],
         jobID: String? = nil,
-        clientMessageID: String? = nil
+        clientMessageID: String? = nil,
+        attachments: [ErisAttachmentRef] = []
     ) {
         self.id = id
         self.role = role
@@ -242,6 +263,7 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
         self.tools = tools
         self.jobID = jobID
         self.clientMessageID = clientMessageID
+        self.attachments = attachments
     }
 
     /// Whether the row is the operator's question.
@@ -269,6 +291,7 @@ extension ErisConversationMessage: Decodable {
         case tools
         case jobID = "job_id"
         case clientMessageID = "client_message_id"
+        case attachments
     }
 
     init(from decoder: any Decoder) throws {
@@ -282,7 +305,8 @@ extension ErisConversationMessage: Decodable {
             reasoning: try container.decodeIfPresent(String.self, forKey: .reasoning),
             tools: try container.decodeIfPresent([ErisToolCall].self, forKey: .tools) ?? [],
             jobID: try container.decodeIfPresent(String.self, forKey: .jobID),
-            clientMessageID: try container.decodeIfPresent(String.self, forKey: .clientMessageID)
+            clientMessageID: try container.decodeIfPresent(String.self, forKey: .clientMessageID),
+            attachments: try container.decodeIfPresent([ErisAttachmentRef].self, forKey: .attachments) ?? []
         )
     }
 }

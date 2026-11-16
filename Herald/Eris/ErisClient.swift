@@ -32,6 +32,8 @@ enum ErisRoute: Equatable, Sendable {
     case createConversation
     /// `GET /v1/conversations/{id}` - one conversation and its transcript.
     case conversation(conversationID: String)
+    /// `GET /v1/attachments/{id}` - the bytes of one file a turn attached.
+    case attachment(attachmentID: String)
     /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
     case clearConversation(conversationID: String)
     /// `GET /v1/settings` - the operator-facing settings snapshot.
@@ -97,6 +99,8 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/conversations"
         case .conversation(let conversationID):
             return "/v1/conversations/\(Self.segment(conversationID))"
+        case .attachment(let attachmentID):
+            return "/v1/attachments/\(Self.segment(attachmentID))"
         case .clearConversation(let conversationID):
             return "/v1/conversations/\(Self.segment(conversationID))/clear"
         case .settings, .updateSettings:
@@ -139,7 +143,7 @@ enum ErisRoute: Equatable, Sendable {
     /// The HTTP method the daemon's router binds this path to.
     var method: String {
         switch self {
-        case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
+        case .events, .session, .conversations, .conversation, .settings, .projects, .approvals, .attachment,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .aux:
             return "GET"
@@ -365,6 +369,14 @@ actor ErisClient {
     ///
     /// Returns how many messages the daemon dropped. The conversation row itself
     /// stays: clearing a conversation is not deleting it.
+    /// The bytes of a file a turn attached.
+    ///
+    /// Served by the device API with the paired bearer, so the phone never needs a
+    /// dashboard session cookie for a file its own daemon already holds.
+    func attachmentBytes(id: String) async throws -> Data {
+        try await send(route: .attachment(attachmentID: id), form: nil)
+    }
+
     func clearConversation(id: String) async throws -> Int {
         let data = try await send(route: .clearConversation(conversationID: id), form: nil)
         return try decode(ErisClearResult.self, from: data).cleared
