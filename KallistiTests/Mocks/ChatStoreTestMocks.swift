@@ -8,6 +8,16 @@ final class MockHeraldClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus = .disconnected
     var currentConversation: Conversation?
 
+    /// Pages the store will be handed, oldest answer first, and how often it asked.
+    var pages: [([Message], Bool)] = []
+    private(set) var pagesAsked = 0
+
+    func loadOlder(conversationID: UUID, before: UUID) async -> (messages: [Message], hasMore: Bool) {
+        pagesAsked += 1
+        guard !pages.isEmpty else { return ([], false) }
+        return pages.removeFirst()
+    }
+
     func connect() async {}
     func disconnect() async {}
     func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
@@ -19,7 +29,11 @@ final class MockHeraldClient: HeraldClientProtocol {
     func ensureConversation(id: UUID) async -> Bool {
         true
     }
-    func loadConversation() async -> Conversation { Conversation(id: UUID(), title: "") }
+    func loadConversation() async -> Conversation {
+        // Hand back what the test set, so a store that reloads does not wipe the
+        // transcript a paging test just built.
+        currentConversation ?? Conversation(id: UUID(), title: "")
+    }
     func clearConversation() async throws -> Conversation { Conversation(id: UUID(), title: "") }
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation { Conversation(id: UUID(), title: "") }
     func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse {
