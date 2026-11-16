@@ -41,6 +41,8 @@ pub enum Method {
     TurnCancel,
     /// Where a turn this device owns has got to.
     TurnState,
+    /// Start a turn.
+    TurnCreate,
 }
 
 impl Method {
@@ -52,6 +54,7 @@ impl Method {
             Self::Ping => "ping",
             Self::TurnCancel => "turn.cancel",
             Self::TurnState => "turn.state",
+            Self::TurnCreate => "turn.create",
         }
     }
 
@@ -63,6 +66,7 @@ impl Method {
             "ping" => Some(Self::Ping),
             "turn.cancel" => Some(Self::TurnCancel),
             "turn.state" => Some(Self::TurnState),
+            "turn.create" => Some(Self::TurnCreate),
             _ => None,
         }
     }
@@ -110,7 +114,7 @@ pub fn parse_envelope(body: &Value) -> Result<(Method, Value), Refusal> {
             404,
             "method_unknown",
             format!(
-                "`{name}` is not a method. The methods are: models.list, ping, turn.cancel, turn.state"
+                "`{name}` is not a method. The methods are: models.list, ping, turn.cancel, turn.create, turn.state"
             ),
         )
     })?;
@@ -155,6 +159,11 @@ pub fn dispatch(
                 )
             })
         }
+        Method::TurnCreate => Err(Refusal::new(
+            500,
+            "internal",
+            "turn.create is async and is served by the handler, not here",
+        )),
         Method::TurnState => {
             let job_id = params
                 .get("job_id")
