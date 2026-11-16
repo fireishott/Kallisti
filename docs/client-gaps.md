@@ -260,3 +260,31 @@ What to check on the phone:
 
 Still missing: the scroll-to-top trigger for older pages. The transport can ask;
 the transcript does not ask yet.
+
+## Build 175: the bind is on the path the chat actually uses
+
+Uploaded 2026-11-16 01:40. The important line in this build:
+
+`performStreamingSend` now ensures a conversation before it creates the turn.
+
+Build 171 put that bind in `sendMessage`, which the chat never calls. The UI path
+read `currentConversationID()`, got nil from an empty map, and sent turns with no
+conversation - which is why the database holds `conversation_id = NULL` for every
+turn the app ever sent, and why replies streamed once and then existed nowhere.
+
+Build 175 carries:
+
+| Fix | Build |
+|---|---|
+| conversation map persisted | 172 |
+| bind before send, on the streaming path | **175** |
+| one prompt cannot render three times | 172 |
+| transcript keeps the order it was merged in | 174 |
+| scroll to the top loads the page before it | 173 |
+| the model pin points at a provider that answers | daemon setting, not a build |
+
+What only the phone can settle:
+
+1. does a reply survive leaving the chat and coming back,
+2. does a long chat load older messages when scrolled to the top,
+3. is the order right, and is each prompt shown once.
