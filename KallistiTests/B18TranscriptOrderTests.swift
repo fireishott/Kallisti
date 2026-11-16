@@ -422,3 +422,87 @@ struct OlderPageTests {
         #expect(chat.canLoadOlder == false)
     }
 }
+
+// Appended 2026-11-16 with the transcript fixes.
+//
+// The send path's last unproven piece: deciding which conversation a message is
+// written to. Everything in this area that looked right and was not - the wrong
+// function fixed, an in-memory map, a dispatch that resolved to an empty default -
+// argued for making the decision a function and exercising it.
+
+@MainActor
+@Suite("A send is bound to a conversation before it goes out")
+struct SendBindingTests {
+
+    /// Already bound: no second conversation, and the same one comes back.
+    @Test("An existing binding is reused")
+    func existingBindingIsReused() async {
+        let local = UUID()
+        let binding = await ErisHeraldClient.bindForSend(
+            localID: local,
+            lookup: { _ in "conversation-existing" },
+            ensure: { _ in
+                Issue.record("ensure must not run when a conversation is already bound")
+                return true
+            }
+        )
+        #expect(binding == .ready("conversation-existing"))
+    }
+
+    /// Unbound: one bind, then the new conversation.
+    @Test("An unbound chat is bound once")
+    func unboundChatIsBound() async {
+        let local = UUID()
+        var attempts = 0
+        let binding = await ErisHeraldClient.bindForSend(
+            localID: local,
+            lookup: { _ in attempts > 0 ? "conversation-new" : nil },
+            ensure: { _ in
+                attempts += 1
+                return true
+            }
+        )
+        #expect(binding == .ready("conversation-new"))
+        #expect(attempts == 1)
+    }
+
+    /// A bind that fails twice must refuse, not send into nothing.
+    @Test("A failed bind refuses the send")
+    func failedBindRefuses() async {
+        let binding = await ErisHeraldClient.bindForSend(
+            localID: UUID(),
+            lookup: { _ in nil },
+            ensure: { _ in false }
+        )
+        #expect(binding == .refused)
+    }
+
+    /// With no local chat there is nothing to bind, so it refuses rather than
+    /// sending a turn that cannot be stored.
+    @Test("No chat means no send")
+    func noChatRefuses() async {
+        let binding = await ErisHeraldClient.bindForSend(
+            localID: nil,
+            lookup: { _ in "should-not-happen" },
+            ensure: { _ in true }
+        )
+        #expect(binding == .refused)
+    }
+
+    /// A bind that only works on the second attempt still sends: a cold launch can
+    /// lose the first to the pairing handshake.
+    @Test("The second attempt is given a chance")
+    func secondAttemptCounts() async {
+        var attempts = 0
+        let binding = await ErisHeraldClient.bindForSend(
+            localID: UUID(),
+            lookup: { _ in attempts >= 2 ? "conversation-after-retry" : nil },
+            ensure: { _ in
+                attempts += 1
+                return true
+            }
+        )
+        #expect(binding == .ready("conversation-after-retry"))
+        #expect(attempts == 2)
+    }
+}

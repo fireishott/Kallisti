@@ -161,6 +161,40 @@ final class ErisHeraldClient: HeraldClientProtocol {
         }
     }
 
+    /// What a send needs before it can be stored.
+    ///
+    /// Split out of the send path so it can be tested without a transport. Three
+    /// defects in this area were only visible when the code ran, so the decision -
+    /// bind, reuse, or refuse - is a function with its inputs passed in.
+    enum SendBinding: Equatable {
+        /// The daemon conversation this send will be written to.
+        case ready(String)
+        /// No conversation could be bound, so there is nowhere to write it.
+        case refused
+    }
+
+    /// Decide the conversation a send belongs to, binding one if needed.
+    ///
+    /// - Parameters:
+    ///   - localID: the local chat, or nil when the client has none.
+    ///   - lookup: the already-bound daemon conversation for a local chat.
+    ///   - ensure: bind one, answering whether it succeeded.
+    static func bindForSend(
+        localID: UUID?,
+        lookup: (UUID) -> String?,
+        ensure: (UUID) async -> Bool
+    ) async -> SendBinding {
+        guard let localID else { return .refused }
+        if let bound = lookup(localID) { return .ready(bound) }
+        // Two attempts: the first can lose a race with the pairing handshake on a
+        // cold launch, and the second costs nothing when the first worked.
+        for _ in 0..<2 {
+            _ = await ensure(localID)
+            if let bound = lookup(localID) { return .ready(bound) }
+        }
+        return .refused
+    }
+
     private func performStreamingSend(
         message: String,
         clientMessageID: UUID,
@@ -185,27 +219,24 @@ final class ErisHeraldClient: HeraldClientProtocol {
             if currentConversation == nil {
                 currentConversation = Conversation(title: "New Chat")
             }
-            if let local = currentConversation?.id, conversationIDByLocalID[local] == nil {
-                _ = await ensureConversation(id: local)
-                // One retry: the first attempt can lose a race with the pairing
-                // handshake on a cold launch.
-                if conversationIDByLocalID[local] == nil {
-                    _ = await ensureConversation(id: local)
-                }
-                if conversationIDByLocalID[local] == nil {
-                    // Sending anyway is the original bug: a turn with no
-                    // conversation produces an answer that exists nowhere and
-                    // leaves nothing on screen to explain it.
-                    continuation.yield(.failed(
-                        "Could not open a conversation with the daemon, so the message was not sent."
-                    ))
-                    continuation.finish()
-                    return
-                }
+            let binding = await Self.bindForSend(
+                localID: currentConversation?.id,
+                lookup: { conversationIDByLocalID[$0] },
+                ensure: { await ensureConversation(id: $0) }
+            )
+            guard case .ready(let boundConversation) = binding else {
+                // Sending anyway is the original bug: a turn with no conversation
+                // produces an answer that exists nowhere, with nothing on screen to
+                // explain it.
+                continuation.yield(.failed(
+                    "Could not open a conversation with the daemon, so the message was not sent."
+                ))
+                continuation.finish()
+                return
             }
             let turn = try await client.createTurn(
                 text: message,
-                conversation: currentConversationID()
+                conversation: boundConversation
             )
             let jobID = Self.stableUUID(from: turn.jobID)
             continuation.yield(.messageSent(jobID: jobID))
