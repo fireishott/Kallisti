@@ -395,6 +395,8 @@ pub const ROUTE_SENSOR_LOCATION: &str = "/v1/device/sensor/location";
 pub const ROUTE_SENSOR_BATCH: &str = "/v1/device/sensors";
 /// `POST /v1/rooms/{id}/say` - one message into a room.
 pub const ROUTE_ROOM_SAY: &str = "/v1/rooms/{id}/say";
+/// `GET /v1/diagnostics` - the local ring buffer as one bundle.
+pub const ROUTE_DIAGNOSTICS: &str = "/v1/diagnostics";
 /// `POST /v1/device/sensitivity` - the operator's own level for a context key.
 pub const ROUTE_SENSITIVITY: &str = "/v1/device/sensitivity";
 
@@ -1278,6 +1280,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_TALK_SESSION_END, post(handlers::end_talk_session))
         .route(ROUTE_TALK_TURNS, post(handlers::create_talk_turn))
         .route(ROUTE_TALK_INJECT, post(handlers::inject_talk_transcript))
+        .route(ROUTE_DIAGNOSTICS, get(handlers::diagnostics))
         .route(ROUTE_ROOM_SAY, post(handlers::room_say))
         .route(ROUTE_RPC, post(handlers::rpc))
         .route(ROUTE_MODELS, get(control::models).post(control::set_model))

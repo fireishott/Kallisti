@@ -5433,6 +5433,29 @@ fn status_for(status: u16) -> axum::http::StatusCode {
     axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST)
 }
 
+/// `GET /v1/diagnostics` - the one-tap bundle.
+///
+/// Operator scope only: the buffer names turns and timings, which is host
+/// administration rather than a phone's business.
+pub async fn diagnostics(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let limit = headers
+        .get("x-diagnostics-limit")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.parse::<usize>().ok())
+        .map_or(200, |value| value.min(200));
+    axum::Json(crate::diagnostics::bundle(limit)).into_response()
+}
+
 /// `POST /v1/rooms/{id}/say` - one message into a room, answered by the bots the
 /// room routes to.
 ///

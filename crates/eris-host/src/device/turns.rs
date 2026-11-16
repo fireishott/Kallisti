@@ -2377,6 +2377,9 @@ impl TurnHub {
             let store = store.clone();
             let sender = sender.clone();
             let writer_job = job_id.clone();
+            // When this writer started, so the done frame can carry a real
+            // duration into the diagnostic buffer.
+            let turn_started = std::time::Instant::now();
             let last_turn = Arc::clone(&last_turn);
             // The worker owns one copy of the conversation target; `run` keeps the
             // other, so a turn that never reached the provider can still be closed
@@ -2669,6 +2672,13 @@ impl TurnHub {
                                 "usage": &usage,
                                 "status": "ok",
                             });
+                            // The turn's own duration, recorded only when it
+                            // crossed the slow watermark: a diagnostic buffer
+                            // full of fast turns hides the slow one.
+                            crate::diagnostics::record_turn(
+                                turn_started.elapsed().as_millis() as i64,
+                                &writer_job,
+                            );
                             match store.finish(&writer_job, FrameKind::Done, &data) {
                                 // The transcript row is written only by the worker
                                 // that won the terminal frame. A turn cancelled
