@@ -133,6 +133,132 @@ pub fn pills(room: &Room, responded: &[String], passed: &[String]) -> Vec<serde_
         .collect()
 }
 
+/// Create a bot profile.
+///
+/// # Errors
+///
+/// The sentence a caller shows: an empty name, a name already taken, or a
+/// database failure.
+pub fn create_bot(
+    db: &Db,
+    name: &str,
+    instructions: &str,
+    model: Option<&str>,
+    tools: &[String],
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 40 {
+        return Err("a bot needs a name of 1 to 40 characters".to_owned());
+    }
+    let id = uuid::Uuid::now_v7().to_string();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO bot_profiles (id, name, instructions, model, tools) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, name, instructions.trim(), model, tools.join(",")],
+        )?;
+        Ok(())
+    })
+    .map_err(|error| {
+        if error.to_string().contains("UNIQUE") {
+            format!("a bot named `{name}` already exists")
+        } else {
+            format!("the bot could not be created: {error}")
+        }
+    })?;
+    Ok(id)
+}
+
+/// Create a room with its members, by bot name.
+///
+/// # Errors
+///
+/// The sentence a caller shows: an unknown policy, a lead that is not a member,
+/// an unknown bot name, or a database failure.
+pub fn create_room(
+    db: &Db,
+    name: &str,
+    purpose: &str,
+    policy: Policy,
+    lead: Option<&str>,
+    members: &[String],
+    max_turns: i64,
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a room needs a name".to_owned());
+    }
+    let mut resolved: Vec<(String, String)> = Vec::new();
+    for wanted in members {
+        let wanted = wanted.trim();
+        if wanted.is_empty() {
+            continue;
+        }
+        let found: Option<(String, String)> = db
+            .with_conn(|conn| {
+                Ok(conn
+                    .query_row(
+                        "SELECT id, name FROM bot_profiles WHERE lower(name) = lower(?1)",
+                        rusqlite::params![wanted],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .ok())
+            })
+            .map_err(|error| format!("the members could not be read: {error}"))?;
+        match found {
+            Some(pair) => resolved.push(pair),
+            None => return Err(format!("no bot is named `{wanted}`, so the room was not created")),
+        }
+    }
+    if resolved.is_empty() {
+        return Err("a room needs at least one bot in it".to_owned());
+    }
+    let lead_id = match lead {
+        None => None,
+        Some(named) => {
+            let wanted = named.trim().to_ascii_lowercase();
+            match resolved
+                .iter()
+                .find(|(_, name)| name.to_ascii_lowercase() == wanted)
+            {
+                Some((id, _)) => Some(id.clone()),
+                None => {
+                    return Err(format!(
+                        "`{named}` is not a member, so it cannot be the lead: a lead that is not                          in the room answers nobody"
+                    ));
+                }
+            }
+        }
+    };
+    if policy == Policy::Lead && lead_id.is_none() {
+        return Err("a `lead` room needs a lead".to_owned());
+    }
+    let id = uuid::Uuid::now_v7().to_string();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO rooms (id, name, purpose, policy, lead_id, max_turns) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                id,
+                name,
+                purpose.trim(),
+                policy.as_str(),
+                lead_id,
+                max_turns.clamp(1, 24)
+            ],
+        )?;
+        for (bot_id, _) in &resolved {
+            conn.execute(
+                "INSERT INTO room_members (room_id, bot_id) VALUES (?1, ?2)",
+                rusqlite::params![id, bot_id],
+            )?;
+        }
+        Ok(())
+    })
+    .map_err(|error| format!("the room could not be created: {error}"))?;
+    Ok(id)
+}
+
 /// Read one room, its members and its policy.
 ///
 /// # Errors
@@ -159,7 +285,8 @@ pub fn get(db: &Db, room_id: &str) -> Result<Option<Room>, crate::db::DbError> {
             return Ok(None);
         };
         let mut statement = conn.prepare(
-            "SELECT b.id, b.name FROM room_members m JOIN bot_profiles b ON b.id = m.bot_id \\
+            "SELECT b.id, b.name FROM room_members m \
+               JOIN bot_profiles b ON b.id = m.bot_id \
               WHERE m.room_id = ?1 ORDER BY b.name",
         )?;
         let members = statement
@@ -242,6 +369,43 @@ mod tests {
         let room = room(Policy::Everyone, None);
         assert!(route(&room, &["@nobody".to_owned()]).is_empty());
         assert_eq!(route(&room, &["@".to_owned()]).len(), 2, "an empty mention falls back to policy");
+    }
+
+    /// A room is created with its members, and a lead that is not in it is
+    /// refused rather than stored.
+    #[test]
+    fn a_room_is_created_with_members_and_a_refused_lead() {
+        let db = crate::db::Db::open_in_memory().expect("database");
+        crate::rooms::create_bot(&db, "Atlas", "be brief", None, &[]).expect("atlas");
+        crate::rooms::create_bot(&db, "Birch", "be kind", None, &[]).expect("birch");
+
+        let refused = crate::rooms::create_room(
+            &db,
+            "standup",
+            "",
+            Policy::Lead,
+            Some("Nobody"),
+            &["Atlas".to_owned()],
+            6,
+        )
+        .expect_err("refused");
+        assert!(refused.contains("not a member"), "{refused}");
+
+        let id = crate::rooms::create_room(
+            &db,
+            "standup",
+            "daily",
+            Policy::Lead,
+            Some("atlas"),
+            &["Atlas".to_owned(), "Birch".to_owned()],
+            6,
+        )
+        .expect("created");
+        let room = crate::rooms::get(&db, &id).expect("read").expect("exists");
+        assert_eq!(room.members.len(), 2);
+        assert_eq!(room.policy, Policy::Lead);
+        assert_eq!(route(&room, &[]).len(), 1);
+        assert_eq!(route(&room, &[])[0].name, "Atlas");
     }
 
     /// A pill says what each bot did, and a bot that did neither is still working.
