@@ -241,6 +241,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
             var uploaded: [String] = []
             for (index, attachment) in attachments.enumerated() {
                 continuation.yield(.uploading(
+                    attachmentID: attachment.id,
                     completed: index,
                     total: attachments.count,
                     name: attachment.fileName
@@ -266,11 +267,15 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 }
             }
             if !attachments.isEmpty {
-                continuation.yield(.uploading(
-                    completed: attachments.count,
-                    total: attachments.count,
-                    name: "done"
-                ))
+                // Every file landed: the chips can go.
+                for attachment in attachments {
+                    continuation.yield(.uploading(
+                        attachmentID: attachment.id,
+                        completed: attachments.count,
+                        total: attachments.count,
+                        name: attachment.fileName
+                    ))
+                }
             }
             let turn = try await client.createTurn(
                 text: message,

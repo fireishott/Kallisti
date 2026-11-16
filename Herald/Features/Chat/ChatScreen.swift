@@ -314,6 +314,7 @@ struct ChatScreen: View {
                     ChatInputBar(
                     text: messageTextBinding,
                     pendingAttachments: $pendingAttachments,
+                    uploadPhases: chatStore.uploadPhases,
                     isStreaming: chatStore.isStreaming || chatStore.isServerTurnActive,
                     isFocused: $isComposerFocused,
                     onSend: sendMessage,
@@ -1798,7 +1799,24 @@ struct ChatScreen: View {
 
             // Now safe to clear — the outbox has it.
             if let cid = conversationID { chatStore.clearDraft(for: cid) }
-            pendingAttachments = []
+            // The chips stay until their bytes are in, so each file can show its
+            // own spinner and its own failure. They are cleared by the watcher
+            // below, or after a bounded wait so a dead upload cannot pin them.
+            let sending = pendingAttachments
+            Task { @MainActor in
+                for _ in 0..<120 {
+                    let settled = sending.allSatisfy { id in
+                        switch chatStore.uploadPhases[id.id] {
+                        case .uploaded, .failed: return true
+                        default: return false
+                        }
+                    }
+                    if settled { break }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                let done = Set(sending.map(\.id))
+                pendingAttachments.removeAll { done.contains($0.id) }
+            }
 
             // Phase 2: submit (async; may queue behind an active job and
             // chain through the FIFO outbox).

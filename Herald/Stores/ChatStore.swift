@@ -2164,7 +2164,10 @@ final class ChatStore {
                         self.conversation = conv
                     }
 
-                case .uploading(let completed, let total, let name):
+                case .uploading(let attachmentID, let completed, let total, let name):
+                    self.uploadPhases[attachmentID] = completed >= total
+                        ? .uploaded
+                        : .uploading(completed: completed, total: total)
                     // A visible count is the only way to tell an upload in flight
                     // from one that silently failed.
                     let label = completed >= total
@@ -3051,6 +3054,16 @@ final class ChatStore {
 
     /// Whether an older page exists. False once the daemon says so, so a
     /// transcript at the true beginning stops asking.
+    /// Where each pending attachment is in its upload.
+    enum UploadPhase: Equatable {
+        case uploading(completed: Int, total: Int)
+        case uploaded
+        case failed(String)
+    }
+
+    /// Keyed by the pending attachment's own id, so a chip knows its own state.
+    private(set) var uploadPhases: [UUID: UploadPhase] = [:]
+
     private(set) var canLoadOlder = true
     /// Guard so a fast scroll cannot fire two page loads at once.
     private var loadingOlderPage = false

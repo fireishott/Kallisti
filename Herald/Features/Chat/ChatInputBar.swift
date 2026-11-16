@@ -30,6 +30,8 @@ func createSpeechDictationService() -> (any SpeechDictationService)? {
 struct ChatInputBar: View {
     @Binding var text: String
     @Binding var pendingAttachments: [PendingAttachment]
+    /// Per-file upload state, keyed by the attachment's id.
+    var uploadPhases: [UUID: ChatStore.UploadPhase] = [:]
     let isStreaming: Bool
     var isFocused: Binding<Bool>
     let onSend: () -> Void
@@ -323,6 +325,37 @@ struct ChatInputBar: View {
                 RoundedRectangle(cornerRadius: Design.CornerRadius.sm)
                     .stroke(Design.Colors.divider, lineWidth: 1)
             )
+            // The chip says what is happening to this file: a spinner while it
+            // goes up, a check when it landed, a cross and the reason when it did
+            // not. A count in the bubble could not say which picture was slow.
+            .overlay {
+                switch uploadPhases[attachment.id] {
+                case .uploading:
+                    ZStack {
+                        Color.black.opacity(0.45)
+                        ProgressView().tint(.white)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.sm))
+                case .uploaded:
+                    ZStack(alignment: .bottomTrailing) {
+                        Color.clear
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.white, .green)
+                            .padding(3)
+                    }
+                case .failed:
+                    ZStack {
+                        Color.black.opacity(0.55)
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 18))
+                            .foregroundStyle(.yellow)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.sm))
+                case nil:
+                    EmptyView()
+                }
+            }
 
             // Remove button
             Button {
