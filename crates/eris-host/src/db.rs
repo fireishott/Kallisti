@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 36;
+pub const SCHEMA_VERSION: i64 = 37;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -267,6 +267,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 36,
         name: "0036_turn_ack",
         sql: MIGRATION_0036,
+    },
+    Migration {
+        version: 37,
+        name: "0037_token_minted_for",
+        sql: MIGRATION_0037,
     },
 ];
 
@@ -1228,6 +1233,16 @@ ALTER TABLE steward_duties ADD COLUMN watch_rounds INTEGER NOT NULL DEFAULT 0;
 /// WP-02: how far a client has consumed each turn. Absent means zero, which is
 /// the same state as "paired a moment ago and heard nothing yet".
 ///
+/// WP-07: the daemon instance a token was minted by, so a token lifted from
+/// another install is refused here. Null means a row written before this column
+/// existed, which is treated as "minted here" so a live phone is never locked out
+/// by an upgrade.
+///
+/// Down path: `ALTER TABLE auth_tokens DROP COLUMN minted_for;`.
+const MIGRATION_0037: &str = r"
+ALTER TABLE auth_tokens ADD COLUMN minted_for TEXT;
+";
+
 /// Down path: `ALTER TABLE jobs DROP COLUMN acked_seq;`. Nothing else reads the
 /// column, and dropping it loses only the marks, which a client re-sends by
 /// acknowledging again after the next reconnect.

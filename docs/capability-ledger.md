@@ -25,7 +25,7 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 04 | Job lease, heartbeat, reclaim | partial | lease + heartbeat carried; `lease_expired_jobs` names the dead; the sweep settles a dead worker's turn as `lease_expired` and a restart's as `interrupted` (proved by `the_boot_sweep_tells_a_dead_worker_from_a_restart`). Reclaim is a requeue, not a resume: `requeue_reclaimed` puts the dead turn's request back as a task bounded by `chain_depth`, and `a_dead_turn_is_requeued_and_a_capped_one_is_not` proves one requeue and none at the cap |
 | 04 | `job.cancel` at a step boundary | carried | `POST /v1/turns/{id}/cancel`; proved by `a_cancelled_turn_takes_no_further_steps` (a cancelled turn answers None to the next step, result or delta) |
 | 07 | Per-device hashed tokens | carried | `auth_tokens` (Argon2id verifiers), `devices` |
-| 07 | Token contrast test on `(host, profile)` | partial | scopes are checked; host binding is not recorded |
+| 07 | Token contrast test on `(host, profile)` | carried | migration 0037 records `auth_tokens.minted_for` = `/etc/machine-id` at mint; verify refuses a row bound to another instance with `token_from_another_daemon`; NULL rows predate the binding and keep working (tested) |
 | 08 | Single-use pair code, QR handoff | carried | `pairing_codes.consumed_at`, dashboard mint |
 | 12 | FTS transcript search | carried | `chat_messages_fts`; `GET /v1/search`; `search_transcripts` tool offered to the model when the turn has a database (query, limit; replies with total and hits: conversation, title, snippet, ts, role) |
 | 09 | Sensor storage + retention | partial | `sensors.db`; `POST /v1/device/sensor/{location,health}` |

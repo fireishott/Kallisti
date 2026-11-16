@@ -523,6 +523,18 @@ impl TokenService {
             if row.revoked_at.is_some() || row.rotated_at.is_some() {
                 return Err(AuthError::TokenRevoked);
             }
+            // Contrast test: a token minted by a different daemon instance is not
+            // a credential here, even when its bytes are a stored verifier's
+            // preimage - which is only possible if the row was copied, restored
+            // from another install, or forged against a stolen hash. Null means
+            // the row predates the binding, and a live phone is never locked out
+            // by an upgrade.
+            if let Some(minted_for) = row.minted_for.as_deref()
+                && let Some(ours) = crate::auth::daemon_identity()
+                && minted_for != ours
+            {
+                return Err(AuthError::ForeignToken);
+            }
             let expires_at = parse_timestamp(&row.expires_at)?;
             if now() >= expires_at {
                 return Err(AuthError::TokenExpired);
@@ -904,4 +916,33 @@ fn sliding_can_be_turned_off_and_a_retired_token_is_never_resurrected() {
             .code(),
         "token_revoked"
     );
+}
+
+#[cfg(test)]
+#[test]
+fn a_token_minted_by_another_daemon_is_refused() {
+    use crate::auth::{AuthError, ScopeSet};
+    use crate::db::Db;
+
+    use super::{TokenOrigin, TokenService};
+
+    let db = Db::open_in_memory().expect("in-memory database");
+    let service = TokenService::new(db.clone());
+    let device = service.register_device("phone", "ios").expect("device");
+    let minted = service
+        .mint_access(&device, ScopeSet::device_default(), TokenOrigin::Device)
+        .expect("mint");
+    assert!(service.verify_access(minted.token()).is_ok());
+
+    // The row a copy of this database would carry back from another install.
+    db.with_conn(|conn| {
+        conn.execute("UPDATE auth_tokens SET minted_for = 'not-this-machine'", [])?;
+        Ok(())
+    })
+    .expect("rebind");
+
+    match service.verify_access(minted.token()) {
+        Err(AuthError::ForeignToken) => {}
+        other => panic!("expected a foreign-token refusal, got {other:?}"),
+    }
 }

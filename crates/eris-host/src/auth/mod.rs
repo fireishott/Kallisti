@@ -93,6 +93,9 @@ pub enum AuthError {
     /// The matching token was revoked or rotated.
     #[error("the token was revoked")]
     TokenRevoked,
+    /// The token was minted by a different daemon instance.
+    #[error("the token was minted by a different daemon instance")]
+    ForeignToken,
     /// The matching token is of the other kind.
     #[error("expected a {} token", expected.as_str())]
     TokenWrongKind {
@@ -169,6 +172,7 @@ impl AuthError {
             Self::TokenRejected => "token_invalid",
             Self::TokenExpired => "token_expired",
             Self::TokenRevoked => "token_revoked",
+            Self::ForeignToken => "token_from_another_daemon",
             Self::TokenWrongKind { .. } => "token_wrong_kind",
             Self::PairingMalformed => "pairing_malformed",
             Self::PairingRejected => "pairing_invalid",
@@ -231,4 +235,23 @@ pub(crate) fn verify_secret(secret: &[u8], stored: &str) -> Result<bool, AuthErr
         what: "a stored verifier",
     })?;
     Ok(Argon2::default().verify_password(secret, &parsed).is_ok())
+}
+
+/// This daemon instance, as the value a token is bound to.
+///
+/// `/etc/machine-id` is the host's own identity and survives restarts, which is
+/// exactly what a contrast test needs: a token minted here keeps working after a
+/// reboot, and a token lifted from another install does not. `None` when the file
+/// cannot be read, in which case tokens are recorded unbound rather than bound to
+/// something made up.
+#[must_use]
+pub fn daemon_identity() -> Option<String> {
+    let raw = std::fs::read_to_string("/etc/machine-id").ok()?;
+    let hex: String = raw
+        .trim()
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    (hex.len() == 32).then_some(hex)
 }

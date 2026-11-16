@@ -55,6 +55,8 @@ pub struct StoredToken {
     pub expires_at: String,
     /// When rotation retired it.
     pub rotated_at: Option<String>,
+    /// The daemon instance that minted it, when the row records one.
+    pub minted_for: Option<String>,
     /// When revocation retired it.
     pub revoked_at: Option<String>,
 }
@@ -151,8 +153,9 @@ impl AuthStore {
     pub fn insert_token(&self, token: &NewToken) -> Result<(), AuthError> {
         self.db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO auth_tokens (id, device_id, kind, token_hash, scope, expires_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO auth_tokens (id, device_id, kind, token_hash, scope, expires_at, \
+                    minted_for) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     token.id,
                     token.device_id,
@@ -160,6 +163,7 @@ impl AuthStore {
                     token.token_hash,
                     token.scope.to_storage(),
                     format_timestamp(token.expires_at),
+                    crate::auth::daemon_identity(),
                 ],
             )?;
             Ok(())
@@ -178,7 +182,8 @@ impl AuthStore {
     pub fn token_rows(&self) -> Result<Vec<StoredToken>, AuthError> {
         let rows = self.db.with_conn(|conn| {
             let mut statement = conn.prepare(
-                "SELECT id, device_id, kind, token_hash, scope, expires_at, rotated_at, revoked_at \
+                "SELECT id, device_id, kind, token_hash, scope, expires_at, rotated_at, revoked_at, \
+                    minted_for \
                  FROM auth_tokens ORDER BY created_at DESC, id",
             )?;
             let mut rows = statement.query([])?;
@@ -193,6 +198,7 @@ impl AuthStore {
                     expires_at: row.get(5)?,
                     rotated_at: row.get(6)?,
                     revoked_at: row.get(7)?,
+                    minted_for: row.get(8)?,
                 });
             }
             Ok(out)
