@@ -107,7 +107,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti
         PRODUCT_NAME: Kallisti
         MARKETING_VERSION: "1.6.0"
-        CURRENT_PROJECT_VERSION: "162"
+        CURRENT_PROJECT_VERSION: "170"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
@@ -191,7 +191,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
         PRODUCT_NAME: KallistiWidgets
         MARKETING_VERSION: "1.6.0"
-        CURRENT_PROJECT_VERSION: "162"
+        CURRENT_PROJECT_VERSION: "170"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
@@ -230,7 +230,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
         PRODUCT_NAME: KallistiNotificationService
         MARKETING_VERSION: "1.6.0"
-        CURRENT_PROJECT_VERSION: "162"
+        CURRENT_PROJECT_VERSION: "170"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -271,7 +271,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
         PRODUCT_NAME: KallistiIntents
         MARKETING_VERSION: "1.6.0"
-        CURRENT_PROJECT_VERSION: "162"
+        CURRENT_PROJECT_VERSION: "170"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -299,7 +299,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
         PRODUCT_NAME: KallistiControls
         MARKETING_VERSION: "1.6.0"
-        CURRENT_PROJECT_VERSION: "162"
+        CURRENT_PROJECT_VERSION: "170"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -355,7 +355,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
         PRODUCT_NAME: KallistiWatch
         MARKETING_VERSION: "1.6.0"
-        CURRENT_PROJECT_VERSION: "162"
+        CURRENT_PROJECT_VERSION: "170"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -396,7 +396,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.tests
         PRODUCT_NAME: KallistiTests
-        TEST_TARGET_NAME: Herald
+        TEST_TARGET_NAME: Kallisti
         BUNDLE_LOADER: "$(TEST_HOST)"
         GENERATE_INFOPLIST_FILE: true
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
@@ -412,7 +412,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.uitests
         PRODUCT_NAME: KallistiUITests
-        TEST_TARGET_NAME: Herald
+        TEST_TARGET_NAME: Kallisti
         GENERATE_INFOPLIST_FILE: true
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 

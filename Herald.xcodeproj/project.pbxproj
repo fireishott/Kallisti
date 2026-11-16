@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -35,6 +35,7 @@
 		0DD50C05137473194D003D88 /* WatchConnectivityCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FF58ECEAD2F1AE446C6F47 /* WatchConnectivityCoordinator.swift */; };
 		0E6917CCA473FD1838281E4D /* SearchEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49F1A219273E8D4AFB1A2908 /* SearchEngine.swift */; };
 		0E727D66DA972E275EFF6DC3 /* MockInboxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CACB5A4B3319724E1D7D4A7F /* MockInboxService.swift */; };
+		0EDE0E6867F44E8621E0C9AA /* ErisClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9F2F11A1650FF5171626C79 /* ErisClient.swift */; };
 		0FBE6E7314D2EB20EED03DA5 /* TUITerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D43C48FBC7CE411C5F9E2FAB /* TUITerminalScreen.swift */; };
 		0FC106A4D21E7A615CCCEF3A /* MarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 540B73A89FCA63E4A659A3D6 /* MarkdownParser.swift */; };
 		1015626F80F5EFFD18A384D0 /* SyncCoordinatorProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF23852C2769061F9AF9939A /* SyncCoordinatorProtocol.swift */; };
@@ -64,6 +65,7 @@
 		1B700EFEF34D08C034B30036 /* TokenBatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = F12EADAC8FD458EC02DC65E5 /* TokenBatcher.swift */; };
 		1B7D0BC170C1A3753DC95FD4 /* HeraldNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 605DD1AA9F59AF394AA92F81 /* HeraldNote.swift */; };
 		1BF67E4C1787B5BB80DDC405 /* SelectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 562BEF3E7CF10F97A9500033 /* SelectionService.swift */; };
+		1E4FE8F339E66F2B189BB8B8 /* ErisConversationTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DA3ACC92FDC9A19E0F68932 /* ErisConversationTypes.swift */; };
 		1E78684CE8D66AE52198068A /* JobEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A94D5780D164E87A1D7A54EF /* JobEvent.swift */; };
 		1E8C52CE882651D649953B84 /* AppTemplateUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3BB7D1E6CC24D18D14DDC01 /* AppTemplateUITests.swift */; };
 		1F3AA4337652DD17B1C9A00E /* stream_v3_approval.json in Resources */ = {isa = PBXBuildFile; fileRef = 6528A652D1092105F1923F17 /* stream_v3_approval.json */; };
@@ -71,6 +73,7 @@
 		1FF4FD4DE4D08F7D2886F493 /* GatewayControlError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 159ED53A35CC3FB0D77B12B8 /* GatewayControlError.swift */; };
 		2004396E6E911E91D971A767 /* BufferSet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BD4C29D351F3393BBB41E69 /* BufferSet.swift */; };
 		202A5BBB132BE5178F1E47D0 /* ProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64F5F06670020BB6FC843019 /* ProfileStore.swift */; };
+		20C2359E8ECAA769113E4061 /* ErisSensorTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DE21F252E2AFE6894F23B04 /* ErisSensorTypes.swift */; };
 		21C2569FC8D3FC48157DF271 /* libKallistiSupport.a in Frameworks */ = {isa = PBXBuildFile; fileRef = BB230C28AA046403EB107F6A /* libKallistiSupport.a */; };
 		21F83E8D433551859D6AC3B1 /* CaretView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3733955EC436E6D4AB31564 /* CaretView.swift */; };
 		22F046CF850FE943DF5F0B05 /* KallistiTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9232A7F07731F20027182CDC /* KallistiTheme.swift */; };
@@ -99,6 +102,7 @@
 		3103441C581977EC65E70CFD /* stream_v2_cancelled.json in Resources */ = {isa = PBXBuildFile; fileRef = 10C70B4E15E4578BEB5E8007 /* stream_v2_cancelled.json */; };
 		3172AE06D3D2DB7EDA98CA0A /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B79FBB5F223624AA2EEC68C /* VideoPlayerView.swift */; };
 		31B10C595C488726257BC530 /* CharData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63F1BA88A13F02651EF5E3D7 /* CharData.swift */; };
+		31F0B0AF5FE2D527FDA4D0DE /* ErisPairingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53B80D0123591B404F0F0223 /* ErisPairingService.swift */; };
 		325ED42E51534AD466E9C9F0 /* GatewayLogsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ADA0FD3C551D728D7AB9C24 /* GatewayLogsScreen.swift */; };
 		327716E068248ECA4CE58453 /* HeraldWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B3B6AFAE01AAC6F2526D51B /* HeraldWidgetBundle.swift */; };
 		328442E73267035EA66F5BBF /* libKallistiSupport.a in Frameworks */ = {isa = PBXBuildFile; fileRef = BB230C28AA046403EB107F6A /* libKallistiSupport.a */; };
@@ -113,6 +117,7 @@
 		356265EB79537D85F3F1CBC4 /* NotePaperBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE22DD28D0A4330BCD941BB /* NotePaperBackground.swift */; };
 		358310A302DEDBCA16EDF73C /* PermissionsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DD65BFD57586C83D62945CD /* PermissionsScreen.swift */; };
 		3651844FF451E39A21E77673 /* WatchNotificationPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24E065BB368870216B5E6E3E /* WatchNotificationPayload.swift */; };
+		367FC4713AF7F83F85057310 /* ErisInboxTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C67E3B4F9C65B89D6F7706B9 /* ErisInboxTypes.swift */; };
 		371F566200167C0EDD10FAF1 /* AppStoresTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA871C6A8A786F2E46E7FDA2 /* AppStoresTests.swift */; };
 		3787623BBA452D5634602F3B /* GatewayState.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFBD2C6912DA94368BBD89D6 /* GatewayState.swift */; };
 		380076111649FE14A60A61E9 /* AuthenticatedAsyncImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D3C11B115527992FE8196F4 /* AuthenticatedAsyncImage.swift */; };
@@ -139,11 +144,13 @@
 		43DC29D5EF9B7F282E084369 /* KallistiActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DB1E3952A4C703165E80A4C /* KallistiActivityAttributes.swift */; };
 		444CF386B72E96CD470EEC7E /* LiveInboxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEA5308BC6B8AC2338133CE4 /* LiveInboxService.swift */; };
 		44E5211460E9D6829AFE8179 /* KallistiIntents.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E75B435EB96C4457174C8AB8 /* KallistiIntents.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		44F1CE79178157F48E6BAA0C /* ErisNotesTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BF431626D41ECF1576D39E4 /* ErisNotesTypes.swift */; };
 		45757CDEA0530170E7CBD72A /* IntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C50D91C1CB57831078FF853 /* IntentHandler.swift */; };
 		45FF4288AB4DAA520750BC59 /* TalkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 314A5630FAA9C2DB346843A3 /* TalkStore.swift */; };
 		46F010C877203AC24BEED328 /* VoiceOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF288BDAEA5CA4F148345BB0 /* VoiceOrb.swift */; };
 		470F75EC2D24EB69D02C3DD7 /* SyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D28A9D351A3BE25048E7E138 /* SyntaxHighlighter.swift */; };
 		475C90250D6BDDC27141775E /* InboxScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 614CDC813900A9FA5D722AAB /* InboxScreen.swift */; };
+		4790ACFAC9684661D56C695E /* ErisSettingsTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A59B8DF794B3C983A831E9C /* ErisSettingsTypes.swift */; };
 		47981765CCB3FCC6FEE975C6 /* LocationServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 291B25B2C82AB794287CA743 /* LocationServiceProtocol.swift */; };
 		47D207E0E247DA9AE49C246B /* SessionBootstrapServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6F52B8AD15494DA0A111160 /* SessionBootstrapServiceProtocol.swift */; };
 		47DDECA8BA540AAE9AB74516 /* SensorUploadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E321CDD5420E0CF8EA5DD4D6 /* SensorUploadService.swift */; };
@@ -169,9 +176,11 @@
 		50C0F460AFA749680F1ED1AE /* PencilCanvasRepresentable.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FC131E1A52D3BB62EDB05AE /* PencilCanvasRepresentable.swift */; };
 		51B3C848C945D994F701549D /* SearchOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F99FC69252CE5F574F74C2B /* SearchOptions.swift */; };
 		521D540198280AC4F6D7E1DC /* MetalTerminalRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 362F4424F7AACCA17E231D8F /* MetalTerminalRenderer.swift */; };
+		52A72D188BB0AEDF223AA8FA /* ErisPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 850F4834D576AAC4E2AD0282 /* ErisPairing.swift */; };
 		52E701CEBF56FE0DEB94FC7B /* StatusIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1424CE6AD0EA1FCEF74BB84 /* StatusIndicator.swift */; };
 		54062FFF233401B1E9D1A258 /* KallistiWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1AFBD1A002B69B9B6A0274B2 /* KallistiWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		544A1BB4A7856ED1E1F43466 /* SemanticPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33A43AFC730B76E2D2105427 /* SemanticPrompt.swift */; };
+		54C8BD230FCA9E93DB17CA32 /* ErisDaemonStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9669CC5090727CA831E55CCF /* ErisDaemonStore.swift */; };
 		55E04966A522AE6EE091A644 /* VoiceAttachmentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50AA91A99B709AF890AF8921 /* VoiceAttachmentSheet.swift */; };
 		56657B636159DD7871197316 /* AppSessionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7D9911E63108664EBB2FFD6 /* AppSessionState.swift */; };
 		575D1E1FA8D1F288BE972DA8 /* TypingDotsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12390528FCB15F35578B47B0 /* TypingDotsView.swift */; };
@@ -183,6 +192,7 @@
 		5A1A73661D71073B9698D42A /* SwiftTermBuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B9215D3DCC94C6AFBE61273 /* SwiftTermBuildInfo.swift */; };
 		5B0A39AA731596FC72C264FE /* HeraldClientProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E849E65008CDBE8DFD00C7DE /* HeraldClientProtocol.swift */; };
 		5B89A498B1127E7279FBB4D9 /* ArabicShapingData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79273866AAAF03881EB55DE8 /* ArabicShapingData.swift */; };
+		5F371A2DC69B54BBE003BE1B /* ErisApprovalTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D60007AFF5D7C4F5636233F /* ErisApprovalTypes.swift */; };
 		5F93D4204096DE06529E44C0 /* CoreTextGlyphRasterizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BF9FC7BD188B38B76EA800C /* CoreTextGlyphRasterizer.swift */; };
 		61705949289D1834797CCC8D /* GatewayControlClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D8645F2AE0A0524FAE74CB8 /* GatewayControlClient.swift */; };
 		61FD79862D5419681FFF224E /* ExtensionsTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E7CEEA1DE46164F2CC02589 /* ExtensionsTerminal.swift */; };
@@ -229,6 +239,7 @@
 		7BD1AE4158A8A41F4A50B7C0 /* InboxItemStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95B882729C3C40D34D8EA0BE /* InboxItemStatus.swift */; };
 		7C132E2E63ADF0B2AA737E37 /* TranscriptRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C993396E4C0360AAE5737DB /* TranscriptRow.swift */; };
 		7C6111244D9D937B7AA72BF7 /* stream_v2_approval.json in Resources */ = {isa = PBXBuildFile; fileRef = 8EE1C61B32A2AA2551216277 /* stream_v2_approval.json */; };
+		7C82D4BCBAC8E499D6DEAC0F /* ErisPairingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 445EB2992C78A7A6C5FFFC13 /* ErisPairingUITests.swift */; };
 		7D6761CDB695B08691BCB893 /* libKallistiSupport.a in Frameworks */ = {isa = PBXBuildFile; fileRef = BB230C28AA046403EB107F6A /* libKallistiSupport.a */; };
 		7DFA5401F52F48C27D6C2040 /* EnrichmentResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = 320B94F037063515E473F238 /* EnrichmentResult.swift */; };
 		7FA808C7C6D08742BBE8DD2F /* ToolCallBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFADE47C65BE32022FE927AD /* ToolCallBubbleView.swift */; };
@@ -238,6 +249,7 @@
 		819760234CAF39810437900B /* SharedGatewayStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 255A0F27925F240B22D38E9B /* SharedGatewayStatus.swift */; };
 		81D920BEF96D7C15B760112B /* File.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF3FA335B25B518A915929E /* File.swift */; };
 		831281ACB124481E0B1FC508 /* PendingAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E5B53E8562C62901D062529 /* PendingAttachment.swift */; };
+		839C7D5C8903707E3DDDA56F /* ErisTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D37E8F7481BC9AE2ECB7140 /* ErisTypes.swift */; };
 		8410D96E879CA1201C9EBB8C /* InboxItemDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15B877ED93E5135C72758F2A /* InboxItemDetailSheet.swift */; };
 		8417251982713C7AD2DB6605 /* NativeAuthCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C98F8E95254705577781268 /* NativeAuthCoordinator.swift */; };
 		844FC541DD973136E1842529 /* HeraldArtifact.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDFA3D939B6EB7724ADC925E /* HeraldArtifact.swift */; };
@@ -270,6 +282,7 @@
 		94BAE0C2D2DDF8A7878447A4 /* LiveHealthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E54757D0C6E7FEE9C422F61 /* LiveHealthService.swift */; };
 		94CB24798F744F3DB0C23B03 /* HostEnrollmentCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C47B0EEFCF9E67C01A57B76 /* HostEnrollmentCode.swift */; };
 		9543EC8FBEC606A2EC3CD0B4 /* ConnectionOverlayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20DF28833D10FB0BDC883BE0 /* ConnectionOverlayTests.swift */; };
+		95AEBA50447D2EAFE42F4BB3 /* ErisHeraldClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 698E534CBE66096482A7CF44 /* ErisHeraldClient.swift */; };
 		95D5069197DD5841C58172C5 /* BoxDrawingRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47B72EE5CFA9D16C103B26B8 /* BoxDrawingRenderer.swift */; };
 		967155C61A4EC856C3642AD8 /* asr_streaming_response.json in Resources */ = {isa = PBXBuildFile; fileRef = 70C959A8E25FA432A9D4F1FD /* asr_streaming_response.json */; };
 		96CDDF927F3ACD4751B43902 /* ModelStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B983135FE5ADF410ACF51E7D /* ModelStoreTests.swift */; };
@@ -339,6 +352,7 @@
 		BDB9936FBB5857CFA6F1DEED /* MessageBubbleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0151DBA421D16051DBB0B96 /* MessageBubbleTests.swift */; };
 		BF7643BE640235567DEC835A /* MacFindBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 212360758D253DF2949B01B7 /* MacFindBarView.swift */; };
 		BF942BCD8A7D4333C646CD72 /* ThinkingBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25B14E4B0A1EC76C42A5BA09 /* ThinkingBlockView.swift */; };
+		BFC60A446BD99CFD4E40AD19 /* ErisTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABE745C538D2BCC05F3644C9 /* ErisTokenStore.swift */; };
 		C010839183D6313B4BC9737F /* MockLocationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E87D525033CA7A83FDF5F82F /* MockLocationService.swift */; };
 		C0488F3E5AE118D1427B6B95 /* VisionHandwritingRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD3E52CD9E61F44EE499B062 /* VisionHandwritingRecognizer.swift */; };
 		C0FF85B1316898EBCE2E5201 /* MockHealthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70C34A32AFC2D65D7D6EC1D /* MockHealthService.swift */; };
@@ -427,6 +441,7 @@
 		ECC779E7138D092D7D5A6866 /* View+Glass.swift in Sources */ = {isa = PBXBuildFile; fileRef = C95BEC1861B50F0421425D09 /* View+Glass.swift */; };
 		ED0566070B5E0A73092ECBDF /* NoteRecognitionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 522EB9981B7B69D68F141D86 /* NoteRecognitionCoordinatorTests.swift */; };
 		EDB483A2808732C78688C9A3 /* ControlKindTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 589991E0F19E898CECE105AB /* ControlKindTests.swift */; };
+		EF0B5C77329D49C267FC531C /* ErisInboxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 972366054539A4778E5A4A65 /* ErisInboxService.swift */; };
 		EFD14E7F85AC61DC72716DB1 /* stream_v3_reasoning.json in Resources */ = {isa = PBXBuildFile; fileRef = D5F1442032DA28C8E94FBAE8 /* stream_v3_reasoning.json */; };
 		F1517FFDFD7C1F9B984C64F0 /* HermesTalkCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0227FAE49C18261AC5197C07 /* HermesTalkCoordinator.swift */; };
 		F18BC36F51FFEA6EB5221656 /* QuickNoteActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 554C23328FBA8D6CA2E44BDB /* QuickNoteActivity.swift */; };
@@ -622,7 +637,9 @@
 		2B875D95C20954055A8C8FC6 /* UserDefaultsAppPersistenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsAppPersistenceStore.swift; sourceTree = "<group>"; };
 		2C81D00ED6092082696BE8E6 /* KallistiWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KallistiWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2CFCAAF37C1FB81807879CC9 /* AppContainer+NativeGateway.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppContainer+NativeGateway.swift"; sourceTree = "<group>"; };
+		2D37E8F7481BC9AE2ECB7140 /* ErisTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisTypes.swift; sourceTree = "<group>"; };
 		2D3C11B115527992FE8196F4 /* AuthenticatedAsyncImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticatedAsyncImage.swift; sourceTree = "<group>"; };
+		2DA3ACC92FDC9A19E0F68932 /* ErisConversationTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisConversationTypes.swift; sourceTree = "<group>"; };
 		2E5B53E8562C62901D062529 /* PendingAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingAttachment.swift; sourceTree = "<group>"; };
 		2E784AB16C39E6C64F9EAF6D /* AppEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEntry.swift; sourceTree = "<group>"; };
 		2F2D09B0484E5E3255AC0165 /* MockHandwritingRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHandwritingRecognizer.swift; sourceTree = "<group>"; };
@@ -648,6 +665,8 @@
 		376F3C46A00109C8437ECCAC /* PCMPlaybackQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCMPlaybackQueue.swift; sourceTree = "<group>"; };
 		386C1F2349F831A5CC874F51 /* iOSTextInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iOSTextInput.swift; sourceTree = "<group>"; };
 		38FBCB1659A915AD0D4D608B /* KittyPlaceholder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KittyPlaceholder.swift; sourceTree = "<group>"; };
+		3A59B8DF794B3C983A831E9C /* ErisSettingsTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSettingsTypes.swift; sourceTree = "<group>"; };
+		3BF431626D41ECF1576D39E4 /* ErisNotesTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisNotesTypes.swift; sourceTree = "<group>"; };
 		3C241EC26EBEDE74BF4AEA9E /* NativeAuthCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAuthCoordinatorTests.swift; sourceTree = "<group>"; };
 		3C2F481E67C9068FFC07EFEE /* NativeGatewayFeatureClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGatewayFeatureClient.swift; sourceTree = "<group>"; };
 		3C4F0C938054F308B4F14959 /* StreamedContentPreservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamedContentPreservationTests.swift; sourceTree = "<group>"; };
@@ -664,6 +683,7 @@
 		4310FA53BC82288581607B67 /* AppTemplateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTemplateTests.swift; sourceTree = "<group>"; };
 		432C23AEFCEE4513CA03A4A1 /* TokenUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenUsage.swift; sourceTree = "<group>"; };
 		43D32A538E6F815C92B06203 /* SecureStoreProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStoreProtocol.swift; sourceTree = "<group>"; };
+		445EB2992C78A7A6C5FFFC13 /* ErisPairingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisPairingUITests.swift; sourceTree = "<group>"; };
 		44962D7FE1C0DEC636E7AD7B /* DaemonGroupScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonGroupScreen.swift; sourceTree = "<group>"; };
 		4516A72DA5AF533B7C547F57 /* PairingServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingServiceProtocol.swift; sourceTree = "<group>"; };
 		4554907DF24E9D7229EDA596 /* Terminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Terminal.swift; sourceTree = "<group>"; };
@@ -694,6 +714,7 @@
 		522EB9981B7B69D68F141D86 /* NoteRecognitionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteRecognitionCoordinatorTests.swift; sourceTree = "<group>"; };
 		5284C9AE8B2A58A9B7F5C258 /* iPadRightPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadRightPanelView.swift; sourceTree = "<group>"; };
 		539A1F1A4160C9A23BF2189B /* Colors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Colors.swift; sourceTree = "<group>"; };
+		53B80D0123591B404F0F0223 /* ErisPairingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisPairingService.swift; sourceTree = "<group>"; };
 		540B73A89FCA63E4A659A3D6 /* MarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownParser.swift; sourceTree = "<group>"; };
 		55375391D8EAAABB4438EC81 /* HeraldStatusWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldStatusWidget.swift; sourceTree = "<group>"; };
 		554C23328FBA8D6CA2E44BDB /* QuickNoteActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickNoteActivity.swift; sourceTree = "<group>"; };
@@ -736,6 +757,7 @@
 		680B8A0E1CD27BB868142C52 /* Bidi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bidi.swift; sourceTree = "<group>"; };
 		68D7AC8132364CDFA88AF6CA /* SessionSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSummary.swift; sourceTree = "<group>"; };
 		69739260DD17C6229D2A945D /* MessageReactionPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReactionPicker.swift; sourceTree = "<group>"; };
+		698E534CBE66096482A7CF44 /* ErisHeraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisHeraldClient.swift; sourceTree = "<group>"; };
 		6992E754A8BD1509A1E72220 /* CodeDiffParserLiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeDiffParserLiveTests.swift; sourceTree = "<group>"; };
 		6ADA0FD3C551D728D7AB9C24 /* GatewayLogsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayLogsScreen.swift; sourceTree = "<group>"; };
 		6AE22DD28D0A4330BCD941BB /* NotePaperBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotePaperBackground.swift; sourceTree = "<group>"; };
@@ -746,6 +768,7 @@
 		6C4E0B1E61D42039379EE86D /* SharedTokenBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTokenBridge.swift; sourceTree = "<group>"; };
 		6C9DC799AE87127D3D2D300B /* NotesIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesIntegrationTests.swift; sourceTree = "<group>"; };
 		6CED4EBCBB7671F61AA0FE5B /* KallistiWatch.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = KallistiWatch.entitlements; sourceTree = "<group>"; };
+		6D60007AFF5D7C4F5636233F /* ErisApprovalTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisApprovalTypes.swift; sourceTree = "<group>"; };
 		6D8645F2AE0A0524FAE74CB8 /* GatewayControlClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayControlClient.swift; sourceTree = "<group>"; };
 		6E513F1FBE5162367E2462E2 /* LoopbackCallbackListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackCallbackListener.swift; sourceTree = "<group>"; };
 		6EA161E86943EE6E4FBA083C /* LocalProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalProcess.swift; sourceTree = "<group>"; };
@@ -784,11 +807,13 @@
 		7D399C69C230A781C70199C5 /* stream_v3_commentary.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v3_commentary.json; sourceTree = "<group>"; };
 		7DA876DAD4AEFCB0B64B7F5F /* iOSCaretView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iOSCaretView.swift; sourceTree = "<group>"; };
 		7DB1E3952A4C703165E80A4C /* KallistiActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KallistiActivityAttributes.swift; sourceTree = "<group>"; };
+		7DE21F252E2AFE6894F23B04 /* ErisSensorTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisSensorTypes.swift; sourceTree = "<group>"; };
 		7E13B7CB146B640D2CE04B57 /* PairingRedeemResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingRedeemResult.swift; sourceTree = "<group>"; };
 		7F95152C4FB98F2C2FB95C27 /* HealthServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthServiceProtocol.swift; sourceTree = "<group>"; };
 		80806A056A221AA641DA031E /* SessionBootstrapResponse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBootstrapResponse.swift; sourceTree = "<group>"; };
 		80A312A723CB0C58F828248F /* PairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingStore.swift; sourceTree = "<group>"; };
 		81AFC7238CDCD0DEA91B504E /* KallistiControlsTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = KallistiControlsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		850F4834D576AAC4E2AD0282 /* ErisPairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisPairing.swift; sourceTree = "<group>"; };
 		8512BFE6A2C8FF7E3CFF91A9 /* SkillDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDetailView.swift; sourceTree = "<group>"; };
 		860E5A710E08ADEC8B39EFE6 /* LiveMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMediaService.swift; sourceTree = "<group>"; };
 		862C24F9EB251BD8705AAADC /* CronStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CronStore.swift; sourceTree = "<group>"; };
@@ -815,6 +840,8 @@
 		95B882729C3C40D34D8EA0BE /* InboxItemStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxItemStatus.swift; sourceTree = "<group>"; };
 		95F3F54AFEC709E296B0858C /* Pty.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pty.swift; sourceTree = "<group>"; };
 		95FEDCF15C7C47E1A4464694 /* ThemeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeManager.swift; sourceTree = "<group>"; };
+		9669CC5090727CA831E55CCF /* ErisDaemonStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisDaemonStore.swift; sourceTree = "<group>"; };
+		972366054539A4778E5A4A65 /* ErisInboxService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisInboxService.swift; sourceTree = "<group>"; };
 		978B6BF1CEC5DD820FF13A28 /* KallistiBrandSurfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KallistiBrandSurfaces.swift; sourceTree = "<group>"; };
 		97D28FAFCE2D3B62211CBD7F /* TerminalProgressBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalProgressBarView.swift; sourceTree = "<group>"; };
 		97D7991C58D1F60670363B82 /* DeviceCapability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceCapability.swift; sourceTree = "<group>"; };
@@ -859,6 +886,7 @@
 		AA3929DC58D9DA4514F44DBD /* stream_v2_commentary.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_commentary.json; sourceTree = "<group>"; };
 		AA85F626A142DA90F7EF8597 /* BellStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BellStyle.swift; sourceTree = "<group>"; };
 		AB7A5EF0ADCD048611D42959 /* BufferLine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BufferLine.swift; sourceTree = "<group>"; };
+		ABE745C538D2BCC05F3644C9 /* ErisTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisTokenStore.swift; sourceTree = "<group>"; };
 		AC2F0914300165B24E6DD118 /* iOSTextStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iOSTextStorage.swift; sourceTree = "<group>"; };
 		AC6686C9A33220A9771A0387 /* LegacySpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacySpeechService.swift; sourceTree = "<group>"; };
 		ACFA718BE71AD253C1802EE2 /* NoteDirectiveParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteDirectiveParser.swift; sourceTree = "<group>"; };
@@ -884,6 +912,7 @@
 		B915E05D43A7249C0CE05BF8 /* KittyKeyboardProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KittyKeyboardProtocol.swift; sourceTree = "<group>"; };
 		B95803737568C2C45A51B86D /* StreamContractV2Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamContractV2Tests.swift; sourceTree = "<group>"; };
 		B983135FE5ADF410ACF51E7D /* ModelStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelStoreTests.swift; sourceTree = "<group>"; };
+		B9F2F11A1650FF5171626C79 /* ErisClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisClient.swift; sourceTree = "<group>"; };
 		B9F42A0C678DA92CEEA5D52D /* AppRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRootView.swift; sourceTree = "<group>"; };
 		BA52DDAB41CD6B5BC13E77BD /* JobEventReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobEventReducer.swift; sourceTree = "<group>"; };
 		BAA40751805C6B58BB807AD4 /* Position.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Position.swift; sourceTree = "<group>"; };
@@ -905,6 +934,7 @@
 		C552DADC1F9E5F608AD0A4AD /* NotificationServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationServiceProtocol.swift; sourceTree = "<group>"; };
 		C5E80959DAADB44928CE1A7C /* CreateCronJobSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateCronJobSheet.swift; sourceTree = "<group>"; };
 		C677AA2ECC8EF8AEC72843DD /* stream_v2_reasoning.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_reasoning.json; sourceTree = "<group>"; };
+		C67E3B4F9C65B89D6F7706B9 /* ErisInboxTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErisInboxTypes.swift; sourceTree = "<group>"; };
 		C70C34A32AFC2D65D7D6EC1D /* MockHealthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHealthService.swift; sourceTree = "<group>"; };
 		C75AD9EC37C321E0AACBD9D2 /* AttachmentService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentService.swift; sourceTree = "<group>"; };
 		C7BA511E2EF749AB4E696118 /* KallistiWatchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KallistiWatchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1061,6 +1091,7 @@
 			children = (
 				A3BB7D1E6CC24D18D14DDC01 /* AppTemplateUITests.swift */,
 				6FE2DCC9A5D67993DF3DFDAF /* AppTemplateUITestsLaunchTests.swift */,
+				445EB2992C78A7A6C5FFFC13 /* ErisPairingUITests.swift */,
 			);
 			path = KallistiUITests;
 			sourceTree = "<group>";
@@ -1163,6 +1194,27 @@
 			path = Live;
 			sourceTree = "<group>";
 		};
+		1D29F62351B9649546A87A68 /* Eris */ = {
+			isa = PBXGroup;
+			children = (
+				6D60007AFF5D7C4F5636233F /* ErisApprovalTypes.swift */,
+				B9F2F11A1650FF5171626C79 /* ErisClient.swift */,
+				2DA3ACC92FDC9A19E0F68932 /* ErisConversationTypes.swift */,
+				9669CC5090727CA831E55CCF /* ErisDaemonStore.swift */,
+				698E534CBE66096482A7CF44 /* ErisHeraldClient.swift */,
+				972366054539A4778E5A4A65 /* ErisInboxService.swift */,
+				C67E3B4F9C65B89D6F7706B9 /* ErisInboxTypes.swift */,
+				3BF431626D41ECF1576D39E4 /* ErisNotesTypes.swift */,
+				850F4834D576AAC4E2AD0282 /* ErisPairing.swift */,
+				53B80D0123591B404F0F0223 /* ErisPairingService.swift */,
+				7DE21F252E2AFE6894F23B04 /* ErisSensorTypes.swift */,
+				3A59B8DF794B3C983A831E9C /* ErisSettingsTypes.swift */,
+				ABE745C538D2BCC05F3644C9 /* ErisTokenStore.swift */,
+				2D37E8F7481BC9AE2ECB7140 /* ErisTypes.swift */,
+			);
+			path = Eris;
+			sourceTree = "<group>";
+		};
 		1FF80C37686A4B35852B7290 /* Onboarding */ = {
 			isa = PBXGroup;
 			children = (
@@ -1178,6 +1230,7 @@
 			children = (
 				77D000FB48AC886A8DA55DCF /* Components */,
 				A33D03FBDA01D7A9E2244C15 /* Core */,
+				1D29F62351B9649546A87A68 /* Eris */,
 				16E5FFF2D5D77FAE0B7E6E5A /* Features */,
 				319156E276F1449BB5CCE2FA /* Models */,
 				61E32C934E35EB8F3F2D52E8 /* Resources */,
@@ -1490,8 +1543,8 @@
 		61E32C934E35EB8F3F2D52E8 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
-				B5383F91A53959A6DBF4FA14 /* AppIntentVocabulary.plist */,
 				3FAE9B85C6D21633EEE9A6F5 /* AppIcon.png */,
+				B5383F91A53959A6DBF4FA14 /* AppIntentVocabulary.plist */,
 				6458A1B911F83B73E45C8025 /* Assets.xcassets */,
 				C8222F56AD06B3CDA4D55239 /* Info.plist */,
 			);
@@ -2162,6 +2215,9 @@
 						DevelopmentTeam = 58U7UPFS53;
 						ProvisioningStyle = Automatic;
 					};
+					2BD1B4F1ADCDAF178C006E63 = {
+						TestTargetID = 686AE8A63BCF6445A1BFF4E5;
+					};
 					354B72BC3591763BAAB3F043 = {
 						DevelopmentTeam = 58U7UPFS53;
 						ProvisioningStyle = Automatic;
@@ -2178,6 +2234,9 @@
 						DevelopmentTeam = 58U7UPFS53;
 						ProvisioningStyle = Automatic;
 					};
+					91F319DB127274E3F650794C = {
+						TestTargetID = 686AE8A63BCF6445A1BFF4E5;
+					};
 					9378087654464AF9183AB315 = {
 						DevelopmentTeam = 58U7UPFS53;
 						ProvisioningStyle = Automatic;
@@ -2189,6 +2248,7 @@
 				};
 			};
 			buildConfigurationList = 367B189DEF92EDB4D0BC0292 /* Build configuration list for PBXProject "Herald" */;
+			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -2197,22 +2257,21 @@
 			);
 			mainGroup = C960DD9679960831752746A9;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
-			productRefGroup = 4C98655825F92734D14D2DAB /* Products */;
+			preferredProjectObjectVersion = 54;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				686AE8A63BCF6445A1BFF4E5 /* Kallisti */,
-				04D07E970B525F5FAC61A68F /* KallistiWidgets */,
-				354B72BC3591763BAAB3F043 /* KallistiNotificationService */,
-				9378087654464AF9183AB315 /* KallistiIntents */,
 				8BD3E7CB96F105E9B1F78D8D /* KallistiControls */,
+				EB0D070FB9AB37C1CD0EED55 /* KallistiControlsTests */,
+				9378087654464AF9183AB315 /* KallistiIntents */,
+				354B72BC3591763BAAB3F043 /* KallistiNotificationService */,
 				366CC5513F0803C7ACA49A23 /* KallistiSupport */,
-				9CDBFC6FD9513D1679376355 /* KallistiWatch */,
-				5D5138AADFAB2506A00C8B54 /* KallistiWatchTests */,
 				2BD1B4F1ADCDAF178C006E63 /* KallistiTests */,
 				91F319DB127274E3F650794C /* KallistiUITests */,
-				EB0D070FB9AB37C1CD0EED55 /* KallistiControlsTests */,
+				9CDBFC6FD9513D1679376355 /* KallistiWatch */,
+				5D5138AADFAB2506A00C8B54 /* KallistiWatchTests */,
+				04D07E970B525F5FAC61A68F /* KallistiWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -2385,6 +2444,20 @@
 				4B5132C83B0FB97F493A0C96 /* Documentation.docc in Sources */,
 				CAC43DB866ADC78E0AB8C5AC /* EnrichedDocumentView.swift in Sources */,
 				7DFA5401F52F48C27D6C2040 /* EnrichmentResult.swift in Sources */,
+				5F371A2DC69B54BBE003BE1B /* ErisApprovalTypes.swift in Sources */,
+				0EDE0E6867F44E8621E0C9AA /* ErisClient.swift in Sources */,
+				1E4FE8F339E66F2B189BB8B8 /* ErisConversationTypes.swift in Sources */,
+				54C8BD230FCA9E93DB17CA32 /* ErisDaemonStore.swift in Sources */,
+				95AEBA50447D2EAFE42F4BB3 /* ErisHeraldClient.swift in Sources */,
+				EF0B5C77329D49C267FC531C /* ErisInboxService.swift in Sources */,
+				367FC4713AF7F83F85057310 /* ErisInboxTypes.swift in Sources */,
+				44F1CE79178157F48E6BAA0C /* ErisNotesTypes.swift in Sources */,
+				52A72D188BB0AEDF223AA8FA /* ErisPairing.swift in Sources */,
+				31F0B0AF5FE2D527FDA4D0DE /* ErisPairingService.swift in Sources */,
+				20C2359E8ECAA769113E4061 /* ErisSensorTypes.swift in Sources */,
+				4790ACFAC9684661D56C695E /* ErisSettingsTypes.swift in Sources */,
+				BFC60A446BD99CFD4E40AD19 /* ErisTokenStore.swift in Sources */,
+				839C7D5C8903707E3DDDA56F /* ErisTypes.swift in Sources */,
 				CE521B0F559B74711EAFAB08 /* EscapeSequenceParser.swift in Sources */,
 				8CD804FD2C130B09F30FF9F9 /* EscapeSequences.swift in Sources */,
 				A99BC361FA2D0C40C8AB58A4 /* Extensions.swift in Sources */,
@@ -2666,6 +2739,7 @@
 			files = (
 				1E8C52CE882651D649953B84 /* AppTemplateUITests.swift in Sources */,
 				5916CE94A9A3360B7C7FAFA5 /* AppTemplateUITestsLaunchTests.swift in Sources */,
+				7C82D4BCBAC8E499D6DEAC0F /* ErisPairingUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2851,22 +2925,16 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.Widgets;
 				PRODUCT_NAME = KallistiWidgets;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -2878,22 +2946,16 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.Intents;
 				PRODUCT_NAME = KallistiIntents;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -2903,21 +2965,14 @@
 		2F0F95A219DC2F19AD56FE24 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.controlstests;
 				PRODUCT_NAME = KallistiControlsTests;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -2930,23 +2985,17 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.controlsWidget;
 				PRODUCT_NAME = KallistiControls;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -2958,39 +3007,25 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.tests;
 				PRODUCT_NAME = KallistiTests;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Kallisti.app/Kallisti";
-				TEST_TARGET_NAME = Herald;
+				TEST_TARGET_NAME = Kallisti;
 			};
 			name = Release;
 		};
 		57B070DDB78FA0CA32F1E0DC /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.controlstests;
 				PRODUCT_NAME = KallistiControlsTests;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -3000,46 +3035,36 @@
 		5C86F1F90282607C50F1F333 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kallisti;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti;
 				PRODUCT_NAME = Kallisti;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
 		714CD9D54151431D1EFD751A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
 				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "watchsimulator watchos";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = 4;
@@ -3052,22 +3077,16 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.Intents;
 				PRODUCT_NAME = KallistiIntents;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -3083,13 +3102,8 @@
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.support;
 				PRODUCT_NAME = KallistiSupport;
-				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
@@ -3100,19 +3114,11 @@
 		B29E6E7275033F072D3BCFC0 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.uitests;
 				PRODUCT_NAME = KallistiUITests;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = Herald;
+				TEST_TARGET_NAME = Kallisti;
 			};
 			name = Release;
 		};
@@ -3121,15 +3127,9 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp.tests;
 				PRODUCT_NAME = KallistiWatchTests;
 				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = 4;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/KallistiWatch.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/HeraldWatch";
@@ -3142,79 +3142,25 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.tests;
 				PRODUCT_NAME = KallistiTests;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Kallisti.app/Kallisti";
-				TEST_TARGET_NAME = Herald;
+				TEST_TARGET_NAME = Kallisti;
 			};
 			name = Debug;
 		};
 		C38F2B76797F148B174303F6 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIcon-GlassCoin";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
-				CLANG_CXX_LIBRARY = "libc++";
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_ENABLE_OBJC_WEAK = YES;
-				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_COMMA = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
-				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
-				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-				CLANG_WARN_STRICT_PROTOTYPES = YES;
-				CLANG_WARN_SUSPICIOUS_MOVE = YES;
-				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu11;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-				GCC_WARN_UNUSED_FUNCTION = YES;
-				GCC_WARN_UNUSED_VARIABLE = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MTL_ENABLE_DEBUG_INFO = NO;
-				MTL_FAST_MATH = YES;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -3225,68 +3171,14 @@
 		CF6921BADA0A702591794F95 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIcon-GlassCoin";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
-				CLANG_CXX_LIBRARY = "libc++";
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_ENABLE_OBJC_WEAK = YES;
-				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_COMMA = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
-				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
-				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-				CLANG_WARN_STRICT_PROTOTYPES = YES;
-				CLANG_WARN_SUSPICIOUS_MOVE = YES;
-				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_TESTABILITY = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu11;
-				GCC_DYNAMIC_NO_PIC = NO;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_OPTIMIZATION_LEVEL = 0;
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"$(inherited)",
-					"DEBUG=1",
-				);
-				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-				GCC_WARN_UNUSED_FUNCTION = YES;
-				GCC_WARN_UNUSED_VARIABLE = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
-				MTL_FAST_MATH = YES;
-				ONLY_ACTIVE_ARCH = YES;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -3299,22 +3191,16 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.NotificationService;
 				PRODUCT_NAME = KallistiNotificationService;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -3326,15 +3212,9 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp.tests;
 				PRODUCT_NAME = KallistiWatchTests;
 				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = 4;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/KallistiWatch.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/HeraldWatch";
@@ -3347,22 +3227,16 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.NotificationService;
 				PRODUCT_NAME = KallistiNotificationService;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -3374,22 +3248,16 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.Widgets;
 				PRODUCT_NAME = KallistiWidgets;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -3402,23 +3270,17 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.controlsWidget;
 				PRODUCT_NAME = KallistiControls;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -3428,17 +3290,15 @@
 		F07A7CEF0B1E7A5159D37BDB /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
 				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "watchsimulator watchos";
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = 4;
@@ -3455,13 +3315,8 @@
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.support;
 				PRODUCT_NAME = KallistiSupport;
-				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.2;
@@ -3472,48 +3327,32 @@
 		F62F34C1BC122E9F540F1B37 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.93;
+				CURRENT_PROJECT_VERSION = 170;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kallisti;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 0.2.6;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti;
 				PRODUCT_NAME = Kallisti;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
 		FB0039C1520BFB8AB839157E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.uitests;
 				PRODUCT_NAME = KallistiUITests;
-				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = Herald;
+				TEST_TARGET_NAME = Kallisti;
 			};
 			name = Debug;
 		};
