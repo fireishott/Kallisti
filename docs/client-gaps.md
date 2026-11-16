@@ -94,3 +94,25 @@ Deliberately not uploaded as build 169 yet: the frames carry hunks and html, and
 shipping two TestFlight builds to watch a line of text is churn. The upload waits
 for the rendering piece - hunks behind a tap, the page in a capped WebView - so
 one build shows both.
+
+## Build 169
+
+Uploaded 2026-11-16 00:58 (delivery fd317422), 1.6.0 build 169. Carries, in one
+install:
+
+- `turn.step` in the Thought process row (also in 168),
+- `turn.artifact.diff` rendered by the app's existing diff card, converted from the
+  daemon hunks into the `CodeDiff` patch shape,
+- `turn.artifact.page` rendered in a capped, scrollable `WKWebView` that loads only
+  the html it is given.
+
+What to check on the phone, in order:
+
+1. A turn with tool calls shows step lines even when the model emits no reasoning.
+2. A turn that writes a file shows a diff card with the file and its counts; tapping
+   expands the hunks.
+3. A turn that writes an .html file shows the page card, capped and scrollable, and
+   the page cannot navigate anywhere.
+
+If a card is missing, the decode is not the last link: check the store case for the
+frame and the bubble branch that draws it.
