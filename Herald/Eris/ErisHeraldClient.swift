@@ -328,8 +328,18 @@ final class ErisHeraldClient: HeraldClientProtocol {
     // MARK: - Conversation (transcript)
 
     func loadConversation() async -> Conversation {
-        if let currentConversation {
-            return currentConversation
+        if var current = currentConversation {
+            // A restored chat is a shell: an id and a title, with no messages. It
+            // must be filled before it is answered, or the transcript stays blank
+            // while the daemon holds every row and pushes announce the replies.
+            guard current.messages.isEmpty else { return current }
+            if let boundID = conversationIDByLocalID[current.id],
+               let client = await pairedClient(),
+               let detail = try? await client.conversation(id: boundID) {
+                current.messages = detail.messages.map { Self.message(from: $0) }
+                currentConversation = current
+            }
+            return current
         }
         // Nothing restored: hand back an empty one the chat can use. This is a
         // first launch, not a lost transcript - a restored chat returns above.
