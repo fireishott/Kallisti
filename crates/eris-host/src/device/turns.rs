@@ -3336,6 +3336,40 @@ mod tests {
         (job, session)
     }
 
+    /// The contract's "cancel is honoured at the next step boundary", stated as
+    /// what the storage layer actually does: once the turn is cancelled, the next
+    /// step finds nothing to append to. There is no window where a fragment
+    /// written after the cancel looks like part of the turn.
+    #[test]
+    fn a_cancelled_turn_takes_no_further_steps() {
+        let (store, device) = store(64);
+        let (job, _session) = queued(&store, &device);
+        assert!(store.claim(&job).expect("claim"));
+        store
+            .append(&job, FrameKind::Step, &serde_json::json!({"step_id": "one"}))
+            .expect("append")
+            .expect("a running turn accepts a step");
+
+        let cancelled = store
+            .finish(
+                &job,
+                FrameKind::Cancelled,
+                &serde_json::json!({"reason": "cancel"}),
+            )
+            .expect("cancel");
+        assert!(cancelled.is_some(), "the cancel is the terminal frame");
+
+        for kind in [FrameKind::Step, FrameKind::StepResult, FrameKind::Delta] {
+            assert_eq!(
+                store
+                    .append(&job, kind, &serde_json::json!({"step_id": "two"}))
+                    .expect("append is answered, not an error"),
+                None,
+                "a cancelled turn takes no further {kind:?} frames"
+            );
+        }
+    }
+
     /// A crash and a deploy are different deaths, and the boot sweep says which.
     #[test]
     fn the_boot_sweep_tells_a_dead_worker_from_a_restart() {

@@ -23,7 +23,7 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 06 | `turn.ask` blocking the turn | carried | frame `asked` + answer route |
 | 06 | `turn.approval` as a stream frame | partial | `GET /v1/approvals`, `POST /v1/approvals/{id}/decide` |
 | 04 | Job lease, heartbeat, reclaim | partial | lease + heartbeat carried; `lease_expired_jobs` names the dead; the sweep settles a dead worker's turn as `lease_expired` and a restart's as `interrupted` (proved by `the_boot_sweep_tells_a_dead_worker_from_a_restart`). Re-claim by a second worker is still not taken |
-| 04 | `job.cancel` at a step boundary | carried | `POST /v1/turns/{id}/cancel` |
+| 04 | `job.cancel` at a step boundary | carried | `POST /v1/turns/{id}/cancel`; proved by `a_cancelled_turn_takes_no_further_steps` (a cancelled turn answers None to the next step, result or delta) |
 | 07 | Per-device hashed tokens | carried | `auth_tokens` (Argon2id verifiers), `devices` |
 | 07 | Token contrast test on `(host, profile)` | partial | scopes are checked; host binding is not recorded |
 | 08 | Single-use pair code, QR handoff | carried | `pairing_codes.consumed_at`, dashboard mint |
