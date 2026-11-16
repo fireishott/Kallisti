@@ -22,7 +22,7 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 05 | Page artifact | absent | - |
 | 06 | `turn.ask` blocking the turn | carried | frame `asked` + answer route |
 | 06 | `turn.approval` as a stream frame | partial | `GET /v1/approvals`, `POST /v1/approvals/{id}/decide` |
-| 04 | Job lease, heartbeat, reclaim | carried | `jobs` table; `renew_lease` in `device/turns.rs` |
+| 04 | Job lease, heartbeat, reclaim | partial | lease + heartbeat carried (`jobs.lease_expires_at`, `renew_lease`, 60s, renewed per turn); `lease_expired_jobs` names the dead; reclaim is not taken - the boot sweep settles them as interrupted |
 | 04 | `job.cancel` at a step boundary | carried | `POST /v1/turns/{id}/cancel` |
 | 07 | Per-device hashed tokens | carried | `auth_tokens` (Argon2id verifiers), `devices` |
 | 07 | Token contrast test on `(host, profile)` | partial | scopes are checked; host binding is not recorded |

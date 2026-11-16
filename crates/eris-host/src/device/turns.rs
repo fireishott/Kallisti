@@ -778,6 +778,33 @@ impl TurnStore {
         Ok(changed == 1)
     }
 
+    /// Running jobs whose lease has run out.
+    ///
+    /// A lease is a heartbeat, so a row still `running` past its expiry is a
+    /// worker that stopped renewing: the row is the only evidence left that the
+    /// turn was ever claimed. Reading them is the first half of a reclaim; the
+    /// second half is a decision about who is allowed to take the turn back,
+    /// which this daemon has not made yet - the boot sweep settles them as
+    /// interrupted instead. Naming them here is what lets that decision be made
+    /// against a number rather than a guess.
+    pub fn lease_expired_jobs(&self) -> Result<Vec<String>, DbError> {
+        self.db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT id FROM jobs \
+                  WHERE status = 'running' \
+                    AND lease_expires_at IS NOT NULL \
+                    AND lease_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                  ORDER BY created_at",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(row.get(0)?);
+            }
+            Ok(out)
+        })
+    }
+
     /// One job, when it exists.
     pub fn job(&self, job_id: &str) -> Result<Option<JobRow>, DbError> {
         self.db.with_conn(|conn| {
@@ -1476,6 +1503,18 @@ fn finish_transaction(
 /// statement means a job a concurrent canceller settled first is not clobbered.
 pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
     let store = TurnStore::from_env(db.clone());
+    // How many of these stopped renewing rather than being caught by the
+    // restart: the difference between "the daemon came back and found work" and
+    // "a worker died mid-turn". One number in the boot log is what makes a
+    // crash-looping worker visible without reading every row.
+    if let Ok(expired) = store.lease_expired_jobs() {
+        if !expired.is_empty() {
+            tracing::warn!(
+                count = expired.len(),
+                "turns outlived their lease before the restart; settling them as interrupted"
+            );
+        }
+    }
     let interrupted = db.with_conn(|conn| {
         let mut statement = conn.prepare(
             // Kind `tool` is a background process, not a chat turn: it has its own
@@ -3278,6 +3317,37 @@ mod tests {
             .create_job(device, &session, None, "reply with the single word: ok")
             .expect("job");
         (job, session)
+    }
+
+    /// The lease is the only evidence that a worker is alive, so a claimed job
+    /// is visible by its expiry and disappears from the list the moment the lease
+    /// is renewed past now.
+    #[test]
+    fn a_lease_that_stopped_beating_is_visible_and_renewal_clears_it() {
+        let (store, device) = store(64);
+        let (job, _session) = queued(&store, &device);
+        assert!(store.lease_expired_jobs().expect("read").is_empty());
+        assert!(store.claim(&job).expect("claim"), "a queued job is claimable");
+
+        // The claim stamps a lease in the future, so the job is not expired.
+        assert!(store.lease_expired_jobs().expect("read").is_empty());
+
+        // Push the lease into the past, as a dead worker would leave it.
+        store
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE jobs SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
+                    params![job],
+                )?;
+                Ok(())
+            })
+            .expect("age the lease");
+        assert_eq!(store.lease_expired_jobs().expect("read"), vec![job.clone()]);
+
+        // A live worker's renew puts it back out of the list.
+        store.renew(&job).expect("renew");
+        assert!(store.lease_expired_jobs().expect("read").is_empty());
     }
 
     /// A step frame is an ordinary append: if this ever returns `None` on a
