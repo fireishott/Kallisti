@@ -3877,6 +3877,11 @@ pub fn run_turn_with_key(
         // Parked before it is waited on, and the wait reports the answer back
         // through `asked` so the transcript can redraw the card with what was
         // decided instead of asking again on every reload.
+        if let Some(db) = settings.db.as_ref()
+            && let Some(result) = crate::scheduler_tools::run(&call.name, &call.arguments, db)
+        {
+            return result;
+        }
         if let (Some(sensors), Some(db)) =
             (crate::sensors::shared(), settings.db.as_ref())
             && let Some(result) = crate::sensor_tools::run(&call.name, &call.arguments, sensors, db)
@@ -4249,6 +4254,11 @@ pub fn run_turn_with_key(
                     // reach the model's list.
                     if crate::sensors::shared().is_some() {
                         offered.extend(crate::sensor_tools::specs());
+                    }
+                    // Recurring work: offered whenever this turn can read the
+                    // database the schedules live in.
+                    if settings.db.is_some() {
+                        offered.extend(crate::scheduler_tools::specs());
                     }
                     // Only offered when the role is pinned: a tool the daemon
                     // will refuse must never reach the model's list.

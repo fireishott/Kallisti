@@ -75,6 +75,7 @@ pub mod reach;
 pub mod release;
 pub mod roster;
 pub mod scheduler;
+pub mod scheduler_tools;
 pub mod search;
 pub mod sensitivity;
 pub mod sensor_tools;
