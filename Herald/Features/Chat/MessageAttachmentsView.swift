@@ -100,7 +100,16 @@ struct MessageAttachmentsView: View {
     }
 
     private func openFile(_ attachment: MessageAttachment) async {
-        guard let data = await attachmentService.data(for: attachment) else { return }
+        // A file from the paired daemon comes over the device API with the bearer
+        // the phone already holds; the relay download path would ask a host that
+        // never had it, and the tap would do nothing.
+        let data: Data?
+        if let id = erisID(of: attachment) {
+            data = try? await ErisDaemonStore.shared.clientForPairedDaemon()?.attachmentBytes(id: id)
+        } else {
+            data = await attachmentService.data(for: attachment)
+        }
+        guard let data else { return }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("KallistiPreview", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(sanitized(attachment.fileName))
