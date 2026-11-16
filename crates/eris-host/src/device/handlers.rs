@@ -286,7 +286,7 @@ fn synthetic_terminal(kind: FrameKind, text: String) -> serde_json::Value {
         FrameKind::Done => {
             let usage =
                 core_domain::Usage::unavailable(core_domain::UnavailableReason::FieldsAbsent);
-            serde_json::json!({ "text": text, "usage": usage })
+            serde_json::json!({ "text": text, "usage": usage, "status": "ok" })
         }
         FrameKind::Error => serde_json::json!({
             "code": "interrupted",
@@ -298,7 +298,8 @@ fn synthetic_terminal(kind: FrameKind, text: String) -> serde_json::Value {
         // because a parked question is the opposite of an ending - the turn is
         // alive and waiting on a person, and inventing a question nobody asked
         // would be worse than leaving the stream short.
-        FrameKind::Delta
+        FrameKind::Start
+        | FrameKind::Delta
         | FrameKind::Reasoning
         | FrameKind::Tool
         | FrameKind::Attachment

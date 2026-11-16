@@ -91,6 +91,12 @@ pub const SETTING_PENDING_MODEL: &str = "device.model_pending";
 /// they are the same names the browser's turn stream sends for the same events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameKind {
+    /// The turn opened: which model is about to answer, and in which chat.
+    ///
+    /// The first frame of a turn, so a phone that attaches mid-way, or resumes
+    /// after a background, can draw the header from the stream instead of
+    /// guessing it from the next delta.
+    Start,
     /// One assistant text fragment.
     Delta,
     /// One fragment of the model's own reasoning, when the provider streams one.
@@ -145,7 +151,8 @@ pub enum FrameKind {
 impl FrameKind {
     /// Every kind, so a client can learn the vocabulary from `/v1/version`
     /// instead of pinning a build number.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
+        Self::Start,
         Self::Delta,
         Self::Reasoning,
         Self::Tool,
@@ -163,6 +170,7 @@ impl FrameKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Start => "turn.start",
             Self::Delta => "delta",
             Self::Reasoning => "reasoning",
             Self::Tool => "tool",
@@ -181,6 +189,7 @@ impl FrameKind {
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         match text {
+            "turn.start" => Some(Self::Start),
             "delta" => Some(Self::Delta),
             "reasoning" => Some(Self::Reasoning),
             "tool" => Some(Self::Tool),
@@ -202,7 +211,8 @@ impl FrameKind {
     pub const fn is_terminal(self) -> bool {
         !matches!(
             self,
-            Self::Delta
+            Self::Start
+                | Self::Delta
                 | Self::Reasoning
                 | Self::Tool
                 | Self::Attachment
@@ -216,7 +226,8 @@ impl FrameKind {
     /// The job status a terminal frame moves the job to.
     const fn terminal_status(self) -> Option<&'static str> {
         match self {
-            Self::Delta
+            Self::Start
+            | Self::Delta
             | Self::Reasoning
             | Self::Tool
             | Self::Attachment
@@ -1965,6 +1976,17 @@ impl TurnHub {
             "device turn resolved its provider"
         );
 
+        // The turn announces itself before the model is called, so the phone
+        // draws the header from the stream rather than from the next delta.
+        // Additive: a client that does not know `turn.start` ignores it.
+        let opening = serde_json::json!({
+            "model": config.model,
+            "profile": config.provider_id,
+        });
+        if let Ok(Some(seq)) = store.append(&job_id, FrameKind::Start, &opening) {
+            publish(&sender, seq, FrameKind::Start, opening);
+        }
+
         // The identity: read from the file now, on this turn, so an edit is live
         // without a restart. `None` is the ordinary "no persona" case and the
         // turn goes ahead with no system message at all.
@@ -2290,7 +2312,17 @@ impl TurnHub {
                             if let Ok(mut last) = last_turn.lock() {
                                 *last = Some((capped, text.clone()));
                             }
-                            let data = serde_json::json!({ "text": &text, "usage": &usage });
+                            // `status` is the contract's terminal word, carried
+                            // on the frame this daemon has always called `done`.
+                            // Renaming the frame would break every shipped
+                            // client; adding the word costs nothing and lets a
+                            // reader tell a finished turn from a stopped one
+                            // without inferring it from the text.
+                            let data = serde_json::json!({
+                                "text": &text,
+                                "usage": &usage,
+                                "status": "ok",
+                            });
                             match store.finish(&writer_job, FrameKind::Done, &data) {
                                 // The transcript row is written only by the worker
                                 // that won the terminal frame. A turn cancelled
@@ -3188,6 +3220,16 @@ mod tests {
             .create_job(device, &session, None, "reply with the single word: ok")
             .expect("job");
         (job, session)
+    }
+
+    /// The opening frame is spelled with a dot, so it cannot be confused with a
+    /// stored word, and it round-trips through the journal like every other kind.
+    #[test]
+    fn the_opening_frame_round_trips_and_is_not_terminal() {
+        assert_eq!(FrameKind::Start.as_str(), "turn.start");
+        assert_eq!(FrameKind::parse("turn.start"), Some(FrameKind::Start));
+        assert!(!FrameKind::Start.is_terminal(), "a turn has not ended at the start");
+        assert!(FrameKind::ALL.contains(&FrameKind::Start));
     }
 
     /// An ack is a promise, so it must prune exactly what it names and nothing

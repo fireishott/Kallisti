@@ -15,9 +15,9 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 02 | `buffer_miss` with snapshot fallback | carried | 409 + snapshot route, same handler |
 | 02 | `resume.ack` / release of retained frames | carried | `POST /v1/turns/{id}/ack`; `jobs.acked_seq` (migration 0036); `TurnStore::acknowledge` |
 | 03 | `turn.delta` | carried | frame `delta` |
-| 03 | `turn.start` | absent | first frame is `round` |
+| 03 | `turn.start` | carried | frame `turn.start` (model, profile) emitted before the provider call |
 | 03 | `turn.step` / `turn.step.result` | partial | `tool_start` + `tool` cover tool calls only |
-| 03 | `turn.end` with status | partial | frame `done` carries text + usage, no status |
+| 03 | `turn.end` with status | carried | frame `done` carries `status: ok` beside text + usage |
 | 05 | Diff artifact | absent | `CodeDiff` exists in the client, nothing produces the frame |
 | 05 | Page artifact | absent | - |
 | 06 | `turn.ask` blocking the turn | carried | frame `asked` + answer route |
