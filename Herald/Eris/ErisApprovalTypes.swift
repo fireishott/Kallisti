@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 // MARK: - Approvals wire types
 //
@@ -161,5 +162,131 @@ extension ErisApprovalOutcome {
             decision: object["decision"] as? String ?? "",
             result: object["result"] as? String
         )
+    }
+}
+
+
+// MARK: - The approvals surface
+
+/// Approvals the daemon is holding, and the decision about each.
+///
+/// The transport already existed (ErisDaemonStore.clientForPairedDaemon); what did
+/// not was anything that called it. A failure is reported as itself - a turn that
+/// already finished, an approval that is gone, a decision the daemon refused -
+/// rather than being folded into one message, because the operator needs to know
+/// which of those happened.
+@MainActor
+final class ErisApprovalsStore: ObservableObject {
+    @Published private(set) var rows: [ErisApproval] = []
+    @Published private(set) var busy = false
+    @Published var failure: String?
+
+    private let store: ErisDaemonStore
+
+    init(store: ErisDaemonStore = ErisDaemonStore()) {
+        self.store = store
+    }
+
+    /// Read the queue. Safe to call on every appearance.
+    func load() async {
+        guard let client = store.clientForPairedDaemon() else {
+            failure = "this phone is not paired with a daemon"
+            return
+        }
+        busy = true
+        defer { busy = false }
+        do {
+            rows = try await client.approvals().approvals
+            failure = nil
+        } catch {
+            failure = (error as? ErisError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Answer one. The row leaves the list only when the daemon took the decision,
+    /// so a refusal stays visible with its reason instead of vanishing.
+    func decide(_ approval: ErisApproval, _ decision: ErisApprovalDecision) async {
+        guard let client = store.clientForPairedDaemon() else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await client.decideApproval(id: approval.id, decision: decision)
+            rows.removeAll { $0.id == approval.id }
+            failure = nil
+        } catch {
+            failure = (error as? ErisError)?.message ?? error.localizedDescription
+        }
+    }
+}
+
+/// The sheet: every parked command, with Allow and Deny.
+struct ErisApprovalsSheet: View {
+    @StateObject private var model: ErisApprovalsStore
+    @Environment(\.dismiss) private var dismiss
+
+    init(store: ErisDaemonStore = ErisDaemonStore()) {
+        _model = StateObject(wrappedValue: ErisApprovalsStore(store: store))
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let failure = model.failure {
+                    Section {
+                        Text(failure)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+                if model.rows.isEmpty && model.failure == nil {
+                    Section {
+                        Text("Nothing is waiting for a decision.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(model.rows) { approval in
+                    Section {
+                        Text(approval.tool)
+                            .font(.callout.weight(.semibold))
+                        Text(approval.arguments)
+                            .font(.caption.monospaced())
+                            .lineLimit(4)
+                        if let reason = approval.reason {
+                            Text(reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Button("Allow") {
+                                Task { await model.decide(approval, .approved) }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.busy)
+                            Button("Deny", role: .destructive) {
+                                Task { await model.decide(approval, .denied) }
+                            }
+                            .disabled(model.busy)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Approvals")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        Task { await model.load() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(model.busy)
+                }
+            }
+            .task { await model.load() }
+            .refreshable { await model.load() }
+        }
     }
 }
