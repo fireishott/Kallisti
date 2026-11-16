@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 40;
+pub const SCHEMA_VERSION: i64 = 41;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -287,6 +287,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 40,
         name: "0040_comms_outbox",
         sql: MIGRATION_0040,
+    },
+    Migration {
+        version: 41,
+        name: "0041_bots_and_rooms",
+        sql: MIGRATION_0041,
     },
 ];
 
@@ -1300,6 +1305,40 @@ CREATE TABLE comms_outbox (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX idx_comms_outbox_status ON comms_outbox (status, created_at DESC);
+";
+
+/// WP-17: bot profiles, rooms, and who is in them.
+///
+/// A room is a conversation with members, exactly as the brief says: room history
+/// is the message table with a `room_id`, so there is no second store to keep in
+/// step. A bot is a stored profile, not a separate agent loop.
+///
+/// Down path: `DROP TABLE room_members; DROP TABLE rooms; DROP TABLE bot_profiles;`.
+const MIGRATION_0041: &str = r"
+CREATE TABLE bot_profiles (
+    id           TEXT PRIMARY KEY NOT NULL,
+    name         TEXT NOT NULL UNIQUE,
+    instructions TEXT NOT NULL DEFAULT '',
+    model        TEXT,
+    tools        TEXT NOT NULL DEFAULT '',
+    picture      TEXT,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE TABLE rooms (
+    id          TEXT PRIMARY KEY NOT NULL,
+    name        TEXT NOT NULL,
+    purpose     TEXT NOT NULL DEFAULT '',
+    notes       TEXT NOT NULL DEFAULT '',
+    policy      TEXT NOT NULL DEFAULT 'mention',
+    lead_id     TEXT,
+    max_turns   INTEGER NOT NULL DEFAULT 6,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE TABLE room_members (
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    bot_id  TEXT NOT NULL REFERENCES bot_profiles(id) ON DELETE CASCADE,
+    PRIMARY KEY (room_id, bot_id)
+);
 ";
 
 /// Down path: `ALTER TABLE jobs DROP COLUMN acked_seq;`. Nothing else reads the

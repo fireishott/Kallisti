@@ -73,6 +73,7 @@ pub mod providers;
 pub mod push;
 pub mod queue;
 pub mod reach;
+pub mod rooms;
 pub mod release;
 pub mod roster;
 pub mod scheduler;
