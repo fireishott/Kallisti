@@ -153,6 +153,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
             let task = Task { @MainActor [weak self] in
                 await self?.performStreamingSend(
                     message: message,
+                    attachments: attachments,
                     clientMessageID: clientMessageID,
                     continuation: continuation
                 )
@@ -197,6 +198,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     private func performStreamingSend(
         message: String,
+        attachments: [PendingAttachment],
         clientMessageID: UUID,
         continuation: AsyncStream<StreamingUpdate>.Continuation
     ) async {
@@ -234,9 +236,22 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 continuation.finish()
                 return
             }
+            // The files go first: a turn can only name ids that exist.
+            var uploaded: [String] = []
+            for attachment in attachments {
+                if let id = try? await client.uploadAttachment(
+                    data: attachment.data,
+                    fileName: attachment.fileName,
+                    mediaType: attachment.mimeType,
+                    conversationID: boundConversation
+                ) {
+                    uploaded.append(id)
+                }
+            }
             let turn = try await client.createTurn(
                 text: message,
-                conversation: boundConversation
+                conversation: boundConversation,
+                attachments: uploaded
             )
             let jobID = Self.stableUUID(from: turn.jobID)
             continuation.yield(.messageSent(jobID: jobID))

@@ -34,6 +34,8 @@ enum ErisRoute: Equatable, Sendable {
     case conversation(conversationID: String)
     /// `GET /v1/attachments/{id}` - the bytes of one file a turn attached.
     case attachment(attachmentID: String)
+    /// `POST /v1/attachments` - take the bytes, hand back an id.
+    case uploadAttachment
     /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
     case clearConversation(conversationID: String)
     /// `GET /v1/settings` - the operator-facing settings snapshot.
@@ -101,6 +103,8 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/conversations/\(Self.segment(conversationID))"
         case .attachment(let attachmentID):
             return "/v1/attachments/\(Self.segment(attachmentID))"
+        case .uploadAttachment:
+            return "/v1/attachments"
         case .clearConversation(let conversationID):
             return "/v1/conversations/\(Self.segment(conversationID))/clear"
         case .settings, .updateSettings:
@@ -148,6 +152,7 @@ enum ErisRoute: Equatable, Sendable {
              .models, .aux:
             return "GET"
         case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings,
+             .uploadAttachment,
              .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote,
              .setModel, .setAux:
             return "POST"
@@ -276,7 +281,49 @@ actor ErisClient {
     /// transcript row pair instead of a session of its own. A conversation id the
     /// daemon does not hold is refused here, before anything is written, so a
     /// refused turn never leaves half a conversation behind.
-    func createTurn(text: String, conversation: String? = nil) async throws -> ErisTurn {
+    /// Take the bytes, hand back the id a turn names them by.
+    ///
+    /// The body is the file itself, not a multipart form: the daemon's route says
+    /// so, and a phone has the bytes in hand. The two headers are the file's name
+    /// and the conversation it belongs to.
+    func uploadAttachment(
+        data: Data,
+        fileName: String,
+        mediaType: String,
+        conversationID: String?
+    ) async throws -> String {
+        var request = try await authorizedRequest(
+            route: .uploadAttachment,
+            form: nil,
+            accept: "application/json"
+        )
+        request.httpMethod = "POST"
+        request.httpBody = data
+        request.setValue(mediaType, forHTTPHeaderField: "Content-Type")
+        request.setValue(fileName, forHTTPHeaderField: "x-kallisti-filename")
+        if let conversationID, !conversationID.isEmpty {
+            request.setValue(conversationID, forHTTPHeaderField: "x-kallisti-conversation")
+        }
+        let (body, response) = try await perform(request)
+        let status = Self.status(of: response)
+        guard (200..<300).contains(status) else {
+            throw Self.serverError(status: status, data: body)
+        }
+        // The daemon answers {"attachment":{"id":...},"conversation_id":...}.
+        // Reading a top-level id would have failed here and been swallowed by the
+        // caller try?, which is how an upload could succeed and still be dropped.
+        struct Uploaded: Decodable {
+            struct Inner: Decodable { let id: String }
+            let attachment: Inner
+        }
+        return try decode(Uploaded.self, from: body).attachment.id
+    }
+
+    func createTurn(
+        text: String,
+        conversation: String? = nil,
+        attachments: [String] = []
+    ) async throws -> ErisTurn {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw ErisError.server(status: 400, code: "text_required", message: "the turn text must not be empty")
@@ -287,6 +334,9 @@ actor ErisClient {
             if !trimmedID.isEmpty {
                 form["conversation"] = trimmedID
             }
+        }
+        if !attachments.isEmpty {
+            form["attachments"] = attachments.joined(separator: ",")
         }
         let data = try await send(route: .turns, form: form)
         return try decode(ErisTurn.self, from: data)
