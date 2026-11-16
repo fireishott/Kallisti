@@ -26,7 +26,10 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 04 | `job.cancel` at a step boundary | carried | `POST /v1/turns/{id}/cancel`; proved by `a_cancelled_turn_takes_no_further_steps` (a cancelled turn answers None to the next step, result or delta) |
 | 07 | Per-device hashed tokens | carried | `auth_tokens` (Argon2id verifiers), `devices` |
 | 07 | Token contrast test on `(host, profile)` | carried | migration 0037 records `auth_tokens.minted_for` = `/etc/machine-id` at mint; verify refuses a row bound to another instance with `token_from_another_daemon`; NULL rows predate the binding and keep working (tested) |
-| 08 | Single-use pair code, QR handoff | carried | `pairing_codes.consumed_at`, dashboard mint |
+| 08 | Single-use pair code | carried | redemption marks `pairing_codes.consumed_at` inside the same statement that reads it, so two racing redeems cannot both win; `auth::pairing::code_single_use` |
+| 08 | QR handoff | carried | `web/qr.rs` renders the payload as SVG with a quiet zone; the dashboard pairing page shows it (`routes.rs` Pairing::new + svg); 4 tests incl. a too-long payload returning none rather than a broken image |
+| 07 | Rotation retires the old token once | carried | `TokenService::rotate` retires the presented refresh row before minting; `rotation_is_recorded` asserts exactly one row retired and an `auth.rotate` audit row |
+| 07 | New token valid only after the first acked frame | absent | the minted pair is valid immediately; nothing ties it to an ack |
 | 12 | FTS transcript search | carried | `chat_messages_fts`; `GET /v1/search`; `search_transcripts` tool offered to the model when the turn has a database (query, limit; replies with total and hits: conversation, title, snippet, ts, role) |
 | 09 | Sensor storage + retention | partial | `sensors.db`; `POST /v1/device/sensor/{location,health}` |
 | 09 | Batch `/v1/device/sensors`, `/v1/device/events` | absent | per-sample routes only |
