@@ -24,7 +24,9 @@ enum ErisHeraldError: Error, LocalizedError {
 @MainActor
 final class ErisHeraldClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus = .disconnected
-    private(set) var currentConversation: Conversation?
+    private(set) var currentConversation: Conversation? {
+        didSet { persistOpenConversation() }
+    }
 
     /// Owns pairing and the sensor pipeline; the transport is pulled from it.
     private let store = ErisDaemonStore()
@@ -53,6 +55,27 @@ final class ErisHeraldClient: HeraldClientProtocol {
         UserDefaults.standard.set(encoded, forKey: Self.conversationMapKey)
     }
 
+    private static let openConversationKey = "eris.openConversation.v1"
+
+    /// Remember which chat is open. Without this a relaunch opens a new one, and
+    /// the transcript of the old one is unreachable even though the daemon has it.
+    private func persistOpenConversation() {
+        guard let open = currentConversation else { return }
+        UserDefaults.standard.set(
+            [open.id.uuidString, open.title],
+            forKey: Self.openConversationKey
+        )
+    }
+
+    /// The chat that was open before, if there was one.
+    private func restoreOpenConversation() {
+        guard let stored = UserDefaults.standard.array(forKey: Self.openConversationKey) as? [String],
+              stored.count == 2,
+              let id = UUID(uuidString: stored[0])
+        else { return }
+        currentConversation = Conversation(id: id, title: stored[1])
+    }
+
     /// Read the map back, rebuilding both directions.
     private func loadConversationMap() {
         guard let encoded = UserDefaults.standard.dictionary(forKey: Self.conversationMapKey)
@@ -68,6 +91,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     init() {
         loadConversationMap()
+        restoreOpenConversation()
     }
 
     func connect() async {
@@ -252,7 +276,8 @@ final class ErisHeraldClient: HeraldClientProtocol {
         if let currentConversation {
             return currentConversation
         }
-        // No conversation bound yet: hand back an empty one the chat can use.
+        // Nothing restored: hand back an empty one the chat can use. This is a
+        // first launch, not a lost transcript - a restored chat returns above.
         let conversation = Conversation(title: "New Chat")
         currentConversation = conversation
         return conversation
