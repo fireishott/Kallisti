@@ -5201,6 +5201,32 @@ final class ChatStore {
             }
         }
 
+        // The same invariant for the operator's own messages. The assistant pass
+        // above only looks at rows with a jobID, and a prompt has none, so an
+        // optimistic prompt plus a streamed copy plus a fetched copy all survived
+        // and the message rendered three times. A clientMessageID is minted once
+        // per send, so two rows sharing one are the same message; the later copy is
+        // dropped and the first keeps its place in the transcript.
+        var seenClientIDs: [UUID: Int] = [:]
+        var duplicateUserIndices: [Int] = []
+        for (index, message) in refreshedConversation.messages.enumerated()
+        where message.sender == .user {
+            guard let clientID = message.clientMessageID else { continue }
+            if seenClientIDs[clientID] == nil {
+                seenClientIDs[clientID] = index
+            } else {
+                duplicateUserIndices.append(index)
+            }
+        }
+        if !duplicateUserIndices.isEmpty {
+            Self.logger.error(
+                "mergeConversationMetadata: collapsed \(duplicateUserIndices.count) duplicate user message(s) sharing a clientMessageID"
+            )
+            for index in duplicateUserIndices.sorted(by: >) {
+                refreshedConversation.messages.remove(at: index)
+            }
+        }
+
         return refreshedConversation
     }
 
