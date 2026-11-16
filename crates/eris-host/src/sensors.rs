@@ -158,6 +158,36 @@ pub struct LocationSnapshot {
     pub recorded_at: String,
 }
 
+/// The store the daemon opened, for callers with no service handle (the tools).
+static SHARED: std::sync::OnceLock<SensorStore> = std::sync::OnceLock::new();
+
+/// Publish the store the daemon opened. Later calls are ignored: one process has
+/// one sensor database, and a second store would open a second connection to it.
+pub fn install_shared(store: SensorStore) {
+    let _ = SHARED.set(store);
+}
+
+/// The published store, when the daemon opened one.
+#[must_use]
+pub fn shared() -> Option<&'static SensorStore> {
+    SHARED.get()
+}
+
+/// One stored reading from `device_events`.
+#[derive(Debug, Clone)]
+pub struct EventRow {
+    /// Its kind.
+    pub kind: String,
+    /// What it is about.
+    pub key: Option<String>,
+    /// The number, when the reading was a number.
+    pub value: Option<f64>,
+    /// Its unit.
+    pub unit: Option<String>,
+    /// When the phone took it.
+    pub recorded_at: String,
+}
+
 /// A sensor-store failure. It is always turned into a 503 by the device layer,
 /// because a sensor write that cannot reach the database must not look like a
 /// successful delivery.
@@ -570,6 +600,53 @@ impl SensorStore {
         }
         transaction.commit()?;
         Ok(rows.len())
+    }
+
+    /// One kind's newest events, newest first.
+    ///
+    /// # Errors
+    ///
+    /// The database's own error.
+    pub fn events_of(
+        &self,
+        kind: &str,
+        since: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<EventRow>, SensorError> {
+        let conn = self.lock()?;
+        let mut statement = conn.prepare(
+            "SELECT kind, key, value, unit, recorded_at FROM device_events \
+              WHERE kind = ?1 AND (?2 IS NULL OR recorded_at >= ?2) \
+              ORDER BY recorded_at DESC LIMIT ?3",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![kind, since, limit as i64],
+            |row| {
+                Ok(EventRow {
+                    kind: row.get(0)?,
+                    key: row.get(1)?,
+                    value: row.get(2)?,
+                    unit: row.get(3)?,
+                    recorded_at: row.get(4)?,
+                })
+            },
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The newest events across a set of kinds, newest first.
+    ///
+    /// # Errors
+    ///
+    /// The database's own error.
+    pub fn recent_events(&self, kinds: &[&str], limit: usize) -> Result<Vec<EventRow>, SensorError> {
+        let mut out = Vec::new();
+        for kind in kinds {
+            out.extend(self.events_of(kind, None, limit)?);
+        }
+        out.sort_by(|a, b| b.recorded_at.cmp(&a.recorded_at));
+        out.truncate(limit);
+        Ok(out)
     }
 
     /// How many rows of one kind are stored. Used by the retention test and by

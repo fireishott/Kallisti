@@ -1103,7 +1103,12 @@ impl DeviceService {
 /// sensor route answers 503 instead of pretending a write landed.
 fn open_sensors(engine: &SetupEngine) -> Option<crate::sensors::SensorStore> {
     match crate::sensors::SensorStore::open(engine.paths().state_dir.join("sensors.db")) {
-        Ok(store) => Some(store),
+        Ok(store) => {
+            // The turn's tool path has no service handle, so the store the daemon
+            // opened is published once here and read back from `sensor_tools`.
+            crate::sensors::install_shared(store.clone());
+            Some(store)
+        }
         Err(error) => {
             tracing::error!(%error, "sensor store unavailable; sensor routes will answer 503");
             None

@@ -77,6 +77,7 @@ pub mod roster;
 pub mod scheduler;
 pub mod search;
 pub mod sensitivity;
+pub mod sensor_tools;
 pub mod selfmemory;
 pub mod sensors;
 pub mod skills;

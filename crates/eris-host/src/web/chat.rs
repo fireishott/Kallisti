@@ -3877,6 +3877,12 @@ pub fn run_turn_with_key(
         // Parked before it is waited on, and the wait reports the answer back
         // through `asked` so the transcript can redraw the card with what was
         // decided instead of asking again on every reload.
+        if let (Some(sensors), Some(db)) =
+            (crate::sensors::shared(), settings.db.as_ref())
+            && let Some(result) = crate::sensor_tools::run(&call.name, &call.arguments, sensors, db)
+        {
+            return result;
+        }
         if call.name == crate::search::TRANSCRIPT_TOOL {
             return match settings.db.as_ref() {
                 Some(db) => crate::search::transcript_tool(db, &call.arguments),
@@ -4237,6 +4243,12 @@ pub fn run_turn_with_key(
                     // with no way to look things up repeats what it can remember.
                     if settings.db.is_some() {
                         offered.push(crate::search::transcript_spec());
+                    }
+                    // The phone's senses, offered only when this process opened
+                    // the sensor store: a tool the daemon will refuse must never
+                    // reach the model's list.
+                    if crate::sensors::shared().is_some() {
+                        offered.extend(crate::sensor_tools::specs());
                     }
                     // Only offered when the role is pinned: a tool the daemon
                     // will refuse must never reach the model's list.
