@@ -846,6 +846,32 @@ struct ErisDiff: Sendable, Hashable {
         }
     }
 
+    /// This diff in the shape the chat already renders.
+    ///
+    /// The app draws one diff card per message (CodeDiff), so the daemon frame is
+    /// rendered into that shape - one patch string per file, hunks with their
+    /// headers - rather than growing a second diff view beside it.
+    var codeDiff: CodeDiff {
+        CodeDiff(
+            files: files.map { file in
+                FileDiff(
+                    path: file.path,
+                    status: file.added > 0 && file.removed == 0 ? "added" : "modified",
+                    additions: file.added,
+                    deletions: file.removed,
+                    patch: file.hunks.map { hunk in
+                        var out = "@@ -\(hunk.oldStart),\(hunk.oldLines) +\(hunk.newStart),\(hunk.newLines) @@"
+                        for line in hunk.lines {
+                            out += "\n" + (line.kind == .add ? "+" : line.kind == .remove ? "-" : " ") + line.text
+                        }
+                        return out
+                    }.joined(separator: "\n")
+                )
+            },
+            summary: files.map(\.summary).joined(separator: ", ")
+        )
+    }
+
     /// Added and removed totals across every file.
     var totals: (added: Int, removed: Int) {
         files.reduce(into: (0, 0)) { totals, file in

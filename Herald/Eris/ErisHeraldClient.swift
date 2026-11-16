@@ -124,11 +124,9 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 case .reasoning(let fragment):
                     continuation.yield(.reasoningDelta(fragment))
                 case .artifactDiff(let diff):
-                    // One line per turn for now; the card view reads the same
-                    // model and draws the hunks.
-                    let totals = diff.totals
-                    let names = diff.files.map(\.path).joined(separator: ", ")
-                    continuation.yield(.toolActivity("changed +\(totals.added) -\(totals.removed): \(names)"))
+                    // One card per turn, drawn by the same view the relay path
+                    // used. No second diff UI.
+                    continuation.yield(.artifactDiff(diff.codeDiff))
                 case .artifactPage(let html, let cap):
                     continuation.yield(.toolActivity("page received (\(html.utf8.count) bytes, cap \(cap.map(String.init) ?? "none"))"))
                 case .step(let label, _):

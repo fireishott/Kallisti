@@ -14,6 +14,9 @@ enum StreamingUpdate: Sendable {
     case textDelta(String)
     case reasoningDelta(String)
     case toolActivity(String)
+    /// A turn.artifact.diff frame from the Eris daemon, in the shape the chat
+    /// renders. The card is the same one the relay path used.
+    case artifactDiff(CodeDiff)
     case toolStarted(ToolActivity)
     case toolCompleted(toolCallID: String, resultPreview: String?, isError: Bool, durationMs: Int?)
     case toolOutput(toolCallID: String, chunk: String)

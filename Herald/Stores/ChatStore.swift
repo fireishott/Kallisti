@@ -27,7 +27,7 @@ struct PendingClarify: Equatable, Sendable {
 @MainActor
 @Observable
 final class ChatStore {
-    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "ChatStore")
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "ChatStore")
     /// Closure to check user haptic preference — wired by ChatScreen
     /// to avoid ChatStore depending on SettingsStore directly.
     var hapticFeedbackEnabled: () -> Bool = { true }
@@ -930,12 +930,12 @@ final class ChatStore {
             if !conversationHasRestartNotice() {
                 conversation?.messages.append(Message(
                     sender: .system,
-                    content: "Hermes is restarting — your message will be sent when it is back online.",
+                    content: "The daemon is restarting — your message will be sent when it is back online.",
                     status: .delivered
                 ))
                 cacheModifiedConversation()
             }
-            appendLog(level: .warn, "Message queued — Hermes gateway restart in progress")
+            appendLog(level: .warn, "Message queued — daemon restart in progress")
         }
         onConversationChanged?()
         return record
@@ -1925,8 +1925,8 @@ final class ChatStore {
                 switch elapsedSecs {
                 case 0..<30:    stallText = "Waiting for host... \(elapsedSecs)s"
                 case 30..<90:   stallText = "Host is slow to respond... \(elapsedSecs)s"
-                case 90..<180:  stallText = "Still waiting... \(elapsedSecs)s - Hermes is being patient"
-                default:        stallText = "Reconnecting to Hermes... \(elapsedSecs)s elapsed"
+                case 90..<180:  stallText = "Still waiting... \(elapsedSecs)s - the daemon is being patient"
+                default:        stallText = "Reconnecting to the daemon... \(elapsedSecs)s elapsed"
                 }
                 conversation?.messages[idx].toolActivity = stallText
                 lastStallMessage = stallText
@@ -2155,6 +2155,15 @@ final class ChatStore {
                     self.sendPhase = .streaming
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
                     self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
+
+                case .artifactDiff(let diff):
+                    // The card lands on the message as it arrives, so it is
+                    // visible during the turn rather than only at the end.
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        conv.messages[idx].codeDiff = diff
+                        self.conversation = conv
+                    }
 
                 case .toolActivity(let label):
                     self.noteStreamingProgress()
@@ -3319,7 +3328,7 @@ final class ChatStore {
         }
         pendingMessageSentAt = nil
 
-        appendLog(level: .warn, "Hermes gateway restart — streaming and polling suspended")
+        appendLog(level: .warn, "Daemon restart — streaming and polling suspended")
         if let conversation {
             persistence.saveConversationCache(conversation)
             onConversationChanged?()
@@ -3334,7 +3343,7 @@ final class ChatStore {
     func resumeAfterRestart() async {
         restartInProgress = false
         streamingPhase = .idle
-        appendLog(level: .info, "Hermes gateway restart settled — sending resumed")
+        appendLog(level: .info, "Daemon restart settled — sending resumed")
 
         // Drain the durable outbox: submit queued items for the current
         // conversation FIFO. Items for other conversations stay durably
