@@ -2475,7 +2475,10 @@ impl TurnHub {
                             if name == "write_file"
                                 && let Some(diff) = serde_json::from_str::<serde_json::Value>(&full_output)
                                     .ok()
-                                    .and_then(|value| value.get("diff").cloned())
+                                    .and_then(|value| {
+                                        let diff = value.get("diff")?;
+                                        (!diff.is_null()).then(|| diff.clone())
+                                    })
                             {
                                 let artifact = serde_json::json!({
                                     "turn_id": writer_job,

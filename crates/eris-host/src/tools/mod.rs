@@ -887,7 +887,15 @@ fn write_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
             // The change itself, in the shape a phone draws. A file that did not
             // exist yet diffs against empty, which reads as all additions rather
             // than as "no previous version".
-            "diff": crate::diff::file(&requested, before.as_deref().unwrap_or(""), content),
+            // A file of bytes is not a file of lines: diffing it would render the
+            // contents as coloured noise. The frame says binary and the card shows
+            // an availability note instead.
+            "diff": if is_binary_path(&requested) {
+                serde_json::Value::Null
+            } else {
+                crate::diff::file(&requested, before.as_deref().unwrap_or(""), content)
+            },
+            "binary": is_binary_path(&requested),
             // A written page is a page the phone can draw. The content rides in
             // the result rather than being re-read from disk, so the frame the
             // turn publishes is exactly what was written, and only for a file
@@ -935,6 +943,19 @@ fn count_removed(old: &str, new: &str) -> usize {
         }
     }
     removed
+}
+
+/// Extensions whose contents are not lines, so a diff of them would be noise.
+const BINARY_EXTENSIONS: [&str; 12] = [
+    "png", "jpg", "jpeg", "gif", "webp", "heic", "pdf", "zip", "gz", "mp3", "mp4", "mov",
+];
+
+/// Whether a path names a file whose content is not lines of text.
+#[must_use]
+pub fn is_binary_path(path: &str) -> bool {
+    path.rsplit('.')
+        .next()
+        .is_some_and(|ext| BINARY_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
 /// What a written HTML file publishes as a page artifact, or `None`.
@@ -1986,6 +2007,23 @@ mod index_tests {
         let indexed = execute("tool_index", &serde_json::json!({}), &sandbox);
         assert!(!indexed.is_error, "{}", indexed.content);
         assert!(indexed.content.contains("read_file"), "{}", indexed.content);
+    }
+}
+
+#[cfg(test)]
+mod binary_path_tests {
+    use super::is_binary_path;
+
+    /// A png is not a file of lines, a markdown file is, and the check is not
+    /// fooled by case or by a path with dots in it.
+    #[test]
+    fn a_binary_extension_is_recognised() {
+        assert!(is_binary_path("shot.png"));
+        assert!(is_binary_path("dir/a.PNG"));
+        assert!(is_binary_path("archive.tar.gz"));
+        assert!(!is_binary_path("notes.md"));
+        assert!(!is_binary_path("report.html"));
+        assert!(!is_binary_path("Makefile"));
     }
 }
 
