@@ -1534,6 +1534,33 @@ fn finish_transaction(
 /// A `queued` or `running` job at boot belongs to a worker this process never
 /// started, and nothing will ever claim it. Left alone it is worse than a stale
 /// row: `GET /v1/turns/{id}/events` replays the frames that exist, finds no
+/// The contract's `turn.approval` payload for one parked call.
+///
+/// `scope` is the tool and `command` is its arguments, which is what the person
+/// deciding is actually looking at: the daemon has no separate notion of a shell
+/// command line, and inventing one would show them a string nothing will run.
+/// `cwd` and `deadline` are null because this queue has neither - nothing sweeps a
+/// parking row, so a deadline here would be a timestamp this daemon invented.
+fn approval_payload(
+    turn_id: &str,
+    approval_id: &str,
+    tool: &str,
+    arguments: &str,
+    reason: Option<&str>,
+    created_at: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "turn_id": turn_id,
+        "approval_id": approval_id,
+        "scope": tool,
+        "command": arguments,
+        "cwd": serde_json::Value::Null,
+        "reason": reason,
+        "created_at": created_at,
+        "deadline": serde_json::Value::Null,
+    })
+}
+
 /// The contract's `turn.ask` frames for one clarify request.
 ///
 /// The daemon's own frame is a single `asked` carrying `{request, answer}`,
@@ -2552,16 +2579,14 @@ impl TurnHub {
                             reason,
                             created_at,
                         } => {
-                            let data = serde_json::json!({
-                                "turn_id": writer_job,
-                                "approval_id": approval_id,
-                                "command": arguments,
-                                "scope": tool,
-                                "cwd": serde_json::Value::Null,
-                                "reason": reason,
-                                "created_at": created_at,
-                                "deadline": serde_json::Value::Null,
-                            });
+                            let data = approval_payload(
+                                &writer_job,
+                                &approval_id,
+                                &tool,
+                                &arguments,
+                                reason.as_deref(),
+                                &created_at,
+                            );
                             if let Ok(Some(seq)) =
                                 store.append(&writer_job, FrameKind::Approval, &data)
                             {
@@ -3590,6 +3615,27 @@ mod tests {
                 "a cancelled turn takes no further {kind:?} frames"
             );
         }
+    }
+
+    /// Every field the contract names is present, and the two the queue cannot
+    /// answer for are stated as null rather than invented.
+    #[test]
+    fn an_approval_payload_carries_the_contract_fields() {
+        let payload = super::approval_payload(
+            "turn-9",
+            "appr-1",
+            "write_file",
+            r#"{"path":"a.txt"}"#,
+            Some("looks safe"),
+            "2026-11-16T03:00:00Z",
+        );
+        assert_eq!(payload["turn_id"], "turn-9");
+        assert_eq!(payload["approval_id"], "appr-1");
+        assert_eq!(payload["scope"], "write_file");
+        assert!(payload["command"].as_str().expect("command").contains("a.txt"));
+        assert_eq!(payload["reason"], "looks safe");
+        assert!(payload["cwd"].is_null());
+        assert!(payload["deadline"].is_null());
     }
 
     /// The contract's ask is one frame per question, with a stable id and the
