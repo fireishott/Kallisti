@@ -360,6 +360,49 @@ pub fn conversation_of(db: &Db, room_id: &str) -> Result<Option<String>, crate::
     })
 }
 
+/// One bot's id, name and instructions.
+///
+/// # Errors
+///
+/// The database's failure.
+pub fn bot_profile(
+    db: &Db,
+    bot_id: &str,
+) -> Result<Option<(String, String, String)>, crate::db::DbError> {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT id, name, instructions FROM bot_profiles WHERE id = ?1",
+                rusqlite::params![bot_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .ok())
+    })
+}
+
+/// How many turns a room has already spent on a message, counted from the jobs
+/// whose request text starts with it.
+///
+/// The count is read rather than stored so a restart cannot lose the budget: the
+/// rows are the record.
+///
+/// # Errors
+///
+/// The database's failure.
+pub fn turns_spent(db: &Db, room_id: &str, message: &str) -> Result<i64, crate::db::DbError> {
+    let Some(conversation) = conversation_of(db, room_id)? else {
+        return Ok(0);
+    };
+    let needle = format!("%{}", message.trim());
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT count(*) FROM jobs WHERE conversation_id = ?1 AND request_text LIKE ?2",
+            rusqlite::params![conversation, needle],
+            |row| row.get::<_, i64>(0),
+        )?)
+    })
+}
+
 /// A room's history: the rows of its conversation, oldest first.
 ///
 /// # Errors

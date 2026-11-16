@@ -5433,6 +5433,111 @@ fn status_for(status: u16) -> axum::http::StatusCode {
     axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST)
 }
 
+/// `POST /v1/rooms/{id}/say` - one message into a room, answered by the bots the
+/// room routes to.
+///
+/// The operator's message is written once, then one turn is created per routed
+/// bot with that bot's instructions in front of the message. The turn limit is
+/// enforced by the planner: once `max_turns` is spent, `plan` returns `None` and
+/// this refuses rather than looping.
+pub async fn room_say(
+    State(service): State<DeviceService>,
+    Path(room_id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let message = field(&fields, "text").trim().to_owned();
+    if message.is_empty() {
+        return DeviceError::bad_request("text_required", "the message must not be empty")
+            .into_response();
+    }
+    let db = service.engine().db();
+    let room = match crate::rooms::get(db, &room_id) {
+        Ok(Some(room)) => room,
+        Ok(None) => return DeviceError::job_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the room: {error}"))
+                .into_response();
+        }
+    };
+    let Some(conversation) = crate::rooms::conversation_of(db, &room_id).ok().flatten() else {
+        return DeviceError::db_unavailable("the room has no conversation").into_response();
+    };
+    // The operator's own words, once, before any bot answers.
+    if let Err(error) = chat::append(
+        db,
+        &conversation,
+        chat::Role::User,
+        &message,
+        chat::State::Complete,
+    ) {
+        return DeviceError::db_unavailable(format!("cannot write the room message: {error}"))
+            .into_response();
+    }
+    let bots: Vec<crate::rooms::BotProfile> = room
+        .members
+        .iter()
+        .filter_map(|member| {
+            crate::rooms::bot_profile(db, &member.id)
+                .ok()
+                .flatten()
+                .map(|(id, name, instructions)| crate::rooms::BotProfile {
+                    id,
+                    name,
+                    instructions,
+                })
+        })
+        .collect();
+    let spent = crate::rooms::turns_spent(db, &room_id, &message).unwrap_or(0);
+    let Some(planned) = crate::rooms::plan(&room, &bots, &message, spent) else {
+        return DeviceError::new(
+            StatusCode::CONFLICT,
+            "room_turn_limit",
+            "this message has spent the room's turn budget; send a new message to continue",
+        )
+        .into_response();
+    };
+    let mut started: Vec<serde_json::Value> = Vec::new();
+    for turn in &planned {
+        let mut turn_fields = std::collections::BTreeMap::new();
+        turn_fields.insert("text".to_owned(), turn.prompt.clone());
+        turn_fields.insert("conversation".to_owned(), conversation.clone());
+        let response =
+            create_turn_with(&service, &token, &turn_fields, None).await;
+        let status = response.status();
+        let (_, body) = response.into_parts();
+        let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+            .await
+            .unwrap_or_default();
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        started.push(serde_json::json!({
+            "bot": turn.bot.name,
+            "bot_id": turn.bot.id,
+            "status": status.as_u16(),
+            "job_id": value.get("job_id").cloned().unwrap_or(serde_json::Value::Null),
+        }));
+    }
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "room": room.name,
+        "policy": room.policy.as_str(),
+        "started": started,
+    }))
+    .into_response()
+}
+
 /// `POST /v1/device/sensitivity` - the phone's switch, as an ordinary upload.
 ///
 /// Either one `{key, level}` or a `mappings` array. The answer states how many

@@ -393,6 +393,8 @@ pub const ROUTE_FULL_ACCESS: &str = "/v1/settings/full-access";
 pub const ROUTE_SENSOR_LOCATION: &str = "/v1/device/sensor/location";
 /// `POST /v1/device/sensors` - one batch of sensor samples, atomically stored.
 pub const ROUTE_SENSOR_BATCH: &str = "/v1/device/sensors";
+/// `POST /v1/rooms/{id}/say` - one message into a room.
+pub const ROUTE_ROOM_SAY: &str = "/v1/rooms/{id}/say";
 /// `POST /v1/device/sensitivity` - the operator's own level for a context key.
 pub const ROUTE_SENSITIVITY: &str = "/v1/device/sensitivity";
 
@@ -1276,6 +1278,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_TALK_SESSION_END, post(handlers::end_talk_session))
         .route(ROUTE_TALK_TURNS, post(handlers::create_talk_turn))
         .route(ROUTE_TALK_INJECT, post(handlers::inject_talk_transcript))
+        .route(ROUTE_ROOM_SAY, post(handlers::room_say))
         .route(ROUTE_RPC, post(handlers::rpc))
         .route(ROUTE_MODELS, get(control::models).post(control::set_model))
         .route(ROUTE_CRON, get(control::cron).post(control::create_cron))
