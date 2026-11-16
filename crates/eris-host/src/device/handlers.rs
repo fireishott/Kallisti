@@ -5621,6 +5621,49 @@ pub async fn upload_sensor_batch(
     }
 }
 
+/// `POST /v1/device/sensitivity` - the phone's switch, as an ordinary upload.
+///
+/// Either one `{key, level}` or a `mappings` array. The answer states how many
+/// were stored, so a client that uploads a batch of flips knows all of them
+/// landed rather than guessing from a 200.
+pub async fn upload_sensitivity(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let value: serde_json::Value = match parse_json(body).await {
+        Ok(value) => value,
+        Err(error) => return error.into_response(),
+    };
+    let mappings = match crate::sensitivity::parse_mappings(&value) {
+        Ok(mappings) => mappings,
+        Err(message) => {
+            return DeviceError::bad_request("sensitivity_invalid", message).into_response();
+        }
+    };
+    let db = service.engine().db();
+    for (key, level) in &mappings {
+        if let Err(error) = crate::sensitivity::record(db, key, *level) {
+            return DeviceError::db_unavailable(format!(
+                "the sensitivity mapping could not be stored: {error}"
+            ))
+            .into_response();
+        }
+    }
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "updated": mappings.len(),
+    }))
+    .into_response()
+}
+
 /// The sensor store this service opened at start-up, or a 503.
 fn sensor_store(service: &DeviceService) -> Result<&crate::sensors::SensorStore, DeviceError> {
     service

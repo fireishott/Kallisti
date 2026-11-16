@@ -392,6 +392,8 @@ pub const ROUTE_FULL_ACCESS: &str = "/v1/settings/full-access";
 pub const ROUTE_SENSOR_LOCATION: &str = "/v1/device/sensor/location";
 /// `POST /v1/device/sensors` - one batch of sensor samples, atomically stored.
 pub const ROUTE_SENSOR_BATCH: &str = "/v1/device/sensors";
+/// `POST /v1/device/sensitivity` - the operator's own level for a context key.
+pub const ROUTE_SENSITIVITY: &str = "/v1/device/sensitivity";
 
 /// `POST /v1/device/sensor/health` - record health samples.
 pub const ROUTE_SENSOR_HEALTH: &str = "/v1/device/sensor/health";
@@ -1228,6 +1230,7 @@ pub fn router(service: DeviceService) -> Router {
             get(handlers::persona).post(handlers::update_persona),
         )
         .route(ROUTE_SENSOR_BATCH, post(handlers::upload_sensor_batch))
+        .route(ROUTE_SENSITIVITY, post(handlers::upload_sensitivity))
         .route(ROUTE_SENSOR_LOCATION, post(handlers::upload_location))
         .route(ROUTE_SENSOR_HEALTH, post(handlers::upload_health))
         .route(ROUTE_HEALTH_LATEST, get(handlers::health_latest))
