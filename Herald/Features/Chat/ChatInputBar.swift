@@ -32,6 +32,8 @@ struct ChatInputBar: View {
     @Binding var pendingAttachments: [PendingAttachment]
     /// Per-file upload state, keyed by the attachment's id.
     var uploadPhases: [UUID: ChatStore.UploadPhase] = [:]
+    /// Called whenever the pending set changes, so an upload can start on pick.
+    var onAttachmentsChanged: ([PendingAttachment]) -> Void = { _ in }
     let isStreaming: Bool
     var isFocused: Binding<Bool>
     let onSend: () -> Void

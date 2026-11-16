@@ -315,6 +315,18 @@ struct ChatScreen: View {
                     text: messageTextBinding,
                     pendingAttachments: $pendingAttachments,
                     uploadPhases: chatStore.uploadPhases,
+                    // A picked file starts uploading immediately: the chip can only
+                    // show a spinner while something is actually in flight.
+                    onAttachmentsChanged: { picked in
+                        for attachment in picked where chatStore.uploadPhases[attachment.id] == nil {
+                            Task {
+                                await chatStore.uploadPicked(
+                                    attachment,
+                                    conversationID: chatStore.conversation?.id
+                                )
+                            }
+                        }
+                    },
                     isStreaming: chatStore.isStreaming || chatStore.isServerTurnActive,
                     isFocused: $isComposerFocused,
                     onSend: sendMessage,
@@ -384,6 +396,18 @@ struct ChatScreen: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        // A picked file starts uploading immediately, so its chip can show a
+        // spinner while the operator is still looking at the composer.
+        .onChange(of: pendingAttachments.map(\.id)) { _, _ in
+            for attachment in pendingAttachments where chatStore.uploadPhases[attachment.id] == nil {
+                Task {
+                    await chatStore.uploadPicked(
+                        attachment,
+                        conversationID: chatStore.conversation?.id
+                    )
+                }
+            }
+        }
         .sheet(isPresented: $showingApprovals) {
             ErisApprovalsSheet()
         }

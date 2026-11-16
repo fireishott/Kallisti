@@ -3064,6 +3064,16 @@ final class ChatStore {
     /// Keyed by the pending attachment's own id, so a chip knows its own state.
     private(set) var uploadPhases: [UUID: UploadPhase] = [:]
 
+    /// Upload a picked file now. The composer calls this as soon as a file is
+    /// added, which is when the operator is watching.
+    func uploadPicked(_ attachment: PendingAttachment, conversationID: UUID?) async {
+        guard uploadPhases[attachment.id] == nil else { return }
+        uploadPhases[attachment.id] = .uploading(completed: 0, total: 1)
+        let id = await heraldClient.preuploadAttachment(attachment, conversationID: conversationID)
+        // A client that cannot pre-upload leaves the send path to do it.
+        uploadPhases[attachment.id] = id == nil ? nil : .uploaded
+    }
+
     private(set) var canLoadOlder = true
     /// Guard so a fast scroll cannot fire two page loads at once.
     private var loadingOlderPage = false

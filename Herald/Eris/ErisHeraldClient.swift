@@ -44,6 +44,10 @@ final class ErisHeraldClient: HeraldClientProtocol {
     }
     private var localIDByConversationID: [String: UUID] = [:]
 
+    /// Attachment ids already uploaded this session, keyed by the pending file.
+    /// The early upload and the send path share this, so a file moves once.
+    private var uploadedAttachmentIDs: [UUID: String] = [:]
+
     private static let conversationMapKey = "eris.conversationMap.v1"
 
     /// Write the map through. Called from the `didSet` above, so every insertion
@@ -247,12 +251,18 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     name: attachment.fileName
                 ))
                 do {
-                    let id = try await client.uploadAttachment(
-                        data: attachment.data,
-                        fileName: attachment.fileName,
-                        mediaType: attachment.mimeType,
-                        conversationID: boundConversation
-                    )
+                    let id: String
+                    if let already = uploadedAttachmentIDs[attachment.id] {
+                        id = already
+                    } else {
+                        id = try await client.uploadAttachment(
+                            data: attachment.data,
+                            fileName: attachment.fileName,
+                            mediaType: attachment.mimeType,
+                            conversationID: boundConversation
+                        )
+                        uploadedAttachmentIDs[attachment.id] = id
+                    }
                     uploaded.append(id)
                 } catch {
                     // Sending a turn without the file the operator attached would
@@ -383,6 +393,25 @@ final class ErisHeraldClient: HeraldClientProtocol {
     /// unknown conversation or a daemon without the cursor answers nothing rather
     /// than throwing into the view: a transcript that cannot page is a transcript
     /// that shows what it has.
+    /// Upload one picked file now, so its chip can show a spinner and a check.
+    func preuploadAttachment(_ attachment: PendingAttachment, conversationID: UUID?) async -> String? {
+        if let done = uploadedAttachmentIDs[attachment.id] { return done }
+        guard let client = await pairedClient() else { return nil }
+        var bound = conversationID.flatMap { conversationIDByLocalID[$0] }
+        if bound == nil, let local = currentConversation?.id {
+            _ = await ensureConversation(id: local)
+            bound = conversationIDByLocalID[local]
+        }
+        guard let id = try? await client.uploadAttachment(
+            data: attachment.data,
+            fileName: attachment.fileName,
+            mediaType: attachment.mimeType,
+            conversationID: bound
+        ) else { return nil }
+        uploadedAttachmentIDs[attachment.id] = id
+        return id
+    }
+
     func loadOlder(conversationID: UUID, before: String) async -> (messages: [Message], hasMore: Bool) {
         guard let client = await pairedClient(),
               let erisID = conversationIDByLocalID[conversationID],

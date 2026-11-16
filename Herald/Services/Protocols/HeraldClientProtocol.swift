@@ -15,6 +15,9 @@ protocol HeraldClientProtocol {
     /// statically to the default that answers nothing. That is exactly what
     /// happened - paging compiled, shipped, and was never called.
     func loadOlder(conversationID: UUID, before: String) async -> (messages: [Message], hasMore: Bool)
+    /// Upload a picked file before the send, so its chip can show progress.
+    /// Returns the daemon's attachment id, or nil when this client cannot upload.
+    func preuploadAttachment(_ attachment: PendingAttachment, conversationID: UUID?) async -> String?
 
     var connectionStatus: ConnectionStatus { get set }
     var currentConversation: Conversation? { get }
@@ -248,5 +251,13 @@ extension HeraldClientProtocol {
     /// compile rather than be forced to pretend.
     func loadOlder(conversationID: UUID, before: String) async -> (messages: [Message], hasMore: Bool) {
         ([], false)
+    }
+}
+
+extension HeraldClientProtocol {
+    /// A client without upload support answers nil, and the send path falls back
+    /// to uploading at send time.
+    func preuploadAttachment(_ attachment: PendingAttachment, conversationID: UUID?) async -> String? {
+        nil
     }
 }
