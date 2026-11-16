@@ -276,11 +276,15 @@ enum ErisFrame: Equatable, Sendable {
     /// used to skip them as an unknown event, which is why the Thought process
     /// row stayed empty on a turn whose model emitted no reasoning.
     case step(label: String, stepType: String?)
+    /// Files a step changed, summarised: `path +added -removed`, comma separated.
+    case artifactDiff(summary: String, files: Int)
+    /// A page a step wrote, with the height cap the daemon set.
+    case artifactPage(bytes: Int, heightCap: Int?)
 
     /// Whether this frame ends the stream. Matches `FrameKind::is_terminal`.
     var isTerminal: Bool {
         switch self {
-        case .delta, .reasoning, .step: return false
+        case .delta, .reasoning, .step, .artifactDiff, .artifactPage: return false
         case .done, .error, .cancelled: return true
         }
     }
@@ -290,7 +294,7 @@ enum ErisFrame: Equatable, Sendable {
         switch self {
         case .delta(let text): return text
         case .done(let text, _): return text
-        case .reasoning, .step, .error, .cancelled: return nil
+        case .reasoning, .step, .artifactDiff, .artifactPage, .error, .cancelled: return nil
         }
     }
 
@@ -326,6 +330,20 @@ enum ErisFrame: Equatable, Sendable {
             let object = try ErisJSON.object(data)
             let label = (object["label"] as? String) ?? (object["step_type"] as? String) ?? "step"
             return .step(label: label, stepType: object["step_type"] as? String)
+        case "turn.artifact.diff":
+            let object = try ErisJSON.object(data)
+            let files = object["files"] as? [[String: Any]] ?? []
+            let summary = files.map { file in
+                let path = file["path"] as? String ?? "file"
+                let added = file["added"] as? Int ?? 0
+                let removed = file["removed"] as? Int ?? 0
+                return "\(path) +\(added) -\(removed)"
+            }.joined(separator: ", ")
+            return .artifactDiff(summary: summary, files: files.count)
+        case "turn.artifact.page":
+            let object = try ErisJSON.object(data)
+            let html = object["html"] as? String ?? ""
+            return .artifactPage(bytes: html.utf8.count, heightCap: object["height_cap"] as? Int)
         case "cancelled":
             let object = (try? ErisJSON.object(data)) ?? [:]
             return .cancelled(reason: object["reason"] as? String)

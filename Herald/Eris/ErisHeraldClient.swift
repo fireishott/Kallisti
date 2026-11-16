@@ -123,6 +123,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     continuation.yield(.textDelta(delta))
                 case .reasoning(let fragment):
                     continuation.yield(.reasoningDelta(fragment))
+                case .artifactDiff(let summary, let files):
+                    // Shown as a run-log line for now: the frame carries the hunks
+                    // too, and rendering them is the next step.
+                    continuation.yield(.toolActivity("\(files) file(s): \(summary)"))
+                case .artifactPage(let bytes, let cap):
+                    continuation.yield(.toolActivity("page received (\(bytes) bytes, cap \(cap.map(String.init) ?? "none"))"))
                 case .step(let label, _):
                     // A step is an activity line, not answer text: it lands in the
                     // Thought process row the UI already draws.
