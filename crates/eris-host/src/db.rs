@@ -1227,6 +1227,10 @@ ALTER TABLE steward_duties ADD COLUMN watch_rounds INTEGER NOT NULL DEFAULT 0;
 
 /// WP-02: how far a client has consumed each turn. Absent means zero, which is
 /// the same state as "paired a moment ago and heard nothing yet".
+///
+/// Down path: `ALTER TABLE jobs DROP COLUMN acked_seq;`. Nothing else reads the
+/// column, and dropping it loses only the marks, which a client re-sends by
+/// acknowledging again after the next reconnect.
 const MIGRATION_0036: &str = r"
 ALTER TABLE jobs ADD COLUMN acked_seq INTEGER NOT NULL DEFAULT 0;
 ";
