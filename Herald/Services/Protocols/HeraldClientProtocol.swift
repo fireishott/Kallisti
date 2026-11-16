@@ -230,3 +230,15 @@ extension HeraldClientProtocol {
     }
 }
 
+
+
+extension HeraldClientProtocol {
+    /// The page before a message, for a transcript at the top.
+    ///
+    /// A default that answers nothing: the daemon transport implements real
+    /// paging, and a client without the concept (the legacy gateway) must still
+    /// compile rather than be forced to pretend.
+    func loadOlder(conversationID: UUID, before: UUID) async -> (messages: [Message], hasMore: Bool) {
+        ([], false)
+    }
+}

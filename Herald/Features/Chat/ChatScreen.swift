@@ -1312,10 +1312,23 @@ struct ChatScreen: View {
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
                 LazyVStack(spacing: Design.Spacing.md) {
-                    // Top anchor for scrolling to empty state after /new
+                    // Top anchor for scrolling to empty state after /new, and
+                    // the sentinel that asks for an older page: appearing here is
+                    // what "scrolled to the top" means in a ScrollView.
                     Color.clear
                         .frame(height: 1)
                         .id("top")
+                        .onAppear {
+                            Task { await chatStore.loadOlderMessagesIfNeeded() }
+                        }
+                    if chatStore.canLoadOlder, !(chatStore.conversation?.messages.isEmpty ?? true) {
+                        HStack {
+                            Spacer()
+                            ProgressView().controlSize(.small)
+                            Spacer()
+                        }
+                        .padding(.vertical, 6)
+                    }
 
                     if let messages = chatStore.conversation?.messages {
                         ForEach(Self.transcriptRows(messages)) { message in

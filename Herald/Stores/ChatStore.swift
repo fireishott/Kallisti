@@ -3037,6 +3037,35 @@ final class ChatStore {
         }
     }
 
+    /// Whether an older page exists. False once the daemon says so, so a
+    /// transcript at the true beginning stops asking.
+    private(set) var canLoadOlder = true
+    /// Guard so a fast scroll cannot fire two page loads at once.
+    private var loadingOlderPage = false
+
+    /// Load the page before the oldest message held, when the transcript reaches
+    /// the top. Failure is silent on purpose: paging is an affordance, and a
+    /// banner about a page that did not arrive helps nobody mid-scroll.
+    func loadOlderMessagesIfNeeded() async {
+        guard canLoadOlder, !loadingOlderPage else { return }
+        guard let current = conversation else { return }
+        guard let oldest = current.messages.first(where: { $0.jobID != nil || $0.sender != .system }) else {
+            canLoadOlder = false
+            return
+        }
+        loadingOlderPage = true
+        defer { loadingOlderPage = false }
+        let page = await heraldClient.loadOlder(conversationID: current.id, before: oldest.id)
+        canLoadOlder = page.hasMore
+        guard !page.messages.isEmpty else { return }
+        var updated = current
+        updated.messages = page.messages + current.messages.filter { message in
+            !page.messages.contains(where: { $0.id == message.id })
+        }
+        conversation = updated
+        cacheModifiedConversation()
+    }
+
     func clearConversation() async throws {
         streamingTask?.cancel()
         streamingTask = nil
