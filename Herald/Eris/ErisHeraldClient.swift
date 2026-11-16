@@ -236,17 +236,41 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 continuation.finish()
                 return
             }
-            // The files go first: a turn can only name ids that exist.
+            // The files go first: a turn can only name ids that exist, and the
+            // operator is told which one is in flight and whether it landed.
             var uploaded: [String] = []
-            for attachment in attachments {
-                if let id = try? await client.uploadAttachment(
-                    data: attachment.data,
-                    fileName: attachment.fileName,
-                    mediaType: attachment.mimeType,
-                    conversationID: boundConversation
-                ) {
+            for (index, attachment) in attachments.enumerated() {
+                continuation.yield(.uploading(
+                    completed: index,
+                    total: attachments.count,
+                    name: attachment.fileName
+                ))
+                do {
+                    let id = try await client.uploadAttachment(
+                        data: attachment.data,
+                        fileName: attachment.fileName,
+                        mediaType: attachment.mimeType,
+                        conversationID: boundConversation
+                    )
                     uploaded.append(id)
+                } catch {
+                    // Sending a turn without the file the operator attached would
+                    // be the same lie as dropping it: the message would exist and
+                    // the picture would not.
+                    let reason = (error as? ErisError)?.message ?? error.localizedDescription
+                    continuation.yield(.failed(
+                        "Uploading \(attachment.fileName) failed: \(reason)", category: nil
+                    ))
+                    continuation.finish()
+                    return
                 }
+            }
+            if !attachments.isEmpty {
+                continuation.yield(.uploading(
+                    completed: attachments.count,
+                    total: attachments.count,
+                    name: "done"
+                ))
             }
             let turn = try await client.createTurn(
                 text: message,

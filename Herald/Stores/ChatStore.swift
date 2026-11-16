@@ -2164,6 +2164,18 @@ final class ChatStore {
                         self.conversation = conv
                     }
 
+                case .uploading(let completed, let total, let name):
+                    // A visible count is the only way to tell an upload in flight
+                    // from one that silently failed.
+                    let label = completed >= total
+                        ? "Files uploaded (\(total))"
+                        : "Uploading \(completed + 1) of \(total): \(name)"
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        conv.messages[idx].toolActivity = label
+                        self.conversation = conv
+                    }
+
                 case .artifactDiff(let diff):
                     // The card lands on the message as it arrives, so it is
                     // visible during the turn rather than only at the end.

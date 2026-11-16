@@ -19,6 +19,8 @@ enum StreamingUpdate: Sendable {
     case artifactDiff(CodeDiff)
     /// A turn.artifact.page frame: html a turn wrote, with the daemon height cap.
     case artifactPage(html: String, heightCap: Int?)
+    /// A file is going up: `completed` of `total`, this one being `name`.
+    case uploading(completed: Int, total: Int, name: String)
     case toolStarted(ToolActivity)
     case toolCompleted(toolCallID: String, resultPreview: String?, isError: Bool, durationMs: Int?)
     case toolOutput(toolCallID: String, chunk: String)
