@@ -318,3 +318,24 @@ What is verified now, by running code:
 Twelve tests, all passing. Still unproven: the bind itself, for the same dispatch
 reason - `ErisHeraldClient` builds its own transport, so the send path cannot be
 driven by a test double until it is injectable.
+
+## Build 179: two id schemes, and a second daemon store
+
+Uploaded 2026-11-16 02:12. Two defects found from the operator's screenshots:
+
+1. **Old chats opened blank.** The session drawer builds a row from
+   `stableUUID(daemon conversation id)`; the map minted random UUIDs. Tapping an old
+   chat asked for an id the map never held, got nothing, and opened an empty New
+   Chat. `localID` now mints the stable id, and an unknown id is resolved against
+   the daemon's conversation list so chats created earlier still open.
+2. **Approvals said "this phone is not paired".** `pairedBaseURL` reads the store's
+   in-memory phase, and the sheet built its own `ErisDaemonStore` - a second phone
+   that never paired. Client and approvals now share `ErisDaemonStore.shared`.
+
+Also cleaned: the acceptance scripts had left "Reply with exactly: mirror-ok"
+conversations in the operator's drawer. Deleted. Test data belongs in a scratch
+conversation that is removed afterwards, not in his chat list.
+
+Two things to try on 179: open an old chat from the drawer, and open Approvals while
+paired. If the chat is still blank, the daemon logs
+`turn created without a conversation` for the send and says whether the app asked.
