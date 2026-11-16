@@ -23,6 +23,16 @@ not a pass.
 
 | 2 | Two devices resume from their own marks | `scripts/acceptance-two-devices.py`: phone job `01a1e2fc-a4aa` read 19 frames to mark 21 then resumed at 22 with no repeats; ipad job `01a1e2fc-a4bd` read 80 frames to mark 114 then resumed at 115 with no repeats. Separately: a second device asking for the first device's turn is answered job_not_found, which is the ownership rule working. |
 
+## The transcript sequence, replayed
+
+| Step | Evidence |
+|---|---|
+| Bind, then send, then reload | `scripts/acceptance-bind-and-reload.py`: created conversation `01a1e313-8c98`, sent turn `01a1e313-8cb0` with it, turn ended `succeeded`, reload returned two messages - `user "Reply with exactly: mirror-ok"` then `assistant "mirror-ok"` - and the check conversation was cleared afterwards. |
+
+This is the sequence the phone now makes, and the one it did not make before: every
+turn the app sent until build 171 carried `conversation_id = NULL`, so nothing it
+produced was ever written to a transcript.
+
 ## Not run, and why
 
 | # | Test | Why |
