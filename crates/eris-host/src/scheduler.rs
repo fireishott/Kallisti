@@ -789,6 +789,22 @@ pub fn set_deliver(db: &Db, id: &str, value: &str) -> Result<(), ScheduleError> 
 ///
 /// A database failure.
 pub fn record_delivery(db: &Db, run_id: &str, delivered: &str, note: &str) -> Result<(), DbError> {
+    // The journal is the one place both delivery paths report to. A duplicate key
+    // means this run and channel were already journalled, which is worth saying
+    // out loud rather than swallowing: it is the shape a double send takes.
+    match crate::delivery::journal(db, run_id, delivered, "recorded", note) {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                %run_id,
+                channel = %delivered,
+                "delivery journalled twice for the same run and channel"
+            );
+        }
+        Err(error) => {
+            tracing::error!(%error, %run_id, "could not write the delivery journal");
+        }
+    }
     db.with_conn(|conn| {
         conn.execute(
             "UPDATE schedule_runs SET delivered = ?2, delivery_note = ?3 WHERE id = ?1",

@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 38;
+pub const SCHEMA_VERSION: i64 = 39;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -277,6 +277,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 38,
         name: "0038_sensitivity_map",
         sql: MIGRATION_0038,
+    },
+    Migration {
+        version: 39,
+        name: "0039_delivery_journal",
+        sql: MIGRATION_0039,
     },
 ];
 
@@ -1255,6 +1260,23 @@ CREATE TABLE sensitivity_map (
     level      TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+";
+
+/// WP-14: one journal for both delivery paths, keyed so one event cannot arrive
+/// twice through two channels.
+///
+/// Down path: `DROP TABLE delivery_journal;`.
+const MIGRATION_0039: &str = r"
+CREATE TABLE delivery_journal (
+    id         TEXT PRIMARY KEY NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    run_id     TEXT,
+    channel    TEXT NOT NULL,
+    status     TEXT NOT NULL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX idx_delivery_journal_run ON delivery_journal (run_id);
 ";
 
 /// Down path: `ALTER TABLE jobs DROP COLUMN acked_seq;`. Nothing else reads the

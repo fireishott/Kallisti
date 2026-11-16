@@ -612,3 +612,112 @@ mod tests {
         assert!(path.extension().is_some_and(|ext| ext == "eml"));
     }
 }
+
+/// The journal key for one run on one channel.
+///
+/// One event, one key. Both paths write the same key, so a run that goes out by
+/// push and then by email cannot arrive twice through the same channel, and a
+/// retry of a delivery that already landed is refused rather than duplicated.
+#[must_use]
+pub fn dedupe_key(run_id: &str, channel: &str) -> String {
+    format!("{run_id}:{channel}")
+}
+
+/// Write one delivery outcome to the journal.
+///
+/// `false` means the key was already there: this delivery has been attempted
+/// before and the caller must not send it again.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn journal(
+    db: &Db,
+    run_id: &str,
+    channel: &str,
+    status: &str,
+    note: &str,
+) -> Result<bool, crate::db::DbError> {
+    let key = dedupe_key(run_id, channel);
+    db.with_conn(|conn| {
+        let inserted = conn.execute(
+            "INSERT INTO delivery_journal (id, dedupe_key, run_id, channel, status, note) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(dedupe_key) DO NOTHING",
+            rusqlite::params![
+                uuid::Uuid::now_v7().to_string(),
+                key,
+                run_id,
+                channel,
+                status,
+                note,
+            ],
+        )?;
+        Ok(inserted == 1)
+    })
+}
+
+/// What the journal holds for one run, oldest first.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn journal_for(db: &Db, run_id: &str) -> Result<Vec<DeliveryEntry>, crate::db::DbError> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT channel, status, note, created_at FROM delivery_journal \
+              WHERE run_id = ?1 ORDER BY created_at, id",
+        )?;
+        let rows = statement.query_map(rusqlite::params![run_id], |row| {
+            Ok(DeliveryEntry {
+                channel: row.get(0)?,
+                status: row.get(1)?,
+                note: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+/// One journalled delivery attempt.
+#[derive(Debug, Clone)]
+pub struct DeliveryEntry {
+    /// Which channel.
+    pub channel: String,
+    /// What happened.
+    pub status: String,
+    /// Why, when the status needs a reason.
+    pub note: String,
+    /// When it was recorded.
+    pub created_at: String,
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::{dedupe_key, journal, journal_for};
+    use crate::db::Db;
+
+    /// The same event on the same channel is journalled once: a retry is refused
+    /// rather than sent twice.
+    #[test]
+    fn a_second_delivery_of_the_same_event_is_refused() {
+        let db = Db::open_in_memory().expect("database");
+        assert_eq!(dedupe_key("run-1", "push"), "run-1:push");
+        assert!(journal(&db, "run-1", "push", "ok", "").expect("first"));
+        assert!(!journal(&db, "run-1", "push", "ok", "").expect("second"));
+        let entries = journal_for(&db, "run-1").expect("read");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].channel, "push");
+    }
+
+    /// Two channels for one run are two entries: the key carries the channel.
+    #[test]
+    fn both_channels_of_one_run_are_journalled_separately() {
+        let db = Db::open_in_memory().expect("database");
+        assert!(journal(&db, "run-2", "push", "ok", "").expect("push"));
+        assert!(journal(&db, "run-2", "email", "failed", "no recipient").expect("email"));
+        let entries = journal_for(&db, "run-2").expect("read");
+        assert_eq!(entries.len(), 2);
+    }
+}
