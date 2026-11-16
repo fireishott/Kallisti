@@ -18,7 +18,7 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 03 | `turn.start` | carried | frame `turn.start` (model, profile) emitted before the provider call |
 | 03 | `turn.step` / `turn.step.result` | carried | emitted beside `tool_start`/`tool`: step_type, step_id, label, started_at, status, summary, duration_ms. Proven live: job 01a1e281 wrote turn.start(1), tool_start(3), turn.step(4), tool(5), turn.step.result(6), done(9) |
 | 03 | `turn.end` with status | carried | frame `done` carries `status: ok` beside text + usage |
-| 05 | Diff artifact | partial | per-file added/removed counts now produced by `write_file` (set arithmetic over lines, tested); hunks and the `turn.artifact.diff` frame are not written |
+| 05 | Diff artifact | partial | `crate::diff::file` builds the contract shape (path, added, removed, hunks with old/new starts and context/add/remove lines, 3 tests) and `write_file` attaches it to its result; the `turn.artifact.diff` frame is not emitted yet |
 | 05 | Page artifact | absent | - |
 | 06 | `turn.ask` blocking the turn | carried | frame `asked` + answer route |
 | 06 | `turn.approval` as a stream frame | partial | `GET /v1/approvals`, `POST /v1/approvals/{id}/decide` |

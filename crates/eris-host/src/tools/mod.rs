@@ -884,6 +884,10 @@ fn write_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
             "added": before.as_deref().map(|old| count_added(old, content)).unwrap_or_else(|| content.lines().count()),
             "removed": before.as_deref().map(|old| count_removed(old, content)).unwrap_or(0),
             "created": before.is_none(),
+            // The change itself, in the shape a phone draws. A file that did not
+            // exist yet diffs against empty, which reads as all additions rather
+            // than as "no previous version".
+            "diff": crate::diff::file(&requested, before.as_deref().unwrap_or(""), content),
         })),
         Err(error) => ToolResult::error(format!("{requested}: {error}")),
     }
