@@ -58,6 +58,8 @@ pub struct Room {
     pub id: String,
     /// Its name.
     pub name: String,
+    /// What the room is for.
+    pub purpose: String,
     /// How an unmentioned message is routed.
     pub policy: Policy,
     /// The bot that answers under `lead`.
@@ -264,6 +266,82 @@ pub fn create_room(
     Ok(id)
 }
 
+/// The prompt one bot receives for a room message.
+///
+/// The bot's own instructions come first and are not negotiable by the message: a
+/// profile a room message could overwrite would be a profile with no effect. The
+/// room's purpose is context, and the operator's words come last so the model
+/// reads them as the request rather than as part of the instructions.
+#[must_use]
+pub fn compose_prompt(bot: &BotProfile, room: &Room, message: &str) -> String {
+    let mut prompt = String::new();
+    if !bot.instructions.trim().is_empty() {
+        prompt.push_str(bot.instructions.trim());
+        prompt.push_str("\n\n");
+    }
+    prompt.push_str(&format!("You are {} in the room, {}.", bot.name, room.name));
+    if !room.purpose.trim().is_empty() {
+        prompt.push_str(&format!(", whose purpose is: {}", room.purpose.trim()));
+    }
+    prompt.push_str(&format!(". The room has {} bot(s).", room.members.len()));
+    prompt.push_str("\n\n");
+    prompt.push_str(message.trim());
+    prompt
+}
+
+/// A bot as the planner needs it.
+#[derive(Debug, Clone)]
+pub struct BotProfile {
+    /// Its id.
+    pub id: String,
+    /// Its name, which a mention spells.
+    pub name: String,
+    /// Its standing instructions.
+    pub instructions: String,
+}
+
+/// One turn a room message should start.
+#[derive(Debug, Clone)]
+pub struct PlannedTurn {
+    /// The bot that speaks.
+    pub bot: BotProfile,
+    /// What it is asked, with its instructions in front.
+    pub prompt: String,
+}
+
+/// Plan the turns one room message starts.
+///
+/// `None` when the room has spent its turn budget: the limit exists so a room
+/// cannot loop. A message that routes to nobody plans nothing, which is the
+/// `mention` policy working rather than an error.
+#[must_use]
+pub fn plan(room: &Room, bots: &[BotProfile], message: &str, spent: i64) -> Option<Vec<PlannedTurn>> {
+    if spent >= room.max_turns {
+        return None;
+    }
+    let mentions: Vec<String> = message
+        .split_whitespace()
+        .filter(|word| word.starts_with('@'))
+        .map(str::to_owned)
+        .collect();
+    let routed = route(room, &mentions);
+    let budget = (room.max_turns - spent).max(0) as usize;
+    Some(
+        routed
+            .into_iter()
+            .take(budget)
+            .filter_map(|member| {
+                bots.iter()
+                    .find(|bot| bot.id == member.id)
+                    .map(|bot| PlannedTurn {
+                        bot: bot.clone(),
+                        prompt: compose_prompt(bot, room, message),
+                    })
+            })
+            .collect(),
+    )
+}
+
 /// The room's conversation id, when it has one.
 ///
 /// # Errors
@@ -390,20 +468,21 @@ pub fn get(db: &Db, room_id: &str) -> Result<Option<Room>, crate::db::DbError> {
     db.with_conn(|conn| {
         let row = conn
             .query_row(
-                "SELECT id, name, policy, lead_id, max_turns FROM rooms WHERE id = ?1",
+                "SELECT id, name, purpose, policy, lead_id, max_turns FROM rooms WHERE id = ?1",
                 rusqlite::params![room_id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)?,
                     ))
                 },
             )
             .ok();
-        let Some((id, name, policy, lead, max_turns)) = row else {
+        let Some((id, name, purpose, policy, lead, max_turns)) = row else {
             return Ok(None);
         };
         let mut statement = conn.prepare(
@@ -422,6 +501,7 @@ pub fn get(db: &Db, room_id: &str) -> Result<Option<Room>, crate::db::DbError> {
         Ok(Some(Room {
             id,
             name,
+            purpose,
             policy: Policy::parse(&policy).unwrap_or(Policy::Mention),
             lead,
             max_turns,
@@ -432,12 +512,13 @@ pub fn get(db: &Db, room_id: &str) -> Result<Option<Room>, crate::db::DbError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Member, Policy, Room, route};
+    use super::{BotProfile, Member, Policy, Room, compose_prompt, plan, route};
 
     fn room(policy: Policy, lead: Option<&str>) -> Room {
         Room {
             id: "room-1".to_owned(),
             name: "test".to_owned(),
+            purpose: String::new(),
             policy,
             lead: lead.map(str::to_owned),
             max_turns: 6,
@@ -528,6 +609,47 @@ mod tests {
         assert_eq!(room.policy, Policy::Lead);
         assert_eq!(route(&room, &[]).len(), 1);
         assert_eq!(route(&room, &[])[0].name, "Atlas");
+    }
+
+    /// A bot's instructions come first and the operator's words last; the room's
+    /// purpose is context, not an instruction the message can override.
+    #[test]
+    fn a_prompt_puts_the_profile_before_the_message() {
+        let room = room(Policy::Everyone, None);
+        let bot = BotProfile {
+            id: "bot-a".to_owned(),
+            name: "Atlas".to_owned(),
+            instructions: "Answer in one sentence.".to_owned(),
+        };
+        let prompt = compose_prompt(&bot, &room, "  what is new?  ");
+        assert!(prompt.starts_with("Answer in one sentence."), "{prompt}");
+        assert!(prompt.contains("You are Atlas in the room"), "{prompt}");
+        assert!(prompt.trim_end().ends_with("what is new?"), "{prompt}");
+    }
+
+    /// The turn limit stops the room, the mention policy answers nobody unnamed,
+    /// and one mention plans exactly one turn.
+    #[test]
+    fn the_plan_respects_the_mention_and_the_budget() {
+        let mut room = room(Policy::Mention, None);
+        room.max_turns = 3;
+        let bots = vec![
+            BotProfile {
+                id: "bot-a".to_owned(),
+                name: "Atlas".to_owned(),
+                instructions: String::new(),
+            },
+            BotProfile {
+                id: "bot-b".to_owned(),
+                name: "Birch".to_owned(),
+                instructions: String::new(),
+            },
+        ];
+        assert!(plan(&room, &bots, "anyone about?", 0).expect("budget").is_empty());
+        let named = plan(&room, &bots, "@birch take this", 0).expect("budget");
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].bot.name, "Birch");
+        assert!(plan(&room, &bots, "@atlas", 3).is_none(), "the budget is spent");
     }
 
     /// A room owns a conversation, and its history is that conversation's rows:
