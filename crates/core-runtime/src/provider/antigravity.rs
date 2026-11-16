@@ -287,8 +287,41 @@ fn declaration(tool: &ToolSpec) -> serde_json::Value {
     serde_json::json!({
         "name": tool.name,
         "description": tool.description,
-        "parameters": tool.parameters,
+        "parameters": without_unsupported_keys(&tool.parameters),
     })
+}
+
+/// The same schema with the keys this provider's Schema message has no field for.
+///
+/// An MCP server builds its `inputSchema` from its own JSON-Schema library, and
+/// those libraries emit `$schema`, `$id`, `$comment` and `additionalProperties`.
+/// Google's function-declaration Schema is a proto with a fixed field list, so
+/// every one of those is rejected outright with `Unknown name "$schema"` and the
+/// whole turn fails before the model is called - which is what a device turn on
+/// an Antigravity model was doing at round one.
+///
+/// Only keys that are *not* part of the call's shape are removed. `properties`,
+/// `required`, `items`, `enum`, `type` and the numeric bounds are the request,
+/// so they stay exactly as the server wrote them: repairing those would change
+/// what the tool is told to accept.
+fn without_unsupported_keys(schema: &serde_json::Value) -> serde_json::Value {
+    const DROPPED: [&str; 4] = ["$schema", "$id", "$comment", "additionalProperties"];
+    match schema {
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (key, value) in map {
+                if DROPPED.contains(&key.as_str()) {
+                    continue;
+                }
+                out.insert(key.clone(), without_unsupported_keys(value));
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(without_unsupported_keys).collect())
+        }
+        other => other.clone(),
+    }
 }
 
 /// Split a `data:` URL into its media type and its base64 payload.
@@ -528,6 +561,47 @@ mod tests {
             body["request"]["toolConfig"]["functionCallingConfig"]["mode"],
             "VALIDATED"
         );
+    }
+
+    /// An MCP server's own JSON Schema carries meta keys this provider rejects.
+    #[test]
+    fn tool_parameters_lose_the_keys_the_provider_has_no_field_for() {
+        let mut request = ChatRequest::user_text("hello");
+        request.tools = vec![ToolSpec {
+            name: "search".to_owned(),
+            description: "Find things".to_owned(),
+            parameters: serde_json::json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "search",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "q": {
+                        "type": "string",
+                        "description": "what to look for",
+                        "$comment": "free text"
+                    }
+                },
+                "required": ["q"]
+            }),
+        }];
+        let body = build_body(
+            &profile(Some("aicode-123")),
+            "gemini-3-flash",
+            &request,
+            RequestType::Agent,
+            "agent/c/t/s/1",
+            "s",
+        )
+        .expect("builds");
+        let parameters = &body["request"]["tools"][0]["functionDeclarations"][0]["parameters"];
+        assert!(parameters.get("$schema").is_none());
+        assert!(parameters.get("$id").is_none());
+        assert!(parameters.get("additionalProperties").is_none());
+        // The call's own shape is untouched.
+        assert_eq!(parameters["properties"]["q"]["type"], "string");
+        assert!(parameters["properties"]["q"].get("$comment").is_none());
+        assert_eq!(parameters["required"][0], "q");
     }
 
     #[test]
