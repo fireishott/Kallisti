@@ -3419,6 +3419,69 @@ mod tests {
         }
     }
 
+    /// A turn whose worker died is put back in its conversation as a task, at the
+    /// next depth, and the terminal frame says so. A turn at the cap is settled
+    /// without one, because the daemon does not decide to keep going forever.
+    #[test]
+    fn a_dead_turn_is_requeued_and_a_capped_one_is_not() {
+        let (store, device) = store(64);
+        let session = store.ensure_session(&device).expect("session");
+        let conversation = crate::web::chat::create_conversation(store.db()).expect("conversation");
+
+        let make = |text: &str, depth: i64| -> String {
+            let job = store
+                .create_job(&device, &session, None, text)
+                .expect("job");
+            store
+                .db()
+                .with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE jobs SET conversation_id = ?2, request_text = ?3, \
+                            chain_depth = ?4, status = 'running', \
+                            lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
+                        params![job, conversation, text, depth],
+                    )?;
+                    Ok(())
+                })
+                .expect("stamp");
+            job
+        };
+        let reclaimable = make("what did I miss", 0);
+        let capped = make("keep going forever", crate::queue::MAX_AUTO + 1);
+
+        super::fail_orphaned(store.db()).expect("sweep");
+
+        let queued = crate::queue::next(store.db(), &conversation)
+            .expect("read")
+            .expect("the dead turn's request is queued");
+        assert_eq!(queued.prompt, "what did I miss");
+        assert_eq!(queued.depth, 1, "the requeue is one depth further");
+
+        let code = |job: &str| -> String {
+            let rows = store.events_after(job, 0).expect("events");
+            rows.iter()
+                .find(|row| row.kind == FrameKind::Error)
+                .map(|row| row.data["code"].as_str().unwrap_or_default().to_owned())
+                .unwrap_or_default()
+        };
+        assert_eq!(code(&reclaimable), "lease_expired");
+        assert_eq!(code(&capped), "lease_expired");
+        // `queue::next` peeks rather than dequeues, so the count is what proves
+        // the capped row asked for nothing back.
+        let tasks: i64 = store
+            .db()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM jobs WHERE kind = 'task' AND status = 'queued' \
+                      AND conversation_id = ?1",
+                    params![conversation],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("count");
+        assert_eq!(tasks, 1, "only the reclaimable turn was requeued");
+    }
+
     /// A crash and a deploy are different deaths, and the boot sweep says which.
     #[test]
     fn the_boot_sweep_tells_a_dead_worker_from_a_restart() {
