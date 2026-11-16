@@ -192,6 +192,27 @@ pub const KINDS: [&str; 10] = [
     "contact",
 ];
 
+/// How long each kind is kept, in days.
+///
+/// Location is the shortest because it is the most sensitive and the least
+/// useful a season later; health is the longest because a year-over-year reading
+/// is the point of keeping health at all. A kind not listed here is kept for
+/// ninety days, which is the floor rather than an accident.
+#[must_use]
+pub fn retention_days(kind: &str) -> i64 {
+    match kind {
+        "location" => 90,
+        "health" => 365,
+        "motion" => 30,
+        _ => 90,
+    }
+}
+
+/// How far a sample's own clock may run ahead of the daemon's before the
+/// timestamp is clamped. A phone with a wrong date must not write next year into
+/// the table, and a five-minute allowance covers a lazy NTP sync.
+pub const MAX_SKEW_SECS: i64 = 300;
+
 /// One row of a sensor batch, after it has been checked.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatchRow {
@@ -255,6 +276,22 @@ pub fn parse_batch(value: &serde_json::Value) -> Result<Vec<BatchRow>, String> {
                     .ok_or_else(|| format!("row {index} has a `value` that is not a number"))?,
             ),
         };
+        // A timestamp in the future is a clock that is wrong, not a sample that
+        // happened. Clamped to now rather than refused: the reading is real even
+        // when the phone's date is not.
+        let now = time::OffsetDateTime::now_utc();
+        let recorded_at = if let Ok(parsed) =
+            time::OffsetDateTime::parse(recorded_at, &time::format_description::well_known::Rfc3339)
+        {
+            if (parsed - now).whole_seconds() > MAX_SKEW_SECS {
+                now.format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_else(|_| recorded_at.to_owned())
+            } else {
+                recorded_at.to_owned()
+            }
+        } else {
+            recorded_at.to_owned()
+        };
         out.push(BatchRow {
             kind: kind.to_owned(),
             key: row.get("key").and_then(serde_json::Value::as_str).map(str::to_owned),
@@ -264,7 +301,7 @@ pub fn parse_batch(value: &serde_json::Value) -> Result<Vec<BatchRow>, String> {
                 .get("sensitivity")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
-            recorded_at: recorded_at.to_owned(),
+            recorded_at,
         });
     }
     Ok(out)
@@ -521,8 +558,33 @@ impl SensorStore {
                 ],
             )?;
         }
+        // Retention, per kind, in the same transaction: a table that only grows
+        // is a table that eventually cannot be read on a phone.
+        for kind in KINDS {
+            transaction.execute(
+                "DELETE FROM device_events \
+                  WHERE kind = ?1 \
+                    AND recorded_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?2)",
+                rusqlite::params![kind, format!("-{} days", retention_days(kind))],
+            )?;
+        }
         transaction.commit()?;
         Ok(rows.len())
+    }
+
+    /// How many rows of one kind are stored. Used by the retention test and by
+    /// anything that needs to know the table is not growing without bound.
+    ///
+    /// # Errors
+    ///
+    /// The database's own error.
+    pub fn count_events(&self, kind: &str) -> Result<i64, SensorError> {
+        let conn = self.lock()?;
+        Ok(conn.query_row(
+            "SELECT count(*) FROM device_events WHERE kind = ?1",
+            rusqlite::params![kind],
+            |row| row.get(0),
+        )?)
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, SensorError> {
@@ -732,6 +794,51 @@ mod batch_tests {
         let body = serde_json::json!({"rows": [row("health", "yesterday")]});
         let refused = parse_batch(&body).expect_err("a bad ts is refused");
         assert!(refused.contains("RFC 3339"), "{refused}");
+    }
+
+    /// A phone whose clock is a year fast must not write next year into the
+    /// table; the reading is kept, the timestamp is not believed.
+    #[test]
+    fn a_future_timestamp_is_clamped_rather_than_trusted() {
+        let body = serde_json::json!({"rows": [
+            {"kind": "health", "key": "steps", "value": 1.0, "ts": "2099-01-01T00:00:00Z"},
+        ]});
+        let rows = parse_batch(&body).expect("a future sample still parses");
+        let stamped = time::OffsetDateTime::parse(
+            &rows[0].recorded_at,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .expect("still RFC 3339");
+        let now = time::OffsetDateTime::now_utc();
+        assert!(
+            stamped <= now + time::Duration::seconds(super::MAX_SKEW_SECS),
+            "clamped to now, got {}",
+            rows[0].recorded_at
+        );
+    }
+
+    /// Retention is per kind and runs in the same transaction as the write.
+    #[test]
+    fn a_stale_row_is_pruned_when_a_batch_is_written() {
+        let store = SensorStore::open_in_memory().expect("sensor store");
+        let old = BatchRow {
+            kind: "motion".to_owned(),
+            key: None,
+            value: None,
+            unit: None,
+            sensitivity: None,
+            recorded_at: "2019-01-01T00:00:00Z".to_owned(),
+        };
+        assert_eq!(store.record_batch(&[old.clone()]).expect("seed"), 1);
+        let fresh = BatchRow {
+            recorded_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            ..old
+        };
+        store.record_batch(&[fresh]).expect("write");
+        let kept = store.count_events("motion").expect("count");
+        assert_eq!(kept, 1, "the 2019 motion row is outside its 30-day window");
     }
 
     #[test]
