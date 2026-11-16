@@ -76,7 +76,10 @@ struct iPhoneSessionDrawer: View {
                     if isOpen {
                         // Only allow dragging closed (negative)
                         dragOffset = min(0, value.translation.width)
-                    } else if value.translation.width > 10 {
+                    } else if value.startLocation.x < 24, value.translation.width > 10 {
+                        // Only from the left edge: a drag that starts anywhere
+                        // else belongs to the screen underneath - a navigation pop,
+                        // a carousel, a swipe-to-delete.
                         // Allow peeking open from edge
                         dragOffset = value.translation.width
                     }

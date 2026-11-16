@@ -673,6 +673,25 @@ struct SettingsScreen: View {
         // /v1/gw/update/check payload (cookie/bearer auth) so the row can
         // show the real version + changelog. Falls back to `hermes update
         // --check` text if the connector call returns nothing.
+        // A paired daemon answers this itself, and is asked first so an Eris phone
+        // never falls through to a relay that is not there - the 404 the operator
+        // saw came from that fallthrough.
+        if let eris = container.chatStore.heraldClient as? ErisHeraldClient,
+           let answer = try? await eris.updateCheck() {
+            if let note = answer.note, !note.isEmpty {
+                updateCheckResult = "Check failed: \(note)"
+            } else if answer.updateAvailable == true {
+                updateCheckResult = answer.canInstall == true
+                    ? "Update available"
+                    : "Update available (blocked by policy)"
+            } else if answer.updateAvailable == false {
+                updateCheckResult = "Up to date"
+            } else {
+                updateCheckResult = "Update check complete"
+            }
+            isCheckingForUpdate = false
+            return
+        }
         if let nativeClient = container.nativeGatewayClient {
             if let info = await nativeClient.updateCheck() {
                 updateInfo = info
@@ -1936,7 +1955,6 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
-                reasoningEffortPicker
             }
         }
     }
@@ -1970,25 +1988,7 @@ struct SettingsScreen: View {
         )
     }
 
-    private var reasoningEffortPicker: some View {
-        HStack {
-            Label("Reasoning Effort", systemImage: "slider.horizontal.3")
-                .font(Design.Typography.body)
-                .foregroundStyle(Design.Colors.foreground)
 
-            Spacer()
-
-            Picker("", selection: reasoningEffortBinding) {
-                ForEach(ReasoningEffort.allCases, id: \.self) { effort in
-                    Text(effort.displayLabel).tag(effort)
-                }
-            }
-            .pickerStyle(.menu)
-            .tint(Design.Colors.secondaryForeground)
-        }
-        .padding(.horizontal, Design.Spacing.lg)
-        .padding(.vertical, Design.Spacing.md)
-    }
 
     private var reasoningEffortBinding: Binding<ReasoningEffort> {
         Binding(

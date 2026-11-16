@@ -40,6 +40,8 @@ enum ErisRoute: Equatable, Sendable {
     case cron
     /// `GET /v1/skills` - the daemon's skill catalogue. Admin scope.
     case skills
+    /// `GET /v1/gw/update/check` - is there a newer build. Admin scope.
+    case updateCheck
     /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
     case clearConversation(conversationID: String)
     /// `GET /v1/settings` - the operator-facing settings snapshot.
@@ -113,6 +115,8 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/cron"
         case .skills:
             return "/v1/skills"
+        case .updateCheck:
+            return "/v1/gw/update/check"
         case .clearConversation(let conversationID):
             return "/v1/conversations/\(Self.segment(conversationID))/clear"
         case .settings, .updateSettings:
@@ -156,7 +160,7 @@ enum ErisRoute: Equatable, Sendable {
     var method: String {
         switch self {
         case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
-             .cron, .skills, .attachment,
+             .cron, .skills, .updateCheck, .attachment,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .aux:
             return "GET"
@@ -290,6 +294,12 @@ actor ErisClient {
     /// transcript row pair instead of a session of its own. A conversation id the
     /// daemon does not hold is refused here, before anything is written, so a
     /// refused turn never leaves half a conversation behind.
+    /// Whether the daemon has a newer build, and what it says about it.
+    func updateCheck() async throws -> ErisUpdateCheck {
+        let data = try await send(route: .updateCheck, form: nil)
+        return try decode(ErisUpdateCheck.self, from: data)
+    }
+
     /// The daemon's schedules.
     ///
     /// Admin scope: a phone paired without administration is refused, and the

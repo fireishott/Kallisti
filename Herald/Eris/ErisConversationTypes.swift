@@ -463,3 +463,26 @@ struct ErisSkill: Decodable, Identifiable, Equatable, Sendable {
 
     var id: String { key }
 }
+
+
+/// What the daemon says about updates.
+struct ErisUpdateCheck: Decodable, Equatable, Sendable {
+    struct Release: Decodable, Equatable, Sendable {
+        let version: String?
+        let tag: String?
+    }
+
+    let version: String?
+    let build: Int?
+    let updateAvailable: Bool?
+    let canInstall: Bool?
+    let blocker: String?
+    let note: String?
+    let latest: Release?
+
+    private enum CodingKeys: String, CodingKey {
+        case version, build, blocker, note, latest
+        case updateAvailable = "update_available"
+        case canInstall = "can_install"
+    }
+}

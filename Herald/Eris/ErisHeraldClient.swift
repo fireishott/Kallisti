@@ -396,6 +396,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
     /// unknown conversation or a daemon without the cursor answers nothing rather
     /// than throwing into the view: a transcript that cannot page is a transcript
     /// that shows what it has.
+    /// Whether the daemon has a newer build. Admin scope on the daemon side.
+    func updateCheck() async throws -> ErisUpdateCheck {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.updateCheck()
+    }
+
     /// Upload one picked file now, so its chip can show a spinner and a check.
     func preuploadAttachment(_ attachment: PendingAttachment, conversationID: UUID?) async -> String? {
         if let done = uploadedAttachmentIDs[attachment.id] { return done }
