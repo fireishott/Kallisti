@@ -4,6 +4,36 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.9.0
+
+- **The phone can see the files a turn made, and send its own.** A turn's attachments
+  are stated on every message the device API returns - id, name, size, media type -
+  and `GET /v1/attachments/{id}` serves the bytes with the paired bearer, so a phone
+  never needs a dashboard session for a file its own daemon holds. An upload posts the
+  raw bytes with `x-kallisti-filename` and `x-kallisti-conversation` and is answered
+  with an id a turn may name. A turn that carries files no longer needs words: the
+  operator who drops two screenshots and presses send has said everything with the
+  picture, and the old `text_required` refusal threw the uploaded rows away for a
+  caption nobody wrote. `build 189`.
+
+- **A transcript can be read backwards.** `GET /v1/conversations/{id}` reads from the
+  newest end instead of the oldest, and an `x-before` cursor names the oldest message
+  the caller already holds. The cursor is the row id, not the timestamp, because two
+  messages in the same second are common and a timestamp cursor skips or repeats
+  them. The reply carries `has_more`, so a client can stop asking at the true
+  beginning. `build 189`.
+
+- **Conversations that never received a message are pruned.** Every client that
+  creates a chat before sending, and every launch that could not restore the previous
+  one, left an empty conversation behind; this daemon had 336 conversations, ten of
+  them empty, and a session list that was mostly "New chat". Creation now removes
+  rows with no messages older than an hour, and touches nothing else. `build 189`.
+
+- **A turn with no conversation is logged.** A turn without a conversation streams but
+  is never stored, which is a legitimate mode and also exactly what a client with a
+  broken bind does by accident. The daemon now says which happened, with the device
+  id, so a report of "the reply never appears" can be answered from evidence.
+
 ## 1.7.1
 
 - **A turn can hand work to a named specialist.** A roster row is a name, a role and

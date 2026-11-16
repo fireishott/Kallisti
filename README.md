@@ -3,10 +3,10 @@
 > **To the Most Beautiful.** The most beautiful way to meet your agent.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/daemon-1.7.1-C8CCD2?style=flat-square&labelColor=0C0C10" alt="daemon 1.7.1"/>
-  <img src="https://img.shields.io/badge/iOS-1.5.0-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 1.5.0"/>
+  <img src="https://img.shields.io/badge/daemon-1.9.0-C8CCD2?style=flat-square&labelColor=0C0C10" alt="daemon 1.9.0"/>
+  <img src="https://img.shields.io/badge/iOS-1.6.0-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 1.6.0"/>
   <img src="https://img.shields.io/badge/Rust-1.99-F74C00?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99"/>
-  <img src="https://img.shields.io/badge/tests-1535-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1535 tests"/>
+  <img src="https://img.shields.io/badge/tests-1537-C8CCD2?style=flat-square&labelColor=0C0C10" alt="1537 tests"/>
   <img src="https://img.shields.io/badge/device_api-no_relay-C8CCD2?style=flat-square&labelColor=0C0C10" alt="no relay"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
@@ -18,6 +18,16 @@ the tools and the memory, on hardware you own. **The Kallisti-Eris Web UI** is t
 daemon's own dashboard, served by that same binary, for the times the phone is not
 in your hand. The app talks to the daemon over its device API; there is no
 third-party relay, and nothing leaves your infrastructure.
+
+What that means on the phone, as of iOS 1.6.0 build 189: a turn's steps, diffs and
+pages render as they happen; a transcript loads the page before it when you scroll to
+the top, and keeps the order the daemon wrote rather than re-sorting it by two
+different clocks; a reopened chat fetches its messages instead of opening as an empty
+shell; a question can be answered from the clarify card and a parked command decided
+from the approvals sheet; and the files a turn made - or the files you attach - open
+on the device, with a PDF editor that lets its form fields be filled in and the
+result shared. The daemon serves those bytes over the device API with the same bearer
+the phone already holds, so there is no second credential and no relay in the path.
 
 **Private TestFlight beta in progress.** MIT licensed: the source is open, and it
 stays free to compile from source.
