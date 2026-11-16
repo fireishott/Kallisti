@@ -680,6 +680,29 @@ pub fn journal_for(db: &Db, run_id: &str) -> Result<Vec<DeliveryEntry>, crate::d
     })
 }
 
+/// The newest journal entries, newest first.
+///
+/// # Errors
+///
+/// A database failure.
+pub fn recent(db: &Db, limit: usize) -> Result<Vec<DeliveryEntry>, crate::db::DbError> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT channel, status, note, created_at FROM delivery_journal \
+              ORDER BY created_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = statement.query_map(rusqlite::params![limit as i64], |row| {
+            Ok(DeliveryEntry {
+                channel: row.get(0)?,
+                status: row.get(1)?,
+                note: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
 /// One journalled delivery attempt.
 #[derive(Debug, Clone)]
 pub struct DeliveryEntry {
@@ -709,6 +732,19 @@ mod journal_tests {
         let entries = journal_for(&db, "run-1").expect("read");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].channel, "push");
+    }
+
+    /// The newest first, bounded: a journal is read to find the last failure, not
+    /// to page through history.
+    #[test]
+    fn the_journal_reads_newest_first() {
+        let db = Db::open_in_memory().expect("database");
+        journal(&db, "run-a", "push", "ok", "").expect("a");
+        journal(&db, "run-b", "email", "failed", "no recipient").expect("b");
+        let rows = super::recent(&db, 10).expect("read");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].status, "failed", "the newest is first");
+        assert_eq!(super::recent(&db, 1).expect("read").len(), 1);
     }
 
     /// Two channels for one run are two entries: the key carries the channel.

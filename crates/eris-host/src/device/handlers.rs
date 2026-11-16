@@ -5460,6 +5460,46 @@ pub async fn mcp_jsonrpc(
     }
 }
 
+/// `GET /v1/deliveries` - the delivery journal, newest first.
+///
+/// Operator scope: it names runs and channels, and it is how a failed delivery is
+/// found rather than guessed at.
+pub async fn deliveries(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let limit = headers
+        .get("x-deliveries-limit")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.parse::<usize>().ok())
+        .map_or(50, |value| value.min(200));
+    match crate::delivery::recent(service.engine().db(), limit) {
+        Ok(rows) => axum::Json(serde_json::json!({
+            "deliveries": rows
+                .into_iter()
+                .map(|row| serde_json::json!({
+                    "channel": row.channel,
+                    "status": row.status,
+                    "note": row.note,
+                    "created_at": row.created_at,
+                }))
+                .collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(error) => DeviceError::db_unavailable(format!(
+            "the delivery journal could not be read: {error}"
+        ))
+        .into_response(),
+    }
+}
+
 /// `POST /v1/skills/install` - install one skill from the phone.
 ///
 /// The body is instructions, not an archive: a key, the markdown, and whether to

@@ -288,6 +288,8 @@ pub const ROUTE_SUBAGENT: &str = "/v1/subagents/{id}";
 pub const ROUTE_MCP: &str = "/v1/mcp";
 /// `POST /v1/mcp/jsonrpc` - one JSON-RPC message, Eris as an MCP server.
 pub const ROUTE_MCP_JSONRPC: &str = "/v1/mcp/jsonrpc";
+/// `GET /v1/deliveries` - the delivery journal.
+pub const ROUTE_DELIVERIES: &str = "/v1/deliveries";
 
 /// `GET /v1/devices` - every device this daemon knows, behind the `admin` scope.
 ///
@@ -1230,6 +1232,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_SLASH_COMMANDS, get(handlers::slash_commands))
         .route(ROUTE_APPROVALS, get(handlers::approvals))
         .route(ROUTE_APPROVAL_DECIDE, post(handlers::decide_approval))
+        .route(ROUTE_DELIVERIES, get(handlers::deliveries))
         .route(ROUTE_MCP, get(handlers::mcp_servers))
         .route(ROUTE_MCP_JSONRPC, post(handlers::mcp_jsonrpc))
         .route(ROUTE_DEVICES, get(handlers::devices))
