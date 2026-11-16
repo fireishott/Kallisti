@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS location_history (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_location_history_time ON location_history(recorded_at DESC);
+CREATE TABLE IF NOT EXISTS device_events (
+    id          TEXT PRIMARY KEY, kind TEXT NOT NULL, key TEXT, value REAL, unit TEXT,
+    sensitivity TEXT, recorded_at TEXT NOT NULL,
+    received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_device_events_kind ON device_events(kind, recorded_at DESC);
 CREATE TABLE IF NOT EXISTS health_samples (
     id TEXT PRIMARY KEY, metric TEXT NOT NULL, value REAL NOT NULL, unit TEXT NOT NULL,
     start_at TEXT NOT NULL, end_at TEXT, source TEXT NOT NULL DEFAULT 'healthkit',
@@ -171,6 +177,99 @@ pub enum SensorError {
 }
 
 /// A handle to the sensor database. Cheap to clone; the connection is shared.
+/// Every kind a phone may report, and the whole set: anything else is refused
+/// rather than stored under a name nobody reads.
+pub const KINDS: [&str; 10] = [
+    "location",
+    "health",
+    "motion",
+    "notification",
+    "alarm",
+    "focus",
+    "shortcut",
+    "calendar",
+    "reminder",
+    "contact",
+];
+
+/// One row of a sensor batch, after it has been checked.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchRow {
+    /// One of [`KINDS`].
+    pub kind: String,
+    /// What the sample is about: a metric, a package, a person.
+    pub key: Option<String>,
+    /// The number, when the sample is a number.
+    pub value: Option<f64>,
+    /// Its unit, verbatim.
+    pub unit: Option<String>,
+    /// The phone's own sensitivity reading, verbatim.
+    pub sensitivity: Option<String>,
+    /// RFC 3339, when the sample was taken.
+    pub recorded_at: String,
+}
+
+/// Check a batch before a single row of it is stored.
+///
+/// The contract is atomic: one bad row fails the batch. That is only true if the
+/// check happens first, because a writer that inserts as it validates leaves the
+/// good rows behind when the bad one arrives - and a phone that retries would
+/// then double them.
+///
+/// # Errors
+///
+/// The sentence a caller shows, naming the index that failed.
+pub fn parse_batch(value: &serde_json::Value) -> Result<Vec<BatchRow>, String> {
+    let rows = value
+        .get("rows")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "the body carries no `rows` array".to_owned())?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let kind = row
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("row {index} names no `kind`"))?;
+        if !KINDS.contains(&kind) {
+            return Err(format!(
+                "row {index} names `{kind}`, which is not a sensor kind: {}",
+                KINDS.join(", ")
+            ));
+        }
+        let recorded_at = row
+            .get("ts")
+            .or_else(|| row.get("recorded_at"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| format!("row {index} carries no `ts`"))?;
+        if time::OffsetDateTime::parse(recorded_at, &time::format_description::well_known::Rfc3339)
+            .is_err()
+        {
+            return Err(format!("row {index} has a `ts` that is not RFC 3339"));
+        }
+        let value = match row.get("value") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(number) => Some(
+                number
+                    .as_f64()
+                    .ok_or_else(|| format!("row {index} has a `value` that is not a number"))?,
+            ),
+        };
+        out.push(BatchRow {
+            kind: kind.to_owned(),
+            key: row.get("key").and_then(serde_json::Value::as_str).map(str::to_owned),
+            value,
+            unit: row.get("unit").and_then(serde_json::Value::as_str).map(str::to_owned),
+            sensitivity: row
+                .get("sensitivity")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            recorded_at: recorded_at.to_owned(),
+        });
+    }
+    Ok(out)
+}
+
 #[derive(Clone)]
 pub struct SensorStore {
     inner: Arc<Inner>,
@@ -389,6 +488,43 @@ impl SensorStore {
         Ok(snapshot)
     }
 
+    /// Store a whole batch, or none of it.
+    ///
+    /// One transaction: the contract says a batch is atomic, and a phone that
+    /// retried a half-written batch would double the rows that did land. Every
+    /// row is checked before this is called, so nothing fails halfway from a bad
+    /// value; what is left for the transaction is a database failure, which
+    /// rolls the lot back.
+    ///
+    /// # Errors
+    ///
+    /// The database's own error, with the batch rolled back.
+    pub fn record_batch(&self, rows: &[BatchRow]) -> Result<usize, SensorError> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction()?;
+        for row in rows {
+            transaction.execute(
+                "INSERT INTO device_events \
+                    (id, kind, key, value, unit, sensitivity, recorded_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    uuid::Uuid::now_v7().to_string(),
+                    row.kind,
+                    row.key,
+                    row.value,
+                    row.unit,
+                    row.sensitivity,
+                    row.recorded_at,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(rows.len())
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, SensorError> {
         self.inner.conn.lock().map_err(|_| SensorError::Locked)
     }
@@ -568,5 +704,46 @@ mod tests {
     fn no_location_is_none_not_a_row() {
         let store = store();
         assert!(store.current_location().expect("current").is_none());
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::{parse_batch, BatchRow, SensorStore};
+
+    fn row(kind: &str, ts: &str) -> serde_json::Value {
+        serde_json::json!({"kind": kind, "key": "steps", "value": 42.0, "ts": ts})
+    }
+
+    /// One bad row fails the whole batch before anything is written.
+    #[test]
+    fn a_batch_is_checked_before_a_single_row_is_stored() {
+        let body = serde_json::json!({"rows": [
+            row("health", "2026-11-16T03:00:00Z"),
+            row("nonsense", "2026-11-16T03:00:00Z"),
+        ]});
+        let refused = parse_batch(&body).expect_err("an unknown kind is refused");
+        assert!(refused.contains("row 1"), "{refused}");
+        assert!(refused.contains("nonsense"), "{refused}");
+    }
+
+    #[test]
+    fn a_row_without_a_usable_timestamp_is_refused_by_index() {
+        let body = serde_json::json!({"rows": [row("health", "yesterday")]});
+        let refused = parse_batch(&body).expect_err("a bad ts is refused");
+        assert!(refused.contains("RFC 3339"), "{refused}");
+    }
+
+    #[test]
+    fn a_good_batch_parses_and_stores_in_one_go() {
+        let body = serde_json::json!({"rows": [
+            row("health", "2026-11-16T03:00:00Z"),
+            row("motion", "2026-11-16T03:01:00Z"),
+        ]});
+        let rows: Vec<BatchRow> = parse_batch(&body).expect("a valid batch");
+        assert_eq!(rows.len(), 2);
+        let store = SensorStore::open_in_memory().expect("sensor store");
+        assert_eq!(store.record_batch(&rows).expect("record"), 2);
+        assert_eq!(store.record_batch(&[]).expect("empty"), 0);
     }
 }

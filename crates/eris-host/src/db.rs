@@ -1238,6 +1238,35 @@ ALTER TABLE steward_duties ADD COLUMN watch_rounds INTEGER NOT NULL DEFAULT 0;
 /// existed, which is treated as "minted here" so a live phone is never locked out
 /// by an upgrade.
 ///
+/// WP-07: the daemon instance a token was minted by, so a token lifted from
+/// another install is refused here. Null means a row written before this column
+/// existed, which is treated as "minted here" so a live phone is never locked out
+/// by an upgrade.
+///
+/// WP-09: every sensor kind the phone reports, in one table, so a batch is one
+/// transaction. Location and health keep their own projections; this is the
+/// record of what arrived.
+///
+/// Down path: `DROP TABLE device_events;`.
+const MIGRATION_0038: &str = r"
+CREATE TABLE device_events (
+    id           TEXT PRIMARY KEY NOT NULL,
+    kind         TEXT NOT NULL,
+    key          TEXT,
+    value        REAL,
+    unit         TEXT,
+    sensitivity  TEXT,
+    recorded_at  TEXT NOT NULL,
+    received_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX idx_device_events_kind ON device_events (kind, recorded_at DESC);
+";
+
+/// WP-07: the daemon instance a token was minted by, so a token lifted from
+/// another install is refused here. Null means a row written before this column
+/// existed, which is treated as "minted here" so a live phone is never locked out
+/// by an upgrade.
+///
 /// Down path: `ALTER TABLE auth_tokens DROP COLUMN minted_for;`.
 const MIGRATION_0037: &str = r"
 ALTER TABLE auth_tokens ADD COLUMN minted_for TEXT;
