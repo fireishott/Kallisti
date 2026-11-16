@@ -283,3 +283,66 @@ struct ConversationPersistenceTests {
         freshDefaults()
     }
 }
+
+// Appended 2026-11-16 with the transcript fixes.
+//
+// The operator saw one prompt three times: an optimistic copy, a streamed copy and
+// a fetched copy all survived the merge. The assistant pass collapsed rows sharing
+// a jobID; a user row has no jobID, so it was invisible to that pass. These tests
+// pin the second invariant: one clientMessageID, one bubble.
+
+@MainActor
+@Suite("A prompt is shown once")
+struct PromptDedupeTests {
+
+    private func makeMsg(
+        _ id: UUID,
+        _ sender: MessageSender,
+        _ content: String,
+        clientMessageID: UUID? = nil,
+        jobID: UUID? = nil
+    ) -> Message {
+        Message(id: id, clientMessageID: clientMessageID, sender: sender, content: content, jobID: jobID)
+    }
+
+    private func merged(local: [Message], refreshed: [Message]) -> [Message] {
+        let localConv = Conversation(id: UUID(), title: "Test", messages: local)
+        let refreshedConv = Conversation(id: localConv.id, title: "Test", messages: refreshed)
+        let store = ChatStore(heraldClient: MockHeraldClient(), persistence: MockPersistence())
+        return store.mergeConversationMetadata(from: localConv, into: refreshedConv)?.messages ?? []
+    }
+
+    /// Three copies of one prompt, all carrying the same client message id, become
+    /// one row.
+    @Test("Three copies of one prompt collapse to one")
+    func threeCopiesBecomeOne() {
+        let clientID = UUID()
+        let copies = [
+            makeMsg(UUID(), .user, "How is the iOS side of things?", clientMessageID: clientID),
+            makeMsg(UUID(), .user, "How is the iOS side of things?", clientMessageID: clientID),
+            makeMsg(UUID(), .user, "How is the iOS side of things?", clientMessageID: clientID),
+        ]
+        let rows = merged(local: copies, refreshed: copies)
+        let prompts = rows.filter { $0.sender == .user && $0.content.hasPrefix("How is") }
+        #expect(prompts.count == 1)
+    }
+
+    /// Two different prompts, each sent once, both survive: the collapse must not
+    /// eat a conversation.
+    @Test("Different prompts are not collapsed")
+    func differentPromptsSurvive() {
+        let first = makeMsg(UUID(), .user, "first question", clientMessageID: UUID())
+        let second = makeMsg(UUID(), .user, "second question", clientMessageID: UUID())
+        let rows = merged(local: [first, second], refreshed: [first, second])
+        #expect(rows.filter { $0.sender == .user }.count == 2)
+    }
+
+    /// The same prompt sent twice on purpose is two prompts, because the ids differ.
+    @Test("The same text sent twice stays two prompts")
+    func repeatedTextIsNotCollapsed() {
+        let a = makeMsg(UUID(), .user, "yes", clientMessageID: UUID())
+        let b = makeMsg(UUID(), .user, "yes", clientMessageID: UUID())
+        let rows = merged(local: [a, b], refreshed: [a, b])
+        #expect(rows.filter { $0.sender == .user }.count == 2)
+    }
+}
