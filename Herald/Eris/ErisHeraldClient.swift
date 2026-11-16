@@ -129,6 +129,14 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     continuation.yield(.artifactDiff(diff.codeDiff))
                 case .artifactPage(let html, let cap):
                     continuation.yield(.artifactPage(html: html, heightCap: cap))
+                case .ask(let question, let choices, let requestID, let multi):
+                    // The app already draws a clarify card for this exact shape.
+                    continuation.yield(.clarifyRequest(
+                        question: question,
+                        choices: choices,
+                        requestID: requestID,
+                        multiSelect: multi
+                    ))
                 case .step(let label, _):
                     // A step is an activity line, not answer text: it lands in the
                     // Thought process row the UI already draws.

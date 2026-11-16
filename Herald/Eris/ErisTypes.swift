@@ -280,11 +280,13 @@ enum ErisFrame: Equatable, Sendable {
     case artifactDiff(ErisDiff)
     /// A page a step wrote, with the height cap the daemon set.
     case artifactPage(html: String, heightCap: Int?)
+    /// The turn is waiting on the operator: turn.ask.
+    case ask(question: String, choices: [String]?, requestID: String, multi: Bool)
 
     /// Whether this frame ends the stream. Matches `FrameKind::is_terminal`.
     var isTerminal: Bool {
         switch self {
-        case .delta, .reasoning, .step, .artifactDiff, .artifactPage: return false
+        case .delta, .reasoning, .step, .artifactDiff, .artifactPage, .ask: return false
         case .done, .error, .cancelled: return true
         }
     }
@@ -294,7 +296,7 @@ enum ErisFrame: Equatable, Sendable {
         switch self {
         case .delta(let text): return text
         case .done(let text, _): return text
-        case .reasoning, .step, .artifactDiff, .artifactPage, .error, .cancelled: return nil
+        case .reasoning, .step, .artifactDiff, .artifactPage, .ask, .error, .cancelled: return nil
         }
     }
 
@@ -338,6 +340,15 @@ enum ErisFrame: Equatable, Sendable {
             return .artifactPage(
                 html: object["html"] as? String ?? "",
                 heightCap: object["height_cap"] as? Int
+            )
+        case "turn.ask":
+            let object = try ErisJSON.object(data)
+            let choices = object["choices"] as? [String]
+            return .ask(
+                question: object["question"] as? String ?? "",
+                choices: (choices?.isEmpty ?? true) ? nil : choices,
+                requestID: object["ask_id"] as? String ?? "",
+                multi: object["multi"] as? Bool ?? false
             )
         case "cancelled":
             let object = (try? ErisJSON.object(data)) ?? [:]
