@@ -62,6 +62,10 @@ That means the app's entire Eris integration - the client, the frame decoder, th
 types, the pairing and control surfaces - exists only on one machine's disk. A
 clone of that repository would not build the app that is on TestFlight.
 
-Before any more client work: `git add Herald/Eris` and commit it, on its own,
-with a message that says what it is. Nothing in this programme can be reproduced
-from that repository until that happens.
+**Fixed on 2026-11-16.** `git add Herald/Eris` and one commit, `33a309a0`: fourteen
+files, 3696 lines - the client, the frame vocabulary including the `turn.step`
+decode, the pairing surfaces, the token store. `git ls-files Herald/Eris` now
+answers fourteen.
+
+What is still uncommitted in that tree is someone else's in-flight work - the
+project file, ChatScreen, the Notes screens - and it was left alone on purpose.
