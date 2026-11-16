@@ -5553,6 +5553,54 @@ async fn parse_json<T: serde::de::DeserializeOwned>(body: Body) -> Result<T, Dev
     })
 }
 
+/// `POST /v1/device/sensors` - a whole batch, or none of it.
+///
+/// The batch is checked before a row of it is stored, then written in one
+/// transaction, so a phone that retries after a refusal cannot double the rows
+/// that would have landed. The answer states how many were taken and the oldest
+/// and newest timestamps in the batch, which is what a client needs to trim its
+/// own outbox without a second read.
+pub async fn upload_sensor_batch(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = match sensor_store(&service) {
+        Ok(store) => store,
+        Err(error) => return error.into_response(),
+    };
+    let value: serde_json::Value = match parse_json(body).await {
+        Ok(value) => value,
+        Err(error) => return error.into_response(),
+    };
+    let rows = match crate::sensors::parse_batch(&value) {
+        Ok(rows) => rows,
+        Err(message) => return DeviceError::bad_request("sensor_batch_invalid", message).into_response(),
+    };
+    let oldest = rows.iter().map(|row| row.recorded_at.clone()).min();
+    let newest = rows.iter().map(|row| row.recorded_at.clone()).max();
+    match store.record_batch(&rows) {
+        Ok(count) => axum::Json(serde_json::json!({
+            "ok": true,
+            "accepted": count,
+            "oldest": oldest,
+            "newest": newest,
+        }))
+        .into_response(),
+        Err(error) => DeviceError::db_unavailable(format!(
+            "the sensor batch could not be stored: {error}"
+        ))
+        .into_response(),
+    }
+}
+
 /// The sensor store this service opened at start-up, or a 503.
 fn sensor_store(service: &DeviceService) -> Result<&crate::sensors::SensorStore, DeviceError> {
     service
