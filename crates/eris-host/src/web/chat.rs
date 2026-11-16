@@ -3455,6 +3455,25 @@ pub enum StreamPart<'a> {
         /// string in it.
         asked: Option<&'a Asked>,
     },
+    /// A call parked for approval, before it has run.
+    ///
+    /// The approvals route can be polled, but a stream that is already open had
+    /// no way to say "this turn is waiting on a decision", so a parked command
+    /// looked like a slow one until somebody refreshed. The frame carries the
+    /// fields a card needs, read from the queue row the route serves.
+    Approval {
+        /// The approval row id the decision goes back with.
+        approval_id: &'a str,
+        /// The tool that will run.
+        tool: &'a str,
+        /// Its arguments, as JSON.
+        arguments: &'a str,
+        /// The approval role's reading, when one is pinned. Advice, never a
+        /// decision.
+        reason: Option<&'a str>,
+        /// When the call parked.
+        created_at: &'a str,
+    },
     /// A file that landed on this reply.
     ///
     /// The transcript renders an attachment chip from the rows it loads, and a
@@ -4737,6 +4756,7 @@ pub fn drive_tool_loop(
             // A running call may write while it runs. The chunk goes out ahead of
             // the result, on the same sink, so a live turn and a reloaded
             // transcript tell the same story in the same order.
+            let mut parked: Option<(String, String, String)> = None;
             let mut live = |chunk: &str| {
                 sink(StreamPart::ToolOutput {
                     name: &call.name,
@@ -4750,11 +4770,27 @@ pub fn drive_tool_loop(
                     execute(call, &mut live, &mut |payload| asked = Some(payload), poll)
                 }
                 GateDecision::Park { approval_id } => {
+                    // Announced once the live closure is dropped, so an open
+                    // stream shows a decision waiting rather than a turn that went
+                    // quiet. Held here because `sink` is borrowed by `live`.
+                    parked = Some((approval_id.clone(), call.name.clone(), arguments.clone()));
                     crate::tools::ToolResult::parked(&approval_id, &call.name)
                 }
                 GateDecision::Refuse { reason } => crate::tools::ToolResult::refused(&reason),
             };
             drop(live);
+            if let Some((approval_id, tool, arguments)) = parked {
+                let parked_at = time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default();
+                sink(StreamPart::Approval {
+                    approval_id: &approval_id,
+                    tool: &tool,
+                    arguments: &arguments,
+                    reason: None,
+                    created_at: &parked_at,
+                });
+            }
             let record = ToolRecord {
                 name: call.name.clone(),
                 arguments,

@@ -107,6 +107,8 @@ pub enum FrameKind {
     Page,
     /// The turn is waiting on the operator's answer to one question.
     Ask,
+    /// A command is parked until a person allows or denies it.
+    Approval,
     /// One assistant text fragment.
     Delta,
     /// One fragment of the model's own reasoning, when the provider streams one.
@@ -161,13 +163,14 @@ pub enum FrameKind {
 impl FrameKind {
     /// Every kind, so a client can learn the vocabulary from `/v1/version`
     /// instead of pinning a build number.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Start,
         Self::Step,
         Self::StepResult,
         Self::Diff,
         Self::Page,
         Self::Ask,
+        Self::Approval,
         Self::Delta,
         Self::Reasoning,
         Self::Tool,
@@ -191,6 +194,7 @@ impl FrameKind {
             Self::Diff => "turn.artifact.diff",
             Self::Page => "turn.artifact.page",
             Self::Ask => "turn.ask",
+            Self::Approval => "turn.approval",
             Self::Delta => "delta",
             Self::Reasoning => "reasoning",
             Self::Tool => "tool",
@@ -215,6 +219,7 @@ impl FrameKind {
             "turn.artifact.diff" => Some(Self::Diff),
             "turn.artifact.page" => Some(Self::Page),
             "turn.ask" => Some(Self::Ask),
+            "turn.approval" => Some(Self::Approval),
             "delta" => Some(Self::Delta),
             "reasoning" => Some(Self::Reasoning),
             "tool" => Some(Self::Tool),
@@ -242,6 +247,7 @@ impl FrameKind {
                 | Self::Diff
                 | Self::Page
                 | Self::Ask
+                | Self::Approval
                 | Self::Delta
                 | Self::Reasoning
                 | Self::Tool
@@ -262,6 +268,7 @@ impl FrameKind {
             | Self::Diff
             | Self::Page
             | Self::Ask
+            | Self::Approval
             | Self::Delta
             | Self::Reasoning
             | Self::Tool
@@ -339,6 +346,19 @@ enum Signal {
         output: String,
         /// Whether it reported a failure.
         is_error: bool,
+    },
+    /// A call parked for approval, before it has run.
+    Approval {
+        /// The approval row id the decision goes back with.
+        approval_id: String,
+        /// The tool that will run.
+        tool: String,
+        /// Its arguments, as JSON.
+        arguments: String,
+        /// The approval role's reading, when one is pinned.
+        reason: Option<String>,
+        /// When the call parked.
+        created_at: String,
     },
     /// The turn asked a question and is now blocked waiting on the answer.
     Asked {
@@ -2525,6 +2545,29 @@ impl TurnHub {
                         // client that was not watching when the frame went out can
                         // read it back from the log, which is the whole reason a
                         // device question is a stored frame and not a signal.
+                        Signal::Approval {
+                            approval_id,
+                            tool,
+                            arguments,
+                            reason,
+                            created_at,
+                        } => {
+                            let data = serde_json::json!({
+                                "turn_id": writer_job,
+                                "approval_id": approval_id,
+                                "command": arguments,
+                                "scope": tool,
+                                "cwd": serde_json::Value::Null,
+                                "reason": reason,
+                                "created_at": created_at,
+                                "deadline": serde_json::Value::Null,
+                            });
+                            if let Ok(Some(seq)) =
+                                store.append(&writer_job, FrameKind::Approval, &data)
+                            {
+                                publish(&sender, seq, FrameKind::Approval, data);
+                            }
+                        }
                         Signal::Asked { request } => {
                             let data = serde_json::json!({
                                 "request": &request,
@@ -3101,6 +3144,21 @@ impl TurnHub {
                     // browser sends it. The frame is also written to the job log, so a
                     // client that reconnects reads it back rather than missing the one
                     // moment the turn was waiting on a person.
+                    crate::web::chat::StreamPart::Approval {
+                        approval_id,
+                        tool,
+                        arguments,
+                        reason,
+                        created_at,
+                    } => {
+                        let _ = tx.send(Signal::Approval {
+                            approval_id: approval_id.to_owned(),
+                            tool: tool.to_owned(),
+                            arguments: arguments.to_owned(),
+                            reason: reason.map(str::to_owned),
+                            created_at: created_at.to_owned(),
+                        });
+                    }
                     crate::web::chat::StreamPart::Asked { request } => {
                         let _ = tx.send(Signal::Asked {
                             request: request.clone(),

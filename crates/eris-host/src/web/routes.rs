@@ -12127,6 +12127,26 @@ fn spawn_turn(
                     );
                 }
             }
+            chat::StreamPart::Approval {
+                approval_id,
+                tool,
+                arguments,
+                reason,
+                created_at,
+            } => {
+                emit(
+                    "turn.approval",
+                    serde_json::json!({
+                        "approval_id": approval_id,
+                        "scope": tool,
+                        "command": arguments,
+                        "cwd": serde_json::Value::Null,
+                        "reason": reason,
+                        "created_at": created_at,
+                        "deadline": serde_json::Value::Null,
+                    }),
+                );
+            }
             chat::StreamPart::Asked { request } => {
                 // Not behind the run log's switch: a question is not a tool
                 // receipt, it is the turn asking the operator for something and
