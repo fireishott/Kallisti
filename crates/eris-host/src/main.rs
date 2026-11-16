@@ -181,6 +181,12 @@ enum Command {
 /// The `device` subcommands.
 #[derive(Debug, Subcommand)]
 enum DeviceCommand {
+    /// Retire every token for one device. The immediate way to end access.
+    Revoke {
+        /// The device id to revoke.
+        #[arg(long, value_name = "DEVICE_ID")]
+        id: String,
+    },
     /// TEST-ONLY: mint one access token for an existing device and print it.
     Token {
         /// The device id to mint for. It must already exist and not be revoked.
@@ -259,13 +265,15 @@ fn main() -> ExitCode {
         Some(Command::Probe { prompt }) => run_probe(&prompt),
         Some(Command::Setup { reset }) => run_setup(cli.json, reset, cli.state_dir),
         Some(Command::Device { command }) => match command {
+            Some(DeviceCommand::Revoke { id }) => run_device_revoke(cli.json, &id, cli.state_dir),
             Some(DeviceCommand::Token { id, print }) => {
                 run_device_token(cli.json, &id, print, cli.state_dir)
             }
             None => not_implemented(
                 cli.json,
                 "device",
-                "device has one subcommand: `device token --id <device_id> [--print]`. \
+                "device has two subcommands: `device revoke --id <device_id>` and \
+                 `device token --id <device_id> [--print]`. \
                  The listener itself is `eris serve --device-listen`",
             ),
         },
@@ -1207,6 +1215,47 @@ fn primary_port(listeners: &[std::net::SocketAddr]) -> u16 {
 /// for more than the one `--id` given, and no way to mint for a device that is
 /// unknown or revoked. Exit code 3 means "refused", so a script can tell a bad id
 /// from a broken database.
+/// `eris device revoke --id <device_id>` - retire every token for one device.
+fn run_device_revoke(json: bool, device_id: &str, state_dir: Option<PathBuf>) -> ExitCode {
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let db = match Db::open(&paths.db_file) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!(
+                "eris device revoke: cannot open {}: {error}",
+                paths.db_file.display()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let service = TokenService::new(db);
+    match service.revoke_device(device_id) {
+        Ok(rows) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"device_id": device_id, "tokens_revoked": rows})
+                );
+            } else if rows == 0 {
+                println!("{device_id}: nothing to revoke, or the device does not exist");
+            } else {
+                println!("{device_id}: retired {rows} token row(s); access ends now");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{device_id}: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn run_device_token(
     json: bool,
     device_id: &str,
