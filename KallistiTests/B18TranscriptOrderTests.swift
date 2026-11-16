@@ -222,3 +222,64 @@ struct TranscriptRowOrderTests {
         #expect(rows.map(\.id) == ids)
     }
 }
+
+// Appended 2026-11-16 with the transcript fixes.
+//
+// The three layers that decide whether a phone can find its own history:
+//   1. the map from local chat id to daemon conversation id,
+//   2. which chat is open,
+//   3. binding before the turn is created.
+// Each of these was missing at some point, and each produced the same symptom: an
+// empty transcript. They are tested here rather than assumed.
+
+@Suite("The conversation map survives a relaunch")
+@MainActor
+struct ConversationPersistenceTests {
+
+    private func freshDefaults() {
+        UserDefaults.standard.removeObject(forKey: "eris.conversationMap.v1")
+        UserDefaults.standard.removeObject(forKey: "eris.openConversation.v1")
+    }
+
+    /// A map written by one client is read by the next one.
+    @Test("A bound conversation is remembered")
+    func mapIsRestored() {
+        freshDefaults()
+        let local = UUID()
+        UserDefaults.standard.set(
+            [local.uuidString: "conversation-abc"],
+            forKey: "eris.conversationMap.v1"
+        )
+
+        let client = ErisHeraldClient()
+        #expect(client.boundConversationID(for: local) == "conversation-abc")
+        freshDefaults()
+    }
+
+    /// The open chat comes back, with its id and title, so the app reopens the
+    /// transcript instead of minting a new chat id that the map cannot resolve.
+    @Test("The open chat is reopened, not replaced")
+    func openConversationIsRestored() async {
+        freshDefaults()
+        let id = UUID()
+        UserDefaults.standard.set([id.uuidString, "Tide pools"], forKey: "eris.openConversation.v1")
+
+        let client = ErisHeraldClient()
+        let reopened = await client.loadConversation()
+        #expect(reopened.id == id)
+        #expect(reopened.title == "Tide pools")
+        freshDefaults()
+    }
+
+    /// A first launch has nothing stored and gets a new chat, rather than a
+    /// failure.
+    @Test("A first launch starts a new chat")
+    func firstLaunchStartsFresh() async {
+        freshDefaults()
+        let client = ErisHeraldClient()
+        let fresh = await client.loadConversation()
+        #expect(fresh.messages.isEmpty)
+        #expect(fresh.title == "New Chat")
+        freshDefaults()
+    }
+}

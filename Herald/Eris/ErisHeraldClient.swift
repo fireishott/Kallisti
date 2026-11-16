@@ -55,6 +55,15 @@ final class ErisHeraldClient: HeraldClientProtocol {
         UserDefaults.standard.set(encoded, forKey: Self.conversationMapKey)
     }
 
+    /// The daemon conversation bound to a local chat, if one is bound.
+    ///
+    /// Internal rather than private so the persistence can be tested: this map is
+    /// the layer that decides whether a phone finds its own history, and an
+    /// untested map is how it stayed in memory for three builds.
+    func boundConversationID(for localID: UUID) -> String? {
+        conversationIDByLocalID[localID]
+    }
+
     private static let openConversationKey = "eris.openConversation.v1"
 
     /// Remember which chat is open. Without this a relaunch opens a new one, and
