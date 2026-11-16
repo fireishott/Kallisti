@@ -146,11 +146,17 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
 
             // Nav-aware suppression: if the user is viewing the same conversation
             // the notification is for, suppress to avoid self-notification.
-            if let notificationConversationId,
-               let currentId = container.chatStore.conversation?.id,
-               notificationConversationId == currentId.uuidString.lowercased() {
-                complete.value([])
-                return
+            // The push names the daemon conversation; the chat holds a local id
+            // plus that daemon id as its session key. Comparing only the local id
+            // meant they never matched, so a banner appeared for the chat already
+            // on screen.
+            if let notificationConversationId, let current = container.chatStore.conversation {
+                let incoming = notificationConversationId.lowercased()
+                let daemonId = current.sessionKey?.lowercased()
+                if incoming == current.id.uuidString.lowercased() || incoming == daemonId {
+                    complete.value([])
+                    return
+                }
             }
 
             complete.value([.banner, .list, .sound, .badge])

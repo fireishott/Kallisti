@@ -1297,7 +1297,24 @@ struct ChatScreen: View {
         // the phone clock, a fetched row carries the daemon clock. A prompt stored
         // a few hundred milliseconds before the phone's own timestamp sorted below
         // the reply it produced, which reads as a transcript out of order.
-        let sorted = messages
+        // Within one turn the prompt precedes the answer, and both rows carry the
+        // same job id, so a misplaced pair can be repaired without guessing. Only
+        // the prompt moves; everything else keeps its place.
+        var repaired = messages
+        var index = 0
+        while index < repaired.count {
+            let row = repaired[index]
+            if row.sender != .user, let job = row.jobID,
+               let promptIndex = repaired[(index + 1)...].firstIndex(where: {
+                   $0.sender == .user && $0.jobID == job
+               }) {
+                let prompt = repaired.remove(at: promptIndex)
+                repaired.insert(prompt, at: index)
+                index += 1
+            }
+            index += 1
+        }
+        let sorted = repaired
         // The live placeholder stays pinned at the bottom of the visible
         // transcript even though its creation timestamp is the OLDEST part of
         // the turn - it is the current activity and must not jump through the

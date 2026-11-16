@@ -567,3 +567,53 @@ struct AttachmentDecodeTests {
         #expect(message.attachments.isEmpty)
     }
 }
+
+// Appended 2026-11-16: a reply cannot render above its own prompt.
+//
+// Both rows of a turn carry the same job id, so this is checkable rather than a
+// matter of opinion. The operator saw the answer above the message it answered.
+
+@MainActor
+@Suite("A turn renders prompt first, answer second")
+struct TurnOrderTests {
+
+    private func row(_ sender: MessageSender, _ text: String, job: UUID?) -> Message {
+        Message(
+            id: UUID(),
+            clientMessageID: nil,
+            sender: sender,
+            content: text,
+            timestamp: .now,
+            jobID: job
+        )
+    }
+
+    @Test("An answer below its prompt is left alone")
+    func correctOrderIsKept() {
+        let job = UUID()
+        let prompt = row(.user, "Good morning.", job: job)
+        let answer = row(.herald, "Morning, Curtis.", job: job)
+        let rows = ChatScreen.transcriptRows([prompt, answer])
+        #expect(rows.map(\.content) == ["Good morning.", "Morning, Curtis."])
+    }
+
+    @Test("An answer above its prompt is repaired")
+    func answerAbovePromptIsMoved() {
+        let job = UUID()
+        let answer = row(.herald, "Morning, Curtis.", job: job)
+        let prompt = row(.user, "Good morning.", job: job)
+        let rows = ChatScreen.transcriptRows([answer, prompt])
+        #expect(rows.map(\.content) == ["Good morning.", "Morning, Curtis."])
+    }
+
+    @Test("A different turn is not dragged along")
+    func otherTurnsAreUntouched() {
+        let first = UUID(), second = UUID()
+        let a1 = row(.user, "one", job: first)
+        let b1 = row(.herald, "two", job: first)
+        let a2 = row(.user, "three", job: second)
+        let b2 = row(.herald, "four", job: second)
+        let rows = ChatScreen.transcriptRows([a1, b1, a2, b2])
+        #expect(rows.map(\.content) == ["one", "two", "three", "four"])
+    }
+}
