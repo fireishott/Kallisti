@@ -1493,6 +1493,42 @@ fn finish_transaction(
 /// A `queued` or `running` job at boot belongs to a worker this process never
 /// started, and nothing will ever claim it. Left alone it is worse than a stale
 /// row: `GET /v1/turns/{id}/events` replays the frames that exist, finds no
+/// Put a dead turn's request back in its conversation, or say why not.
+///
+/// `false` for a row with no conversation (nothing to rejoin), a row already at
+/// the continuation cap, or a failed insert. A reclaim that cannot be delivered
+/// leaves the ordinary `lease_expired` settle in place, which is still true.
+fn requeue_reclaimed(store: &TurnStore, job_id: &str) -> bool {
+    let Ok(Some(job)) = store.job(job_id) else {
+        return false;
+    };
+    let Some(conversation) = job.conversation_id.as_deref() else {
+        return false;
+    };
+    let Some(text) = job.request_text.as_deref().filter(|text| !text.trim().is_empty()) else {
+        return false;
+    };
+    if job.chain_depth >= crate::queue::MAX_AUTO {
+        return false;
+    }
+    match crate::queue::enqueue(
+        store.db(),
+        conversation,
+        job.device_id.as_deref().unwrap_or_default(),
+        text,
+        job.chain_depth + 1,
+    ) {
+        Ok(_) => {
+            tracing::warn!(%job_id, %conversation, "reclaimed a dead turn: request requeued");
+            true
+        }
+        Err(error) => {
+            tracing::error!(%error, %job_id, "could not requeue a reclaimed turn");
+            false
+        }
+    }
+}
+
 /// terminal one, and then tails a broadcast channel nobody publishes on, so a
 /// client that reconnects to resume the turn waits forever.
 ///
@@ -1538,7 +1574,20 @@ pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
         // client that sees `interrupted` for both cannot tell a deploy from a
         // crashed worker.
         let lease_expired = expired_leases.contains(&job_id);
-        let data = if lease_expired {
+        // A turn whose worker died is requeued when the row still names a chat to
+        // put it in. That is the reclaim: the same request, run again as a task,
+        // rather than the same job row resumed. A dead worker cannot be handed
+        // back a half-written stream, so the honest recovery is to ask the
+        // question again in the conversation that lost the answer. The existing
+        // drain picks it up after the next successful turn in that chat, and
+        // `chain_depth` bounds it exactly as it bounds every other continuation.
+        let requeued = lease_expired && requeue_reclaimed(&store, &job_id);
+        let data = if requeued {
+            serde_json::json!({
+                "code": "lease_expired",
+                "message": "the worker stopped renewing this turn's lease; the request was requeued",
+            })
+        } else if lease_expired {
             serde_json::json!({
                 "code": "lease_expired",
                 "message": "the worker stopped renewing this turn's lease before it finished",
