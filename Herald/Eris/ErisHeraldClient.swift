@@ -24,6 +24,9 @@ enum ErisHeraldError: Error, LocalizedError {
 @MainActor
 final class ErisHeraldClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus = .disconnected
+
+    /// A turn comes back as frames; there is no other form to ask for.
+    var streamsOnly: Bool { true }
     private(set) var currentConversation: Conversation? {
         didSet { persistOpenConversation() }
     }

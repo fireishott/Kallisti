@@ -15,6 +15,13 @@ protocol HeraldClientProtocol {
     /// statically to the default that answers nothing. That is exactly what
     /// happened - paging compiled, shipped, and was never called.
     func loadOlder(conversationID: UUID, before: String) async -> (messages: [Message], hasMore: Bool)
+    /// Whether this transport has only a streaming form.
+    ///
+    /// The Eris daemon answers a turn as a stream of frames, so a request/response
+    /// send loses the Thinking row, the live text, and - on this app - the finished
+    /// row until a refresh. A transport that can only stream says so, and the store
+    /// streams for it regardless of the setting.
+    var streamsOnly: Bool { get }
     /// Upload a picked file before the send, so its chip can show progress.
     /// Returns the daemon's attachment id, or nil when this client cannot upload.
     func preuploadAttachment(_ attachment: PendingAttachment, conversationID: UUID?) async -> String?
@@ -260,4 +267,9 @@ extension HeraldClientProtocol {
     func preuploadAttachment(_ attachment: PendingAttachment, conversationID: UUID?) async -> String? {
         nil
     }
+}
+
+extension HeraldClientProtocol {
+    /// A transport that also has a request/response form is not stream-only.
+    var streamsOnly: Bool { false }
 }

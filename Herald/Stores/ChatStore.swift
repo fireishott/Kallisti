@@ -607,6 +607,13 @@ final class ChatStore {
     var onTurnCompleted: (@MainActor () -> Void)?
     var useStreaming: Bool = false
 
+    /// Whether this send should stream. The setting decides for a transport that
+    /// has both forms; a stream-only transport streams either way, because the
+    /// other form loses the live row and the finished one too.
+    private var shouldStream: Bool {
+        useStreaming || heraldClient.streamsOnly
+    }
+
     /// Maximum number of log entries to keep in memory and on disk.
     private static let maxLogEntries = 500
 
@@ -1155,7 +1162,7 @@ final class ChatStore {
         // Render the stream placeholder before session health checks. A
         // reconnect can legitimately take a few seconds after backgrounding,
         // but it must never look like the send button ignored the user.
-        let earlyPlaceholderID: UUID? = useStreaming ? UUID() : nil
+        let earlyPlaceholderID: UUID? = shouldStream ? UUID() : nil
         if let earlyPlaceholderID {
             conversation?.messages.append(Message(
                 id: earlyPlaceholderID,
@@ -1213,7 +1220,7 @@ final class ChatStore {
         item.state = .submitting
         updateOutboxItem(item)
 
-        if useStreaming, let placeholderID = earlyPlaceholderID {
+        if shouldStream, let placeholderID = earlyPlaceholderID {
             // The placeholder was inserted before ensureConversation so socket
             // recovery is visible. Reuse that exact row for streamed updates.
             // activeStreams entry is added in the .messageSent handler once jobId is known.
