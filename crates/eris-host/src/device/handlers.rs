@@ -5433,6 +5433,47 @@ fn status_for(status: u16) -> axum::http::StatusCode {
     axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST)
 }
 
+/// `POST /v1/skills/install` - install one skill from the phone.
+///
+/// The body is instructions, not an archive: a key, the markdown, and whether to
+/// replace an existing skill of that name. Operator scope, because a skill changes
+/// what every later turn can do.
+pub async fn install_skill(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let key = field(&fields, "key").trim().to_owned();
+    let skill_body = field(&fields, "body");
+    let replace = matches!(field(&fields, "replace").trim(), "true" | "1" | "on");
+    let dir_key = crate::skills::setting_key("dir");
+    let stored = service
+        .engine()
+        .setting(&dir_key)
+        .ok()
+        .flatten();
+    match crate::skills::install(stored.as_deref(), &key, skill_body, replace) {
+        Ok(path) => axum::Json(serde_json::json!({
+            "ok": true,
+            "key": key,
+            "path": path.display().to_string(),
+        }))
+        .into_response(),
+        Err(message) => DeviceError::bad_request("skill_not_installed", message).into_response(),
+    }
+}
+
 /// `GET /v1/diagnostics` - the one-tap bundle.
 ///
 /// Operator scope only: the buffer names turns and timings, which is host

@@ -516,6 +516,53 @@ pub fn catalog_for(db: &Db, on: bool, stored_dir: Option<&str>) -> Option<String
 /// # Errors
 ///
 /// [`SkillError::Unknown`], [`SkillError::TooLarge`] or [`SkillError::Io`].
+/// The most a skill body may be. A skill is instructions, not an archive.
+pub const MAX_INSTALL_BYTES: usize = 64 * 1024;
+
+/// Write one skill into the library, from a body pasted or posted by a phone.
+///
+/// The key is checked with the same rule the catalogue uses, so a body cannot be
+/// stored under a name the reader would never look up. An existing skill is only
+/// replaced when `replace` is true: installing twice by accident should not quietly
+/// change a bot's instructions.
+///
+/// # Errors
+///
+/// The sentence a caller shows.
+pub fn install(
+    stored_dir: Option<&str>,
+    key: &str,
+    body: &str,
+    replace: bool,
+) -> Result<std::path::PathBuf, String> {
+    if !valid_key(key) {
+        return Err(format!(
+            "`{key}` is not a skill key: use lower-case letters, digits and hyphens"
+        ));
+    }
+    if body.trim().is_empty() {
+        return Err("a skill needs a body".to_owned());
+    }
+    if body.len() > MAX_INSTALL_BYTES {
+        return Err(format!(
+            "that skill is {} bytes; the limit is {MAX_INSTALL_BYTES}",
+            body.len()
+        ));
+    }
+    let dir = library_dir(stored_dir).ok_or_else(|| "no skill library is configured".to_owned())?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+    let path = dir.join(format!("{key}.md"));
+    if path.exists() && !replace {
+        return Err(format!(
+            "a skill named `{key}` is already installed; pass replace to overwrite it"
+        ));
+    }
+    std::fs::write(&path, body)
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    Ok(path)
+}
+
 pub fn read(db: &Db, stored_dir: Option<&str>, key: &str) -> Result<String, SkillError> {
     let key = key.trim();
     if !valid_key(key) {
@@ -1460,5 +1507,43 @@ mod tests {
             !after.contains("attach_file"),
             "the shipped body did not return"
         );
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::{MAX_INSTALL_BYTES, install};
+
+    /// A key the catalogue would never look up is refused before a file exists.
+    #[test]
+    fn a_bad_key_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let refused = install(Some(dir.path().to_str().unwrap_or("")), "Not A Key", "# x", true)
+            .expect_err("refused");
+        assert!(refused.contains("skill key"), "{refused}");
+    }
+
+    /// Installing twice does not quietly replace a skill; asking for a replace
+    /// does.
+    #[test]
+    fn a_second_install_needs_replace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = Some(dir.path().to_str().unwrap_or(""));
+        install(root, "harvest-test", "# first", false).expect("first");
+        let refused = install(root, "harvest-test", "# second", false).expect_err("refused");
+        assert!(refused.contains("already installed"), "{refused}");
+        let path = install(root, "harvest-test", "# second", true).expect("replace");
+        let written = std::fs::read_to_string(path).expect("read");
+        assert_eq!(written, "# second");
+    }
+
+    /// A body over the limit is refused with both numbers.
+    #[test]
+    fn an_oversized_body_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let huge = "x".repeat(MAX_INSTALL_BYTES + 1);
+        let refused = install(Some(dir.path().to_str().unwrap_or("")), "big", &huge, false)
+            .expect_err("refused");
+        assert!(refused.contains("limit is"), "{refused}");
     }
 }
