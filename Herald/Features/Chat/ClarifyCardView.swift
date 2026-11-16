@@ -138,3 +138,81 @@ struct ClarifyCardView: View {
         .padding(.top, Design.Spacing.xs)
     }
 }
+
+// MARK: - Turn artifact: a diff
+
+/// One changed file with its counts, expanding to the hunks the daemon sent.
+///
+/// The data comes from a turn.artifact.diff frame through ErisDiff, so the card draws
+/// exactly what the daemon diffed - it does not diff anything itself. A turn with
+/// no diff never builds one of these.
+struct ErisDiffCard: View {
+    let diff: ErisDiff
+    @State private var expanded = false
+
+    private var totals: (added: Int, removed: Int) { diff.totals }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                expanded.toggle()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                    Text(diff.files.count == 1 ? "1 file changed" : "\(diff.files.count) files changed")
+                        .font(.caption.weight(.semibold))
+                    Text("+\(totals.added)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.green)
+                    Text("-\(totals.removed)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.red)
+                    Spacer(minLength: 0)
+                }
+            }
+            .buttonStyle(.plain)
+
+            ForEach(diff.files, id: \.path) { file in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(file.path)
+                            .font(.caption.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        Text("+\(file.added)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.green)
+                        Text("-\(file.removed)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.red)
+                    }
+                    if expanded {
+                        ForEach(Array(file.hunks.enumerated()), id: \.offset) { _, hunk in
+                            Text("@\(hunk.oldStart) +\(hunk.newStart)")
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                            ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
+                                Text((line.kind == .add ? "+" : line.kind == .remove ? "-" : " ") + line.text)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(colour(for: line.kind))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.35)))
+    }
+
+    private func colour(for kind: ErisDiffLine.Kind) -> Color {
+        switch kind {
+        case .add: return .green
+        case .remove: return .red
+        case .context: return .secondary
+        }
+    }
+}
