@@ -5433,6 +5433,33 @@ fn status_for(status: u16) -> axum::http::StatusCode {
     axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST)
 }
 
+/// `POST /mcp` - Eris as an MCP server, one JSON-RPC message per request.
+///
+/// Operator scope: an MCP client is another agent on this host, and the tools it
+/// may call are read-only. A notification answers 202 with no body, which is what
+/// JSON-RPC asks for and what a real client expects after `initialize`.
+pub async fn mcp_jsonrpc(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let value: serde_json::Value = match parse_json(body).await {
+        Ok(value) => value,
+        Err(error) => return error.into_response(),
+    };
+    match crate::mcp_server::handle(service.engine().db(), &value) {
+        Some(reply) => axum::Json(reply).into_response(),
+        None => (StatusCode::ACCEPTED, axum::Json(serde_json::Value::Null)).into_response(),
+    }
+}
+
 /// `POST /v1/skills/install` - install one skill from the phone.
 ///
 /// The body is instructions, not an archive: a key, the markdown, and whether to

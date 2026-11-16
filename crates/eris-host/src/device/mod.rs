@@ -286,6 +286,8 @@ pub const ROUTE_SUBAGENT: &str = "/v1/subagents/{id}";
 /// Not `admin`: reading what is configured and whether it answered is the same
 /// class of read as the transcript, and the server list carries no credential.
 pub const ROUTE_MCP: &str = "/v1/mcp";
+/// `POST /v1/mcp/jsonrpc` - one JSON-RPC message, Eris as an MCP server.
+pub const ROUTE_MCP_JSONRPC: &str = "/v1/mcp/jsonrpc";
 
 /// `GET /v1/devices` - every device this daemon knows, behind the `admin` scope.
 ///
@@ -1229,6 +1231,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_APPROVALS, get(handlers::approvals))
         .route(ROUTE_APPROVAL_DECIDE, post(handlers::decide_approval))
         .route(ROUTE_MCP, get(handlers::mcp_servers))
+        .route(ROUTE_MCP_JSONRPC, post(handlers::mcp_jsonrpc))
         .route(ROUTE_DEVICES, get(handlers::devices))
         .route(ROUTE_DEVICE_REVOKE, post(handlers::revoke_device))
         .route(ROUTE_DEVICE_CODE, post(handlers::mint_device_code))

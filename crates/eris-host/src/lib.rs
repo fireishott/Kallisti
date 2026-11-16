@@ -56,6 +56,7 @@ pub mod inbox;
 pub mod learning;
 pub mod learning_worker;
 pub mod mcp;
+pub mod mcp_server;
 pub mod mem;
 pub mod memconsolidate;
 pub mod memintent;
