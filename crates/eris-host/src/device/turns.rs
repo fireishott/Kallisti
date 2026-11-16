@@ -1507,13 +1507,16 @@ pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
     // restart: the difference between "the daemon came back and found work" and
     // "a worker died mid-turn". One number in the boot log is what makes a
     // crash-looping worker visible without reading every row.
-    if let Ok(expired) = store.lease_expired_jobs() {
-        if !expired.is_empty() {
-            tracing::warn!(
-                count = expired.len(),
-                "turns outlived their lease before the restart; settling them as interrupted"
-            );
-        }
+    let expired_leases: std::collections::HashSet<String> = store
+        .lease_expired_jobs()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    if !expired_leases.is_empty() {
+        tracing::warn!(
+            count = expired_leases.len(),
+            "turns outlived their lease before the restart; settling them as expired"
+        );
     }
     let interrupted = db.with_conn(|conn| {
         let mut statement = conn.prepare(
@@ -1528,10 +1531,24 @@ pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
 
     let mut settled = 0usize;
     for job_id in interrupted {
-        let data = serde_json::json!({
-            "code": "interrupted",
-            "message": "the daemon stopped before this turn finished",
-        });
+        // Two different deaths, and a reader can act on only one of them. A turn
+        // the restart caught still held a live lease: the daemon went away under
+        // it. A turn whose lease had already run out lost its worker earlier, and
+        // nothing noticed until now - that is the contract's `expired`, and a
+        // client that sees `interrupted` for both cannot tell a deploy from a
+        // crashed worker.
+        let lease_expired = expired_leases.contains(&job_id);
+        let data = if lease_expired {
+            serde_json::json!({
+                "code": "lease_expired",
+                "message": "the worker stopped renewing this turn's lease before it finished",
+            })
+        } else {
+            serde_json::json!({
+                "code": "interrupted",
+                "message": "the daemon stopped before this turn finished",
+            })
+        };
         match store.finish(&job_id, FrameKind::Error, &data) {
             Ok(Some(_)) => settled += 1,
             // A terminal job is not settled twice: `finish` wrote nothing.
@@ -3317,6 +3334,39 @@ mod tests {
             .create_job(device, &session, None, "reply with the single word: ok")
             .expect("job");
         (job, session)
+    }
+
+    /// A crash and a deploy are different deaths, and the boot sweep says which.
+    #[test]
+    fn the_boot_sweep_tells_a_dead_worker_from_a_restart() {
+        let (store, device) = store(64);
+        let (expired_job, _s1) = queued(&store, &device);
+        let (restarted_job, _s2) = queued(&store, &device);
+        assert!(store.claim(&expired_job).expect("claim"));
+        assert!(store.claim(&restarted_job).expect("claim"));
+        store
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE jobs SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
+                    params![expired_job],
+                )?;
+                Ok(())
+            })
+            .expect("age the lease");
+
+        let settled = super::fail_orphaned(store.db()).expect("sweep");
+        assert_eq!(settled, 2, "both rows were open");
+
+        let code = |job: &str| -> String {
+            let rows = store.events_after(job, 0).expect("events");
+            rows.iter()
+                .find(|row| row.kind == FrameKind::Error)
+                .map(|row| row.data["code"].as_str().unwrap_or_default().to_owned())
+                .unwrap_or_default()
+        };
+        assert_eq!(code(&expired_job), "lease_expired");
+        assert_eq!(code(&restarted_job), "interrupted");
     }
 
     /// The lease is the only evidence that a worker is alive, so a claimed job
