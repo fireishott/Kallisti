@@ -514,3 +514,56 @@ struct SendBindingTests {
         #expect(attempts == 2)
     }
 }
+
+// Appended 2026-11-16: the attachments the operator's turn carried.
+//
+// Taken from the live daemon - `GET /v1/conversations/{id}` on the conversation
+// where the agent attached a PDF - so this decodes what the phone actually
+// receives, not a hand-made approximation.
+
+@Suite("A turn's attachments decode")
+struct AttachmentDecodeTests {
+
+    /// The exact keys the daemon sends, including `media_type`.
+    private let messageJSON = """
+    {
+      "id": "01a1e389-cfb0-7000-8000-000000000000",
+      "role": "assistant",
+      "body": "Attached.",
+      "state": "complete",
+      "created_at": "2026-11-16T08:47:00.000Z",
+      "reasoning": null,
+      "tools": [],
+      "client_message_id": null,
+      "job_id": "01a1e389-cfb0-7000-8000-000000000001",
+      "attachments": [
+        {
+          "id": "01a1e389-ddb2-729b-89a1-1e3d905cfef2",
+          "name": "HYTE-Y70-Touch-Infinite-Unraid-Architecture-v1.1.pdf",
+          "size": 664296,
+          "media_type": "application/pdf"
+        }
+      ]
+    }
+    """
+
+    @Test("A PDF attachment survives decoding")
+    func pdfDecodes() throws {
+        let data = Data(messageJSON.utf8)
+        let message = try JSONDecoder().decode(ErisConversationMessage.self, from: data)
+        #expect(message.attachments.count == 1)
+        #expect(message.attachments.first?.name.hasSuffix(".pdf") == true)
+        #expect(message.attachments.first?.mediaType == "application/pdf")
+        #expect(message.attachments.first?.size == 664296)
+    }
+
+    /// A daemon that predates the key still decodes.
+    @Test("A message without attachments decodes to none")
+    func missingAttachmentsAreEmpty() throws {
+        let json = """
+        {"id":"x","role":"assistant","body":"hi","state":"complete","created_at":"2026-01-01T00:00:00.000Z","reasoning":null,"tools":[],"client_message_id":null,"job_id":null}
+        """
+        let message = try JSONDecoder().decode(ErisConversationMessage.self, from: Data(json.utf8))
+        #expect(message.attachments.isEmpty)
+    }
+}
