@@ -33,7 +33,7 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 12 | FTS transcript search | carried | `chat_messages_fts`; `GET /v1/search`; `search_transcripts` tool offered to the model when the turn has a database (query, limit; replies with total and hits: conversation, title, snippet, ts, role) |
 | 09 | Sensor storage + retention | carried | `sensors.db` with location/health projections; `device_events` table, the closed kind set and `parse_batch`/`record_batch` now exist (validate-then-write, one transaction, 3 tests). `POST /v1/device/sensors` is live: 3-row batch accepted with oldest/newest echoed, unknown kind refused 400 by row index, rows read back from `sensors.db` |
 | 09 | Batch `/v1/device/sensors`, `/v1/device/events` | absent | per-sample routes only |
-| 10 | Sensitivity closed set + inference | absent | - |
+| 10 | Sensitivity closed set + inference | carried | three levels (always/ask/off), defaults health/location always, calendar/contacts ask, photos off, unknown ask; `sensitivity_map` cache (migration 0038); values stripped before the write; `POST /v1/device/sensitivity` takes one flip or an array. Live: updated 1 / updated 2 / `sometimes` refused 400 naming entry 0, rows read back from the table. 6 tests |
 | 11 | `device_location`, `device_health`, `device_activity`, `query_device_db` | absent | tool registry holds `fetch_url`, `list_dir`, `read_file`, `run_command`, `tool_index`, `write_file` |
 | 14 | Delivery journal, device fan-out | partial | APNs registrations + `push.db`; email path not wired to a schedule |
 | 15 | `schedule_run` / `schedule_list` / `schedule_cancel` | partial | `schedules`, `schedule_runs` tables and routes; no tool wrapper |
