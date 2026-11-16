@@ -148,3 +148,77 @@ struct B18TranscriptOrderTests {
         }
     }
 }
+// Appended 2026-11-16 with the transcript fixes.
+//
+// The view used to re-sort the merged transcript by timestamp, mixing the phone's
+// clock (optimistic rows) with the daemon's (fetched rows). A prompt stored a few
+// hundred milliseconds before the phone's own timestamp sorted below the reply it
+// produced, which reads as a transcript out of order. These tests pin the invariant
+// that replaced it: the merged order is the order, and the live placeholder stays
+// at the bottom.
+
+@MainActor
+@Suite("Transcript rows keep the merged order")
+struct TranscriptRowOrderTests {
+
+    private func makeMsg(
+        _ id: UUID,
+        _ sender: MessageSender,
+        _ content: String,
+        at timestamp: Date,
+        jobID: UUID? = nil,
+        isStreaming: Bool = false
+    ) -> Message {
+        var message = Message(id: id, clientMessageID: nil, sender: sender, content: content)
+        message.timestamp = timestamp
+        message.jobID = jobID
+        message.isStreaming = isStreaming
+        return message
+    }
+
+    /// A prompt that carries a later local timestamp than the reply it produced
+    /// must still render above that reply, because the array says so.
+    @Test("A clock that disagrees with the array does not reorder the transcript")
+    func clocksDoNotReorder() {
+        let prompt = UUID(), reply = UUID()
+        let now = Date()
+        let messages = [
+            makeMsg(prompt, .user, "question", at: now.addingTimeInterval(5)),
+            makeMsg(reply, .herald, "answer", at: now, jobID: UUID()),
+        ]
+
+        let rows = ChatScreen.transcriptRows(messages)
+        #expect(rows.map(\.id) == [prompt, reply])
+    }
+
+    /// The live placeholder keeps its place at the bottom even when its creation
+    /// timestamp is the oldest part of the turn.
+    @Test("The streaming row is pinned last")
+    func streamingRowIsPinnedLast() {
+        let earlier = UUID(), live = UUID(), later = UUID()
+        let now = Date()
+        let messages = [
+            makeMsg(earlier, .user, "question", at: now),
+            makeMsg(live, .herald, "", at: now.addingTimeInterval(-30), jobID: UUID(), isStreaming: true),
+            makeMsg(later, .user, "another", at: now.addingTimeInterval(10)),
+        ]
+
+        let rows = ChatScreen.transcriptRows(messages)
+        #expect(rows.last?.id == live)
+        #expect(rows.count == 3)
+    }
+
+    /// Nothing is dropped or duplicated on the way through.
+    @Test("Every row survives exactly once")
+    func rowsAreComplete() {
+        let ids = (0..<6).map { _ in UUID() }
+        let now = Date()
+        let messages = ids.enumerated().map { index, id in
+            makeMsg(id, index.isMultiple(of: 2) ? .user : .herald,
+                    "row \(index)", at: now.addingTimeInterval(Double(index)))
+        }
+
+        let rows = ChatScreen.transcriptRows(messages)
+        #expect(rows.map(\.id) == ids)
+    }
+}
