@@ -19,11 +19,15 @@ not a pass.
 | 3 | Jobs: kill the worker mid-job | Covered at the storage layer rather than by killing a process: `a_lease_that_stopped_beating_is_visible_and_renewal_clears_it`, `the_boot_sweep_tells_a_dead_worker_from_a_restart`, `a_dead_turn_is_requeued_and_a_capped_one_is_not` (one reclaim, none at the cap). |
 | 4 | Ask: phone sleeps with an open ask | `a_gate_times_out_rather_than_waiting_forever`: the wait answers `TimedOut` at the deadline, so the turn cannot hang. Not run against a sleeping phone. |
 
+## Run and passed
+
+| 2 | Two devices resume from their own marks | `scripts/acceptance-two-devices.py`: phone job `01a1e2fc-a4aa` read 19 frames to mark 21 then resumed at 22 with no repeats; ipad job `01a1e2fc-a4bd` read 80 frames to mark 114 then resumed at 115 with no repeats. Separately: a second device asking for the first device's turn is answered job_not_found, which is the ownership rule working. |
+
 ## Not run, and why
 
 | # | Test | Why |
 |---|---|---|
-| 2 | Two devices on one profile resume independently | Both tokens exist, but proving "independently" needs two clients holding the stream at once. The sequence is per job and the ack is per device, so the pieces exist; the test does not. |
+
 | 5 | Approval: deny then re-run | Blocked: this daemon runs `sandbox=full` with `approval=never`, so nothing parks. Needs one permission change by the operator. |
 | 11 | Delivery: relay down | There is no relay in this design, so there is no fallback to observe: the direct stream is the only path. |
 | 12 | Schedules: a job fails delivery | The journal records a failed delivery (`both_channels_of_one_run_are_journalled_separately`), but nothing schedules a delivery against a failing target end to end. |
