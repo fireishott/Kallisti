@@ -68,6 +68,29 @@ acks keeps its frames until the turn is evicted, which is correct and expensive.
 - The job holds the turn open: the turn ends only on `done`, `failed`,
   `cancelled` or `expired`.
 
+### 4.1 Reclaim, and why it is not wired yet
+
+A reclaim is a second worker taking a turn whose first worker stopped renewing
+its lease. It is the one line of WP-04 this tree does not carry, and the reason
+is a design fact rather than an omission.
+
+Turns here are request-driven: a turn runs on the worker that created it, and
+when that worker dies there is nothing that picks work back up. Reclaiming the
+row without that picker would move a job from `running` to `queued` and leave it
+there, which is a worse lie than the lease expiry it replaces.
+
+The manager loop that closes this has to do three things in one place:
+
+1. claim from `queued` (one statement, the existing `claim`),
+2. renew while it runs (the existing `renew`),
+3. reclaim a lease-expired job only when `attempts` is under the cap, journaled
+   as a reclaim with the attempt count it carries.
+
+The executor it needs already has everything required to re-run a stored turn:
+`jobs.request_text`, `conversation_id`, `device_id` and `chain_depth` are on the
+row. The loop is not written, so the ledger says `partial` and this section says
+so out loud rather than leaving the reader to discover it.
+
 ## 5. Auth
 
 - One token per device, minted at pair, stored in the phone keychain and hashed in
