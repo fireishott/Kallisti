@@ -91,6 +91,7 @@ pub mod steward;
 pub mod steward_prompt;
 pub mod steward_tools;
 pub mod subagents;
+pub mod diagnostics;
 pub mod diff;
 pub mod tools;
 pub mod trigger;
