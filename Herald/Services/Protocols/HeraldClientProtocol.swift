@@ -8,6 +8,14 @@ struct SessionListResponse: Codable, Sendable {
 
 @MainActor
 protocol HeraldClientProtocol {
+    /// The page of transcript before `before`, for a transcript at the top.
+    ///
+    /// A requirement, not just an extension: ChatStore holds this as
+    /// `any HeraldClientProtocol`, so an extension-only method would be dispatched
+    /// statically to the default that answers nothing. That is exactly what
+    /// happened - paging compiled, shipped, and was never called.
+    func loadOlder(conversationID: UUID, before: UUID) async -> (messages: [Message], hasMore: Bool)
+
     var connectionStatus: ConnectionStatus { get set }
     var currentConversation: Conversation? { get }
     func connect() async

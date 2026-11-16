@@ -366,16 +366,16 @@ struct OlderPageTests {
         let conversation = Conversation(id: UUID(), title: "Test", messages: messages)
         mock.currentConversation = conversation
         let store = ChatStore(heraldClient: mock, persistence: MockPersistence())
-        // Let the store finish what it starts at construction before the test sets
-        // the transcript, so this measures paging rather than a race with init.
-        await Task.yield()
-        try? await Task.sleep(for: .milliseconds(50))
+        // Finish the store's own load first. Its load replaces the transcript, so a
+        // page requested before that finished was requested against nothing - which
+        // is exactly what the xcresult showed: pagesAsked == 0.
+        await store.loadConversationIfNeeded()
         store.conversation = conversation
         return store
     }
 
     /// The older page goes above what is already there, and nothing is lost.
-    @Test("An older page is prepended", .disabled("store paging path does not behave as expected; the failure text is only in the xcresult, next step is to instrument loadOlderMessagesIfNeeded"))
+    @Test("An older page is prepended")
     func olderPageIsPrepended() async {
         let mock = MockHeraldClient()
         let held = [makeMsg("current one"), makeMsg("current two", sender: .herald)]
@@ -394,7 +394,7 @@ struct OlderPageTests {
 
     /// Once the daemon answers no more, the store stops asking - a transcript at
     /// the true beginning must not hammer the route.
-    @Test("No more pages stops the asking", .disabled("same path as the prepend test"))
+    @Test("No more pages stops the asking")
     func exhaustedStopsAsking() async {
         let mock = MockHeraldClient()
         let held = [makeMsg("only one")]
@@ -417,6 +417,7 @@ struct OlderPageTests {
 
         await chat.loadOlderMessagesIfNeeded()
 
+        #expect(mock.pagesAsked == 1)
         #expect(chat.conversation?.messages.count == 1)
         #expect(chat.canLoadOlder == false)
     }
