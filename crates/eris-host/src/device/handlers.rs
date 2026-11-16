@@ -5490,7 +5490,15 @@ pub async fn install_skill(
         .setting(&dir_key)
         .ok()
         .flatten();
-    match crate::skills::install(stored.as_deref(), &key, skill_body, replace) {
+    // A `url` installs from a hub, and the guard that stops the daemon fetching
+    // its own network runs inside `install_from_url`.
+    let url = field(&fields, "url").trim().to_owned();
+    let installed = if url.is_empty() {
+        crate::skills::install(stored.as_deref(), &key, skill_body, replace)
+    } else {
+        crate::skills::install_from_url(stored.as_deref(), &key, &url, replace)
+    };
+    match installed {
         Ok(path) => axum::Json(serde_json::json!({
             "ok": true,
             "key": key,

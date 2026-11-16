@@ -519,7 +519,70 @@ pub fn catalog_for(db: &Db, on: bool, stored_dir: Option<&str>) -> Option<String
 /// The most a skill body may be. A skill is instructions, not an archive.
 pub const MAX_INSTALL_BYTES: usize = 64 * 1024;
 
-/// Write one skill into the library, from a body pasted or posted by a phone.
+/// The most a hub install may pull over the wire.
+pub const MAX_HUB_BYTES: u64 = 64 * 1024;
+
+/// Fetch one skill from an https URL and install it.
+///
+/// The same guard the `fetch_url` tool uses runs first: loopback, link-local and
+/// private ranges are refused by name, because a daemon that will fetch any
+/// address on request is a way into its own network. The body is capped twice -
+/// by the declared length and by what actually arrived - and then goes through
+/// the same key and size rules as a pasted one.
+///
+/// # Errors
+///
+/// The sentence a caller shows.
+pub fn install_from_url(
+    stored_dir: Option<&str>,
+    key: &str,
+    url: &str,
+    replace: bool,
+) -> Result<std::path::PathBuf, String> {
+    crate::tools::fetch_allowed(url)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start a fetch: {error}"))?;
+    let body: String = runtime
+        .block_on(async {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(crate::tools::FETCH_TIMEOUT_SECS))
+                .redirect(reqwest::redirect::Policy::limited(crate::tools::MAX_FETCH_REDIRECTS))
+                .build()
+                .map_err(|error| format!("cannot build a client: {error}"))?;
+            let response = client
+                .get(url)
+                .header(reqwest::header::USER_AGENT, "kallisti-hub/1.0")
+                .send()
+                .await
+                .map_err(|error| format!("cannot fetch {url}: {error}"))?;
+            if !response.status().is_success() {
+                return Err(format!("{url} answered {}", response.status()));
+            }
+            // A declared length over the cap is refused before the body is read;
+            // an undeclared one is caught after, below.
+            if response.content_length().unwrap_or(0) > MAX_HUB_BYTES {
+                return Err(format!(
+                    "{url} declares {} bytes; the hub limit is {MAX_HUB_BYTES}",
+                    response.content_length().unwrap_or(0)
+                ));
+            }
+            response
+                .text()
+                .await
+                .map_err(|error| format!("cannot read {url}: {error}"))
+        })?;
+    if body.len() as u64 > MAX_HUB_BYTES {
+        return Err(format!(
+            "that skill is {} bytes; the hub limit is {MAX_HUB_BYTES}",
+            body.len()
+        ));
+    }
+    install(stored_dir, key, &body, replace)
+}
+
+/// Write one skill into the library, from a body pasted or posted by a phone./// Write one skill into the library, from a body pasted or posted by a phone.
 ///
 /// The key is checked with the same rule the catalogue uses, so a body cannot be
 /// stored under a name the reader would never look up. An existing skill is only
@@ -1535,6 +1598,23 @@ mod install_tests {
         let path = install(root, "harvest-test", "# second", true).expect("replace");
         let written = std::fs::read_to_string(path).expect("read");
         assert_eq!(written, "# second");
+    }
+
+    /// The hub path runs the same address guard as the fetch tool: loopback and
+    /// private ranges are refused before a request is made.
+    #[test]
+    fn a_hub_url_on_the_local_network_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = Some(dir.path().to_str().unwrap_or(""));
+        for url in [
+            "http://127.0.0.1:8080/skill.md",
+            "http://192.168.68.51/skill.md",
+            "http://localhost/skill.md",
+        ] {
+            let refused = super::install_from_url(root, "probe", url, false)
+                .expect_err("refused before any request");
+            assert!(!refused.is_empty(), "{url}");
+        }
     }
 
     /// A body over the limit is refused with both numbers.
