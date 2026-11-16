@@ -362,22 +362,26 @@ struct OlderPageTests {
         Message(id: UUID(), clientMessageID: nil, sender: sender, content: content)
     }
 
-    private func store(_ mock: MockHeraldClient, messages: [Message]) -> ChatStore {
+    private func store(_ mock: MockHeraldClient, messages: [Message]) async -> ChatStore {
         let conversation = Conversation(id: UUID(), title: "Test", messages: messages)
         mock.currentConversation = conversation
         let store = ChatStore(heraldClient: mock, persistence: MockPersistence())
+        // Let the store finish what it starts at construction before the test sets
+        // the transcript, so this measures paging rather than a race with init.
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(50))
         store.conversation = conversation
         return store
     }
 
     /// The older page goes above what is already there, and nothing is lost.
-    @Test("An older page is prepended", .disabled("the store replaces conversation asynchronously; see docs/client-gaps.md"))
+    @Test("An older page is prepended", .disabled("store paging path does not behave as expected; the failure text is only in the xcresult, next step is to instrument loadOlderMessagesIfNeeded"))
     func olderPageIsPrepended() async {
         let mock = MockHeraldClient()
         let held = [makeMsg("current one"), makeMsg("current two", sender: .herald)]
         let older = [makeMsg("ancient one"), makeMsg("ancient two", sender: .herald)]
         mock.pages = [(older, true)]
-        let chat = store(mock, messages: held)
+        let chat = await store(mock, messages: held)
 
         await chat.loadOlderMessagesIfNeeded()
 
@@ -390,12 +394,12 @@ struct OlderPageTests {
 
     /// Once the daemon answers no more, the store stops asking - a transcript at
     /// the true beginning must not hammer the route.
-    @Test("No more pages stops the asking", .disabled("same cause as the prepend test"))
+    @Test("No more pages stops the asking", .disabled("same path as the prepend test"))
     func exhaustedStopsAsking() async {
         let mock = MockHeraldClient()
         let held = [makeMsg("only one")]
         mock.pages = [([makeMsg("older")], false)]
-        let chat = store(mock, messages: held)
+        let chat = await store(mock, messages: held)
 
         await chat.loadOlderMessagesIfNeeded()
         await chat.loadOlderMessagesIfNeeded()
@@ -409,7 +413,7 @@ struct OlderPageTests {
     func emptyPageIsHarmless() async {
         let mock = MockHeraldClient()
         let held = [makeMsg("kept")]
-        let chat = store(mock, messages: held)
+        let chat = await store(mock, messages: held)
 
         await chat.loadOlderMessagesIfNeeded()
 
