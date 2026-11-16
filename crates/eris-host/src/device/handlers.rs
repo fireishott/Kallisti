@@ -1102,6 +1102,10 @@ pub async fn create_conversation(
     if let Err(error) = require_scope(&token, Scope::Sessions) {
         return error.into_response();
     }
+    // Housekeeping on a write, not on a timer: conversations with no messages are
+    // the debris of clients that created a chat and never sent into it, and the
+    // next creation is when the list is about to grow anyway.
+    let _ = chat::prune_empty_conversations(service.engine().db(), 60);
     let id = match chat::create_conversation(service.engine().db()) {
         Ok(id) => id,
         Err(error) => {

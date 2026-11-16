@@ -1446,6 +1446,31 @@ pub fn load_bounded(
     Ok((messages, truncated))
 }
 
+/// Drop conversations that never received a message.
+///
+/// Every client that creates a chat before sending - and every app launch that
+/// could not restore the previous one - leaves an empty conversation behind. They
+/// accumulate silently: this daemon had 336 conversations, ten of them empty, and
+/// the drawer lists them all as "New chat". Only rows with no messages and older
+/// than the window are removed, so a chat created a second ago is never touched.
+///
+/// # Errors
+///
+/// The database's own error.
+pub fn prune_empty_conversations(db: &Db, older_than_minutes: i64) -> Result<usize, DbError> {
+    db.with_conn(|conn| {
+        let removed = conn.execute(
+            "DELETE FROM chat_conversations
+              WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)
+                AND NOT EXISTS (
+                    SELECT 1 FROM chat_messages m WHERE m.conversation_id = chat_conversations.id
+                )",
+            params![format!("-{older_than_minutes} minutes")],
+        )?;
+        Ok(removed)
+    })
+}
+
 /// The newest page of a transcript, or the page before a given message.
 ///
 /// `load_bounded` answers with the *first* `limit` rows, which for a long
@@ -8378,5 +8403,50 @@ mod transcript_bound_tests {
         .await
         .expect("the blocking task runs");
         assert_eq!(answer, 42, "and drive it to completion");
+    }
+}
+
+#[cfg(test)]
+mod empty_conversation_tests {
+    use super::prune_empty_conversations;
+    use crate::db::Db;
+
+    /// An empty conversation older than the window goes, one inside it stays, and
+    /// a conversation with a message is never touched.
+    #[test]
+    fn only_stale_empty_conversations_are_pruned() {
+        let db = Db::open_in_memory().expect("db");
+        let old = prune_empty_conversations(&db, 60).expect("prune");
+        assert_eq!(old, 0, "an empty database has nothing to prune");
+
+        let stale = super::create_conversation(&db).expect("create");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE chat_conversations SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = ?1",
+                rusqlite::params![stale],
+            )
+        })
+        .expect("age it");
+
+        let fresh = super::create_conversation(&db).expect("create");
+        let used = super::create_conversation(&db).expect("create");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_messages (id, conversation_id, role, body, created_at)
+                 VALUES ('m1', ?1, 'user', 'hello', '2020-01-01T00:00:00.000Z')",
+                rusqlite::params![used],
+            )
+        })
+        .expect("a message");
+
+        let removed = prune_empty_conversations(&db, 60).expect("prune");
+        assert_eq!(removed, 1, "only the stale empty conversation goes");
+
+        for kept in [fresh, used] {
+            assert!(
+                super::conversation(&db, &kept).expect("read").is_some(),
+                "a conversation {kept} should have survived"
+            );
+        }
     }
 }
