@@ -132,10 +132,10 @@ pub fn dispatch(
         ));
     }
     match method {
+        // The envelope already states ok and the context; repeating them inside
+        // the result makes one answer with two voices.
         Method::Ping => Ok(json!({
-            "ok": true,
             "version": env!("CARGO_PKG_VERSION"),
-            "context": context.kind(),
         })),
         Method::ModelsList => {
             crate::device::control::read_models_for_rpc(engine).map_err(|error| {
