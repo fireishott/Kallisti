@@ -438,6 +438,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
         guard let conversationID else {
             return Conversation(id: id, title: "New Chat")
         }
+        // Bind it. A chat opened from the session list - one started on another
+        // device - resolved to a conversation here; leaving the map empty meant the
+        // next send created a fresh conversation and the reply diverged into a new
+        // chat instead of continuing this one.
+        conversationIDByLocalID[id] = conversationID
+        localIDByConversationID[conversationID] = id
         let detail = try await client.conversation(id: conversationID)
         let conversation = Conversation(
             id: id,
