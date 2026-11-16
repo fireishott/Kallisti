@@ -297,12 +297,22 @@ struct ErisConversationDetail: Equatable, Sendable, Decodable {
     let messages: [ErisConversationMessage]
     /// Whether the daemon bounded the page, so older rows are not in this body.
     let truncated: Bool
+    /// Whether an older page exists. Optional so a daemon that does not send the
+    /// key still decodes; absent means unknown, and the caller should not page.
+    let hasMore: Bool?
 
-    init(id: String, title: String, messages: [ErisConversationMessage], truncated: Bool) {
+    init(
+        id: String,
+        title: String,
+        messages: [ErisConversationMessage],
+        truncated: Bool,
+        hasMore: Bool? = nil
+    ) {
         self.id = id
         self.title = title
         self.messages = messages
         self.truncated = truncated
+        self.hasMore = hasMore
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -310,6 +320,7 @@ struct ErisConversationDetail: Equatable, Sendable, Decodable {
         case title
         case messages
         case truncated
+        case hasMore = "has_more"
     }
 
     init(from decoder: any Decoder) throws {

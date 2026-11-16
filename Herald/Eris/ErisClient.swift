@@ -345,8 +345,19 @@ actor ErisClient {
     ///
     /// An id the daemon does not hold is a typed 404 (`conversation_not_found`),
     /// not an empty transcript, so "gone" and "nothing said yet" stay distinct.
-    func conversation(id: String) async throws -> ErisConversationDetail {
-        let data = try await send(route: .conversation(conversationID: id), form: nil)
+    /// One page of a conversation.
+    ///
+    /// `before` names the oldest message the caller already holds; the daemon
+    /// answers the page just before it, which is how the transcript loads older
+    /// rows when the operator scrolls to the top. Without it the newest page comes
+    /// back, which is what opening a chat wants.
+    func conversation(id: String, before: String? = nil) async throws -> ErisConversationDetail {
+        let headers = before.map { ["x-before": $0] }
+        let data = try await send(
+            route: .conversation(conversationID: id),
+            form: nil,
+            headers: headers
+        )
         return try decode(ErisConversationDetail.self, from: data)
     }
 
@@ -601,10 +612,19 @@ actor ErisClient {
     // MARK: Requests
 
     /// A request that carries the bearer, retried once after a refresh on a 401.
-    private func send(route: ErisRoute, form: [String: String]?) async throws -> Data {
+    private func send(
+        route: ErisRoute,
+        form: [String: String]?,
+        headers: [String: String]? = nil
+    ) async throws -> Data {
         var refreshed = false
         while true {
-            let request = try await authorizedRequest(route: route, form: form, accept: "application/json")
+            let request = try await authorizedRequest(
+                route: route,
+                form: form,
+                accept: "application/json",
+                headers: headers
+            )
             let (data, response) = try await perform(request)
             let status = Self.status(of: response)
             if status == 401 && !refreshed {
@@ -634,7 +654,8 @@ actor ErisClient {
     private func authorizedRequest(
         route: ErisRoute,
         form: [String: String]?,
-        accept: String
+        accept: String,
+        headers: [String: String]? = nil
     ) async throws -> URLRequest {
         guard let stored = try await tokenStore.load(), !stored.accessToken.isEmpty else {
             throw ErisError.missingToken
@@ -642,6 +663,9 @@ actor ErisClient {
         var request = try makeRequest(route: route, form: form)
         request.setValue("Bearer \(stored.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(accept, forHTTPHeaderField: "Accept")
+        for (name, value) in headers ?? [:] {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         return request
     }
 
