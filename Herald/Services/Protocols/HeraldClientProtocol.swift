@@ -14,7 +14,7 @@ protocol HeraldClientProtocol {
     /// `any HeraldClientProtocol`, so an extension-only method would be dispatched
     /// statically to the default that answers nothing. That is exactly what
     /// happened - paging compiled, shipped, and was never called.
-    func loadOlder(conversationID: UUID, before: UUID) async -> (messages: [Message], hasMore: Bool)
+    func loadOlder(conversationID: UUID, before: String) async -> (messages: [Message], hasMore: Bool)
 
     var connectionStatus: ConnectionStatus { get set }
     var currentConversation: Conversation? { get }
@@ -246,7 +246,7 @@ extension HeraldClientProtocol {
     /// A default that answers nothing: the daemon transport implements real
     /// paging, and a client without the concept (the legacy gateway) must still
     /// compile rather than be forced to pretend.
-    func loadOlder(conversationID: UUID, before: UUID) async -> (messages: [Message], hasMore: Bool) {
+    func loadOlder(conversationID: UUID, before: String) async -> (messages: [Message], hasMore: Bool) {
         ([], false)
     }
 }

@@ -79,6 +79,10 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     var jobID: UUID?
     var status: MessageStatus
     var toolActivity: String?
+    /// The daemon's id for this row, when it came from one. `id` is a UUID derived
+    /// from it and cannot be reversed, so anything the daemon has to look up -
+    /// paging, for one - sends this.
+    var erisID: String?
     var toolActivities: [ToolActivity]
     var codeDiff: CodeDiff?
     /// A page a turn wrote (turn.artifact.page), rendered in a capped web view.
@@ -129,7 +133,8 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         attachments: [MessageAttachment] = [],
         reasoning: String = "",
         reasoningDuration: TimeInterval? = nil,
-        errorCategory: String? = nil
+        errorCategory: String? = nil,
+        erisID: String? = nil
     ) {
         self.id = id
         self.clientMessageID = clientMessageID
@@ -147,6 +152,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         self.reasoning = reasoning
         self.reasoningDuration = reasoningDuration
         self.errorCategory = errorCategory
+        self.erisID = erisID
     }
 
     enum CodingKeys: String, CodingKey {

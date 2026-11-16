@@ -12,7 +12,7 @@ final class MockHeraldClient: HeraldClientProtocol {
     var pages: [([Message], Bool)] = []
     private(set) var pagesAsked = 0
 
-    func loadOlder(conversationID: UUID, before: UUID) async -> (messages: [Message], hasMore: Bool) {
+    func loadOlder(conversationID: UUID, before: String) async -> (messages: [Message], hasMore: Bool) {
         pagesAsked += 1
         guard !pages.isEmpty else { return ([], false) }
         return pages.removeFirst()

@@ -359,7 +359,15 @@ struct PromptDedupeTests {
 struct OlderPageTests {
 
     private func makeMsg(_ content: String, sender: MessageSender = .user) -> Message {
-        Message(id: UUID(), clientMessageID: nil, sender: sender, content: content)
+        // A row the daemon could page from: paging anchors on its own message id,
+        // and a row built only from a derived UUID has nowhere to anchor.
+        Message(
+            id: UUID(),
+            clientMessageID: nil,
+            sender: sender,
+            content: content,
+            erisID: "daemon-" + UUID().uuidString
+        )
     }
 
     private func store(_ mock: MockHeraldClient, messages: [Message]) async -> ChatStore {

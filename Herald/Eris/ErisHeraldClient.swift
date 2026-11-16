@@ -329,10 +329,10 @@ final class ErisHeraldClient: HeraldClientProtocol {
     /// unknown conversation or a daemon without the cursor answers nothing rather
     /// than throwing into the view: a transcript that cannot page is a transcript
     /// that shows what it has.
-    func loadOlder(conversationID: UUID, before: UUID) async -> (messages: [Message], hasMore: Bool) {
+    func loadOlder(conversationID: UUID, before: String) async -> (messages: [Message], hasMore: Bool) {
         guard let client = await pairedClient(),
               let erisID = conversationIDByLocalID[conversationID],
-              let detail = try? await client.conversation(id: erisID, before: before.uuidString)
+              let detail = try? await client.conversation(id: erisID, before: before)
         else {
             return ([], false)
         }
@@ -606,7 +606,8 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 )
             },
             reasoning: m.displayReasoning ?? ""
-        )
+        
+            , erisID: m.id)
     }
 
     static func summary(from s: ErisConversationSummary) -> SessionSummary {

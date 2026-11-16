@@ -3049,13 +3049,17 @@ final class ChatStore {
     func loadOlderMessagesIfNeeded() async {
         guard canLoadOlder, !loadingOlderPage else { return }
         guard let current = conversation else { return }
-        guard let oldest = current.messages.first(where: { $0.jobID != nil || $0.sender != .system }) else {
+        guard let oldest = current.messages.first(where: { $0.jobID != nil || $0.sender != .system }),
+              let cursor = oldest.erisID
+        else {
+            // No daemon id to page from: a locally-built row cannot anchor a page,
+            // and asking with a derived UUID is what made paging answer nothing.
             canLoadOlder = false
             return
         }
         loadingOlderPage = true
         defer { loadingOlderPage = false }
-        let page = await heraldClient.loadOlder(conversationID: current.id, before: oldest.id)
+        let page = await heraldClient.loadOlder(conversationID: current.id, before: cursor)
         canLoadOlder = page.hasMore
         guard !page.messages.isEmpty else { return }
         var updated = current
