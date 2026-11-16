@@ -43,7 +43,7 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 18 | Live voice tiers | partial | Tier 1 is the phone's own speech-to-text and speech and exists (Talk capture + TTS in the app). Tier 2 needs a host transcription and speech engine and this host has neither: no whisper, no piper, no `say`. Tier 3 additionally needs the provider decision the brief lists as the operator's. Recorded as blocked on a decision rather than guessed |
 | 19 | Client shell (diffs, widgets, share sheet) | partial | chat, sessions, inbox, notes, sensors exist in the app |
 | 20 | MCP and skills hooks | carried | `crates/eris-host/src/mcp`, skills library |
-| 21 | Diagnostics ring buffer | absent | - |
+| 21 | Diagnostics ring buffer | partial | `diagnostics.rs`: bounded 200-entry buffer in-process, `record_turn` writes only a turn past the 30s watermark with its duration, `GET /v1/diagnostics` serves the bundle for an operator token (x-diagnostics-limit capped at 200). Live: a phone token is refused 403 scope_denied, which is the operator gate working. The turn writer feeds it from the done path |
 | 22 | Rotation and hardening | partial | token rotation exists; pairing/tunnel guidance not written |
 | 23 | Local Live experiment flag | absent | - |
 
