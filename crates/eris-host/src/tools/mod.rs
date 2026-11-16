@@ -873,13 +873,59 @@ fn write_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
         return ToolResult::error(format!("{}: {error}", parent.display()));
     }
 
+    // What the file looked like before, so the turn can report a change rather
+    // than a write. Absent means "this file is new", which is a different fact
+    // from "it changed by zero lines".
+    let before = std::fs::read_to_string(&path).ok();
     match std::fs::write(&path, content) {
         Ok(()) => ToolResult::ok(serde_json::json!({
             "path": requested,
             "bytes": content.len(),
+            "added": before.as_deref().map(|old| count_added(old, content)).unwrap_or_else(|| content.lines().count()),
+            "removed": before.as_deref().map(|old| count_removed(old, content)).unwrap_or(0),
+            "created": before.is_none(),
         })),
         Err(error) => ToolResult::error(format!("{requested}: {error}")),
     }
+}
+
+/// How many lines the new text has that the old text did not, and how many the
+/// old text had that the new one dropped.
+///
+/// Set arithmetic over the line multiset rather than a full hunt: the count is
+/// what a step summary states, and a hunk-level diff is a separate, larger job.
+/// A line moved inside the file counts as one added and one removed, which is
+/// what any line-oriented diff says too.
+fn count_added(old: &str, new: &str) -> usize {
+    let mut old_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for line in old.lines() {
+        *old_counts.entry(line).or_default() += 1;
+    }
+    let mut added = 0;
+    for line in new.lines() {
+        match old_counts.get_mut(line) {
+            Some(count) if *count > 0 => *count -= 1,
+            _ => added += 1,
+        }
+    }
+    added
+}
+
+/// The other half of [`count_added`], computed from the same pairing so the two
+/// numbers cannot disagree about a line that stayed.
+fn count_removed(old: &str, new: &str) -> usize {
+    let mut new_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for line in new.lines() {
+        *new_counts.entry(line).or_default() += 1;
+    }
+    let mut removed = 0;
+    for line in old.lines() {
+        match new_counts.get_mut(line) {
+            Some(count) if *count > 0 => *count -= 1,
+            _ => removed += 1,
+        }
+    }
+    removed
 }
 
 /// The most of a page that is fetched or handed back.
@@ -1909,5 +1955,29 @@ mod index_tests {
         let indexed = execute("tool_index", &serde_json::json!({}), &sandbox);
         assert!(!indexed.is_error, "{}", indexed.content);
         assert!(indexed.content.contains("read_file"), "{}", indexed.content);
+    }
+}
+
+#[cfg(test)]
+mod change_count_tests {
+    use super::{count_added, count_removed};
+
+    /// The pair has to agree about what stayed, or a summary reads as "3 added,
+    /// 3 removed" for a file that changed one line.
+    #[test]
+    fn a_change_is_counted_once_from_each_side() {
+        let old = "a\nb\nc\n";
+        let new = "a\nB\nc\n";
+        assert_eq!(count_added(old, new), 1);
+        assert_eq!(count_removed(old, new), 1);
+
+        // An append is additions only.
+        assert_eq!(count_added("a\n", "a\nb\n"), 1);
+        assert_eq!(count_removed("a\n", "a\nb\n"), 0);
+
+        // An unchanged file is neither, and a repeated line is not double-counted.
+        assert_eq!(count_added("x\nx\n", "x\nx\n"), 0);
+        assert_eq!(count_removed("x\nx\n", "x\nx\n"), 0);
+        assert_eq!(count_added("x\n", "x\nx\n"), 1);
     }
 }
