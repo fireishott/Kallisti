@@ -10,6 +10,7 @@ not a pass.
 |---|---|---|
 | 1 | Resume: drop the socket mid-turn, resume from the last ack | `scripts/acceptance-resume.py`: first connection read 48 frames (ids to 50, deltas only), socket dropped, reconnect with `Last-Event-ID: 50` returned 94 frames (ids 51 to 144), **zero overlap**, terminal `done` received. Job `01a1e2f6-afb8`. |
 | 8 | Sensors: batch with one bad row | `POST /v1/device/sensors` with a valid row then `telepathy` answered 400 `sensor_batch_invalid`, naming row 0, and `device_events` gained nothing. |
+| 13 | Diff: binary file in a turn | **Fixed and observed.** `write_file` marks twelve binary extensions, sends a null diff, and the writer skips the frame entirely. Live: a turn wrote `shot.png` and `job_events` for job `01a1e2fa` holds three `turn.step` frames and **no** `turn.artifact.diff`. Test `a_binary_extension_is_recognised`. |
 | 9 | Clock skew: future timestamp beyond the window | One batch with a 2099 health sample and a 2019 motion sample: the health row stored with its timestamp clamped to now, the motion row accepted and pruned by retention in the same transaction. |
 | 10 | Email: recipient lock | `comms::confirm` refuses a recipient that differs from the staged one, by name, and a confirmation cannot be replayed. Test `a_confirmation_cannot_swap_the_recipient`. |
 | 6 | Auth: token minted by another host | Migration 0037 binds a token to `/etc/machine-id`; a row bound elsewhere is refused `token_from_another_daemon`. Test `a_token_minted_by_another_daemon_is_refused`. |
@@ -26,7 +27,7 @@ not a pass.
 | 5 | Approval: deny then re-run | Blocked: this daemon runs `sandbox=full` with `approval=never`, so nothing parks. Needs one permission change by the operator. |
 | 11 | Delivery: relay down | There is no relay in this design, so there is no fallback to observe: the direct stream is the only path. |
 | 12 | Schedules: a job fails delivery | The journal records a failed delivery (`both_channels_of_one_run_are_journalled_separately`), but nothing schedules a delivery against a failing target end to end. |
-| 13 | Diff: binary file in a turn | Not run. `write_file` reads the old content as UTF-8 and the diff is line-based, so a binary file is the case most likely to be wrong. |
+
 | 14 | Artifacts: page taller than the cap | App-side: the cap is honoured in `ErisPageCard`, but "opens full screen" is not implemented. |
 | 16 | Voice: lock the screen mid-call | Tier 1 only, by the operator's decision; no host call to lock. |
 
