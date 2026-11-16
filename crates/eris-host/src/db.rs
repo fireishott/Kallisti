@@ -1746,3 +1746,23 @@ mod tests {
         assert_eq!(TABLES.len(), 32, "the list and the schema agree on arity");
     }
 }
+
+#[cfg(test)]
+mod schema_gate_tests {
+    use super::{MIGRATIONS, SCHEMA_VERSION};
+
+    /// The gate and the migration list are two halves of one promise, and moving
+    /// only one of them is exactly how build 188's first deploy crash-looped on
+    /// its own database: 0036 applied, the gate still said 35, and every boot
+    /// refused the file it had just written.
+    ///
+    /// This is a compile-time fact written as a test so a reviewer sees it.
+    #[test]
+    fn schema_version_matches_the_last_migration() {
+        let last = MIGRATIONS.last().expect("a migration list").version;
+        assert_eq!(
+            SCHEMA_VERSION, last,
+            "SCHEMA_VERSION must equal the last migration's version"
+        );
+    }
+}
