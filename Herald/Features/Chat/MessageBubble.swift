@@ -389,6 +389,9 @@ struct MessageBubble: View, Equatable {
                     toolActivityPill(activity)
                 }
 
+                if let html = message.pageHTML, !html.isEmpty {
+                    ErisPageCard(html: html, heightCap: message.pageHeightCap)
+                }
                 if let diff = message.codeDiff, !diff.isEmpty {
                     InlineDiffView(diff: diff)
                 }

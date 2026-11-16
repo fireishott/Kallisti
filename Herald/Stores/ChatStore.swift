@@ -2156,6 +2156,14 @@ final class ChatStore {
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
                     self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
 
+                case .artifactPage(let html, let cap):
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        conv.messages[idx].pageHTML = html
+                        conv.messages[idx].pageHeightCap = cap
+                        self.conversation = conv
+                    }
+
                 case .artifactDiff(let diff):
                     // The card lands on the message as it arrives, so it is
                     // visible during the turn rather than only at the end.

@@ -81,6 +81,10 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     var toolActivity: String?
     var toolActivities: [ToolActivity]
     var codeDiff: CodeDiff?
+    /// A page a turn wrote (turn.artifact.page), rendered in a capped web view.
+    var pageHTML: String?
+    /// The height the daemon capped the page at, when it said.
+    var pageHeightCap: Int?
     var isStreaming: Bool
     var voiceSessionDuration: TimeInterval?
     var attachments: [MessageAttachment]

@@ -128,7 +128,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     // used. No second diff UI.
                     continuation.yield(.artifactDiff(diff.codeDiff))
                 case .artifactPage(let html, let cap):
-                    continuation.yield(.toolActivity("page received (\(html.utf8.count) bytes, cap \(cap.map(String.init) ?? "none"))"))
+                    continuation.yield(.artifactPage(html: html, heightCap: cap))
                 case .step(let label, _):
                     // A step is an activity line, not answer text: it lands in the
                     // Thought process row the UI already draws.

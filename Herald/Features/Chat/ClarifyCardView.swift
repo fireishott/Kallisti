@@ -1,3 +1,4 @@
+import WebKit
 import SwiftUI
 
 /// Build 128.76: interactive clarify card.
@@ -214,5 +215,54 @@ struct ErisDiffCard: View {
         case .remove: return .red
         case .context: return .secondary
         }
+    }
+}
+
+
+// MARK: - Turn artifact: a page
+
+/// A page a turn wrote, in a capped web view that scrolls inside the bubble.
+///
+/// The daemon sends the html and the height cap it renders against; the phone does
+/// not fetch anything, because a page that could reach the network would be a
+/// browser the turn controls. Height is capped and the content scrolls within it,
+/// which is what the brief asks for instead of growing the transcript without end.
+struct ErisPageCard: View {
+    let html: String
+    let heightCap: Int?
+
+    private var height: CGFloat {
+        let cap = CGFloat(heightCap ?? 2000)
+        return min(max(cap, 160), 480)
+    }
+
+    var body: some View {
+        ErisHTMLView(html: html)
+            .frame(height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(.quaternary, lineWidth: 1)
+            )
+            .padding(.top, 6)
+    }
+}
+
+
+/// The web view itself. Loads the html the turn wrote, and nothing else: links are
+/// not followed, so a page cannot become a browser.
+struct ErisHTMLView: UIViewRepresentable {
+    let html: String
+
+    func makeUIView(context: Context) -> WKWebView {
+        let view = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        view.isOpaque = false
+        view.backgroundColor = .clear
+        view.scrollView.isScrollEnabled = true
+        return view
+    }
+
+    func updateUIView(_ view: WKWebView, context: Context) {
+        view.loadHTMLString(html, baseURL: nil)
     }
 }

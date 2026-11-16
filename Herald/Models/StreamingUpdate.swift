@@ -17,6 +17,8 @@ enum StreamingUpdate: Sendable {
     /// A turn.artifact.diff frame from the Eris daemon, in the shape the chat
     /// renders. The card is the same one the relay path used.
     case artifactDiff(CodeDiff)
+    /// A turn.artifact.page frame: html a turn wrote, with the daemon height cap.
+    case artifactPage(html: String, heightCap: Int?)
     case toolStarted(ToolActivity)
     case toolCompleted(toolCallID: String, resultPreview: String?, isError: Bool, durationMs: Int?)
     case toolOutput(toolCallID: String, chunk: String)
