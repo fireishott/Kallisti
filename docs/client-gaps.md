@@ -51,3 +51,17 @@ and are what the current UI renders.
 
 Each is additive: an unknown event still decodes to `nil`, so an old app against a
 new daemon keeps working.
+
+## The client is not in the client's git
+
+`Herald/Eris/` is **untracked** in `~/kallisti-180-forward`. `git ls-files Herald/Eris`
+returns nothing, and it is not ignored - the whole directory simply sits outside
+version control while every build from 163 to 167 shipped from it.
+
+That means the app's entire Eris integration - the client, the frame decoder, the
+types, the pairing and control surfaces - exists only on one machine's disk. A
+clone of that repository would not build the app that is on TestFlight.
+
+Before any more client work: `git add Herald/Eris` and commit it, on its own,
+with a message that says what it is. Nothing in this programme can be reproduced
+from that repository until that happens.
