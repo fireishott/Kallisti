@@ -167,8 +167,20 @@ pub async fn models(State(service): State<DeviceService>, headers: HeaderMap) ->
     }
 }
 
+/// The catalogue, for the RPC shim.
+///
+/// The shim serves the same answer as the route, through the same function: two
+/// code paths for one method is the proliferation WP-13 exists to prevent.
+///
+/// # Errors
+///
+/// The settings or registry failure the route would have reported.
+pub fn read_models_for_rpc(engine: &SetupEngine) -> Result<serde_json::Value, DeviceError> {
+    read_models(engine)
+}
+
 /// The snapshot `GET /v1/models` answers with.
-fn read_models(engine: &SetupEngine) -> Result<serde_json::Value, DeviceError> {
+pub(crate) fn read_models(engine: &SetupEngine) -> Result<serde_json::Value, DeviceError> {
     let pinned = engine
         .model()
         .map_err(settings_unavailable)?

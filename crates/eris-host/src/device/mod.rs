@@ -47,6 +47,7 @@ pub mod control;
 pub mod gateway;
 pub mod handlers;
 pub mod legacy;
+pub mod rpc;
 pub mod notify;
 pub mod turns;
 pub mod wire;
@@ -467,6 +468,8 @@ pub const ROUTE_TALK_INJECT: &str = "/v1/talk/session/{id}/inject";
 
 /// `GET` and `POST /v1/models` - the probe's model list, and the pin.
 pub const ROUTE_MODELS: &str = "/v1/models";
+/// `POST /v1/rpc` - the single method envelope.
+pub const ROUTE_RPC: &str = "/v1/rpc";
 
 /// `GET` and `POST /v1/cron` - the schedule list, and a new schedule.
 pub const ROUTE_CRON: &str = "/v1/cron";
@@ -1273,6 +1276,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_TALK_SESSION_END, post(handlers::end_talk_session))
         .route(ROUTE_TALK_TURNS, post(handlers::create_talk_turn))
         .route(ROUTE_TALK_INJECT, post(handlers::inject_talk_transcript))
+        .route(ROUTE_RPC, post(handlers::rpc))
         .route(ROUTE_MODELS, get(control::models).post(control::set_model))
         .route(ROUTE_CRON, get(control::cron).post(control::create_cron))
         .route(

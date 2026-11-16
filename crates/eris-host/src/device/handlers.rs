@@ -5621,6 +5621,49 @@ pub async fn upload_sensor_batch(
     }
 }
 
+/// `POST /v1/rpc` - one method, one envelope, whoever is calling.
+///
+/// The context is read from the bearer rather than from the path: admin scope is
+/// the operator, anything else is a device. A method that needs the operator
+/// refuses a phone with 403 instead of quietly answering less.
+pub async fn rpc(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    let value: serde_json::Value = match parse_json(body).await {
+        Ok(value) => value,
+        Err(error) => return error.into_response(),
+    };
+    let (method, params) = match crate::device::rpc::parse_envelope(&value) {
+        Ok(parsed) => parsed,
+        Err(refusal) => {
+            return (status_for(refusal.status), axum::Json(crate::device::rpc::failure(&refusal)))
+                .into_response();
+        }
+    };
+    let context = crate::device::rpc::Context {
+        device_id: token.device_id().to_owned(),
+        operator: token.scope().has_admin(),
+    };
+    match crate::device::rpc::dispatch(method, &params, &context, service.engine()) {
+        Ok(result) => axum::Json(crate::device::rpc::success(method, &context, result)).into_response(),
+        Err(refusal) => {
+            (status_for(refusal.status), axum::Json(crate::device::rpc::failure(&refusal)))
+                .into_response()
+        }
+    }
+}
+
+/// The status line for a refusal's number.
+fn status_for(status: u16) -> axum::http::StatusCode {
+    axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST)
+}
+
 /// `POST /v1/device/sensitivity` - the phone's switch, as an ordinary upload.
 ///
 /// Either one `{key, level}` or a `mappings` array. The answer states how many
