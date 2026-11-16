@@ -183,7 +183,7 @@ final class ErisApprovalsStore: ObservableObject {
 
     private let store: ErisDaemonStore
 
-    init(store: ErisDaemonStore = ErisDaemonStore()) {
+    init(store: ErisDaemonStore = .shared) {
         self.store = store
     }
 
@@ -224,7 +224,7 @@ struct ErisApprovalsSheet: View {
     @StateObject private var model: ErisApprovalsStore
     @Environment(\.dismiss) private var dismiss
 
-    init(store: ErisDaemonStore = ErisDaemonStore()) {
+    init(store: ErisDaemonStore = .shared) {
         _model = StateObject(wrappedValue: ErisApprovalsStore(store: store))
     }
 

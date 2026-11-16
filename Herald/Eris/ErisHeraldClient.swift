@@ -29,7 +29,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
     }
 
     /// Owns pairing and the sensor pipeline; the transport is pulled from it.
-    private let store = ErisDaemonStore()
+    private let store = ErisDaemonStore.shared
 
     /// Local conversation UUID <-> Eris conversation id (opaque string).
     ///

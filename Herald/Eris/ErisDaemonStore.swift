@@ -10,6 +10,12 @@ import Observation
 @MainActor
 @Observable
 final class ErisDaemonStore {
+
+    /// The one store the app uses. Pairing lives in this object's memory, so a
+    /// second instance is a second phone that has never paired: that is why the
+    /// approvals sheet said "this phone is not paired with a daemon" on a phone
+    /// that was paired and chatting.
+    static let shared = ErisDaemonStore()
     enum Phase: Equatable {
         case unpaired
         case connecting
