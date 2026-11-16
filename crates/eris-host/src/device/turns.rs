@@ -101,6 +101,8 @@ pub enum FrameKind {
     Step,
     /// A step finished, with its verdict and how long it took.
     StepResult,
+    /// Files a step changed, in the shape the phone draws.
+    Diff,
     /// One assistant text fragment.
     Delta,
     /// One fragment of the model's own reasoning, when the provider streams one.
@@ -155,10 +157,11 @@ pub enum FrameKind {
 impl FrameKind {
     /// Every kind, so a client can learn the vocabulary from `/v1/version`
     /// instead of pinning a build number.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Start,
         Self::Step,
         Self::StepResult,
+        Self::Diff,
         Self::Delta,
         Self::Reasoning,
         Self::Tool,
@@ -179,6 +182,7 @@ impl FrameKind {
             Self::Start => "turn.start",
             Self::Step => "turn.step",
             Self::StepResult => "turn.step.result",
+            Self::Diff => "turn.artifact.diff",
             Self::Delta => "delta",
             Self::Reasoning => "reasoning",
             Self::Tool => "tool",
@@ -200,6 +204,7 @@ impl FrameKind {
             "turn.start" => Some(Self::Start),
             "turn.step" => Some(Self::Step),
             "turn.step.result" => Some(Self::StepResult),
+            "turn.artifact.diff" => Some(Self::Diff),
             "delta" => Some(Self::Delta),
             "reasoning" => Some(Self::Reasoning),
             "tool" => Some(Self::Tool),
@@ -224,6 +229,7 @@ impl FrameKind {
             Self::Start
                 | Self::Step
                 | Self::StepResult
+                | Self::Diff
                 | Self::Delta
                 | Self::Reasoning
                 | Self::Tool
@@ -241,6 +247,7 @@ impl FrameKind {
             Self::Start
             | Self::Step
             | Self::StepResult
+            | Self::Diff
             | Self::Delta
             | Self::Reasoning
             | Self::Tool
@@ -2325,6 +2332,9 @@ impl TurnHub {
                                 is_error,
                                 asked: None,
                             });
+                            // Kept because the diff below is read from the tool's
+                            // own result, and the frame data takes the value.
+                            let full_output = output.clone();
                             let data = serde_json::json!({
                                 "name": name,
                                 "arguments": arguments,
@@ -2354,6 +2364,25 @@ impl TurnHub {
                                 store.append(&writer_job, FrameKind::StepResult, &result)
                             {
                                 publish(&sender, seq, FrameKind::StepResult, result);
+                            }
+                            // A write's own diff, if the tool produced one. The
+                            // payload is the tool's JSON result, so the frame is
+                            // built from the same record the transcript keeps and
+                            // never from a second reading of the file.
+                            if name == "write_file"
+                                && let Some(diff) = serde_json::from_str::<serde_json::Value>(&full_output)
+                                    .ok()
+                                    .and_then(|value| value.get("diff").cloned())
+                            {
+                                let artifact = serde_json::json!({
+                                    "turn_id": writer_job,
+                                    "files": [diff],
+                                });
+                                if let Ok(Some(seq)) =
+                                    store.append(&writer_job, FrameKind::Diff, &artifact)
+                                {
+                                    publish(&sender, seq, FrameKind::Diff, artifact);
+                                }
                             }
                         }
                         // The round about to run. Stored: a reader that joins a
