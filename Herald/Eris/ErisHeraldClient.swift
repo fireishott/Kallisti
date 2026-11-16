@@ -142,6 +142,14 @@ final class ErisHeraldClient: HeraldClientProtocol {
         do {
             // Eris turns carry text only; attachments have no route yet and are
             // dropped (the composer's text still reaches the model).
+            //
+            // Bind a conversation first. This is the path the chat actually takes,
+            // and a turn sent with no conversation is a turn with no transcript
+            // row: the answer streams once and then exists nowhere, which is the
+            // disappearing reply and the empty history in one.
+            if let local = currentConversation?.id, conversationIDByLocalID[local] == nil {
+                _ = await ensureConversation(id: local)
+            }
             let turn = try await client.createTurn(
                 text: message,
                 conversation: currentConversationID()
