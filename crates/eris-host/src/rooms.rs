@@ -328,6 +328,59 @@ pub struct RoomMessage {
     pub job_id: Option<String>,
 }
 
+/// Every bot profile, by name.
+///
+/// # Errors
+///
+/// The database's failure.
+pub fn bots(db: &Db) -> Result<Vec<(String, String)>, crate::db::DbError> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare("SELECT id, name FROM bot_profiles ORDER BY name")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+/// Every room, by name, with how many bots are in it.
+///
+/// # Errors
+///
+/// The database's failure.
+pub fn rooms(db: &Db) -> Result<Vec<RoomSummary>, crate::db::DbError> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT r.id, r.name, r.policy, r.max_turns, \
+                    (SELECT count(*) FROM room_members m WHERE m.room_id = r.id) \
+               FROM rooms r ORDER BY r.name",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(RoomSummary {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                policy: row.get(2)?,
+                max_turns: row.get(3)?,
+                members: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+/// One row of the room list.
+#[derive(Debug, Clone)]
+pub struct RoomSummary {
+    /// Its id.
+    pub id: String,
+    /// Its name.
+    pub name: String,
+    /// Its policy, as stored.
+    pub policy: String,
+    /// How many turns one message may spend.
+    pub max_turns: i64,
+    /// How many bots are in it.
+    pub members: i64,
+}
+
 /// Read one room, its members and its policy.
 ///
 /// # Errors
