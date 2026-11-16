@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 41;
+pub const SCHEMA_VERSION: i64 = 42;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -292,6 +292,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 41,
         name: "0041_bots_and_rooms",
         sql: MIGRATION_0041,
+    },
+    Migration {
+        version: 42,
+        name: "0042_room_conversation",
+        sql: MIGRATION_0042,
     },
 ];
 
@@ -1339,6 +1344,18 @@ CREATE TABLE room_members (
     bot_id  TEXT NOT NULL REFERENCES bot_profiles(id) ON DELETE CASCADE,
     PRIMARY KEY (room_id, bot_id)
 );
+";
+
+/// WP-17: a room's history is a conversation, not a second message store.
+///
+/// `chat_messages.conversation_id` is NOT NULL and rebuilding that table to make
+/// it nullable is a migration this daemon does not need: a room owns a
+/// conversation, its history is that conversation's rows, and the dashboard, the
+/// turn path and attachment claiming all keep working unchanged.
+///
+/// Down path: `ALTER TABLE rooms DROP COLUMN conversation_id;`.
+const MIGRATION_0042: &str = r"
+ALTER TABLE rooms ADD COLUMN conversation_id TEXT;
 ";
 
 /// Down path: `ALTER TABLE jobs DROP COLUMN acked_seq;`. Nothing else reads the

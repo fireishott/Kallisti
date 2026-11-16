@@ -233,18 +233,23 @@ pub fn create_room(
     if policy == Policy::Lead && lead_id.is_none() {
         return Err("a `lead` room needs a lead".to_owned());
     }
+    // A room's history is a conversation: same message table, same dashboard, same
+    // attachment path. Created first so a room without one cannot exist.
+    let conversation = crate::web::chat::create_conversation(db)
+        .map_err(|error| format!("the room's conversation could not be created: {error}"))?;
     let id = uuid::Uuid::now_v7().to_string();
     db.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO rooms (id, name, purpose, policy, lead_id, max_turns) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO rooms (id, name, purpose, policy, lead_id, max_turns, conversation_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 id,
                 name,
                 purpose.trim(),
                 policy.as_str(),
                 lead_id,
-                max_turns.clamp(1, 24)
+                max_turns.clamp(1, 24),
+                conversation
             ],
         )?;
         for (bot_id, _) in &resolved {
@@ -257,6 +262,70 @@ pub fn create_room(
     })
     .map_err(|error| format!("the room could not be created: {error}"))?;
     Ok(id)
+}
+
+/// The room's conversation id, when it has one.
+///
+/// # Errors
+///
+/// The database's failure.
+pub fn conversation_of(db: &Db, room_id: &str) -> Result<Option<String>, crate::db::DbError> {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT conversation_id FROM rooms WHERE id = ?1",
+                rusqlite::params![room_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten())
+    })
+}
+
+/// A room's history: the rows of its conversation, oldest first.
+///
+/// # Errors
+///
+/// The database's failure.
+pub fn history(
+    db: &Db,
+    room_id: &str,
+    limit: usize,
+) -> Result<Vec<RoomMessage>, crate::db::DbError> {
+    let Some(conversation) = conversation_of(db, room_id)? else {
+        return Ok(Vec::new());
+    };
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT role, body, created_at, job_id FROM chat_messages \
+              WHERE conversation_id = ?1 ORDER BY created_at, id LIMIT ?2",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![conversation, limit as i64],
+            |row| {
+                Ok(RoomMessage {
+                    role: row.get(0)?,
+                    body: row.get(1)?,
+                    created_at: row.get(2)?,
+                    job_id: row.get(3)?,
+                })
+            },
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+/// One row of a room's history.
+#[derive(Debug, Clone)]
+pub struct RoomMessage {
+    /// `user` or `assistant`.
+    pub role: String,
+    /// What was said.
+    pub body: String,
+    /// When.
+    pub created_at: String,
+    /// The turn that wrote it, when one did.
+    pub job_id: Option<String>,
 }
 
 /// Read one room, its members and its policy.
@@ -406,6 +475,39 @@ mod tests {
         assert_eq!(room.policy, Policy::Lead);
         assert_eq!(route(&room, &[]).len(), 1);
         assert_eq!(route(&room, &[])[0].name, "Atlas");
+    }
+
+    /// A room owns a conversation, and its history is that conversation's rows:
+    /// no second message store to keep in step.
+    #[test]
+    fn a_rooms_history_is_its_conversation() {
+        let db = crate::db::Db::open_in_memory().expect("database");
+        crate::rooms::create_bot(&db, "Atlas", "", None, &[]).expect("bot");
+        let id = crate::rooms::create_room(
+            &db,
+            "standup",
+            "",
+            Policy::Mention,
+            None,
+            &["Atlas".to_owned()],
+            6,
+        )
+        .expect("room");
+        let conversation = crate::rooms::conversation_of(&db, &id)
+            .expect("read")
+            .expect("a room has a conversation");
+        crate::web::chat::append(
+            &db,
+            &conversation,
+            crate::web::chat::Role::User,
+            "morning all",
+            crate::web::chat::State::Complete,
+        )
+        .expect("append");
+        let history = crate::rooms::history(&db, &id, 10).expect("history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].body, "morning all");
+        assert_eq!(history[0].role, "user");
     }
 
     /// A pill says what each bot did, and a bot that did neither is still working.
