@@ -1344,3 +1344,101 @@ mod tests {
         assert!(hits.len() <= MAX_LIMIT);
     }
 }
+
+/// The name the model calls to search past conversations.
+pub const TRANSCRIPT_TOOL: &str = "search_transcripts";
+
+/// The tool as the model sees it.
+#[must_use]
+pub fn transcript_spec() -> core_runtime::provider::ToolSpec {
+    core_runtime::provider::ToolSpec {
+        name: TRANSCRIPT_TOOL.to_owned(),
+        description: "Search every past conversation for the words given and return the \
+                      conversations they appear in, newest first, with a short excerpt around \
+                      each match. Use it when the operator refers to something said before \
+                      instead of asking them to repeat it. It reads the transcript only; it \
+                      cannot see the filesystem or the network."
+            .to_owned(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The words to look for. Every word is tried first, then any of them."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many conversations to return, at most 50. Default 10."
+                }
+            },
+            "required": ["query"]
+        }),
+    }
+}
+
+/// Run one `search_transcripts` call.
+#[must_use]
+pub fn transcript_tool(db: &Db, arguments: &serde_json::Value) -> crate::tools::ToolResult {
+    let query = arguments
+        .get("query")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    if query.is_empty() {
+        return crate::tools::ToolResult::refused(
+            "search_transcripts needs a `query`: the words to look for",
+        );
+    }
+    let limit = arguments
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |value| value.min(50) as usize);
+
+    let mut request = Request {
+        query,
+        limit,
+        ..Request::default()
+    };
+    apply_defaults(db, &mut request);
+    match search(db, &request) {
+        Ok(page) => crate::tools::ToolResult::ok(serde_json::json!({
+            "total": page.total,
+            "hits": page.hits.iter().map(|hit| serde_json::json!({
+                "conversation_id": hit.conversation_id,
+                "title": hit.title,
+                "snippet": hit.snippet,
+                "ts": hit.ts,
+                "role": hit.role,
+            })).collect::<Vec<_>>(),
+        })),
+        Err(error) => crate::tools::ToolResult::refused(&format!(
+            "the transcript index could not be read: {error}"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod transcript_tool_tests {
+    use super::{transcript_tool, transcript_spec};
+
+    /// A call with no words is refused by name rather than returning everything,
+    /// which would look like a search that matched the whole archive.
+    #[test]
+    fn an_empty_search_is_refused_with_a_reason() {
+        let db = crate::db::Db::open_in_memory().expect("database");
+        let refused = transcript_tool(&db, &serde_json::json!({ "query": "   " }));
+        assert!(refused.is_error);
+        assert!(refused.content.contains("query"), "{}", refused.content);
+    }
+
+    /// The tool is advertised with the argument the model has to supply, or the
+    /// model sees a name it cannot call.
+    #[test]
+    fn the_spec_names_the_query_argument() {
+        let spec = transcript_spec();
+        assert_eq!(spec.name, "search_transcripts");
+        assert_eq!(spec.parameters["required"][0], "query");
+        assert!(spec.parameters["properties"].get("limit").is_some());
+    }
+}

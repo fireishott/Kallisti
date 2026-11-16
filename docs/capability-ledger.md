@@ -27,7 +27,7 @@ means nothing in the tree does it. A row only moves when a test proves the move.
 | 07 | Per-device hashed tokens | carried | `auth_tokens` (Argon2id verifiers), `devices` |
 | 07 | Token contrast test on `(host, profile)` | partial | scopes are checked; host binding is not recorded |
 | 08 | Single-use pair code, QR handoff | carried | `pairing_codes.consumed_at`, dashboard mint |
-| 12 | FTS transcript search | carried | `chat_messages_fts`; `GET /v1/search` |
+| 12 | FTS transcript search | carried | `chat_messages_fts`; `GET /v1/search`; `search_transcripts` tool offered to the model when the turn has a database (query, limit; replies with total and hits: conversation, title, snippet, ts, role) |
 | 09 | Sensor storage + retention | partial | `sensors.db`; `POST /v1/device/sensor/{location,health}` |
 | 09 | Batch `/v1/device/sensors`, `/v1/device/events` | absent | per-sample routes only |
 | 10 | Sensitivity closed set + inference | absent | - |

@@ -3877,6 +3877,14 @@ pub fn run_turn_with_key(
         // Parked before it is waited on, and the wait reports the answer back
         // through `asked` so the transcript can redraw the card with what was
         // decided instead of asking again on every reload.
+        if call.name == crate::search::TRANSCRIPT_TOOL {
+            return match settings.db.as_ref() {
+                Some(db) => crate::search::transcript_tool(db, &call.arguments),
+                None => crate::tools::ToolResult::refused(
+                    "this turn has no database, so past conversations cannot be searched",
+                ),
+            };
+        }
         if call.name == crate::web::clarify::TOOL {
             let Ok(request) = crate::web::clarify::Request::parse(&call.arguments) else {
                 return crate::tools::ToolResult::refused(
@@ -4223,6 +4231,12 @@ pub fn run_turn_with_key(
                     // learn what the list could have said.
                     if ask.is_some() {
                         offered.push(crate::web::clarify::spec());
+                    }
+                    // Past conversations, searched from the daemon's own index.
+                    // Offered whenever this turn has a database, because a turn
+                    // with no way to look things up repeats what it can remember.
+                    if settings.db.is_some() {
+                        offered.push(crate::search::transcript_spec());
                     }
                     // Only offered when the role is pinned: a tool the daemon
                     // will refuse must never reach the model's list.
