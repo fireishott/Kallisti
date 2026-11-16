@@ -147,8 +147,28 @@ final class ErisHeraldClient: HeraldClientProtocol {
             // and a turn sent with no conversation is a turn with no transcript
             // row: the answer streams once and then exists nowhere, which is the
             // disappearing reply and the empty history in one.
+            // A chat with no current conversation cannot be bound at all, so give
+            // it one: an unbound chat is the bug this whole path is fixing.
+            if currentConversation == nil {
+                currentConversation = Conversation(title: "New Chat")
+            }
             if let local = currentConversation?.id, conversationIDByLocalID[local] == nil {
                 _ = await ensureConversation(id: local)
+                // One retry: the first attempt can lose a race with the pairing
+                // handshake on a cold launch.
+                if conversationIDByLocalID[local] == nil {
+                    _ = await ensureConversation(id: local)
+                }
+                if conversationIDByLocalID[local] == nil {
+                    // Sending anyway is the original bug: a turn with no
+                    // conversation produces an answer that exists nowhere and
+                    // leaves nothing on screen to explain it.
+                    continuation.yield(.failed(
+                        "Could not open a conversation with the daemon, so the message was not sent."
+                    ))
+                    continuation.finish()
+                    return
+                }
             }
             let turn = try await client.createTurn(
                 text: message,
