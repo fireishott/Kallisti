@@ -931,6 +931,79 @@ impl<S: Stream + Unpin, G: Unpin> Stream for Guarded<S, G> {
 }
 
 // ---------------------------------------------------------------------------
+// GET /v1/session
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/session` - the presenting device's session, in the connector shape.
+///
+/// The shipped 1.x client loads its launch state with this route and renders a
+/// failed decode as "Connection Failed". Eris has one operator and one device
+/// per caller, so the answer is derived from the bearer that presented it: the
+/// device row is the user and the device, the stored relay is the endpoint the
+/// phone should call, and the connection is simply "connected" because this is
+/// the process answering.
+pub async fn session(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    let store = AuthStore::new(service.engine().db().clone());
+    let device = match store.device(token.device_id()) {
+        Ok(Some(device)) => device,
+        Ok(None) => return DeviceError::device_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!(
+                "the device could not be read: {error}"
+            ))
+            .into_response();
+        }
+    };
+    if device.revoked_at.is_some() {
+        return DeviceError::unauthorized(
+            "token_invalid",
+            "this device was revoked: pair again with a fresh code",
+        )
+        .into_response();
+    }
+    let now = match now_stamp(service.engine().db()) {
+        Ok(stamp) => stamp,
+        Err(error) => return error.into_response(),
+    };
+    let relay = service
+        .engine()
+        .setting(crate::device::SETTING_RELAY)
+        .ok()
+        .flatten()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            headers
+                .get(axum::http::header::HOST)
+                .and_then(|value| value.to_str().ok())
+                .map(|host| format!("https://{host}"))
+                .unwrap_or_default()
+        });
+    answered(json!({
+        "user": {
+            "id": device.id,
+            "displayName": device.name,
+        },
+        "device": {
+            "id": device.id,
+            "registered": true,
+        },
+        "session": {
+            "connectionStatus": "connected",
+            "isMockMode": false,
+            "backendEndpoint": relay,
+            "lastSyncAt": now,
+        },
+        "push": {
+            "tokenRegistered": false,
+        },
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // POST /v1/auth/refresh, POST /v1/auth/revoke
 // ---------------------------------------------------------------------------
 
