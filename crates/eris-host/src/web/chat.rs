@@ -3882,6 +3882,11 @@ pub fn run_turn_with_key(
         {
             return result;
         }
+        if let Some(db) = settings.db.as_ref()
+            && let Some(result) = crate::comms::run(&call.name, &call.arguments, db)
+        {
+            return result;
+        }
         if let (Some(sensors), Some(db)) =
             (crate::sensors::shared(), settings.db.as_ref())
             && let Some(result) = crate::sensor_tools::run(&call.name, &call.arguments, sensors, db)
@@ -4259,6 +4264,12 @@ pub fn run_turn_with_key(
                     // database the schedules live in.
                     if settings.db.is_some() {
                         offered.extend(crate::scheduler_tools::specs());
+                    }
+                    // Nothing here sends: the tools stage and confirm, and the
+                    // description says so, because a model that believes it can
+                    // send will tell the operator it did.
+                    if settings.db.is_some() {
+                        offered.extend(crate::comms::specs());
                     }
                     // Only offered when the role is pinned: a tool the daemon
                     // will refuse must never reach the model's list.

@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 39;
+pub const SCHEMA_VERSION: i64 = 40;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -282,6 +282,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 39,
         name: "0039_delivery_journal",
         sql: MIGRATION_0039,
+    },
+    Migration {
+        version: 40,
+        name: "0040_comms_outbox",
+        sql: MIGRATION_0040,
     },
 ];
 
@@ -1277,6 +1282,24 @@ CREATE TABLE delivery_journal (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX idx_delivery_journal_run ON delivery_journal (run_id);
+";
+
+/// WP-16: messages the model wants to send, staged with the exact recipient that
+/// was confirmed. Nothing here is a transport; it is the record that a send was
+/// asked for, to whom, and what was agreed.
+///
+/// Down path: `DROP TABLE comms_outbox;`.
+const MIGRATION_0040: &str = r"
+CREATE TABLE comms_outbox (
+    id         TEXT PRIMARY KEY NOT NULL,
+    kind       TEXT NOT NULL,
+    recipient  TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    status     TEXT NOT NULL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX idx_comms_outbox_status ON comms_outbox (status, created_at DESC);
 ";
 
 /// Down path: `ALTER TABLE jobs DROP COLUMN acked_seq;`. Nothing else reads the

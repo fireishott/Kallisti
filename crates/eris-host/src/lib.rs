@@ -43,6 +43,7 @@ pub mod aux;
 pub mod backup;
 pub mod budget;
 pub mod commands;
+pub mod comms;
 pub mod config;
 pub mod db;
 pub mod delivery;
