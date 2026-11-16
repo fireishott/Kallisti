@@ -1202,8 +1202,18 @@ pub async fn conversation(
                 .into_response();
         }
     };
+    // A `before` cursor walks backwards from the newest page, which is what a
+    // transcript does when the operator scrolls up. Without one, the newest page
+    // is still what comes back: the first page of a long chat is its beginning,
+    // and a phone wants the end.
+    let before = headers
+        .get("x-before")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
     let (messages, truncated) =
-        match chat::load_bounded(db, &conversation_id, CONVERSATION_MESSAGE_LIMIT) {
+        match chat::load_page(db, &conversation_id, before.as_deref(), CONVERSATION_MESSAGE_LIMIT) {
             Ok(read) => read,
             Err(error) => {
                 return DeviceError::db_unavailable(format!(
@@ -1272,6 +1282,9 @@ pub async fn conversation(
         "model": row.model,
         "messages": messages,
         "truncated": truncated || bounded.omitted > 0,
+        // Whether an older page exists, so a client can decide to ask for one
+        // before it renders a top-of-list that claims to be the beginning.
+        "has_more": truncated,
         // Older messages left out to fit the read, and tool outputs cut to their
         // preview. Additive keys: a client that does not know them reads exactly
         // what it read before.

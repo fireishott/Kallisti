@@ -1438,6 +1438,52 @@ pub fn load_bounded(
     Ok((messages, truncated))
 }
 
+/// The newest page of a transcript, or the page before a given message.
+///
+/// `load_bounded` answers with the *first* `limit` rows, which for a long
+/// conversation is the beginning of it - not what a phone opening a chat needs.
+/// This reads from the newest end and walks backwards: `before` names the oldest
+/// message the caller already holds, and the reply is the page just before it.
+///
+/// The cursor is the row id rather than the timestamp, because two messages in the
+/// same second are common and a timestamp cursor would skip or repeat them.
+///
+/// # Errors
+///
+/// The database's own error.
+pub fn load_page(
+    db: &Db,
+    conversation: &str,
+    before: Option<&str>,
+    limit: usize,
+) -> Result<(Vec<Message>, bool), DbError> {
+    let limit = limit.clamp(1, 2000);
+    db.with_conn(|conn| {
+        const SELECT: &str = "SELECT id, role, body, state, error_code, created_at, model,
+                    prompt_tokens, completion_tokens, cached_tokens, context_window,
+                    duration_ms, reasoning, tools, rounds, quota_json, context_tokens,
+                    client_message_id, job_id, capped, wrapped_up
+               FROM chat_messages
+              WHERE conversation_id = ?1
+                AND (?2 IS NULL
+                     OR rowid < (SELECT rowid FROM chat_messages WHERE id = ?2))
+              ORDER BY rowid DESC
+              LIMIT ?3";
+        let mut statement = conn.prepare(SELECT)?;
+        let mut rows: Vec<Message> = statement
+            .query_map(
+                params![conversation, before, (limit + 1) as i64],
+                row_message,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        // One extra row was asked for only to learn whether an older page exists.
+        let more = rows.len() > limit;
+        rows.truncate(limit);
+        rows.reverse();
+        Ok((rows, more))
+    })
+}
+
 /// What one transcript read is allowed to cost on the wire, in bytes.
 ///
 /// A message count is not a size bound. One measured conversation on this daemon
