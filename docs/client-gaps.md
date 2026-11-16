@@ -116,3 +116,29 @@ What to check on the phone, in order:
 
 If a card is missing, the decode is not the last link: check the store case for the
 frame and the bubble branch that draws it.
+
+## Approvals: the phone has no surface at all
+
+Read on 2026-11-16 while building the decide card. `ErisApproval`,
+`ErisApprovalPage`, `ErisApprovalDecision`, `ErisClient.approvals()` and
+`ErisClient.decideApproval` all exist in `Herald/Eris`. Nothing calls any of them:
+`grep -rn decideApproval Herald | grep -v ErisClient.swift` returns nothing, and
+`MessageBubble` reaches only `TalkStore` and `SettingsStore`, not the Eris client.
+
+So the approval card is not a card. It is a small feature:
+
+1. A store that lists approvals (`clientForPairedDaemon().approvals()`), each
+   refreshed when the daemon says one parked - `turn.approval` decodes to that
+   event already, as of round 64.
+2. A decide call that reports the outcome rather than assuming success:
+   `turn_not_cancellable`, `approval_not_found` and a refused decision all have to
+   read as themselves.
+3. A surface: a sheet from the chat, or a card in the bubble, either way something
+   that can be dismissed without deciding.
+
+The transport exists (`ErisDaemonStore.clientForPairedDaemon()`), so this is
+plumbing and a view, not a protocol.
+
+Until it exists, `turn.approval` shows as a run-log line naming the tool and its
+arguments. That is honest: it says what is waiting, and it does not offer a button
+that cannot work.
