@@ -97,6 +97,10 @@ pub enum FrameKind {
     /// after a background, can draw the header from the stream instead of
     /// guessing it from the next delta.
     Start,
+    /// A step of the turn is starting: a tool call, a delegation, a plan beat.
+    Step,
+    /// A step finished, with its verdict and how long it took.
+    StepResult,
     /// One assistant text fragment.
     Delta,
     /// One fragment of the model's own reasoning, when the provider streams one.
@@ -151,8 +155,10 @@ pub enum FrameKind {
 impl FrameKind {
     /// Every kind, so a client can learn the vocabulary from `/v1/version`
     /// instead of pinning a build number.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::Start,
+        Self::Step,
+        Self::StepResult,
         Self::Delta,
         Self::Reasoning,
         Self::Tool,
@@ -171,6 +177,8 @@ impl FrameKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Start => "turn.start",
+            Self::Step => "turn.step",
+            Self::StepResult => "turn.step.result",
             Self::Delta => "delta",
             Self::Reasoning => "reasoning",
             Self::Tool => "tool",
@@ -190,6 +198,8 @@ impl FrameKind {
     pub fn parse(text: &str) -> Option<Self> {
         match text {
             "turn.start" => Some(Self::Start),
+            "turn.step" => Some(Self::Step),
+            "turn.step.result" => Some(Self::StepResult),
             "delta" => Some(Self::Delta),
             "reasoning" => Some(Self::Reasoning),
             "tool" => Some(Self::Tool),
@@ -227,6 +237,8 @@ impl FrameKind {
     const fn terminal_status(self) -> Option<&'static str> {
         match self {
             Self::Start
+            | Self::Step
+            | Self::StepResult
             | Self::Delta
             | Self::Reasoning
             | Self::Tool
@@ -2164,6 +2176,11 @@ impl TurnHub {
                 let mut streamed = String::new();
                 let mut reasoning = String::new();
                 let mut tools: Vec<crate::web::chat::ToolRecord> = Vec::new();
+                // When each step started, so the result frame can state how long
+                // the step took instead of leaving the phone to guess from
+                // arrival times it does not keep.
+                let mut step_started: std::collections::HashMap<String, std::time::Instant> =
+                    std::collections::HashMap::new();
                 while let Some(signal) = rx.blocking_recv() {
                     match signal {
                         Signal::Delta(text) => {
@@ -2211,6 +2228,26 @@ impl TurnHub {
                             {
                                 publish(&sender, seq, FrameKind::Tool, data);
                             }
+                            // The step closes with a verdict and a duration. The
+                            // summary is the same output preview the transcript
+                            // keeps, so the phone can show what the step did
+                            // without re-reading the whole transcript.
+                            let duration_ms = step_started.remove(&name).map(|at| {
+                                i64::try_from(at.elapsed().as_millis()).unwrap_or(i64::MAX)
+                            });
+                            let summary: String = output.chars().take(280).collect();
+                            let result = serde_json::json!({
+                                "turn_id": writer_job,
+                                "step_id": name,
+                                "status": if is_error { "error" } else { "ok" },
+                                "summary": summary,
+                                "duration_ms": duration_ms,
+                            });
+                            if let Ok(Some(seq)) =
+                                store.append(&writer_job, FrameKind::StepResult, &result)
+                            {
+                                publish(&sender, seq, FrameKind::StepResult, result);
+                            }
                         }
                         // The round about to run. Stored: a reader that joins a
                         // long turn mid-way wants to know which round it walked
@@ -2243,6 +2280,25 @@ impl TurnHub {
                                 store.append(&writer_job, FrameKind::ToolStart, &data)
                             {
                                 publish(&sender, seq, FrameKind::ToolStart, data);
+                            }
+                            // The same event in the contract's step vocabulary.
+                            // `step_id` is the tool's name, which is unique
+                            // within one turn's step list, so a result frame
+                            // can name the step it closes.
+                            step_started.insert(name.clone(), std::time::Instant::now());
+                            let step = serde_json::json!({
+                                "turn_id": writer_job,
+                                "step_id": name,
+                                "step_type": "tool_call",
+                                "label": name,
+                                "started_at": time::OffsetDateTime::now_utc()
+                                    .format(&time::format_description::well_known::Rfc3339)
+                                    .unwrap_or_default(),
+                            });
+                            if let Ok(Some(seq)) =
+                                store.append(&writer_job, FrameKind::Step, &step)
+                            {
+                                publish(&sender, seq, FrameKind::Step, step);
                             }
                         }
                         // Output as it arrives. Deliberately NOT journalled: a

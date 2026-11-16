@@ -299,6 +299,8 @@ fn synthetic_terminal(kind: FrameKind, text: String) -> serde_json::Value {
         // alive and waiting on a person, and inventing a question nobody asked
         // would be worse than leaving the stream short.
         FrameKind::Start
+        | FrameKind::Step
+        | FrameKind::StepResult
         | FrameKind::Delta
         | FrameKind::Reasoning
         | FrameKind::Tool
