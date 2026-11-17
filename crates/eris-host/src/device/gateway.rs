@@ -200,7 +200,19 @@ pub fn update_offered(staged: &[String], latest: Option<&crate::release::Release
     // A staged file whose NAME does not parse is not an offer: the daemon could
     // not say what it would install, and a button that installs something
     // unnamed is worse than a button that is off.
-    newest_staged(staged).is_some() || latest.is_some_and(is_newer_than_self)
+    //
+    // A staged file that parses but is OLDER than the running build is not an
+    // offer either. Leftovers accumulate beside the binary - a failed or older
+    // deploy leaves them - and treating any of them as an update advertises a
+    // downgrade with a button that would install it.
+    staged_is_newer(staged) || latest.is_some_and(is_newer_than_self)
+}
+
+/// Whether the newest staged build is ahead of the running one.
+fn staged_is_newer(staged: &[String]) -> bool {
+    newest_staged(staged).is_some_and(|(version, build)| {
+        crate::release::is_newer(&version, build, admin::VERSION, admin::BUILD)
+    })
 }
 
 /// The legacy `data.components[<key>]` object, in the phone's words, where the
@@ -216,7 +228,10 @@ fn legacy_component(
     last_checked_at: &str,
     error: Option<&str>,
 ) -> serde_json::Value {
-    let newest = newest_staged(staged);
+    let newest = newest_staged(staged)
+        .filter(|(version, build)| {
+            crate::release::is_newer(version, *build, admin::VERSION, admin::BUILD)
+        });
     let newer_release = latest.filter(|release| is_newer_than_self(release));
     // A parse failure means the host cannot say what it would install, so
     // `updateAvailable` is false and the sentence says why: a phone that shows
@@ -1508,18 +1523,43 @@ mod tests {
 
     #[test]
     fn a_staged_name_makes_the_envelope_offer_an_update_without_a_release() {
-        let staged = vec!["eris.new-1.5.0-183".to_owned()];
+        // Relative to the build in this binary: the point is that a staged build
+        // AHEAD of the running one is offered, not that one particular number is.
+        let version = admin::VERSION;
+        let build = admin::BUILD + 1;
+        let staged = vec![format!("eris.new-{version}-{build}")];
         assert_eq!(
             newest_staged(&staged),
-            Some(("1.5.0".to_owned(), 183)),
+            Some((version.to_owned(), build)),
             "a staged name parses to its identity"
         );
         assert!(update_offered(&staged, None));
         let envelope = legacy_envelope(None, &staged, "2026-11-10T00:00:00Z", None);
         let component = &envelope["components"][COMPONENT];
         assert_eq!(component["updateAvailable"], true);
-        assert_eq!(component["latestVersion"], "1.5.0 build 183");
+        assert_eq!(
+            component["latestVersion"],
+            format!("{version} build {build}")
+        );
         assert_eq!(component["behindCount"], 1);
+    }
+
+    #[test]
+    fn a_staged_build_older_than_this_one_is_not_an_update() {
+        // The case that shipped: leftovers from earlier deploys beside a newer
+        // running binary made the daemon advertise a downgrade as an update.
+        let build = admin::BUILD.saturating_sub(1);
+        let staged = vec![format!("eris.new-{}-{build}", admin::VERSION)];
+        assert!(!update_offered(&staged, None), "an older staged build is not an offer");
+        let envelope = legacy_envelope(None, &staged, "2026-11-10T00:00:00Z", None);
+        let component = &envelope["components"][COMPONENT];
+        assert_eq!(component["updateAvailable"], false);
+        assert_eq!(
+            component["latestVersion"],
+            admin::version_line(),
+            "the card names what is running, not the leftover"
+        );
+        assert_eq!(component["behindCount"], 0);
     }
 
     #[test]

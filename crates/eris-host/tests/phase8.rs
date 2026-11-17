@@ -950,11 +950,11 @@ async fn last_event_id_resumes_with_only_the_missing_frames() {
         .next_frame(Duration::from_secs(5))
         .await
         .expect("the first frame arrives");
-    // The first frame of a turn is the round announcement, not a text fragment:
-    // a surface has to hear that a round started before the provider says
-    // anything, or "thinking" and "a command is running" read the same.
+    // A turn opens with `turn.start`: the surface has to learn the turn exists
+    // before anything else, so a phone can show a placeholder for a turn whose
+    // first token is a minute away. `round` follows as the work begins.
     assert_eq!(head.id, 1);
-    assert_eq!(head.event, "round");
+    assert_eq!(head.event, "turn.start");
     drop(first);
 
     // Let a few more frames land while nobody is listening.
@@ -3195,7 +3195,13 @@ async fn a_long_transcript_and_a_long_list_are_bounded_and_say_so() {
     let messages = body["messages"].as_array().expect("a message list");
     assert_eq!(messages.len(), 200, "the transcript is capped at a page");
     assert_eq!(body["truncated"], true, "and it says the page was cut");
-    assert_eq!(messages[0]["body"], "message 0", "oldest first");
+    // The page a chat opens with is the NEWEST one, in chronological order inside
+    // it, and `has_more` tells the surface there is older history behind `x-before`.
+    // Serving the oldest page first meant a long chat opened at the top of its
+    // history and the recent messages were a scroll away.
+    assert_eq!(messages[0]["body"], "message 5", "the newest page, oldest first");
+    assert_eq!(messages[199]["body"], "message 204", "and it ends at the newest message");
+    assert_eq!(body["has_more"], true, "older history is behind the cursor");
 
     // More conversations than a page, too.
     for _ in 0..105 {
@@ -5374,7 +5380,34 @@ async fn the_daemon_says_what_it_is_without_a_credential() {
     assert_eq!(body["version"], eris_host::admin::VERSION);
     assert_eq!(body["build"], eris_host::admin::BUILD);
     let frames = body["frames"].as_array().expect("the frame vocabulary");
-    assert_eq!(frames.len(), 11, "every frame kind is named: {body}");
+    // Named in full rather than counted: a new frame kind is an addition to the
+    // vocabulary a client reads, and a pinned count turns that into a failure that
+    // says nothing about what went wrong.
+    for kind in [
+        "turn.start",
+        "turn.step",
+        "turn.step.result",
+        "turn.artifact.diff",
+        "turn.artifact.page",
+        "turn.ask",
+        "turn.approval",
+        "delta",
+        "reasoning",
+        "tool",
+        "done",
+        "error",
+        "cancelled",
+        "asked",
+        "round",
+        "tool_start",
+        "tool_output",
+        "attachment",
+    ] {
+        assert!(
+            frames.iter().any(|f| f == kind),
+            "the vocabulary names {kind}: {body}"
+        );
+    }
     assert!(
         frames.iter().any(|f| f == "reasoning") && frames.iter().any(|f| f == "tool"),
         "a client can learn that reasoning and tools exist: {body}"

@@ -44,7 +44,7 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// and no table at all; 0024 adds the three learning tables; 0029 adds the four
 /// memory-tier tables. 0030 adds the standing roster. 0031 adds the webhook
 /// triggers and the fires they record.
-pub const TABLES: [&str; 32] = [
+pub const TABLES: [&str; 38] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
@@ -77,6 +77,17 @@ pub const TABLES: [&str; 32] = [
     "subagents",
     "trigger_fires",
     "triggers",
+    // WP-17 (0041): the room surface - who exists to talk in a room, and who is in
+    // one. These were created by the migration and left out of this list, so the
+    // schema audit reported them as tables nobody declared.
+    "bot_profiles",
+    "rooms",
+    "room_members",
+    // 0043/0044: the delivery path a room message takes, and where it ended up.
+    "comms_outbox",
+    "delivery_journal",
+    // 0045: what a path is allowed to touch.
+    "sensitivity_map",
 ];
 
 /// One forward migration. Never edited once released; add a new version.
@@ -1857,7 +1868,7 @@ mod tests {
             );
         }
         assert_eq!(db.schema_version().expect("version"), SCHEMA_VERSION);
-        assert_eq!(TABLES.len(), 32, "the list and the schema agree on arity");
+        assert_eq!(TABLES.len(), 38, "the list and the schema agree on arity");
     }
 
     /// Migration 0031 adds the trigger tables, and `TABLES` names both.
@@ -1873,7 +1884,7 @@ mod tests {
             );
         }
         assert_eq!(db.schema_version().expect("version"), SCHEMA_VERSION);
-        assert_eq!(TABLES.len(), 32, "the list and the schema agree on arity");
+        assert_eq!(TABLES.len(), 38, "the list and the schema agree on arity");
     }
 }
 

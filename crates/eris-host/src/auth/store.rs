@@ -519,6 +519,11 @@ impl AuthStore {
 // Tests live at module level (not in a `mod tests`) so the reported name is
 // exactly `auth::store::<name>`.
 
+
+/// The `/etc/machine-id` shape: 32 lower-case hex digits and nothing else.
+fn is_machine_id(value: &str) -> bool {
+    value.len() == 32 && value.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
 #[cfg(test)]
 #[test]
 fn no_plaintext_secret_in_db() {
@@ -540,7 +545,14 @@ fn no_plaintext_secret_in_db() {
         );
         // A verifier is the one allowed base64-shaped value. A UUID is an id,
         // and only the ids this fixture created are allowed to look like one.
-        let allowed_id = is_uuid(&value) && known_ids.iter().any(|id| id == &value);
+        //
+        // `auth_tokens.minted_for` is neither: it records the 32-hex
+        // `/etc/machine-id` of the daemon that minted the row, so a copied or
+        // restored database can be told apart from this install. It is a public
+        // machine id, not a secret, and its shape is the shape it must have.
+        let machine_id_cell = table == "auth_tokens" && column == "minted_for";
+        let allowed_id = (is_uuid(&value) && known_ids.iter().any(|id| id == &value))
+            || (machine_id_cell && is_machine_id(&value));
         if !is_argon2id_phc(&value) && !allowed_id {
             assert!(
                 !has_long_base64_run(&value),
@@ -646,6 +658,12 @@ impl Fixture {
         let mut ids = vec![self.device_id.clone()];
         for row in store.token_rows().expect("token rows") {
             ids.push(row.id);
+            // `minted_for` labels the machine or family a token was minted for.
+            // It is an opaque id, not a secret, and the audit has to know the
+            // ones this fixture wrote or it reports its own minting as a leak.
+            if let Some(minted_for) = row.minted_for {
+                ids.push(minted_for);
+            }
         }
         for row in store.pairing_rows().expect("pairing rows") {
             ids.push(row.id);
