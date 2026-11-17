@@ -1,0 +1,101 @@
+//! Server-rendered pages and the routes that serve them.
+//!
+//! `maud` for the markup, one inline stylesheet, no build step, and no CDN: a
+//! browser with JavaScript disabled can read and use every page. The chat
+//! surface adds one small inline script on that one page, as progressive
+//! enhancement: with it the answer streams in, without it the form still works
+//! and the reply arrives on the next page.
+
+pub mod accounts;
+pub mod attach;
+pub mod backups;
+pub mod chat;
+pub mod clarify;
+pub mod context;
+pub mod css;
+pub mod dsml;
+pub mod live;
+pub mod proxy;
+pub mod qr;
+pub mod quota;
+pub mod routes;
+pub mod store;
+pub mod templates;
+pub mod term;
+pub mod wallpaper;
+
+/// The Steward page: the duty board, its notes and its forms.
+pub mod steward_page;
+
+/// The workboard page, and the proof that a task outlives a session.
+#[cfg(test)]
+mod workboard_page;
+
+/// P11 acceptance for the sign-in route. Test-only: the handlers live with the
+/// other handlers in `routes`, and this module is the suite that pins the
+/// browser path to the dashboard.
+#[cfg(test)]
+mod login;
+
+/// Shared request plumbing for the suites below. Test-only.
+#[cfg(test)]
+mod harness;
+
+/// Phase 1: the application shell, its nav, and the house style.
+#[cfg(test)]
+mod shell;
+
+/// Phase 1: the Settings surface, the only page that writes behaviour.
+#[cfg(test)]
+mod settings;
+
+/// Phase 1: the Activity page over `audit_log`.
+#[cfg(test)]
+mod activity;
+
+/// The environment page: the file it writes, the names it lists, and the
+/// refusals that keep the daemon's own variables out of it.
+#[cfg(test)]
+mod env_page;
+
+/// The learning loop's page and its three controls.
+#[cfg(test)]
+mod learning_page;
+
+/// The roster page: the table, the form, and the two-press delete.
+#[cfg(test)]
+mod roster_page;
+
+/// The triggers page: the table, the one-time token, and the fire ledger.
+#[cfg(test)]
+mod triggers_page;
+
+/// The search page: the field, the results, and the link out.
+#[cfg(test)]
+mod search_page;
+
+/// The skills page: the library, its editor, and the archive button.
+#[cfg(test)]
+mod skills_page;
+
+/// Phase 2: the Sessions list, the session detail page, and job cancellation.
+#[cfg(test)]
+mod sessions;
+
+/// Phase 2: the Devices list, its revoke button, and the pairing-code form.
+#[cfg(test)]
+mod devices;
+
+/// The Assistant identity group: the persona file, its size, and the two
+/// refusals that keep an enabled-but-blank persona from existing.
+#[cfg(test)]
+mod persona;
+
+/// The conversation surface and the wallpaper: session gating, the transcript,
+/// the streaming POST's refusals, and the preset and upload paths.
+#[cfg(test)]
+mod chat_surface;
+
+/// The subagents control in the top bar, and the setting that arms the tool.
+#[cfg(test)]
+mod bar;

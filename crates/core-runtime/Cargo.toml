@@ -1,0 +1,31 @@
+[package]
+name = "core-runtime"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Kallisti 1.0 runtime seams: event log, prompt compile, provider seam, turn machine."
+
+[dependencies]
+core-domain = { path = "../core-domain" }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+zstd = { workspace = true }
+fs4 = { workspace = true }
+eventsource-stream = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# `net` and `io-util` are for the keep-alive test: the only honest way to prove a
+# dropped connection is retried is to be the server that drops it.
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

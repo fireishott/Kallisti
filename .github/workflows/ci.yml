@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins 1.99.1 and its components; installing it
+      # explicitly keeps a runner's default stable from masking a drift.
+      - name: Install pinned toolchain
+        run: >-
+          rustup toolchain install 1.99.1
+          --profile default
+          --component rustfmt
+          --component clippy
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The retired product-name tokens are out of the tree, and this gate keeps
+      # them out. The wire literals a deployed phone decodes are composed from
+      # fragments in `device/wire.rs`; a plain-text occurrence anywhere else means
+      # either a contract was re-spelled or the name crept back in.
+      - name: no retired namespace tokens
+        run: bash scripts/check-namespace.sh
+
+      # The repository is public and it is the release source: what lands here is
+      # what a stranger clones. A login, a work address or a LAN address is not
+      # part of the product. The iOS bundle id and the release repository are
+      # excluded on purpose, because removing those breaks a running install.
+      - name: no operator identifiers
+        run: bash scripts/check-identifiers.sh
+
+      - name: test
+        run: cargo test --workspace
+
+      # The Lite boundary is a dependency graph, not a feature flag (locked
+      # amendment 9), and Gate A of the Lite proof is a turn with no listener
+      # and no network (locked amendment 2).
+      #
+      # Scoped to src/ on purpose: the test that asserts this absence lives in
+      # crates/ios-host/tests/ and therefore contains the tokens it forbids.
+      - name: ios-host source has no network stack
+        run: |
+          if grep -rniE 'reqwest|tokio|TcpListener|UdpSocket|std::net' crates/ios-host/src/; then
+            echo "::error::crates/ios-host/src must stay I/O-free: no reqwest, tokio, TcpListener, UdpSocket or std::net"
+            exit 1
+          fi
+          echo "crates/ios-host/src is clean"

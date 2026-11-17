@@ -1,0 +1,16 @@
+[package]
+name = "core-domain"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Kallisti 1.0 domain types: ids, events, capabilities, device context. No I/O."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

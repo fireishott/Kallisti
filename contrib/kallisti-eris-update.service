@@ -1,0 +1,33 @@
+# Reference copy of the Kallisti-Eris update helper unit.
+#
+# install.sh writes the live file to ~/.config/systemd/user/kallisti-eris-update.service
+# with @PREFIX@ and @STATE_DIR@ resolved. This copy exists so a packager, or
+# anyone reading the repo, can see the exact unit without running the installer
+# or digging into a shell heredoc. It is a template: the daemon does not read it
+# and nothing copies it verbatim, so the two cannot disagree about behaviour,
+# only about literal paths.
+#
+# Why a second unit exists at all: kallisti-eris.service runs with
+# ProtectHome=read-only and will not write $HOME/.local/opt, so the daemon cannot
+# replace the binary it is running from. The process being replaced does not get
+# write access to the thing replacing it. The swap is this unit's job.
+
+[Unit]
+Description=Kallisti Eris update helper (installs a release outside the daemon sandbox)
+# The request file is the trigger and the record: the daemon writes it, this unit
+# consumes it, and the helper removes it on success. Starting this unit with no
+# request is a no-op rather than an install of whatever happens to be newest.
+ConditionPathExists=@STATE_DIR@/update/request.json
+
+[Service]
+Type=oneshot
+ExecStart=@PREFIX@/bin/eris-update
+NoNewPrivileges=yes
+PrivateTmp=yes
+# Deliberately no ProtectHome and no ProtectSystem: writing @PREFIX@/bin is the
+# entire reason this unit exists. Every other hardening option the daemon carries
+# is kept.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

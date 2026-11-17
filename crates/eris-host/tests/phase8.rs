@@ -1,0 +1,7890 @@
+//! P8 acceptance: the device surface contract over real HTTP.
+//!
+//! Every test here talks to a real `axum::serve` on an ephemeral loopback port
+//! over a real TCP socket, so the coverage is the listener and not just the
+//! router: request ids, header parsing, SSE framing, and the 404 the admin paths
+//! earn.
+//!
+//! The provider is a local stub that speaks the OpenAI-compatible SSE dialect the
+//! seam already parses. That is what makes the turn path testable offline and
+//! deterministic; the real 9router turn is proved separately, by hand, in the
+//! phase self-proof.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+use eris_host::auth::{AuthStore, PairingService, Scope, ScopeSet, TokenOrigin, TokenService};
+use eris_host::config::Paths;
+use eris_host::db::{Db, SetupState};
+use eris_host::device::turns::{DEFAULT_SSE_BUFFER, TurnStore};
+use eris_host::device::{DEVICE_ADDR, DeviceService};
+use eris_host::onboarding::SetupEngine;
+
+/// The environment variable name the tests point the provider at. No such
+/// variable exists: the service is built with an injected lookup, because edition
+/// 2024 makes mutating the process environment `unsafe` and this workspace
+/// forbids unsafe.
+const TEST_KEY_REF: &str = "env:KALLISTI_P8_TEST_KEY";
+
+/// The key the injected lookup returns.
+const TEST_KEY: &str = "p8-test-key";
+
+/// The body type a JSON request sends.
+const JSON: &str = "application/json";
+
+/// The body type a form request sends.
+const FORM: &str = "application/x-www-form-urlencoded";
+
+/// What a phone uploads a file as: the bytes, nothing wrapped around them.
+const OCTETS: &str = "application/octet-stream";
+
+// ---------------------------------------------------------------------------
+// Harness
+// ---------------------------------------------------------------------------
+
+/// One running device listener plus the state behind it.
+struct Harness {
+    _dir: tempfile::TempDir,
+    addr: SocketAddr,
+    engine: SetupEngine,
+    /// Kept so a future test can assert on the service directly; the listener
+    /// already holds its own clone.
+    #[allow(dead_code)]
+    service: DeviceService,
+    server: tokio::task::JoinHandle<()>,
+}
+
+impl Harness {
+    /// A listener in `ready` state, pointed at `provider_url`, with `buffer`
+    /// retained events per job.
+    async fn start(provider_url: &str, buffer: usize) -> Self {
+        Self::spawn(provider_url, buffer, None).await
+    }
+
+    /// A listener whose service was handed an MCP pool, the way the daemon hands
+    /// one to the device surface it serves.
+    async fn start_with_mcp(
+        provider_url: &str,
+        buffer: usize,
+        pool: Arc<eris_host::mcp::Pool>,
+    ) -> Self {
+        Self::spawn(provider_url, buffer, Some(pool)).await
+    }
+
+    /// Start one listener, optionally over an MCP pool.
+    async fn spawn(
+        provider_url: &str,
+        buffer: usize,
+        mcp: Option<Arc<eris_host::mcp::Pool>>,
+    ) -> Self {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // The database lives where the paths say it does, so the archive code
+        // (which reads `paths.db_file`) is looking at the state this listener
+        // actually writes.
+        let paths = Paths::for_root(dir.path().join("root"));
+        let db = Db::open(&paths.db_file).expect("db opens");
+        let engine = SetupEngine::new(db.clone(), paths);
+        // A workspace inside the temp root, created here rather than left to the
+        // default. Without it the daemon falls back to `~/kallisti-workspace`, so
+        // a test that approves a write passes only on a host where that directory
+        // happens to exist - which is exactly how this suite was green here and
+        // red on CI, where approving the call answered 422 approval_not_run with
+        // "No such file or directory".
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        engine
+            .set_setting(
+                eris_host::onboarding::SETTING_WORKSPACE,
+                &workspace.display().to_string(),
+            )
+            .expect("workspace setting");
+        engine
+            .set_provider(provider_url, TEST_KEY_REF, &["p8-model".to_owned()])
+            .expect("provider settings");
+        engine.set_model("p8-model").expect("model setting");
+        db.set_setup_state(SetupState::Ready).expect("ready");
+
+        let service = DeviceService::with_key_lookup(
+            engine.clone(),
+            buffer,
+            Arc::new(|name: &str| (name == "KALLISTI_P8_TEST_KEY").then(|| TEST_KEY.to_owned())),
+        );
+        let clarify = Arc::new(eris_host::web::clarify::Registry::new());
+        let service = service.with_clarify(Arc::clone(&clarify));
+        let service = match mcp {
+            Some(pool) => service.with_mcp(pool),
+            None => service,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("an ephemeral loopback listener");
+        let addr = listener.local_addr().expect("a local address");
+        let serving = service.clone();
+        let server = tokio::spawn(async move {
+            let _ = eris_host::device::serve_on(listener, serving).await;
+        });
+
+        Self {
+            _dir: dir,
+            addr,
+            engine,
+            service,
+            server,
+        }
+    }
+
+    /// A listener that has not finished onboarding.
+    async fn start_not_ready() -> Self {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::for_root(dir.path().join("root"));
+        let db = Db::open(&paths.db_file).expect("db opens");
+        let engine = SetupEngine::new(db, paths);
+        let service = DeviceService::with_key_lookup(
+            engine.clone(),
+            DEFAULT_SSE_BUFFER,
+            Arc::new(|name: &str| (name == "KALLISTI_P8_TEST_KEY").then(|| TEST_KEY.to_owned())),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("an ephemeral loopback listener");
+        let addr = listener.local_addr().expect("a local address");
+        let serving = service.clone();
+        let server = tokio::spawn(async move {
+            let _ = eris_host::device::serve_on(listener, serving).await;
+        });
+        Self {
+            _dir: dir,
+            addr,
+            engine,
+            service,
+            server,
+        }
+    }
+
+    /// Register a device and mint a pairing code bound to it.
+    fn device_with_code(&self, name: &str) -> (String, String) {
+        let db = self.engine.db().clone();
+        let device_id = AuthStore::new(db.clone())
+            .register_device(name, "ios")
+            .expect("device row");
+        let issued = PairingService::new(db)
+            .issue_for_device(&device_id)
+            .expect("pairing code");
+        (device_id, issued.code().to_owned())
+    }
+
+    /// Register a device and mint a pairing code the operator ticked the
+    /// administration box for.
+    fn device_with_admin_code(&self, name: &str) -> (String, String) {
+        let db = self.engine.db().clone();
+        let device_id = AuthStore::new(db.clone())
+            .register_device(name, "ios")
+            .expect("device row");
+        let issued = PairingService::new(db)
+            .issue_for_device_asking(&device_id, true)
+            .expect("pairing code");
+        (device_id, issued.code().to_owned())
+    }
+
+    /// A device and a live token that carries `admin`, without going through
+    /// `/v1/pair`: the same scope set a ticked code redeems into.
+    fn device_with_admin_token(&self, name: &str) -> (String, String) {
+        let db = self.engine.db().clone();
+        let device_id = AuthStore::new(db.clone())
+            .register_device(name, "ios")
+            .expect("device row");
+        let token = TokenService::new(db)
+            .mint_access(
+                &device_id,
+                ScopeSet::device_default().with(Scope::Admin),
+                TokenOrigin::PairedAdmin,
+            )
+            .expect("admin access token");
+        (device_id, token.token().to_owned())
+    }
+
+    /// A device and a live access token, without going through `/v1/pair`.
+    fn device_with_token(&self, name: &str) -> (String, String) {
+        let db = self.engine.db().clone();
+        let device_id = AuthStore::new(db.clone())
+            .register_device(name, "ios")
+            .expect("device row");
+        let token = TokenService::new(db)
+            .mint_access(&device_id, ScopeSet::device_default(), TokenOrigin::Device)
+            .expect("access token");
+        (device_id, token.token().to_owned())
+    }
+
+    async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        body: Option<&str>,
+    ) -> HttpResponse {
+        http(self.addr, method, path, headers, body, JSON).await
+    }
+
+    /// A raw-byte upload, which is what the phone sends a file as.
+    async fn request_octets(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        body: &str,
+    ) -> HttpResponse {
+        http(self.addr, method, path, headers, Some(body), OCTETS).await
+    }
+
+    /// A form-encoded body, which is what a `curl --data-urlencode` run sends.
+    async fn request_form(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        body: &str,
+    ) -> HttpResponse {
+        http(self.addr, method, path, headers, Some(body), FORM).await
+    }
+
+    fn stop(&self) {
+        self.server.abort();
+    }
+}
+
+/// The decoded HTTP status, headers and body of one request.
+struct HttpResponse {
+    status: u16,
+    headers: String,
+    body: String,
+}
+
+impl HttpResponse {
+    fn json(&self) -> serde_json::Value {
+        serde_json::from_str(&self.body).unwrap_or_else(|error| {
+            panic!(
+                "body is not json ({error}): status={} body={}",
+                self.status, self.body
+            )
+        })
+    }
+}
+
+/// One request over a real socket, with `Connection: close`, so the body ends
+/// when the socket does.
+async fn http(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, String)],
+    body: Option<&str>,
+    content_type: &str,
+) -> HttpResponse {
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .expect("connect to the listener");
+    let mut request =
+        format!("{method} {path} HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n");
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    if let Some(body) = body {
+        request.push_str(&format!("content-length: {}\r\n", body.len()));
+        request.push_str(&format!("content-type: {content_type}\r\n"));
+    }
+    request.push_str("\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write the request");
+    if let Some(body) = body {
+        stream
+            .write_all(body.as_bytes())
+            .await
+            .expect("write the body");
+    }
+
+    let mut raw = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut raw))
+        .await
+        .expect("the response arrives")
+        .expect("read the response");
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((text.as_str(), ""));
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .expect("a status line");
+    let body = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        dechunk(body)
+    } else {
+        body.to_owned()
+    };
+    HttpResponse {
+        status,
+        headers: head.to_owned(),
+        body,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SSE client
+// ---------------------------------------------------------------------------
+
+/// One parsed SSE frame.
+#[derive(Debug, Clone)]
+struct Frame {
+    id: i64,
+    event: String,
+    data: serde_json::Value,
+}
+
+/// A live SSE connection: reads incrementally, decodes chunked framing when the
+/// server uses it, and hands back complete frames.
+struct Sse {
+    stream: TcpStream,
+    chunked: bool,
+    raw: Vec<u8>,
+    body: Vec<u8>,
+    closed: bool,
+}
+
+impl Sse {
+    async fn open(addr: SocketAddr, path: &str, token: &str, last_event_id: Option<i64>) -> Self {
+        let mut stream = TcpStream::connect(addr).await.expect("connect for sse");
+        let mut request = format!(
+            "GET {path} HTTP/1.1\r\nhost: 127.0.0.1\r\naccept: text/event-stream\r\nauthorization: Bearer {token}\r\n"
+        );
+        if let Some(id) = last_event_id {
+            request.push_str(&format!("last-event-id: {id}\r\n"));
+        }
+        request.push_str("\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write the sse request");
+
+        // Read until the header block is complete.
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte))
+                .await
+                .expect("sse headers arrive")
+                .expect("read sse headers");
+            assert!(read == 1, "connection closed before the sse headers");
+            head.push(byte[0]);
+            if head.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+        assert!(
+            head.starts_with("http/1.1 200"),
+            "the stream must open with 200, got: {head}"
+        );
+        assert!(
+            head.contains("text/event-stream"),
+            "the stream must be event-stream: {head}"
+        );
+        let chunked = head.contains("transfer-encoding: chunked");
+        Self {
+            stream,
+            chunked,
+            raw: Vec::new(),
+            body: Vec::new(),
+            closed: false,
+        }
+    }
+
+    /// The next frame, or `None` on timeout or a closed stream.
+    async fn next_frame(&mut self, timeout: Duration) -> Option<Frame> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Some(frame) = self.take_frame() {
+                return Some(frame);
+            }
+            if self.closed {
+                return None;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let mut buffer = [0u8; 8192];
+            match tokio::time::timeout(remaining, self.stream.read(&mut buffer)).await {
+                Ok(Ok(0)) => self.closed = true,
+                Ok(Ok(read)) => {
+                    self.raw.extend_from_slice(&buffer[..read]);
+                    if self.chunked {
+                        self.decode_chunks();
+                    } else {
+                        self.body.extend_from_slice(&self.raw);
+                        self.raw.clear();
+                    }
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Every frame until the stream ends or the timeout expires.
+    async fn frames_until_end(&mut self, timeout: Duration) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        while let Some(frame) = self.next_frame(timeout).await {
+            frames.push(frame);
+        }
+        frames
+    }
+
+    fn decode_chunks(&mut self) {
+        loop {
+            let Some(position) = find(&self.raw, b"\r\n") else {
+                return;
+            };
+            let size_line = String::from_utf8_lossy(&self.raw[..position]).into_owned();
+            let size = usize::from_str_radix(size_line.split(';').next().unwrap_or("0").trim(), 16)
+                .unwrap_or(0);
+            let start = position + 2;
+            if size == 0 {
+                self.closed = true;
+                return;
+            }
+            if self.raw.len() < start + size + 2 {
+                return;
+            }
+            self.body.extend_from_slice(&self.raw[start..start + size]);
+            self.raw.drain(..start + size + 2);
+        }
+    }
+
+    fn take_frame(&mut self) -> Option<Frame> {
+        let position = find(&self.body, b"\n\n")?;
+        let block = String::from_utf8_lossy(&self.body[..position]).into_owned();
+        self.body.drain(..position + 2);
+
+        let mut id = None;
+        let mut event = None;
+        let mut data = String::new();
+        let mut has_data = false;
+        for line in block.lines() {
+            if line.starts_with(':') {
+                continue;
+            }
+            let (name, value) = line.split_once(':').unwrap_or((line, ""));
+            let value = value.trim_start();
+            match name {
+                "id" => id = value.trim().parse::<i64>().ok(),
+                "event" => event = Some(value.trim().to_owned()),
+                "data" => {
+                    if has_data {
+                        data.push('\n');
+                    }
+                    data.push_str(value);
+                    has_data = true;
+                }
+                _ => {}
+            }
+        }
+        if !has_data {
+            // A keep-alive comment carries no frame.
+            return self.take_frame();
+        }
+        Some(Frame {
+            id: id.expect("every frame carries an id"),
+            event: event.expect("every frame carries an event"),
+            data: serde_json::from_str(&data).unwrap_or(serde_json::Value::String(data)),
+        })
+    }
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// A chunked body, decoded once it is complete (non-streaming responses only).
+fn dechunk(body: &str) -> String {
+    let mut out = String::new();
+    let mut rest = body;
+    while let Some((size_line, remainder)) = rest.split_once("\r\n") {
+        let size = usize::from_str_radix(size_line.trim(), 16).unwrap_or(0);
+        if size == 0 {
+            break;
+        }
+        if remainder.len() < size {
+            out.push_str(remainder);
+            break;
+        }
+        out.push_str(&remainder[..size]);
+        rest = remainder[size..]
+            .strip_prefix("\r\n")
+            .unwrap_or(&remainder[size..]);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// The stub provider
+// ---------------------------------------------------------------------------
+
+/// A provider stub that streams `deltas` one frame at a time.
+/// Read one full HTTP request: headers plus the body `content-length` names.
+///
+/// The stub used to read a single 4 KB chunk, which was enough while every prompt
+/// was small. A turn that carries a skill catalog is not small, and the record
+/// stopped mid-system-prompt, so a test about history could not see the history.
+async fn read_full_request(socket: &mut tokio::net::TcpStream) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    let mut scratch = [0u8; 8192];
+    let mut body_start: Option<usize> = None;
+    let mut body_len: Option<usize> = None;
+    loop {
+        if let (Some(start), Some(len)) = (body_start, body_len)
+            && buffer.len() >= start + len
+        {
+            break;
+        }
+        let read = socket.read(&mut scratch).await.unwrap_or(0);
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&scratch[..read]);
+        if body_start.is_none()
+            && let Some(pos) = buffer.windows(4).position(|window| window == b"\r\n\r\n")
+        {
+            let start = pos + 4;
+            let headers = String::from_utf8_lossy(&buffer[..start]);
+            let len = headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            });
+            body_start = Some(start);
+            body_len = Some(len.unwrap_or(0));
+        }
+    }
+    buffer
+}
+
+struct StubProvider {
+    url: String,
+    hits: Arc<AtomicUsize>,
+    /// The raw request head and body each call arrived with, in order. A test that
+    /// cares about what the model was told reads this.
+    bodies: Arc<std::sync::Mutex<Vec<String>>>,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl StubProvider {
+    /// What each call arrived with, in order.
+    fn bodies(&self) -> Vec<String> {
+        self.bodies
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    /// Start a stub. `gap` is the delay between deltas, so a test can hold a turn
+    /// open long enough to cancel or disconnect mid-stream.
+    async fn start(deltas: &[&'static str], gap: Duration) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a stub provider listener");
+        let addr = listener.local_addr().expect("a stub provider address");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&bodies);
+        let deltas: Vec<&'static str> = deltas.to_vec();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let recorder = Arc::clone(&recorder);
+                let deltas = deltas.clone();
+                tokio::spawn(async move {
+                    // Record the whole request, not one 4 KB read. A system
+                    // prompt that carries a skill catalog is larger than that,
+                    // and a truncated record made a history assertion fail on
+                    // what the client never sent.
+                    let body = read_full_request(&mut socket).await;
+                    if let Ok(mut seen) = recorder.lock() {
+                        seen.push(String::from_utf8_lossy(&body).into_owned());
+                    }
+                    let response = String::from(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
+                    );
+                    if socket.write_all(response.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    for delta in deltas {
+                        let frame = format!(
+                            "data: {}\n\n",
+                            serde_json::json!({
+                                "choices": [{ "index": 0, "delta": { "content": delta } }]
+                            })
+                        );
+                        if socket.write_all(frame.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        if !gap.is_zero() {
+                            tokio::time::sleep(gap).await;
+                        }
+                    }
+                    let last = format!(
+                        "data: {}\n\ndata: [DONE]\n\n",
+                        serde_json::json!({
+                            "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }],
+                            "usage": { "prompt_tokens": 9, "completion_tokens": 2 }
+                        })
+                    );
+                    let _ = socket.write_all(last.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        Self {
+            url: format!("http://{addr}/v1"),
+            hits,
+            bodies,
+            _task: task,
+        }
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(Ordering::SeqCst)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The six routes
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pair_redeems_a_code_and_refresh_mints_an_access_token() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, code) = harness.device_with_code("iPhone");
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(r#"{{"code":"{code}","device_name":"iPhone"}}"#)),
+        )
+        .await;
+    assert_eq!(response.status, 201, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["device_id"], device_id);
+    let access = body["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    assert_eq!(access.len(), 64, "32 bytes as hex");
+    assert!(
+        access.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "the access token is hex"
+    );
+    let refresh = body["refresh_token"]
+        .as_str()
+        .expect("a refresh token")
+        .to_owned();
+    assert_ne!(refresh, access);
+    let scopes = body["scopes"].as_array().expect("a scope list");
+    assert!(scopes.contains(&serde_json::json!("chat")));
+    assert!(!scopes.contains(&serde_json::json!("admin")));
+    assert!(body["expires_at"].as_str().is_some_and(|at| !at.is_empty()));
+
+    // The code is single use.
+    let reused = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(r#"{{"code":"{code}","device_name":"iPhone"}}"#)),
+        )
+        .await;
+    assert_eq!(reused.status, 401, "{}", reused.body);
+    assert_eq!(reused.json()["code"], "pairing_code_invalid");
+
+    // A code that never existed is the same 401 with the same code.
+    let bogus = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(r#"{"code":"ZZZZZZZZ","device_name":"iPhone"}"#),
+        )
+        .await;
+    assert_eq!(bogus.status, 401, "{}", bogus.body);
+    assert_eq!(bogus.json()["code"], "pairing_code_invalid");
+    assert_eq!(bogus.json()["ok"], false);
+
+    // Refresh: the stored refresh token buys one fresh access token.
+    let previous_refresh = refresh.clone();
+    let refreshed = harness
+        .request(
+            "POST",
+            "/v1/token/refresh",
+            &[],
+            Some(&format!(r#"{{"refresh_token":"{refresh}"}}"#)),
+        )
+        .await;
+    assert_eq!(refreshed.status, 200, "{}", refreshed.body);
+    let refreshed_body = refreshed.json();
+    assert_eq!(refreshed_body["ok"], true);
+    let fresh = refreshed_body["access_token"]
+        .as_str()
+        .expect("a fresh access token");
+    assert_ne!(fresh, access, "a refresh mints a new token");
+    // Rotation: the refresh token that bought this access token is spent, and the
+    // replacement is what carries on.
+    let refresh = refreshed_body["refresh_token"]
+        .as_str()
+        .expect("a replacement refresh token")
+        .to_owned();
+    assert_ne!(refresh, previous_refresh, "the replacement is a new token");
+
+    // The retired token is refused, and the replacement works. Anything else would
+    // mean a client holding the old copy could still refresh, which is the state the
+    // two lanes kept getting each other into.
+    let again = harness
+        .request(
+            "POST",
+            "/v1/token/refresh",
+            &[],
+            Some(&format!(r#"{{"refresh_token":"{previous_refresh}"}}"#)),
+        )
+        .await;
+    assert_eq!(again.status, 401, "{}", again.body);
+    let rotated_again = harness
+        .request(
+            "POST",
+            "/v1/token/refresh",
+            &[],
+            Some(&format!(r#"{{"refresh_token":"{refresh}"}}"#)),
+        )
+        .await;
+    assert_eq!(rotated_again.status, 200, "{}", rotated_again.body);
+
+    // An access token is not a refresh token.
+    let wrong_kind = harness
+        .request(
+            "POST",
+            "/v1/token/refresh",
+            &[],
+            Some(&format!(r#"{{"refresh_token":"{access}"}}"#)),
+        )
+        .await;
+    assert_eq!(wrong_kind.status, 401, "{}", wrong_kind.body);
+    assert_eq!(wrong_kind.json()["code"], "token_invalid");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_turn_returns_202_then_streams_frames_with_monotonic_ids() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(r#"{"text":"reply with the single word: ok"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["state"], "queued");
+    let job_id = body["job_id"].as_str().expect("a job id").to_owned();
+    let session_id = body["session_id"]
+        .as_str()
+        .expect("a session id")
+        .to_owned();
+
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+    assert!(!frames.is_empty(), "the stream must carry frames");
+    let ids: Vec<i64> = frames.iter().map(|frame| frame.id).collect();
+    assert_eq!(
+        ids,
+        (1..=ids.len() as i64).collect::<Vec<_>>(),
+        "ids are 1..n"
+    );
+    let last = frames.last().expect("a last frame");
+    assert_eq!(last.event, "done", "the last frame is the terminal one");
+    assert_eq!(last.data["text"], "ok");
+    assert!(
+        last.data["usage"].is_object(),
+        "the done frame carries usage: {}",
+        last.data
+    );
+    let deltas: String = frames
+        .iter()
+        .filter(|frame| frame.event == "delta")
+        .filter_map(|frame| frame.data["text"].as_str())
+        .collect();
+    assert_eq!(deltas, "ok", "the deltas assemble into the reply");
+
+    // The snapshot route reports the same turn.
+    let snapshot = harness
+        .request("GET", &format!("/v1/sessions/{session_id}"), &auth, None)
+        .await;
+    assert_eq!(snapshot.status, 200, "{}", snapshot.body);
+    let snapshot = snapshot.json();
+    assert_eq!(snapshot["ok"], true);
+    assert_eq!(snapshot["session_id"], session_id.as_str());
+    let turns = snapshot["turns"].as_array().expect("a turn list");
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0]["job_id"], job_id.as_str());
+    assert_eq!(turns[0]["state"], "succeeded");
+    assert_eq!(turns[0]["text"], "ok");
+    assert!(turns[0]["created_at"].as_str().is_some());
+    assert!(turns[0]["finished_at"].as_str().is_some());
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn an_idempotency_key_replays_the_job_without_a_second_call() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, token) = harness.device_with_token("iPhone");
+    let auth = [
+        ("authorization", format!("Bearer {token}")),
+        ("idempotency-key", "turn-42".to_owned()),
+    ];
+
+    let first = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"ok"}"#))
+        .await;
+    assert_eq!(first.status, 202, "{}", first.body);
+    let job_id = first.json()["job_id"].as_str().expect("job id").to_owned();
+
+    let second = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"ok"}"#))
+        .await;
+    assert_eq!(second.status, 202, "{}", second.body);
+    assert_eq!(
+        second.json()["job_id"],
+        job_id.as_str(),
+        "same key, same job"
+    );
+
+    let rows = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM jobs WHERE device_id = ?1",
+                [&device_id],
+                |row| row.get::<_, i64>(0),
+            )
+        })
+        .expect("job count");
+    assert_eq!(rows, 1, "no second turn row");
+
+    // The provider was called once, and only after the worker claimed the job.
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let _ = stream.frames_until_end(Duration::from_secs(10)).await;
+    assert_eq!(provider.hits(), 1, "no second provider call");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn last_event_id_resumes_with_only_the_missing_frames() {
+    let provider =
+        StubProvider::start(&["a", "b", "c", "d", "e", "f"], Duration::from_millis(120)).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"ok"}"#))
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("job id")
+        .to_owned();
+    let path = format!("/v1/turns/{job_id}/events");
+
+    // Read one frame, then drop the connection mid-turn.
+    let mut first = Sse::open(harness.addr, &path, &token, None).await;
+    let head = first
+        .next_frame(Duration::from_secs(5))
+        .await
+        .expect("the first frame arrives");
+    // A turn opens with `turn.start`: the surface has to learn the turn exists
+    // before anything else, so a phone can show a placeholder for a turn whose
+    // first token is a minute away. `round` follows as the work begins.
+    assert_eq!(head.id, 1);
+    assert_eq!(head.event, "turn.start");
+    drop(first);
+
+    // Let a few more frames land while nobody is listening.
+    tokio::time::sleep(Duration::from_millis(450)).await;
+
+    // Reconnect strictly after frame 1 and read the rest, including the terminal.
+    let mut resumed = Sse::open(harness.addr, &path, &token, Some(1)).await;
+    let frames = resumed.frames_until_end(Duration::from_secs(10)).await;
+    assert!(!frames.is_empty(), "the resume must deliver frames");
+    assert!(
+        frames.iter().all(|frame| frame.id > 1),
+        "a resume replays strictly after the id it was given: {:?}",
+        frames.iter().map(|frame| frame.id).collect::<Vec<_>>()
+    );
+    let ids: Vec<i64> = frames.iter().map(|frame| frame.id).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted, "frames arrive in id order");
+    let last = frames.last().expect("a terminal frame");
+    assert_eq!(last.event, "done");
+
+    // The replayed deltas are the whole reply: the frame before the resume id is
+    // not replayed, and the round frame carried no text.
+    let mut text = String::new();
+    for frame in &frames {
+        if frame.event == "delta" {
+            text.push_str(frame.data["text"].as_str().unwrap_or(""));
+        }
+    }
+    assert_eq!(text, "abcdef", "no delta was lost across the reconnect");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_resume_past_the_retention_window_is_a_409_buffer_miss() {
+    let provider =
+        StubProvider::start(&["a", "b", "c", "d", "e", "f", "g", "h"], Duration::ZERO).await;
+    // Two retained events per job is enough to prove the window.
+    let harness = Harness::start(&provider.url, 2).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"ok"}"#))
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let body = response.json();
+    let job_id = body["job_id"].as_str().expect("job id").to_owned();
+    let session_id = body["session_id"].as_str().expect("session id").to_owned();
+    let path = format!("/v1/turns/{job_id}/events");
+
+    // Drain the stream so the turn is certainly finished and pruned. A live
+    // subscriber sees every frame as it happens; retention is about what can be
+    // replayed afterwards, which is what the two requests below prove.
+    let mut stream = Sse::open(harness.addr, &path, &token, None).await;
+    let live = stream.frames_until_end(Duration::from_secs(10)).await;
+    assert_eq!(live.last().expect("a terminal frame").event, "done");
+    assert_eq!(
+        live.iter().filter(|frame| frame.event == "delta").count(),
+        8,
+        "eight deltas"
+    );
+
+    // Asking for everything from the start is now impossible, and the answer says
+    // so rather than quietly streaming a suffix.
+    let missed = harness
+        .request(
+            "GET",
+            &path,
+            &[
+                ("authorization", format!("Bearer {token}")),
+                ("last-event-id", "1".to_owned()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(missed.status, 409, "{}", missed.body);
+    let missed_body = missed.json();
+    assert_eq!(missed_body["ok"], false);
+    assert_eq!(missed_body["code"], "buffer_miss");
+    assert_eq!(
+        missed_body["snapshot_url"],
+        format!("/v1/sessions/{session_id}").as_str()
+    );
+
+    // A connection that names no position is not resuming, it is watching, so
+    // it must not be told its position is stale. This is the phone: it has no
+    // resume header at all, and before this a long turn pruning its early frames
+    // made every reconnect a 409 and the live view went silent.
+    let watching = harness.request("GET", &path, &auth, None).await;
+    assert_eq!(watching.status, 200, "{}", watching.body);
+
+    // The snapshot route is the documented recovery path.
+    let snapshot = harness
+        .request("GET", &format!("/v1/sessions/{session_id}"), &auth, None)
+        .await;
+    assert_eq!(snapshot.status, 200, "{}", snapshot.body);
+    let snapshot = snapshot.json();
+    assert_eq!(snapshot["turns"][0]["text"], "abcdefgh");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn cancel_stops_a_running_turn_and_a_second_cancel_is_409() {
+    let provider = StubProvider::start(
+        &["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"],
+        Duration::from_millis(150),
+    )
+    .await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"ok"}"#))
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("job id")
+        .to_owned();
+
+    // Hold the job open just long enough for the worker to be running.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let cancelled = harness
+        .request("POST", &format!("/v1/turns/{job_id}/cancel"), &auth, None)
+        .await;
+    assert_eq!(cancelled.status, 200, "{}", cancelled.body);
+    assert_eq!(cancelled.json()["state"], "cancelled");
+
+    // The stream now ends with the cancellation, not with a done.
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+    let last = frames.last().expect("the cancelled frame");
+    assert_eq!(last.event, "cancelled");
+    assert_eq!(last.data["reason"], "cancel");
+
+    // A second cancel is a refusal, not a second cancelled frame.
+    let again = harness
+        .request("POST", &format!("/v1/turns/{job_id}/cancel"), &auth, None)
+        .await;
+    assert_eq!(again.status, 409, "{}", again.body);
+    assert_eq!(again.json()["code"], "turn_not_cancellable");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_admin_plane_is_404_on_the_device_listener() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_device, _token) = harness.device_with_token("iPhone");
+
+    for path in [
+        "/setup",
+        "/setup/state",
+        "/dashboard",
+        "/healthz",
+        "/static/app.css",
+        "/",
+        "/v2/turns",
+    ] {
+        let response = harness.request("GET", path, &[], None).await;
+        assert_eq!(response.status, 404, "{path} must not exist here");
+        assert!(
+            response
+                .headers
+                .to_ascii_lowercase()
+                .contains("x-request-id"),
+            "{path} carries a request id too: {}",
+            response.headers
+        );
+        let body = response.json();
+        assert_eq!(body["ok"], false, "{path}");
+        assert_eq!(body["code"], "not_found", "{path}");
+    }
+
+    // A POST to an admin path is a 404 too, not a 405: the route does not exist.
+    let posted = harness
+        .request("POST", "/setup/claim", &[], Some(r#"{"passphrase":"x"}"#))
+        .await;
+    assert_eq!(posted.status, 404, "{}", posted.body);
+    assert_eq!(posted.json()["code"], "not_found");
+
+    // A device route with a bearer still requires the bearer on the session
+    // routes: the surface is authenticated even where the path exists.
+    let anonymous = harness
+        .request("GET", "/v1/sessions/whatever", &[], None)
+        .await;
+    assert_eq!(anonymous.status, 401, "{}", anonymous.body);
+    assert_eq!(anonymous.json()["code"], "token_invalid");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_not_ready_gate_and_the_missing_bearer_are_both_typed() {
+    let harness = Harness::start_not_ready().await;
+    let (_, token) = harness.device_with_token("iPhone");
+
+    let not_ready = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &[("authorization", format!("Bearer {token}"))],
+            Some(r#"{"text":"ok"}"#),
+        )
+        .await;
+    assert_eq!(not_ready.status, 409, "{}", not_ready.body);
+    assert_eq!(not_ready.json()["code"], "not_ready");
+
+    let no_token = harness
+        .request("POST", "/v1/turns", &[], Some(r#"{"text":"ok"}"#))
+        .await;
+    assert_eq!(no_token.status, 401, "{}", no_token.body);
+    assert_eq!(no_token.json()["code"], "token_invalid");
+
+    let bad_token = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &[("authorization", "Bearer not-a-token".to_owned())],
+            Some(r#"{"text":"ok"}"#),
+        )
+        .await;
+    assert_eq!(bad_token.status, 401, "{}", bad_token.body);
+    assert_eq!(bad_token.json()["code"], "token_invalid");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_foreign_job_is_404_and_the_port_is_loopback_only() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, mine) = harness.device_with_token("iPhone");
+    let (_, theirs) = harness.device_with_token("iPad");
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &[("authorization", format!("Bearer {theirs}"))],
+            Some(r#"{"text":"ok"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("job id")
+        .to_owned();
+
+    // The other device's job is not readable, cancellable, or resumable.
+    for (method, path) in [
+        ("GET", format!("/v1/turns/{job_id}/events")),
+        ("POST", format!("/v1/turns/{job_id}/cancel")),
+    ] {
+        let foreign = harness
+            .request(
+                method,
+                &path,
+                &[("authorization", format!("Bearer {mine}"))],
+                None,
+            )
+            .await;
+        assert_eq!(foreign.status, 404, "{method} {path}: {}", foreign.body);
+        assert_eq!(foreign.json()["code"], "job_not_found");
+    }
+
+    // Address and retention are literals, not settings.
+    assert_eq!(DEVICE_ADDR, "127.0.0.1:7341");
+    assert_eq!(TurnStore::buffer_from_env(), DEFAULT_SSE_BUFFER);
+    assert!(harness.addr.ip().is_loopback());
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// A provider stub that scripts whole rounds
+// ---------------------------------------------------------------------------
+
+/// A provider stub that answers each request with the next scripted round.
+///
+/// `StubProvider` above streams one fixed list of text deltas; this one exists
+/// because a reasoning frame, a tool call and a second round are all *sequences of
+/// different frames*, and a test that proved them would otherwise have to hard
+/// code a provider dialect twice. Each round is the SSE payloads to send, in
+/// order; the last round repeats if the turn asks again.
+struct ScriptedProvider {
+    url: String,
+    hits: Arc<AtomicUsize>,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl ScriptedProvider {
+    async fn start(rounds: Vec<Vec<serde_json::Value>>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a stub provider listener");
+        let addr = listener.local_addr().expect("a stub provider address");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let served = counter.fetch_add(1, Ordering::SeqCst);
+                let frames = rounds
+                    .get(served)
+                    .or_else(|| rounds.last())
+                    .cloned()
+                    .unwrap_or_default();
+                tokio::spawn(async move {
+                    let mut scratch = [0u8; 8192];
+                    let _ = socket.read(&mut scratch).await;
+                    let head = String::from(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
+                    );
+                    if socket.write_all(head.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    for frame in frames {
+                        let body = format!("data: {frame}\n\n");
+                        if socket.write_all(body.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    let _ = socket.write_all(b"data: [DONE]\n\n").await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        Self {
+            url: format!("http://{addr}/v1"),
+            hits,
+            _task: task,
+        }
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(Ordering::SeqCst)
+    }
+}
+
+/// One chunk carrying a text delta.
+fn text_chunk(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "choices": [{ "index": 0, "delta": { "content": text } }]
+    })
+}
+
+/// One chunk carrying a reasoning fragment.
+fn reasoning_chunk(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "choices": [{ "index": 0, "delta": { "reasoning_content": text } }]
+    })
+}
+
+/// The chunk that ends a round, with the usage every round reports.
+fn closing_chunk(reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "choices": [{ "index": 0, "delta": {}, "finish_reason": reason }],
+        "usage": { "prompt_tokens": 9, "completion_tokens": 2 }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// What a device turn carries
+// ---------------------------------------------------------------------------
+
+/// Run one device turn to completion and hand back nothing.
+///
+/// Every assertion in the goal tests is about what the provider was told, so the
+/// turn has to be finished before the recording is read. Draining the stream is
+/// what settles the row; polling the database would be the same wait with more
+/// ways to be flaky.
+async fn drain_turn_in(
+    harness: &Harness,
+    token: &str,
+    auth: &[(&str, String)],
+    conversation: &str,
+    text: &str,
+) {
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            auth,
+            Some(&serde_json::json!({ "text": text, "conversation": conversation }).to_string()),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        token,
+        None,
+    )
+    .await;
+    let _ = stream.frames_until_end(Duration::from_secs(10)).await;
+}
+
+async fn drain_turn(harness: &Harness, token: &str, auth: &[(&str, String)], text: &str) {
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            auth,
+            Some(&serde_json::json!({ "text": text }).to_string()),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        token,
+        None,
+    )
+    .await;
+    let _ = stream.frames_until_end(Duration::from_secs(10)).await;
+}
+
+/// A greeting is not a work order.
+///
+/// With a goal set, the objective is the only actionable instruction in the prompt,
+/// so "Sup" was answered with a warehouse sweep and sixty rounds of budget. The gate
+/// is what stops it, and this is the proof: the same daemon, the same goal, one
+/// greeting and one real instruction, and only the second carries the block.
+#[tokio::test]
+async fn a_greeting_does_not_carry_the_objective_and_a_task_does() {
+    let provider = StubProvider::start(&["ok"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    harness
+        .engine
+        .set_setting("goal.objective", "inspect the warehouse")
+        .expect("a goal row");
+
+    drain_turn(&harness, &token, &auth, "Sup").await;
+    drain_turn(&harness, &token, &auth, "sweep the warehouse for gaps").await;
+
+    let seen = provider.bodies();
+    assert_eq!(seen.len(), 2, "two turns, two provider calls");
+    assert!(
+        !seen[0].contains("## Objective"),
+        "a greeting carries no objective: {}",
+        seen[0]
+    );
+    assert!(
+        !seen[0].contains("inspect the warehouse"),
+        "and not the text of one either: {}",
+        seen[0]
+    );
+    assert!(
+        seen[1].contains("## Objective"),
+        "a real instruction still carries it: {}",
+        seen[1]
+    );
+    assert!(
+        seen[1].contains("inspect the warehouse"),
+        "with the objective in it: {}",
+        seen[1]
+    );
+
+    harness.stop();
+}
+
+/// Clearing the goal is what turns the behaviour off, and it is one setting.
+#[tokio::test]
+async fn a_cleared_goal_is_not_carried_at_all() {
+    let provider = StubProvider::start(&["ok"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    harness
+        .engine
+        .set_setting("goal.objective", "inspect the warehouse")
+        .expect("a goal row");
+
+    // `/goal stop` is the phone's own route to the same row, so it is what a
+    // cleared goal looks like from the surface that set it.
+    let response = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"/goal stop"}"#))
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+    let done = frames.last().expect("a terminal frame");
+    assert!(
+        done.data["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Goal cleared")),
+        "the command says what it did: {:?}",
+        done.data["text"]
+    );
+
+    drain_turn(&harness, &token, &auth, "sweep the warehouse for gaps").await;
+
+    let seen = provider.bodies();
+    assert_eq!(seen.len(), 1, "the command cost no model call");
+    assert!(
+        !seen[0].contains("## Objective"),
+        "a cleared goal is not in the prompt: {}",
+        seen[0]
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_turn_that_reasons_streams_reasoning_frames() {
+    let provider = ScriptedProvider::start(vec![vec![
+        reasoning_chunk("weighing it"),
+        reasoning_chunk(" then answering"),
+        text_chunk("ok"),
+        closing_chunk("stop"),
+    ]])
+    .await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(r#"{"text":"think first"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+
+    let reasoning: String = frames
+        .iter()
+        .filter(|frame| frame.event == "reasoning")
+        .filter_map(|frame| frame.data["text"].as_str())
+        .collect();
+    assert_eq!(
+        reasoning, "weighing it then answering",
+        "every reasoning fragment is its own frame, in order: {frames:?}"
+    );
+    assert!(
+        frames.iter().any(|frame| frame.event == "reasoning"),
+        "the stream names the frame `reasoning`, the name the browser uses"
+    );
+    // The reply is still the reply: reasoning is never mixed into the text.
+    let deltas: String = frames
+        .iter()
+        .filter(|frame| frame.event == "delta")
+        .filter_map(|frame| frame.data["text"].as_str())
+        .collect();
+    assert_eq!(deltas, "ok");
+    let last = frames.last().expect("a terminal frame");
+    assert_eq!(last.event, "done");
+    assert_eq!(last.data["text"], "ok");
+
+    // A reasoning frame is not terminal, and the id sequence has no gaps.
+    let ids: Vec<i64> = frames.iter().map(|frame| frame.id).collect();
+    assert_eq!(ids, (1..=ids.len() as i64).collect::<Vec<_>>());
+    assert!(
+        frames
+            .iter()
+            .take(frames.len() - 1)
+            .all(|frame| frame.event != "done"),
+        "nothing terminates the stream early: {frames:?}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_turn_that_calls_a_tool_streams_the_frame_the_browser_sends() {
+    // Round one asks for a tool; round two answers with what it found. A
+    // `list_dir` call is not a write, so no approval gate stands in its way.
+    let provider = ScriptedProvider::start(vec![
+        vec![
+            serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_1",
+                            "function": { "name": "list_dir", "arguments": "{\"path\":\".\"}" }
+                        }]
+                    }
+                }]
+            }),
+            closing_chunk("tool_calls"),
+        ],
+        vec![text_chunk("one directory"), closing_chunk("stop")],
+    ])
+    .await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    // The turn works in a real directory, so the call actually runs.
+    harness
+        .engine
+        .set_setting(
+            eris_host::onboarding::SETTING_WORKSPACE,
+            &harness._dir.path().display().to_string(),
+        )
+        .expect("a workspace setting");
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(r#"{"text":"what is here"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(20)).await;
+    assert_eq!(provider.hits(), 2, "a tool round is a second provider call");
+
+    let tool = frames
+        .iter()
+        .find(|frame| frame.event == "tool")
+        .unwrap_or_else(|| panic!("a tool frame is in the stream: {frames:?}"));
+    // Exactly the four fields the browser sends, and no invented fifth one.
+    let data = tool.data.as_object().expect("the tool frame is an object");
+    let mut keys: Vec<&str> = data.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["arguments", "is_error", "name", "output"],
+        "the frame carries the browser's four fields: {data:?}"
+    );
+    assert_eq!(data["name"], "list_dir");
+    assert_eq!(data["arguments"], r#"{"path":"."}"#);
+    assert_eq!(data["is_error"], false, "the call ran: {data:?}");
+    let output = data["output"].as_str().expect("an output string");
+    assert!(
+        output.contains("entries"),
+        "the output is the tool's own result: {output}"
+    );
+
+    // The tool frame precedes the answer it produced, and the answer still lands.
+    let tool_at = frames
+        .iter()
+        .position(|frame| frame.event == "tool")
+        .expect("a tool position");
+    let last = frames.last().expect("a terminal frame");
+    assert_eq!(last.event, "done");
+    assert_eq!(last.data["text"], "one directory");
+    assert!(
+        frames
+            .iter()
+            .skip(tool_at)
+            .any(|frame| frame.event == "delta"),
+        "the second round's text streams after the call: {frames:?}"
+    );
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// A phone turn that asks a question and resumes with the answer
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_turn_that_asks_parks_and_resumes_with_the_answer_over_v1() {
+    // Round one reaches for `clarify`; round two answers with what came back. The
+    // whole point is that the second round sees the operator's words, so the
+    // assertion is on the model's own reply, not just on the frames.
+    let provider = ScriptedProvider::start(vec![
+        vec![
+            serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_ask",
+                            "function": {
+                                "name": "clarify",
+                                "arguments": "{\"title\":\"Which lane?\",\"questions\":[{\"question\":\"Which lane should this land on?\",\"choices\":[\"Web first\",\"All three\"]}]}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            closing_chunk("tool_calls"),
+        ],
+        vec![text_chunk("landing on Web first"), closing_chunk("stop")],
+    ])
+    .await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(r#"{"text":"ship the compression work"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+
+    // Read the stream until the question appears. The turn is parked at that
+    // moment, so the stream does not end - which is the behaviour under test.
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let mut asked: Option<Frame> = None;
+    while let Some(frame) = stream.next_frame(Duration::from_secs(20)).await {
+        if frame.event == "asked" {
+            asked = Some(frame);
+            break;
+        }
+    }
+    let asked = asked.unwrap_or_else(|| panic!("the turn asks and says so on the stream"));
+    assert_eq!(
+        asked.data["request"]["questions"][0]["question"], "Which lane should this land on?",
+        "the frame carries what the model asked: {}",
+        asked.data
+    );
+    assert_eq!(
+        asked.data["answer"],
+        serde_json::Value::Null,
+        "the card goes out unanswered, before the turn blocks: {}",
+        asked.data
+    );
+    assert_eq!(
+        provider.hits(),
+        1,
+        "the turn is parked before the second provider call"
+    );
+
+    // A client that was not watching reads the same question from the route.
+    let reply = harness
+        .request("GET", &format!("/v1/turns/{job_id}/asked"), &auth, None)
+        .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(reply.json()["waiting"], true, "{}", reply.body);
+
+    // Answer it. This is the resume path: the parked thread wakes with the
+    // operator's words as the tool result and the turn runs its second round.
+    let reply = harness
+        .request(
+            "POST",
+            &format!("/v1/turns/{job_id}/answer"),
+            &auth,
+            Some(r#"{"labels":"Web first","question":"Which lane should this land on?"}"#),
+        )
+        .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(reply.json()["ok"], true, "{}", reply.body);
+
+    let frames = stream.frames_until_end(Duration::from_secs(20)).await;
+    let last = frames.last().expect("a terminal frame");
+    assert_eq!(
+        last.event, "done",
+        "the turn finishes after the answer: {frames:?}"
+    );
+    assert_eq!(last.data["text"], "landing on Web first");
+    assert_eq!(
+        provider.hits(),
+        2,
+        "the answer resumed the turn into a second provider round"
+    );
+
+    // The answer is written to the job log under the same kind, so a client that
+    // reconnects reads the question and the decision from the last `asked` frame.
+    let replay = harness
+        .request("GET", &format!("/v1/turns/{job_id}/events"), &auth, None)
+        .await;
+    assert!(
+        replay.body.contains("landing on Web first") || replay.body.contains("\"Web first\""),
+        "the job log keeps the answer the turn resumed with: {}",
+        replay.body
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_stops_waiting_on_its_question() {
+    // Parked on a question nobody answers, then cancelled. Without the cancel
+    // being heard through the turn's poll, this would hold the job for the hour
+    // and finish as a success on the model's own judgement.
+    let provider = ScriptedProvider::start(vec![
+        vec![
+            serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_ask",
+                            "function": {
+                                "name": "clarify",
+                                "arguments": "{\"question\":\"Which lane?\",\"choices\":[\"Web first\"]}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            closing_chunk("tool_calls"),
+        ],
+        vec![text_chunk("carrying on alone"), closing_chunk("stop")],
+    ])
+    .await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"which lane"}"#))
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+
+    // Wait for the question to be parked before cancelling, so this proves the
+    // cancel interrupts a wait rather than racing the turn's start.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let reply = harness
+            .request("GET", &format!("/v1/turns/{job_id}/asked"), &auth, None)
+            .await;
+        if reply.json()["waiting"] == true {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the turn never parked on its question"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let reply = harness
+        .request("POST", &format!("/v1/turns/{job_id}/cancel"), &auth, None)
+        .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+
+    // The job ends cancelled rather than holding the lease until the hour is up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let reply = harness
+            .request("GET", &format!("/v1/turns/{job_id}/events"), &auth, None)
+            .await;
+        if reply.body.contains("event: cancelled") || reply.body.contains("event: error") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a cancelled turn parked on a question never ended: {}",
+            reply.body
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        provider.hits(),
+        1,
+        "the turn stopped instead of taking a second round on its own judgement"
+    );
+    // The parked question is gone: nothing may answer a turn that already ended.
+    let reply = harness
+        .request("GET", &format!("/v1/turns/{job_id}/asked"), &auth, None)
+        .await;
+    assert_eq!(reply.json()["waiting"], false, "{}", reply.body);
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Slash commands over /v1
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_help_command_answers_without_a_provider_or_a_billed_token() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    // Every `provider.*` row goes, mirroring the browser's own command test: a
+    // command is not a message to a model, so a daemon with no endpoint answers.
+    harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.execute("DELETE FROM settings WHERE key LIKE 'provider.%'", [])?;
+            Ok(())
+        })
+        .expect("the provider rows are deleted");
+    let (device_id, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"/help"}"#))
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body["state"], "succeeded",
+        "a command settles before the 202 is answered"
+    );
+    let job_id = body["job_id"].as_str().expect("a job id").to_owned();
+
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+    let last = frames.last().expect("a terminal frame");
+    assert_eq!(last.event, "done", "the answer is a normal turn result");
+    let text = last.data["text"].as_str().expect("the answer text");
+    assert!(
+        text.contains("/help"),
+        "the answer is the help text: {text}"
+    );
+    assert!(
+        text.contains("/stop"),
+        "it lists the commands this daemon implements: {text}"
+    );
+    assert!(
+        frames.iter().all(|frame| frame.event == "done"),
+        "one frame, and it is the answer: {frames:?}"
+    );
+
+    // Nothing was billed and no model was asked: the usage numbers are absent
+    // rather than a confident zero, which is the same distinction the browser's
+    // null token columns make.
+    let usage = &last.data["usage"];
+    assert!(
+        usage["input"]["tokens"].is_null() && usage["output"]["tokens"].is_null(),
+        "no token count was reported: {usage}"
+    );
+    assert_eq!(
+        usage["input"]["state"], "provider_unavailable",
+        "unreported, not zero: {usage}"
+    );
+    assert_eq!(provider.hits(), 0, "no provider call");
+
+    // The device transcript is never written: this turn has no conversation row
+    // and no question row, which is the by-construction proof it cost nothing.
+    let (messages, user_rows) = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row("SELECT COUNT(*) FROM chat_messages", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM chat_messages WHERE role = 'user'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?,
+            ))
+        })
+        .expect("the transcript counts");
+    assert_eq!(messages, 0, "a command writes no transcript row");
+    assert_eq!(user_rows, 0, "and no user row");
+
+    // The command belongs to the device that asked, and the snapshot reports it.
+    let row = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT device_id, request_text FROM jobs WHERE id = ?1",
+                [&job_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+        })
+        .expect("the job row");
+    assert_eq!(row.0, device_id);
+    assert_eq!(row.1, "/help");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn an_unknown_command_is_refused_by_name_and_costs_nothing() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    // `/goal` is a Kallisti command now, so the unknown names are the ones that
+    // genuinely belong to other tools.
+    for name in ["restart", "deploy", "doesnotexist"] {
+        let response = harness
+            .request(
+                "POST",
+                "/v1/turns",
+                &auth,
+                Some(&format!(r#"{{"text":"/{name}"}}"#)),
+            )
+            .await;
+        assert_eq!(response.status, 400, "{}", response.body);
+        let body = response.json();
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["code"], "command_unsupported");
+        let message = body["message"].as_str().expect("a message");
+        assert!(
+            message.contains(&format!("/{name}")),
+            "the refusal names it: {message}"
+        );
+        assert!(
+            message.contains("not supported"),
+            "the refusal says so: {message}"
+        );
+        assert!(
+            message.contains("nothing was sent to a model"),
+            "the refusal says no model was asked: {message}"
+        );
+    }
+
+    // A refused command queues no turn at all.
+    let jobs = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM jobs WHERE device_id = ?1",
+                [&device_id],
+                |row| row.get::<_, i64>(0),
+            )
+        })
+        .expect("the job count");
+    assert_eq!(jobs, 0, "a refused command is not a turn");
+    assert_eq!(provider.hits(), 0, "no provider call");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_stop_command_cancels_the_devices_live_turn_without_a_model() {
+    // A provider that holds the turn open long enough to still be running.
+    let provider = StubProvider::start(&["a", "b", "c"], Duration::from_millis(400)).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let started = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"go"}"#))
+        .await;
+    assert_eq!(started.status, 202, "{}", started.body);
+    let running = started.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+
+    let stopped = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"/stop"}"#))
+        .await;
+    assert_eq!(stopped.status, 202, "{}", stopped.body);
+    let job_id = stopped.json()["job_id"]
+        .as_str()
+        .expect("a command job id")
+        .to_owned();
+
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+    let text = frames
+        .last()
+        .and_then(|frame| frame.data["text"].as_str())
+        .unwrap_or_default();
+    assert!(
+        text.contains("Stopped"),
+        "the answer says what it stopped: {text}"
+    );
+
+    // The running turn is cancelled, not left to finish: its own stream ends with
+    // a cancelled frame.
+    let mut running_stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{running}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let running_frames = running_stream
+        .frames_until_end(Duration::from_secs(10))
+        .await;
+    assert!(
+        running_frames
+            .iter()
+            .any(|frame| frame.event == "cancelled"),
+        "the stopped turn ends cancelled: {running_frames:?}"
+    );
+
+    // And a second /stop says there was nothing left to stop, rather than
+    // pretending to have stopped something.
+    let again = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"/stop"}"#))
+        .await;
+    assert_eq!(again.status, 202, "{}", again.body);
+    let second = again.json()["job_id"]
+        .as_str()
+        .expect("a command job id")
+        .to_owned();
+    let mut second_stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{second}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let second_frames = second_stream
+        .frames_until_end(Duration::from_secs(10))
+        .await;
+    let second_text = second_frames
+        .last()
+        .and_then(|frame| frame.data["text"].as_str())
+        .unwrap_or_default();
+    assert!(
+        second_text.contains("Nothing was running"),
+        "the second stop is honest: {second_text}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_command_that_needs_a_transcript_or_settings_is_refused_by_name() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    // /new, /clear and /model answer on this lane now: a phone can start a
+    // conversation, clear the one it names, and be told which model a turn will
+    // use. /memory is still refused, because it is a settings write and settings
+    // have one path - POST /v1/settings, behind the admin scope.
+    for name in ["memory"] {
+        let response = harness
+            .request(
+                "POST",
+                "/v1/turns",
+                &auth,
+                Some(&format!(r#"{{"text":"/{name}"}}"#)),
+            )
+            .await;
+        assert_eq!(response.status, 400, "{}", response.body);
+        let body = response.json();
+        assert_eq!(body["code"], "command_not_available");
+        let message = body["message"].as_str().expect("a message");
+        assert!(message.contains(&format!("/{name}")), "{message}");
+        assert!(
+            message.contains("nothing was sent to a model"),
+            "it says no model was asked: {message}"
+        );
+    }
+    assert_eq!(provider.hits(), 0);
+
+    // /new starts a conversation and names it, and /model reports the pin.
+    let started = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"/new"}"#))
+        .await;
+    assert_eq!(started.status, 202, "{}", started.body);
+    let repinned = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"/model"}"#))
+        .await;
+    assert_eq!(repinned.status, 202, "{}", repinned.body);
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+/// The token a device holds, minus one scope.
+fn token_without(harness: &Harness, name: &str, scope: eris_host::auth::Scope) -> String {
+    let db = harness.engine.db().clone();
+    let device_id = AuthStore::new(db.clone())
+        .register_device(name, "ios")
+        .expect("device row");
+    TokenService::new(db)
+        .mint_access(
+            &device_id,
+            ScopeSet::device_default().without(scope),
+            TokenOrigin::Device,
+        )
+        .expect("access token")
+        .token()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn projects_require_a_bearer_and_the_sessions_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let scoped = token_without(&harness, "iPad", eris_host::auth::Scope::Sessions);
+
+    // No bearer: 401 on all three, the same code every other route uses.
+    for (method, path) in [
+        ("GET", "/v1/projects"),
+        ("POST", "/v1/projects"),
+        ("POST", "/v1/projects/assign"),
+    ] {
+        let anonymous = harness.request(method, path, &[], None).await;
+        assert_eq!(anonymous.status, 401, "{method} {path}: {}", anonymous.body);
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+    }
+
+    // A real token without `sessions`: 403, because the token is real and the
+    // scope is simply not on it.
+    for (method, path) in [
+        ("GET", "/v1/projects"),
+        ("POST", "/v1/projects"),
+        ("POST", "/v1/projects/assign"),
+    ] {
+        let denied = harness
+            .request(
+                method,
+                path,
+                &[("authorization", format!("Bearer {scoped}"))],
+                Some(r#"{"project_name":"Work","conversation":"c"}"#),
+            )
+            .await;
+        assert_eq!(denied.status, 403, "{method} {path}: {}", denied.body);
+        assert_eq!(denied.json()["code"], "scope_denied");
+    }
+
+    // The device's own token still lists, so the refusal above is about scope and
+    // not about the route.
+    let listed = harness
+        .request(
+            "GET",
+            "/v1/projects",
+            &[("authorization", format!("Bearer {token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert_eq!(listed.json()["projects"], serde_json::json!([]));
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn projects_create_list_and_assign_round_trip() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let created = harness
+        .request(
+            "POST",
+            "/v1/projects",
+            &auth,
+            Some(r#"{"project_name":"Quarterly contract renewal"}"#),
+        )
+        .await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let body = created.json();
+    assert_eq!(body["ok"], true);
+    let project = body["project"].clone();
+    let project_id = project["id"].as_str().expect("a project id").to_owned();
+    assert_eq!(project["name"], "Quarterly contract renewal");
+    assert!(
+        project["created_at"]
+            .as_str()
+            .is_some_and(|at| !at.is_empty()),
+        "the row carries its stamp: {project}"
+    );
+
+    let listed = harness.request("GET", "/v1/projects", &auth, None).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let projects = listed.json()["projects"].clone();
+    assert_eq!(
+        projects,
+        serde_json::json!([{
+            "id": project_id,
+            "name": "Quarterly contract renewal",
+            "created_at": project["created_at"],
+        }]),
+        "the list is the row that was created"
+    );
+
+    // A conversation to file. Filing is a column update on a conversation row, so
+    // one has to exist first.
+    let conversation =
+        eris_host::web::chat::create_conversation(harness.engine.db()).expect("a conversation row");
+
+    let assigned = harness
+        .request(
+            "POST",
+            "/v1/projects/assign",
+            &auth,
+            Some(&format!(
+                r#"{{"conversation":"{conversation}","project":"{project_id}"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(assigned.status, 200, "{}", assigned.body);
+    let body = assigned.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["conversation"], conversation.as_str());
+    assert_eq!(body["project"], project_id.as_str());
+
+    let filed =
+        eris_host::web::chat::conversations(harness.engine.db(), 10).expect("the rail list reads");
+    assert_eq!(filed.len(), 1);
+    assert_eq!(filed[0].project_id.as_deref(), Some(project_id.as_str()));
+
+    // An empty project is the "no project" entry, which is a clear rather than a
+    // missing field.
+    let cleared = harness
+        .request(
+            "POST",
+            "/v1/projects/assign",
+            &auth,
+            Some(&format!(
+                r#"{{"conversation":"{conversation}","project":""}}"#
+            )),
+        )
+        .await;
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    assert_eq!(cleared.json()["project"], serde_json::Value::Null);
+    let unfiled =
+        eris_host::web::chat::conversations(harness.engine.db(), 10).expect("the rail list reads");
+    assert_eq!(unfiled[0].project_id, None, "it is ungrouped again");
+
+    // A conversation or project the daemon does not know is refused, not reported
+    // as a success: a client that reads `ok` has to be able to believe it.
+    let refused = harness
+        .request(
+            "POST",
+            "/v1/projects/assign",
+            &auth,
+            Some(r#"{"conversation":"no-such","project":"no-such"}"#),
+        )
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "project_assign_refused");
+    let missing = harness
+        .request(
+            "POST",
+            "/v1/projects/assign",
+            &auth,
+            Some(r#"{"project":""}"#),
+        )
+        .await;
+    assert_eq!(missing.status, 400, "{}", missing.body);
+    assert_eq!(missing.json()["code"], "conversation_missing");
+
+    // Both writes are audited, and the actor is the device rather than loopback.
+    let audited: Vec<(String, String)> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT actor, action FROM audit_log \
+                  WHERE action IN ('projects.created', 'projects.assigned') ORDER BY id",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(out)
+        })
+        .expect("the audit rows");
+    assert_eq!(
+        audited,
+        vec![
+            (device_id.clone(), "projects.created".to_owned()),
+            (device_id.clone(), "projects.assigned".to_owned()),
+            (device_id, "projects.assigned".to_owned()),
+        ],
+        "one create and two assignments, every one from the device"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_duplicate_project_name_is_refused_by_code() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let first = harness
+        .request(
+            "POST",
+            "/v1/projects",
+            &auth,
+            Some(r#"{"project_name":"Work"}"#),
+        )
+        .await;
+    assert_eq!(first.status, 201, "{}", first.body);
+
+    // Case is not a way around it, the same rule the dashboard applies.
+    for name in ["Work", "work", "  WORK  "] {
+        let duplicate = harness
+            .request(
+                "POST",
+                "/v1/projects",
+                &auth,
+                Some(&format!(r#"{{"project_name":"{name}"}}"#)),
+            )
+            .await;
+        assert_eq!(duplicate.status, 400, "{}", duplicate.body);
+        let body = duplicate.json();
+        assert_eq!(body["code"], "project_name_duplicate");
+        assert!(
+            body["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("already exists")),
+            "the refusal says why: {}",
+            body["message"]
+        );
+    }
+
+    // A blank name is its own refusal, with its own code.
+    let blank = harness
+        .request(
+            "POST",
+            "/v1/projects",
+            &auth,
+            Some(r#"{"project_name":"   "}"#),
+        )
+        .await;
+    assert_eq!(blank.status, 400, "{}", blank.body);
+    assert_eq!(blank.json()["code"], "project_name_invalid");
+
+    let projects = harness.request("GET", "/v1/projects", &auth, None).await;
+    assert_eq!(
+        projects.json()["projects"]
+            .as_array()
+            .expect("a list")
+            .len(),
+        1,
+        "the refusals added no rows"
+    );
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Two chats, two models
+// ---------------------------------------------------------------------------
+
+/// A chat keeps the model it is on when another chat picks one.
+///
+/// The phone's picker writes the daemon default, because that is the only row it
+/// has ever written, and every turn read only that. So: start chat A on the
+/// default, pick another provider's model in chat B, come back to A, and A's next
+/// turn went to B's model - the model "switching itself" under one conversation.
+///
+/// The fix is that a turn resolves its model from the conversation it is writing
+/// into, and the picker's write is taken once, by the next turn, as a pin. This is
+/// the regression test: A must still be on A's model after B moved the default.
+#[tokio::test]
+async fn a_chat_keeps_its_model_when_another_chat_picks_one() {
+    let provider = StubProvider::start(&["ok"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let chat_a = a_conversation(&harness);
+    let chat_b = a_conversation(&harness);
+
+    // A starts on the daemon default, exactly as a new chat does.
+    drain_turn_in(&harness, &token, &auth, &chat_a, "first task in A").await;
+
+    // The picker in B: the default moves, and the pin waits for a turn.
+    eris_host::web::store::settings_put(
+        harness.engine.db(),
+        eris_host::onboarding::SETTING_MODEL,
+        "p8-other",
+    )
+    .expect("the default model moves");
+    eris_host::web::store::settings_put(
+        harness.engine.db(),
+        eris_host::device::turns::SETTING_PENDING_MODEL,
+        "p8-other",
+    )
+    .expect("the pin is written");
+
+    // B's turn is the one that takes the pin.
+    drain_turn_in(&harness, &token, &auth, &chat_b, "task in B").await;
+
+    // And A, coming back, is still on A's model.
+    drain_turn_in(&harness, &token, &auth, &chat_a, "second task in A").await;
+
+    let seen = provider.bodies();
+    assert_eq!(seen.len(), 3, "three turns, three provider calls");
+    assert!(
+        seen[0].contains("p8-model"),
+        "A's first turn is on the default: {}",
+        seen[0]
+    );
+    assert!(
+        seen[1].contains("p8-other"),
+        "B's turn is on the model B picked: {}",
+        seen[1]
+    );
+    assert!(
+        seen[2].contains("p8-model"),
+        "A's next turn is still A's model, not the one B chose: {}",
+        seen[2]
+    );
+    assert!(
+        !seen[2].contains("p8-other"),
+        "and not the other chat's: {}",
+        seen[2]
+    );
+
+    // The conversation says which model it is on, so a client can draw the badge
+    // for the chat it reopened rather than the daemon's default.
+    let listed = harness
+        .request("GET", &format!("/v1/conversations/{chat_a}"), &auth, None)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert!(
+        listed.json()["model"]
+            .as_str()
+            .is_some_and(|model| model.contains("p8-model")),
+        "the conversation reports its own model: {}",
+        listed.body
+    );
+
+    // The pin is a one-turn thing: it is gone once a turn has taken it, so it
+    // cannot follow the operator into the next chat they open.
+    let left: i64 = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM settings WHERE key = ?1",
+                [eris_host::device::turns::SETTING_PENDING_MODEL],
+                |row| row.get(0),
+            )
+        })
+        .expect("the settings row count");
+    assert_eq!(left, 0, "the pin was consumed by exactly one turn");
+
+    // B is on B's model and stayed there too.
+    let listed = harness
+        .request("GET", &format!("/v1/conversations/{chat_b}"), &auth, None)
+        .await;
+    assert!(
+        listed.json()["model"]
+            .as_str()
+            .is_some_and(|model| model.contains("p8-other")),
+        "B reports the model it picked: {}",
+        listed.body
+    );
+
+    harness.stop();
+}
+
+/// Two chats can be in flight at once, and neither is the other's orphan.
+///
+/// The report was that the first chat "seemed hung" when a second one started.
+/// The two turns are separate jobs with separate streams, and the page that comes
+/// back to the first one has to find a finished answer rather than a row that is
+/// still streaming with nothing writing it.
+#[tokio::test]
+async fn two_chats_run_at_once_and_both_settle() {
+    let provider = StubProvider::start(&["a"], Duration::from_millis(120)).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let first = a_conversation(&harness);
+    let second = a_conversation(&harness);
+    // Two turns queued before either is drained: the second must not wait for the
+    // first, and the first must not be cancelled by the second.
+    let mut jobs = Vec::new();
+    for (conversation, text) in [(&first, "first chat"), (&second, "second chat")] {
+        let response = harness
+            .request(
+                "POST",
+                "/v1/turns",
+                &auth,
+                Some(
+                    &serde_json::json!({ "text": text, "conversation": conversation }).to_string(),
+                ),
+            )
+            .await;
+        assert_eq!(response.status, 202, "{}", response.body);
+        jobs.push(
+            response.json()["job_id"]
+                .as_str()
+                .expect("a job id")
+                .to_owned(),
+        );
+    }
+    let [job_one, job_two] = <[String; 2]>::try_from(jobs).expect("two jobs");
+    for job in [job_one, job_two] {
+        let mut stream = Sse::open(
+            harness.addr,
+            &format!("/v1/turns/{job}/events"),
+            &token,
+            None,
+        )
+        .await;
+        let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+        assert_eq!(
+            frames.last().map(|frame| frame.event.as_str()),
+            Some("done"),
+            "the turn finished: {frames:?}"
+        );
+    }
+
+    // Both transcripts carry a complete answer, so a page that comes back to the
+    // first chat is not looking at a row that never settles.
+    for conversation in [first, second] {
+        let read = harness
+            .request(
+                "GET",
+                &format!("/v1/conversations/{conversation}"),
+                &auth,
+                None,
+            )
+            .await;
+        assert_eq!(read.status, 200, "{}", read.body);
+        let messages = read.json()["messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let answer = messages
+            .iter()
+            .find(|row| row["role"] == "assistant")
+            .expect("an answer row");
+        assert_eq!(answer["state"], "complete", "{}", read.body);
+    }
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Conversations
+// ---------------------------------------------------------------------------
+
+/// A conversation row created directly, for a route that only needs an id.
+fn a_conversation(harness: &Harness) -> String {
+    eris_host::web::chat::create_conversation(harness.engine.db()).expect("a conversation row")
+}
+
+/// A conversation that actually holds a message, so the count is not zero and a
+/// delete that removed nothing cannot pass as one that worked.
+fn a_conversation_with_a_message(harness: &Harness) -> String {
+    let id = a_conversation(harness);
+    eris_host::web::chat::append(
+        harness.engine.db(),
+        &id,
+        eris_host::web::chat::Role::User,
+        "hello",
+        eris_host::web::chat::State::Complete,
+    )
+    .expect("a question row");
+    id
+}
+
+/// Deleting a chat has to delete the chat.
+///
+/// The phone calls this `deleteSession` and it called `/v1/sessions/{id}`, a path
+/// this daemon only answered with `GET` for a *device* session. The client dropped
+/// its own row and then failed the sync, so the chat came back on the next
+/// refresh. Both spellings delete a conversation now, and the transcript goes with
+/// the row.
+#[tokio::test]
+async fn deleting_a_session_drops_the_conversation_and_its_transcript() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    // The app's spelling first: it is the one the phone actually calls.
+    let by_app = a_conversation_with_a_message(&harness);
+    let response = harness
+        .request("DELETE", &format!("/v1/sessions/{by_app}"), &auth, None)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(response.json()["ok"], true);
+    assert_eq!(response.json()["removed"], 1, "{}", response.body);
+    assert!(
+        eris_host::web::chat::conversation(harness.engine.db(), &by_app)
+            .expect("readable")
+            .is_none(),
+        "the conversation row is gone, not merely emptied"
+    );
+    assert!(
+        eris_host::web::chat::load(harness.engine.db(), &by_app)
+            .expect("readable transcript")
+            .is_empty(),
+        "and so is its transcript"
+    );
+
+    // The second press is a 404 rather than a silent success, so a client cannot
+    // report "deleted" for a chat that was already gone.
+    let again = harness
+        .request("DELETE", &format!("/v1/sessions/{by_app}"), &auth, None)
+        .await;
+    assert_eq!(again.status, 404, "{}", again.body);
+    assert_eq!(again.json()["code"], "conversation_not_found");
+
+    // The daemon's own spelling answers the same way, because the two names are
+    // one object to the person pressing delete.
+    let by_name = a_conversation_with_a_message(&harness);
+    let response = harness
+        .request(
+            "DELETE",
+            &format!("/v1/conversations/{by_name}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert!(
+        eris_host::web::chat::conversation(harness.engine.db(), &by_name)
+            .expect("readable")
+            .is_none()
+    );
+
+    // A delete is an audit fact: "where did that conversation go" is asked later.
+    let audited: Vec<String> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement =
+                conn.prepare("SELECT action FROM audit_log WHERE action = 'conversation.deleted'")?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(row.get(0)?);
+            }
+            Ok(out)
+        })
+        .expect("the audit rows");
+    assert_eq!(
+        audited.len(),
+        2,
+        "one row per delete, and none for the refused second press: {audited:?}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn conversations_require_a_bearer_and_the_sessions_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let scoped = token_without(&harness, "iPad", eris_host::auth::Scope::Sessions);
+    let conversation = a_conversation(&harness);
+    let one = format!("/v1/conversations/{conversation}");
+    let clear = format!("/v1/conversations/{conversation}/clear");
+    let routes = [
+        ("GET", "/v1/conversations".to_owned()),
+        ("POST", "/v1/conversations".to_owned()),
+        ("GET", one.clone()),
+        ("POST", clear.clone()),
+        ("DELETE", one.clone()),
+    ];
+
+    // No bearer: 401 on every one, with the code the rest of the surface uses.
+    for (method, path) in &routes {
+        let anonymous = harness.request(method, path, &[], None).await;
+        assert_eq!(anonymous.status, 401, "{method} {path}: {}", anonymous.body);
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+    }
+
+    // A real token without `sessions`: 403, because the token is real and the
+    // scope is simply not on it.
+    for (method, path) in &routes {
+        let denied = harness
+            .request(
+                method,
+                path,
+                &[("authorization", format!("Bearer {scoped}"))],
+                None,
+            )
+            .await;
+        assert_eq!(denied.status, 403, "{method} {path}: {}", denied.body);
+        assert_eq!(denied.json()["code"], "scope_denied");
+    }
+
+    // The device's own token still answers, so the refusal above is about scope
+    // and not about the route being unreachable.
+    let listed = harness
+        .request(
+            "GET",
+            "/v1/conversations",
+            &[("authorization", format!("Bearer {token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn conversations_create_list_and_fetch_round_trip() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let created = harness
+        .request("POST", "/v1/conversations", &auth, None)
+        .await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let body = created.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body["title"],
+        eris_host::web::chat::NEW_CONVERSATION_TITLE,
+        "a new conversation carries the existing placeholder title"
+    );
+    let conversation = body["id"].as_str().expect("a conversation id").to_owned();
+
+    let listed = harness
+        .request("GET", "/v1/conversations", &auth, None)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["count"], 1);
+    assert_eq!(body["truncated"], false);
+    let items = body["conversations"]
+        .as_array()
+        .expect("a conversation list");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], conversation.as_str());
+    assert_eq!(items[0]["title"], body["conversations"][0]["title"]);
+    assert_eq!(items[0]["message_count"], 0);
+    assert!(
+        items[0]["updated_at"]
+            .as_str()
+            .is_some_and(|at| !at.is_empty()),
+        "the row carries its stamp: {}",
+        items[0]
+    );
+    assert_eq!(items[0]["project_id"], serde_json::Value::Null);
+
+    let fetched = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(fetched.status, 200, "{}", fetched.body);
+    let body = fetched.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["id"], conversation.as_str());
+    assert_eq!(body["title"], eris_host::web::chat::NEW_CONVERSATION_TITLE);
+    assert_eq!(body["truncated"], false);
+    assert_eq!(
+        body["messages"],
+        serde_json::json!([]),
+        "a fresh conversation has no messages"
+    );
+
+    // The write is audited with the device as the actor, not `loopback`.
+    let audited: Vec<(String, String)> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT actor, action FROM audit_log WHERE action = 'conversation.created'",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(out)
+        })
+        .expect("the audit rows");
+    assert_eq!(
+        audited,
+        vec![(device_id, "conversation.created".to_owned())]
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn clearing_a_conversation_empties_its_transcript() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let conversation = a_conversation(&harness);
+    let db = harness.engine.db();
+
+    let role = |user: bool| {
+        if user {
+            eris_host::web::chat::Role::User
+        } else {
+            eris_host::web::chat::Role::Assistant
+        }
+    };
+    eris_host::web::chat::append(
+        db,
+        &conversation,
+        role(true),
+        "what is in the workspace",
+        eris_host::web::chat::State::Complete,
+    )
+    .expect("a question");
+    eris_host::web::chat::append(
+        db,
+        &conversation,
+        role(false),
+        "two files",
+        eris_host::web::chat::State::Complete,
+    )
+    .expect("an answer");
+
+    let path = format!("/v1/conversations/{conversation}");
+    let before = harness.request("GET", &path, &auth, None).await;
+    assert_eq!(before.status, 200, "{}", before.body);
+    assert_eq!(
+        before.json()["messages"]
+            .as_array()
+            .expect("a message list")
+            .len(),
+        2
+    );
+
+    let cleared = harness
+        .request("POST", &format!("{path}/clear"), &auth, None)
+        .await;
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    let body = cleared.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["cleared"], 2, "both rows went");
+
+    let after = harness.request("GET", &path, &auth, None).await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    let body = after.json();
+    assert_eq!(
+        body["messages"],
+        serde_json::json!([]),
+        "the transcript is empty"
+    );
+    assert_eq!(body["truncated"], false);
+
+    // Clearing keeps the conversation itself: the row is still listable.
+    let listed = harness
+        .request("GET", "/v1/conversations", &auth, None)
+        .await;
+    let items = listed.json()["conversations"].clone();
+    assert_eq!(items.as_array().expect("a list").len(), 1);
+    assert_eq!(items[0]["message_count"], 0);
+
+    // A second clear has nothing left to remove and says so rather than failing.
+    let again = harness
+        .request("POST", &format!("{path}/clear"), &auth, None)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["cleared"], 0);
+
+    let audited: Vec<(String, String)> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT actor, action FROM audit_log WHERE action = 'conversation.cleared'",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(out)
+        })
+        .expect("the audit rows");
+    assert_eq!(
+        audited,
+        vec![
+            (device_id.clone(), "conversation.cleared".to_owned()),
+            (device_id, "conversation.cleared".to_owned()),
+        ]
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn an_unknown_conversation_is_a_404_by_code_and_creates_no_turn() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let missing = harness
+        .request("GET", "/v1/conversations/no-such-conversation", &auth, None)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    let body = missing.json();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["code"], "conversation_not_found");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "the refusal says something: {body}"
+    );
+
+    let cleared = harness
+        .request(
+            "POST",
+            "/v1/conversations/no-such-conversation/clear",
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(cleared.status, 404, "{}", cleared.body);
+    assert_eq!(cleared.json()["code"], "conversation_not_found");
+
+    // A turn that names a conversation nobody holds is refused before a job
+    // exists: no row, and no provider call.
+    let refused = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(r#"{"text":"ok","conversation":"no-such-conversation"}"#),
+        )
+        .await;
+    assert_eq!(refused.status, 404, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "conversation_not_found");
+    let jobs = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM jobs WHERE device_id = ?1",
+                [&device_id],
+                |row| row.get::<_, i64>(0),
+            )
+        })
+        .expect("job count");
+    assert_eq!(jobs, 0, "a refused turn leaves no job behind");
+    assert_eq!(provider.hits(), 0, "and no provider call");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_turn_named_for_a_conversation_writes_both_rows_and_reports_it() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let conversation = a_conversation(&harness);
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(&format!(
+                r#"{{"text":"reply with the single word: ok","conversation":"{conversation}"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body["conversation_id"],
+        conversation.as_str(),
+        "the turn says which conversation it belongs to"
+    );
+    let job_id = body["job_id"].as_str().expect("a job id").to_owned();
+
+    // Drain the turn so its answer is certainly settled.
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+    assert_eq!(frames.last().expect("a terminal frame").event, "done");
+
+    let fetched = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(fetched.status, 200, "{}", fetched.body);
+    let body = fetched.json();
+    let messages = body["messages"].as_array().expect("a message list");
+    assert_eq!(messages.len(), 2, "a question and an answer: {body}");
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["body"], "reply with the single word: ok");
+    assert_eq!(messages[0]["state"], "complete");
+    assert!(messages[0]["id"].as_str().is_some());
+    assert!(messages[0]["created_at"].as_str().is_some());
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["body"], "ok");
+    assert_eq!(messages[1]["state"], "complete");
+    assert_eq!(
+        messages[1]["tools"],
+        serde_json::json!([]),
+        "a turn that called nothing carries an empty tool list"
+    );
+    assert_eq!(messages[1]["reasoning"], serde_json::Value::Null);
+
+    // The list reports the ground truth: two messages, and a title named from the
+    // first question rather than the placeholder.
+    let listed = harness
+        .request("GET", "/v1/conversations", &auth, None)
+        .await;
+    let items = listed.json()["conversations"].clone();
+    assert_eq!(items[0]["id"], conversation.as_str());
+    assert_eq!(items[0]["message_count"], 2);
+    assert_ne!(
+        items[0]["title"],
+        eris_host::web::chat::NEW_CONVERSATION_TITLE,
+        "the first question names the conversation: {}",
+        items[0]["title"]
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_long_transcript_and_a_long_list_are_bounded_and_say_so() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let db = harness.engine.db().clone();
+
+    // One conversation holding more messages than a page.
+    let conversation = a_conversation(&harness);
+    for index in 0..205 {
+        eris_host::web::chat::append(
+            &db,
+            &conversation,
+            eris_host::web::chat::Role::User,
+            &format!("message {index}"),
+            eris_host::web::chat::State::Complete,
+        )
+        .expect("a message");
+    }
+    let fetched = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(fetched.status, 200, "{}", fetched.body);
+    let body = fetched.json();
+    let messages = body["messages"].as_array().expect("a message list");
+    assert_eq!(messages.len(), 200, "the transcript is capped at a page");
+    assert_eq!(body["truncated"], true, "and it says the page was cut");
+    // The page a chat opens with is the NEWEST one, in chronological order inside
+    // it, and `has_more` tells the surface there is older history behind `x-before`.
+    // Serving the oldest page first meant a long chat opened at the top of its
+    // history and the recent messages were a scroll away.
+    assert_eq!(messages[0]["body"], "message 5", "the newest page, oldest first");
+    assert_eq!(messages[199]["body"], "message 204", "and it ends at the newest message");
+    assert_eq!(body["has_more"], true, "older history is behind the cursor");
+
+    // More conversations than a page, too.
+    for _ in 0..105 {
+        a_conversation(&harness);
+    }
+    let listed = harness
+        .request("GET", "/v1/conversations", &auth, None)
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["count"], 100, "the list is capped at a page");
+    assert_eq!(body["truncated"], true);
+    assert_eq!(
+        body["conversations"].as_array().expect("a list").len(),
+        100,
+        "count and the array agree"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_does_not_settle_its_conversation_answer() {
+    let provider = StubProvider::start(
+        &["a", "b", "c", "d", "e", "f", "g", "h"],
+        Duration::from_millis(150),
+    )
+    .await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let conversation = a_conversation(&harness);
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(&format!(
+                r#"{{"text":"ok","conversation":"{conversation}"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let _ = stream.next_frame(Duration::from_secs(5)).await;
+    let cancelled = harness
+        .request("POST", &format!("/v1/turns/{job_id}/cancel"), &auth, None)
+        .await;
+    assert_eq!(cancelled.status, 200, "{}", cancelled.body);
+    let frames = stream.frames_until_end(Duration::from_secs(10)).await;
+    assert_eq!(frames.last().expect("a terminal frame").event, "cancelled");
+
+    // The provider call finishes on its own schedule; give it time to finish and
+    // the worker time to close the row.
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+
+    let fetched = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(fetched.status, 200, "{}", fetched.body);
+    let body = fetched.json();
+    let messages = body["messages"].as_array().expect("a message list");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(
+        messages[1]["state"], "failed",
+        "the cancelled answer is closed, not settled: {}",
+        messages[1]
+    );
+    assert_eq!(messages[1]["body"], "Stopped before it finished.");
+    assert!(provider.hits() >= 1);
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Settings behind the admin scope
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_code_minted_with_the_box_ticked_yields_an_admin_token() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+
+    // An ordinary code: the device defaults, which do not include admin, and the
+    // settings route refuses the token it buys.
+    let (ordinary_device, ordinary_code) = harness.device_with_code("iPhone");
+    let ordinary = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(
+                r#"{{"code":"{ordinary_code}","device_name":"iPhone"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(ordinary.status, 201, "{}", ordinary.body);
+    let ordinary_body = ordinary.json();
+    let ordinary_scopes = ordinary_body["scopes"]
+        .as_array()
+        .expect("a scope list")
+        .clone();
+    assert!(
+        !ordinary_scopes.contains(&serde_json::json!("admin")),
+        "an ordinary code mints no admin: {ordinary_scopes:?}"
+    );
+    let ordinary_access = ordinary_body["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let refused = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {ordinary_access}"))],
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    // A code the operator ticked the administration box for.
+    let (admin_device, admin_code) = harness.device_with_admin_code("iPad");
+    let admin = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(
+                r#"{{"code":"{admin_code}","device_name":"iPad"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(admin.status, 201, "{}", admin.body);
+    let admin_body = admin.json();
+    assert_eq!(admin_body["device_id"], admin_device);
+    let admin_scopes = admin_body["scopes"]
+        .as_array()
+        .expect("a scope list")
+        .clone();
+    assert!(
+        admin_scopes.contains(&serde_json::json!("admin")),
+        "the ticked box reaches the token: {admin_scopes:?}"
+    );
+    for expected in ["chat", "sessions", "files"] {
+        assert!(
+            admin_scopes.contains(&serde_json::json!(expected)),
+            "the admin code keeps the defaults too: {admin_scopes:?}"
+        );
+    }
+    let admin_access = admin_body["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let admin_refresh = admin_body["refresh_token"]
+        .as_str()
+        .expect("a refresh token")
+        .to_owned();
+
+    // The token that code redeemed reads the snapshot, so the admin scope on it
+    // is usable and not only listed.
+    let readable = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {admin_access}"))],
+            None,
+        )
+        .await;
+    assert_eq!(readable.status, 200, "{}", readable.body);
+
+    // The scope is on the stored row, not only in the response.
+    let stored: Vec<String> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement =
+                conn.prepare("SELECT scope FROM auth_tokens WHERE device_id = ?1 ORDER BY id")?;
+            let mut rows = statement.query([admin_device.as_str()])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(row.get::<_, String>(0)?);
+            }
+            Ok(out)
+        })
+        .expect("the stored scopes");
+    assert_eq!(stored.len(), 2, "an access row and a refresh row");
+    for scope in &stored {
+        assert!(
+            scope.split_whitespace().any(|word| word == "admin"),
+            "the stored scope set carries admin: {scope}"
+        );
+    }
+
+    // And it survives a refresh, because a token that expires in an hour is not
+    // an administration grant, it is a one-hour one.
+    let refreshed = harness
+        .request(
+            "POST",
+            "/v1/token/refresh",
+            &[],
+            Some(&format!(r#"{{"refresh_token":"{admin_refresh}"}}"#)),
+        )
+        .await;
+    assert_eq!(refreshed.status, 200, "{}", refreshed.body);
+    let fresh = refreshed.json()["access_token"]
+        .as_str()
+        .expect("a fresh access token")
+        .to_owned();
+    let after_refresh = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {fresh}"))],
+            None,
+        )
+        .await;
+    assert_eq!(after_refresh.status, 200, "{}", after_refresh.body);
+
+    // The ordinary device is untouched by all of that: its scope set is unchanged
+    // and still cannot administer.
+    let ordinary_stored: String = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT scope FROM auth_tokens WHERE device_id = ?1 ORDER BY id LIMIT 1",
+                [ordinary_device.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+        })
+        .expect("the ordinary scope");
+    assert_eq!(ordinary_stored, "chat sessions files");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn settings_require_a_bearer_and_the_admin_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, device_token) = harness.device_with_token("iPhone");
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+
+    // No bearer at all: the same 401 every other route answers.
+    for method in ["GET", "POST"] {
+        let anonymous = harness
+            .request(method, "/v1/settings", &[], Some(r#"{"memory":"off"}"#))
+            .await;
+        assert_eq!(anonymous.status, 401, "{method}: {}", anonymous.body);
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+    }
+
+    // A real token without admin: 403, and the message says why rather than the
+    // word forbidden.
+    for method in ["GET", "POST"] {
+        let denied = harness
+            .request(
+                method,
+                "/v1/settings",
+                &[("authorization", format!("Bearer {device_token}"))],
+                Some(r#"{"memory":"off"}"#),
+            )
+            .await;
+        assert_eq!(denied.status, 403, "{method}: {}", denied.body);
+        let body = denied.json();
+        assert_eq!(body["code"], "scope_denied");
+        let message = body["message"].as_str().expect("a message");
+        assert!(
+            message.contains("paired without administration"),
+            "the refusal says what actually happened: {message}"
+        );
+        assert!(
+            !message.to_ascii_lowercase().contains("forbidden"),
+            "the refusal is not the bare word: {message}"
+        );
+    }
+
+    // Nothing was written by either refused post.
+    let written: i64 = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM settings WHERE key = 'memory.backend'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("the memory row count");
+    assert_eq!(written, 0, "a refused post writes nothing");
+
+    // An admin token reads the snapshot.
+    let read = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let body = read.json();
+    assert_eq!(body["ok"], true);
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    // The seven fields a client read before build 111, the three the capability
+    // record added, and the full-access switch. Section 7.5 of the read-first
+    // file is this list, and a field that is not in that section is a wire shape
+    // that drifted. The switch is separate from `capabilities` on purpose: it is
+    // not a plain setting, because enabling it needs the word typed and turning
+    // it off demotes a `full` sandbox.
+    assert_eq!(
+        keys,
+        vec![
+            "approval",
+            "capabilities",
+            "clock_format",
+            "full_access",
+            "goal_rounds_ceiling",
+            "listen",
+            "memory",
+            "model",
+            "ok",
+            "push",
+            "relay",
+            "sandbox",
+            "timezone",
+            "tool_rounds",
+            "tools_enabled"
+        ],
+        "the body is the documented snapshot and nothing else: {body}"
+    );
+    assert_eq!(body["model"], "p8-model");
+    assert_eq!(body["sandbox"], "read-only");
+    assert_eq!(body["approval"], "ask");
+    assert_eq!(body["memory"], "gbrain");
+    assert_eq!(body["tools_enabled"], true);
+    assert_eq!(body["tool_rounds"], 12);
+    assert_eq!(
+        body["goal_rounds_ceiling"], 60,
+        "the long-job ceiling ships at the goal raise it was before the setting \
+         existed, so no turn changes until it is dialled down"
+    );
+    assert!(body["timezone"].as_str().is_some());
+    assert_eq!(body["clock_format"], "24h", "the clock default: {body}");
+    assert_eq!(body["push"]["notify_on_reply"], true);
+    assert_eq!(body["push"]["scope"], "origin");
+    assert_eq!(body["push"]["devices"], serde_json::json!([]));
+
+    // The three new fields are not a shape of their own: the record is a list,
+    // every entry carries the seven documented members, and the six groups are
+    // the only groups. A seventh group is a tab neither client can render.
+    let record = body["capabilities"]
+        .as_array()
+        .expect("the capability record is an array");
+    assert!(
+        record.len() >= 20,
+        "the record covers the real settings, not a sample: {} entries",
+        record.len()
+    );
+    for entry in record {
+        let mut members: Vec<&str> = entry
+            .as_object()
+            .expect("a capability object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        members.sort_unstable();
+        // Seven members describe a field. An integer adds `min` and `max`,
+        // because a form control cannot offer a range the record does not
+        // publish - and nothing else may be added: a member a client does not
+        // know is a member it will not draw.
+        let expected: Vec<&str> = match entry["type"].as_str() {
+            Some("int") => vec![
+                "group", "key", "label", "max", "min", "options", "type", "value", "writable",
+            ],
+            _ => vec![
+                "group", "key", "label", "options", "type", "value", "writable",
+            ],
+        };
+        assert_eq!(
+            members, expected,
+            "a capability carries its documented members: {entry}"
+        );
+        let group = entry["group"].as_str().expect("a group");
+        assert!(
+            [
+                "models",
+                "assistant",
+                "memory",
+                "devices",
+                "automation",
+                "system"
+            ]
+            .contains(&group),
+            "the group is one of the six: {entry}"
+        );
+        assert!(
+            entry["key"].as_str().is_some_and(|key| !key.is_empty()),
+            "a capability names a key: {entry}"
+        );
+        assert!(
+            entry["label"]
+                .as_str()
+                .is_some_and(|label| !label.is_empty()),
+            "a capability carries a label: {entry}"
+        );
+        assert!(entry["writable"].is_boolean(), "{entry}");
+        // The options match the type: an enum lists them, anything else is null.
+        match entry["type"].as_str().expect("a type") {
+            "enum" => assert!(
+                entry["options"].as_array().is_some_and(|o| !o.is_empty()),
+                "an enum names its options: {entry}"
+            ),
+            "string" | "bool" | "int" => assert!(
+                entry["options"].is_null(),
+                "only an enum has options: {entry}"
+            ),
+            other => panic!("an undocumented type {other}: {entry}"),
+        }
+    }
+
+    // The wizard's bookkeeping and the derived catalogues are not choices, so
+    // they are not in the record. A passphrase hash in a record a client renders
+    // is a secret in a picture.
+    for entry in record {
+        let key = entry["key"].as_str().expect("a key");
+        for banned in ["setup.", "provider.", "aux.", "memory.vault"] {
+            assert!(
+                !key.starts_with(banned),
+                "the record carries no {banned} entry: {key}"
+            );
+        }
+    }
+
+    // Nothing credential shaped is in it. A settings screen that carried an API
+    // key, a reference or a provider URL would be the leak it exists to avoid.
+    // `key` is not on this list because `key` is now a documented field name in
+    // every capability entry; the values are checked for it below instead.
+    let raw = read.body.clone();
+    for banned in [
+        "env:", "http", "sk-", "password", "token", "base_url", "api_key",
+    ] {
+        assert!(
+            !raw.to_ascii_lowercase().contains(banned),
+            "the snapshot carries no {banned}: {raw}"
+        );
+    }
+    // The only path the record is allowed to carry is the workspace, which is
+    // read-only on this route on purpose.
+    for entry in record {
+        let Some(value) = entry["value"].as_str() else {
+            continue;
+        };
+        if entry["key"] == "workspace_path" {
+            continue;
+        }
+        assert!(
+            !value.contains('/'),
+            "no path is in a capability value but the workspace: {entry}"
+        );
+    }
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn settings_post_changes_a_subset_and_refuses_an_invalid_value() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    // Two ids the endpoint publishes, so a model change is a real change.
+    harness
+        .engine
+        .set_provider(
+            &provider.url,
+            TEST_KEY_REF,
+            &["p8-model".to_owned(), "p8-model-alt".to_owned()],
+        )
+        .expect("the catalog");
+    let (device_id, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // A valid subset: two fields, one of them a model the endpoint published.
+    let changed = harness
+        .request(
+            "POST",
+            "/v1/settings",
+            &auth,
+            Some(r#"{"sandbox":"workspace-write","model":"p8-model-alt"}"#),
+        )
+        .await;
+    assert_eq!(changed.status, 200, "{}", changed.body);
+    let body = changed.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body["changed"],
+        serde_json::json!(["model", "sandbox"]),
+        "the response lists what changed: {body}"
+    );
+
+    let after = harness.request("GET", "/v1/settings", &auth, None).await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert_eq!(after.json()["sandbox"], "workspace-write");
+    assert_eq!(after.json()["model"], "p8-model-alt");
+    assert_eq!(
+        after.json()["approval"],
+        "ask",
+        "a field the body did not name is untouched"
+    );
+
+    // The write is audited with the device as the actor, and the detail names the
+    // fields and values that were written.
+    let audited: Vec<(String, String, String)> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT actor, action, detail FROM audit_log \
+                  WHERE action = 'settings.device_update' ORDER BY id",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push((row.get(0)?, row.get(1)?, row.get(2)?));
+            }
+            Ok(out)
+        })
+        .expect("the audit rows");
+    assert_eq!(audited.len(), 1, "one write, one row: {audited:?}");
+    assert_eq!(audited[0].0, device_id, "the actor is the device");
+    assert_eq!(audited[0].1, "settings.device_update");
+    assert!(
+        audited[0].2.contains("model=p8-model-alt"),
+        "the detail names the model that was written: {}",
+        audited[0].2
+    );
+    assert!(
+        audited[0].2.contains("sandbox=workspace-write"),
+        "the detail names the sandbox that was written: {}",
+        audited[0].2
+    );
+
+    // An invalid value is a 400 that names the field and what it accepts, and it
+    // writes nothing at all: the valid model in the same body is left alone.
+    let refused = harness
+        .request(
+            "POST",
+            "/v1/settings",
+            &auth,
+            Some(r#"{"model":"p8-model","sandbox":"yolo"}"#),
+        )
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    let refusal = refused.json();
+    assert_eq!(refusal["code"], "sandbox_invalid");
+    let message = refusal["message"].as_str().expect("a message");
+    assert!(message.contains("sandbox"), "names the field: {message}");
+    assert!(message.contains("yolo"), "names the value: {message}");
+    assert!(
+        message.contains("read-only") && message.contains("workspace-write"),
+        "names the allowed values: {message}"
+    );
+
+    let untouched = harness.request("GET", "/v1/settings", &auth, None).await;
+    assert_eq!(untouched.status, 200, "{}", untouched.body);
+    assert_eq!(
+        untouched.json()["sandbox"],
+        "workspace-write",
+        "the refused value was not written"
+    );
+    assert_eq!(
+        untouched.json()["model"],
+        "p8-model-alt",
+        "all or nothing: the valid model beside an invalid sandbox is not written either"
+    );
+    let rows: i64 = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'settings.device_update'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("the audit count");
+    assert_eq!(rows, 1, "a refused write appends no audit row");
+
+    // A body that names none of the four fields is refused rather than 200.
+    let empty = harness
+        .request("POST", "/v1/settings", &auth, Some(r#"{}"#))
+        .await;
+    assert_eq!(empty.status, 400, "{}", empty.body);
+    assert_eq!(empty.json()["code"], "settings_empty");
+
+    // A model the endpoint never published is refused by field too.
+    let unknown = harness
+        .request(
+            "POST",
+            "/v1/settings",
+            &auth,
+            Some(r#"{"model":"no-such-model"}"#),
+        )
+        .await;
+    assert_eq!(unknown.status, 400, "{}", unknown.body);
+    assert_eq!(unknown.json()["code"], "model_invalid");
+    assert!(
+        unknown.body.contains("p8-model-alt"),
+        "the refusal names the ids the probe published: {}",
+        unknown.body
+    );
+
+    // And the admin scope is what unlocks it: the same post from a device token
+    // is a 403 that writes nothing.
+    let (_, device_token) = harness.device_with_token("iPhone");
+    let denied = harness
+        .request(
+            "POST",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {device_token}"))],
+            Some(r#"{"sandbox":"read-only"}"#),
+        )
+        .await;
+    assert_eq!(denied.status, 403, "{}", denied.body);
+    assert_eq!(denied.json()["code"], "scope_denied");
+    let still = harness.request("GET", "/v1/settings", &auth, None).await;
+    assert_eq!(still.json()["sandbox"], "workspace-write");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_admin_scope_unlocks_admin_routes_and_nothing_else() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // Admin is not chat and it is not sessions: a token carrying only admin is
+    // still refused by the routes that need those, so one scope cannot silently
+    // become the other.
+    let admin_only = {
+        let db = harness.engine.db().clone();
+        let device = AuthStore::new(db.clone())
+            .register_device("AdminOnly", "ios")
+            .expect("device row");
+        TokenService::new(db)
+            .mint_access(
+                &device,
+                ScopeSet::EMPTY.with(Scope::Admin),
+                TokenOrigin::PairedAdmin,
+            )
+            .expect("admin only token")
+            .token()
+            .to_owned()
+    };
+    let settings = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {admin_only}"))],
+            None,
+        )
+        .await;
+    assert_eq!(settings.status, 200, "{}", settings.body);
+    // Admin also reaches the administration surface added beside the settings:
+    // reading the devices, the trail and the identity are the same authority.
+    for path in ["/v1/devices", "/v1/audit", "/v1/persona"] {
+        let read = harness
+            .request(
+                "GET",
+                path,
+                &[("authorization", format!("Bearer {admin_only}"))],
+                None,
+            )
+            .await;
+        assert_eq!(read.status, 200, "GET {path}: {}", read.body);
+    }
+    for (method, path) in [
+        ("GET", "/v1/projects"),
+        ("GET", "/v1/conversations"),
+        ("POST", "/v1/turns"),
+    ] {
+        let denied = harness
+            .request(
+                method,
+                path,
+                &[("authorization", format!("Bearer {admin_only}"))],
+                Some(r#"{"text":"hello","project_name":"Work"}"#),
+            )
+            .await;
+        assert_eq!(denied.status, 403, "{method} {path}: {}", denied.body);
+        assert_eq!(denied.json()["code"], "scope_denied");
+    }
+
+    // The admin token that was paired with the defaults keeps them, so nothing
+    // was widened on the routes that were already there.
+    let conversations = harness
+        .request("GET", "/v1/conversations", &auth, None)
+        .await;
+    assert_eq!(conversations.status, 200, "{}", conversations.body);
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// The approvals queue and MCP health over /v1
+// ---------------------------------------------------------------------------
+
+/// Park one call the way a browser turn's gate parks it, stamped at a fixed
+/// second so "newest first" is a fact rather than a millisecond tie.
+fn park(harness: &Harness, tool: &str, second: u8, advice: Option<&str>) -> String {
+    let db = harness.engine.db();
+    let id = eris_host::approvals::queue(
+        db,
+        "conv-approvals",
+        tool,
+        &serde_json::json!({"path": "notes/a.txt", "content": "hi"}),
+        advice,
+    )
+    .expect("queued");
+    let stamp = format!("2026-01-01T00:00:{second:02}.000Z");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE approvals SET created_at = ?1 WHERE id = ?2",
+            (stamp.as_str(), id.as_str()),
+        )
+    })
+    .expect("stamped");
+    id
+}
+
+/// One approval row's status and who settled it, read back from the store.
+fn approval_row(harness: &Harness, id: &str) -> (String, Option<String>) {
+    harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT status, decided_by FROM approvals WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+        })
+        .expect("the approval row")
+}
+
+/// How many audit rows the store holds.
+fn audit_rows(harness: &Harness) -> i64 {
+    harness
+        .engine
+        .db()
+        .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0)))
+        .expect("the audit count")
+}
+
+/// How many decisions the audit log holds.
+fn decision_audits(harness: &Harness) -> i64 {
+    harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'chat.approval.decided'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("the decision audit count")
+}
+
+/// The newest audit row: actor, action and detail.
+fn latest_audit(harness: &Harness) -> (String, String, Option<String>) {
+    harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT actor, action, detail FROM audit_log ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+        })
+        .expect("the newest audit row")
+}
+
+/// The newest audit row with one action.
+fn latest_audit_with(harness: &Harness, action: &str) -> (String, Option<String>) {
+    harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT actor, detail FROM audit_log WHERE action = ?1 ORDER BY id DESC LIMIT 1",
+                [action],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+        })
+        .expect("an audit row with that action")
+}
+
+/// Store an MCP server list, the way the settings save would.
+fn store_servers(harness: &Harness, servers: &[(&str, &str)]) {
+    let list: Vec<serde_json::Value> = servers
+        .iter()
+        .map(|(name, command)| serde_json::json!({"name": name, "command": command, "args": []}))
+        .collect();
+    harness
+        .engine
+        .set_setting(
+            eris_host::mcp::SETTING_SERVERS,
+            &serde_json::to_string(&list).expect("a server list"),
+        )
+        .expect("the stored list");
+}
+
+#[tokio::test]
+async fn approvals_require_a_bearer_and_the_admin_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let id = park(&harness, "write_file", 0, None);
+    let (_, device_token) = harness.device_with_token("iPhone");
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+
+    // No bearer: the same 401 every other route answers.
+    for (method, path) in [
+        ("GET", "/v1/approvals".to_owned()),
+        ("POST", format!("/v1/approvals/{id}/decide")),
+        ("GET", "/v1/mcp".to_owned()),
+    ] {
+        let anonymous = harness
+            .request(method, &path, &[], Some(r#"{"decision":"approved"}"#))
+            .await;
+        assert_eq!(anonymous.status, 401, "{method} {path}: {}", anonymous.body);
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+    }
+
+    // A real token without `admin`: 403, and the message says the device was
+    // paired without administration rather than the bare word forbidden.
+    for (method, path) in [
+        ("GET", "/v1/approvals".to_owned()),
+        ("POST", format!("/v1/approvals/{id}/decide")),
+    ] {
+        let denied = harness
+            .request(
+                method,
+                &path,
+                &[("authorization", format!("Bearer {device_token}"))],
+                Some(r#"{"decision":"approved"}"#),
+            )
+            .await;
+        assert_eq!(denied.status, 403, "{method} {path}: {}", denied.body);
+        let body = denied.json();
+        assert_eq!(body["code"], "scope_denied");
+        let message = body["message"].as_str().expect("a message");
+        assert!(
+            message.contains("paired without administration"),
+            "the refusal says what actually happened: {message}"
+        );
+        assert!(
+            !message.to_ascii_lowercase().contains("forbidden"),
+            "the refusal is not the bare word: {message}"
+        );
+    }
+
+    // Neither refused post moved the row it named, and neither left a decision
+    // in the audit log.
+    assert_eq!(approval_row(&harness, &id).0, "pending");
+    assert_eq!(
+        decision_audits(&harness),
+        0,
+        "a refused decision audits nothing"
+    );
+
+    // The admin token reads the queue, so the refusals above were about scope.
+    let read = harness
+        .request(
+            "GET",
+            "/v1/approvals",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    assert_eq!(read.json()["count"], 1);
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_approvals_list_is_newest_first_and_capped_with_truncated() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    let oldest = park(
+        &harness,
+        "write_file",
+        0,
+        Some("CAREFUL - overwrites a file that already exists"),
+    );
+    let listed = harness.request("GET", "/v1/approvals", &auth, None).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["count"], 1);
+    assert_eq!(body["truncated"], false);
+    let row = &body["approvals"][0];
+    assert_eq!(row["id"], oldest.as_str());
+    assert_eq!(row["tool"], "write_file");
+    assert_eq!(
+        row["reason"], "CAREFUL - overwrites a file that already exists",
+        "the approval role's reading rides along as the reason"
+    );
+    assert_eq!(
+        row["arguments"],
+        serde_json::json!({"path": "notes/a.txt", "content": "hi"}),
+        "the parked arguments come back as JSON, not as quoted text"
+    );
+    assert_eq!(row["expires_at"], serde_json::Value::Null);
+    let mut keys: Vec<&str> = row
+        .as_object()
+        .expect("an approval object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "arguments",
+            "created_at",
+            "expires_at",
+            "id",
+            "reason",
+            "tool"
+        ],
+        "the row is the documented shape and nothing else: {row}"
+    );
+
+    // Nothing credential shaped and no workspace path, so a queue read over a
+    // shoulder leaks nothing the call would not have written itself.
+    let raw = listed.body.clone();
+    assert!(
+        !raw.contains(&harness._dir.path().display().to_string()),
+        "no workspace path is in the list: {raw}"
+    );
+    assert!(!raw.contains("env:"), "no key reference is in it: {raw}");
+    assert!(!raw.contains(TEST_KEY), "no provider key is in it: {raw}");
+
+    // Fifty more rows, so the page has to bound itself and say so.
+    let mut newest = oldest.clone();
+    for second in 1..=50u8 {
+        newest = park(&harness, "write_file", second, None);
+    }
+    let capped = harness.request("GET", "/v1/approvals", &auth, None).await;
+    assert_eq!(capped.status, 200, "{}", capped.body);
+    let body = capped.json();
+    assert_eq!(body["count"], 50);
+    assert_eq!(body["truncated"], true);
+    let rows = body["approvals"].as_array().expect("a list").clone();
+    assert_eq!(rows.len(), 50);
+    assert_eq!(
+        rows[0]["id"], newest,
+        "the newest parked call is at the top of the page"
+    );
+    let ids: Vec<&str> = rows.iter().filter_map(|row| row["id"].as_str()).collect();
+    assert!(
+        !ids.contains(&oldest.as_str()),
+        "the oldest call is what falls off the capped page"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn deciding_an_approval_moves_the_row_and_audits_the_device() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    // An approval runs the call now, so the sandbox has to accept the write or
+    // the test would be asserting a refusal.
+    let widened = harness
+        .request_form("POST", "/v1/settings", &auth, "sandbox=workspace-write")
+        .await;
+    assert_eq!(widened.status, 200, "{}", widened.body);
+    let allow_id = park(&harness, "write_file", 0, None);
+    let deny_id = park(&harness, "write_file", 1, None);
+
+    // Allow, as a form body: a curl acceptance run does not set a type.
+    let allowed = harness
+        .request_form(
+            "POST",
+            &format!("/v1/approvals/{allow_id}/decide"),
+            &auth,
+            "decision=approved",
+        )
+        .await;
+    assert_eq!(allowed.status, 200, "{}", allowed.body);
+    let body = allowed.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["id"], allow_id.as_str());
+    assert_eq!(body["decision"], "approved");
+    assert!(
+        body["result"].as_str().is_some(),
+        "the answer carries what the call said, not only that it was decided: {body}"
+    );
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a decision object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["decision", "id", "ok", "result"],
+        "the body is the documented shape and nothing else: {body}"
+    );
+
+    // The write actually happened, which is the whole point of approving it.
+    let written = harness
+        .engine
+        .workspace_path()
+        .expect("a workspace")
+        .join("notes/a.txt");
+    assert_eq!(
+        std::fs::read_to_string(&written).expect("the approved write landed"),
+        "hi"
+    );
+
+    // The row moved, and the actor is the device rather than the browser.
+    let (status, decided_by) = approval_row(&harness, &allow_id);
+    assert_eq!(status, "approved");
+    assert_eq!(decided_by.as_deref(), Some(device_id.as_str()));
+    let (actor, action, detail) = latest_audit(&harness);
+    assert_eq!(actor, device_id);
+    assert_eq!(action, "chat.approval.decided");
+    let detail = detail.expect("a detail");
+    assert!(detail.contains(&allow_id), "{detail}");
+    assert!(detail.contains("tool=write_file"), "{detail}");
+    assert!(detail.contains("decision=approved"), "{detail}");
+
+    // Deny, as JSON, and the same history results.
+    let denied = harness
+        .request(
+            "POST",
+            &format!("/v1/approvals/{deny_id}/decide"),
+            &auth,
+            Some(r#"{"decision":"denied"}"#),
+        )
+        .await;
+    assert_eq!(denied.status, 200, "{}", denied.body);
+    assert_eq!(denied.json()["decision"], "denied");
+    let (status, decided_by) = approval_row(&harness, &deny_id);
+    assert_eq!(status, "denied");
+    assert_eq!(decided_by.as_deref(), Some(device_id.as_str()));
+    let (actor, action, detail) = latest_audit(&harness);
+    assert_eq!(actor, device_id);
+    assert_eq!(action, "chat.approval.decided");
+    assert!(
+        detail.expect("a detail").contains("decision=denied"),
+        "the audit row says what the decision was"
+    );
+
+    // Both rows left the queue.
+    let listed = harness.request("GET", "/v1/approvals", &auth, None).await;
+    assert_eq!(listed.json()["count"], 0, "{}", listed.body);
+
+    // A second decision on the same id is a 404 by code, and it changes nothing.
+    let audited = audit_rows(&harness);
+    let again = harness
+        .request(
+            "POST",
+            &format!("/v1/approvals/{allow_id}/decide"),
+            &auth,
+            Some(r#"{"decision":"denied"}"#),
+        )
+        .await;
+    assert_eq!(again.status, 404, "{}", again.body);
+    assert_eq!(again.json()["code"], "approval_not_found");
+    assert_eq!(approval_row(&harness, &allow_id).0, "approved");
+    assert_eq!(
+        audit_rows(&harness),
+        audited,
+        "a refused decide audits nothing"
+    );
+
+    // An id nobody queued is the same 404.
+    let unknown = harness
+        .request(
+            "POST",
+            "/v1/approvals/ap-never-issued/decide",
+            &auth,
+            Some(r#"{"decision":"approved"}"#),
+        )
+        .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body);
+    assert_eq!(unknown.json()["code"], "approval_not_found");
+
+    // A decision that is not one of the two is a 400 that names them, and
+    // leaves the row pending with nothing audited.
+    let fresh = park(&harness, "write_file", 2, None);
+    let audited = audit_rows(&harness);
+    for bad in ["allow", "deny", "APPROVED", ""] {
+        let refused = harness
+            .request(
+                "POST",
+                &format!("/v1/approvals/{fresh}/decide"),
+                &auth,
+                Some(&format!(r#"{{"decision":"{bad}"}}"#)),
+            )
+            .await;
+        assert_eq!(refused.status, 400, "{bad}: {}", refused.body);
+        let body = refused.json();
+        assert_eq!(body["code"], "decision_invalid");
+        let message = body["message"].as_str().expect("a message");
+        assert!(
+            message.contains("approved") && message.contains("denied"),
+            "the refusal names the values it would have taken: {message}"
+        );
+    }
+    assert_eq!(approval_row(&harness, &fresh).0, "pending");
+    assert_eq!(
+        audit_rows(&harness),
+        audited,
+        "an invalid decision writes nothing"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn mcp_servers_and_their_health_need_only_the_sessions_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    store_servers(
+        &harness,
+        &[("vault", "mcp-vault"), ("search", "mcp-search")],
+    );
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let scoped = token_without(&harness, "iPad", eris_host::auth::Scope::Sessions);
+
+    // A real token without `sessions` is 403: this route is a read of the
+    // transcript's class, not an administration one.
+    let denied = harness
+        .request(
+            "GET",
+            "/v1/mcp",
+            &[("authorization", format!("Bearer {scoped}"))],
+            None,
+        )
+        .await;
+    assert_eq!(denied.status, 403, "{}", denied.body);
+    assert_eq!(denied.json()["code"], "scope_denied");
+
+    // This service was handed no pool, so it has observed nothing: the honest
+    // answer is "unknown", not a boolean per server.
+    let read = harness.request("GET", "/v1/mcp", &auth, None).await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let body = read.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body["health_known"], false,
+        "a daemon that has made no attempt must not claim health: {body}"
+    );
+    let servers = body["servers"].as_array().expect("a server list");
+    assert_eq!(servers.len(), 2);
+    assert_eq!(servers[0]["name"], "vault");
+    assert_eq!(servers[0]["command"], "mcp-vault");
+    assert_eq!(
+        servers[0]["healthy"],
+        serde_json::Value::Null,
+        "never started is unknown, not healthy"
+    );
+    assert_eq!(servers[0]["last_error"], serde_json::Value::Null);
+    let mut keys: Vec<&str> = servers[0]
+        .as_object()
+        .expect("a server object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["command", "healthy", "last_error", "name"]);
+    // The arguments are not part of this shape: they can carry a path the
+    // operator never meant to publish.
+    assert!(!read.body.contains("\"args\""), "{}", read.body);
+    harness.stop();
+
+    // A service that was handed the daemon's pool reports what that pool
+    // actually observed, and the flag says the list is covered.
+    let pool = Arc::new(eris_host::mcp::Pool::new(vec![
+        eris_host::mcp::Server {
+            name: "vault".to_owned(),
+            command: "/nonexistent/mcp-vault".to_owned(),
+            args: Vec::new(),
+        },
+        eris_host::mcp::Server {
+            name: "search".to_owned(),
+            command: "/nonexistent/mcp-search".to_owned(),
+            args: Vec::new(),
+        },
+    ]));
+    // The attempt the daemon makes when a turn asks for tools.
+    let started = pool.specs();
+    assert!(
+        started.is_empty(),
+        "a server that cannot start offers nothing"
+    );
+    let harness = Harness::start_with_mcp(&provider.url, DEFAULT_SSE_BUFFER, pool).await;
+    store_servers(
+        &harness,
+        &[
+            ("vault", "/nonexistent/mcp-vault"),
+            ("search", "/nonexistent/mcp-search"),
+        ],
+    );
+    let (_, token) = harness.device_with_token("iPhone2");
+    let read = harness
+        .request(
+            "GET",
+            "/v1/mcp",
+            &[("authorization", format!("Bearer {token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let body = read.json();
+    assert_eq!(
+        body["health_known"], true,
+        "every server has an observed state: {body}"
+    );
+    assert_eq!(body["servers"][0]["healthy"], false);
+    let error = body["servers"][0]["last_error"]
+        .as_str()
+        .expect("the reason the server is down");
+    assert!(error.contains("cannot start"), "{error}");
+
+    harness.stop();
+}
+
+/// The dashboard page, one in-process request through the router the daemon
+/// serves. The browser surface is unchanged by the device routes; this is how it
+/// is read here.
+async fn dashboard(app: &axum::Router, cookie: &str) -> (u16, String) {
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri("/dashboard")
+        .header("accept", "text/html")
+        .header("cookie", cookie)
+        .body(axum::body::Body::empty())
+        .expect("a dashboard request");
+    let response = app
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the dashboard answers");
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("the dashboard body");
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+#[tokio::test]
+async fn the_dashboard_reads_the_one_queue_a_device_answers() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let id = park(&harness, "write_file", 0, None);
+
+    // The browser surface, built exactly as the daemon builds it.
+    let app = eris_host::admin::router_with(eris_host::admin::AppState::new(
+        harness.engine.clone(),
+        false,
+    ));
+    let cookie = format!(
+        "kallisti_admin={}",
+        harness
+            .engine
+            .sessions()
+            .mint()
+            .expect("an admin session")
+            .cookie_value
+    );
+
+    let (status, page) = dashboard(&app, &cookie).await;
+    assert_eq!(status, 200, "the dashboard still answers: {page}");
+    assert!(
+        page.contains("parked"),
+        "the dashboard still counts the parked call: {page}"
+    );
+
+    // The device answers it, and the same page stops counting it: one queue, one
+    // history, whichever surface settled the row. The sandbox has to accept the
+    // write, because approving it runs it.
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let widened = harness
+        .request_form(
+            "POST",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            "sandbox=workspace-write",
+        )
+        .await;
+    assert_eq!(widened.status, 200, "{}", widened.body);
+    let decided = harness
+        .request(
+            "POST",
+            &format!("/v1/approvals/{id}/decide"),
+            &[("authorization", format!("Bearer {admin_token}"))],
+            Some(r#"{"decision":"approved"}"#),
+        )
+        .await;
+    assert_eq!(decided.status, 200, "{}", decided.body);
+
+    let (status, page) = dashboard(&app, &cookie).await;
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        !page.contains("parked"),
+        "a decision on the device empties the dashboard's counter: {page}"
+    );
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// The administration half: devices, revocation, the trail and the identity
+// ---------------------------------------------------------------------------
+
+/// One page through the browser router, the way the daemon serves it.
+async fn browser_page(app: &axum::Router, cookie: &str, path: &str) -> (u16, String) {
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("accept", "text/html")
+        .header("cookie", cookie)
+        .body(axum::body::Body::empty())
+        .expect("a page request");
+    let response = app
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the page answers");
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+        .await
+        .expect("the page body");
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// One form post through the browser router, so the revoke button is exercised
+/// the way a browser sends it and not only through the device route.
+async fn browser_post(app: &axum::Router, cookie: &str, path: &str, body: &str) -> (u16, String) {
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("accept", "text/html")
+        .header("cookie", cookie)
+        .header("content-type", FORM)
+        .body(axum::body::Body::from(body.to_owned()))
+        .expect("a form request");
+    let response = app
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the form answers");
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+        .await
+        .expect("the form body");
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// The admin cookie for the in-process browser router.
+fn browser_cookie(harness: &Harness) -> String {
+    format!(
+        "kallisti_admin={}",
+        harness
+            .engine
+            .sessions()
+            .mint()
+            .expect("an admin session")
+            .cookie_value
+    )
+}
+
+use eris_host::web::store as web_store;
+
+#[tokio::test]
+async fn the_device_and_audit_routes_require_a_bearer_and_the_admin_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, device_token) = harness.device_with_token("iPhone");
+    let (other, _) = harness.device_with_token("iPad");
+
+    // Every route this wave added, by method and path, so a route that forgot the
+    // guard fails by name instead of by a survey of the whole listener.
+    let cases: [(&str, String, Option<&str>); 5] = [
+        ("GET", "/v1/devices".to_owned(), None),
+        ("POST", format!("/v1/devices/{other}/revoke"), None),
+        ("GET", "/v1/audit".to_owned(), None),
+        ("GET", "/v1/persona".to_owned(), None),
+        (
+            "POST",
+            "/v1/persona".to_owned(),
+            Some(r#"{"persona":"you are Kallisti"}"#),
+        ),
+    ];
+
+    for (method, path, body) in &cases {
+        let anonymous = harness.request(method, path, &[], *body).await;
+        assert_eq!(
+            anonymous.status, 401,
+            "{method} {path} without a bearer: {}",
+            anonymous.body
+        );
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+
+        let denied = harness
+            .request(
+                method,
+                path,
+                &[("authorization", format!("Bearer {device_token}"))],
+                *body,
+            )
+            .await;
+        assert_eq!(
+            denied.status, 403,
+            "{method} {path} without admin: {}",
+            denied.body
+        );
+        let refusal = denied.json();
+        assert_eq!(refusal["code"], "scope_denied");
+        let message = refusal["message"].as_str().expect("a message");
+        assert!(
+            message.contains("paired without administration"),
+            "the refusal says what actually happened: {message}"
+        );
+        assert!(
+            !message.to_ascii_lowercase().contains("forbidden"),
+            "the refusal is not the bare word: {message}"
+        );
+    }
+
+    // A refused revoke revokes nothing, and a refused persona post writes nothing.
+    let row = AuthStore::new(harness.engine.db().clone())
+        .device(&other)
+        .expect("the device read")
+        .expect("a device row");
+    assert!(
+        row.revoked_at.is_none(),
+        "a 403 must not settle the row it named"
+    );
+    let persona_file =
+        eris_host::config::Paths::for_root(harness._dir.path().join("root")).persona_file();
+    assert!(
+        !persona_file.exists(),
+        "a 403 must not write the persona file: {}",
+        persona_file.display()
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_device_list_reports_pairing_and_administration_per_device() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+
+    // Two devices through the real pairing route: one whose code the operator
+    // ticked the box for, one ordinary code. The list has to keep them apart.
+    let (admin_id, admin_code) = harness.device_with_admin_code("iPad");
+    let paired_admin = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(
+                r#"{{"code":"{admin_code}","device_name":"iPad"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(paired_admin.status, 201, "{}", paired_admin.body);
+    let admin_token = paired_admin.json()["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+
+    let (chatty_id, chatty_code) = harness.device_with_code("iPhone");
+    let paired_chatty = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(
+                r#"{{"code":"{chatty_code}","device_name":"iPhone"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(paired_chatty.status, 201, "{}", paired_chatty.body);
+
+    let listed = harness
+        .request(
+            "GET",
+            "/v1/devices",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["truncated"], false);
+    assert_eq!(body["count"], 2);
+    let mut top: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    top.sort_unstable();
+    assert_eq!(
+        top,
+        vec!["count", "devices", "ok", "truncated"],
+        "the body is the documented shape and nothing else: {body}"
+    );
+    let rows = body["devices"].as_array().expect("a device list");
+    assert_eq!(rows.len(), 2);
+
+    // The row shape is the documented one and nothing else.
+    for row in rows {
+        let mut keys: Vec<&str> = row
+            .as_object()
+            .expect("a device object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "can_admin",
+                "created_at",
+                "id",
+                "last_seen",
+                "name",
+                "paired"
+            ],
+            "the row is the documented shape and nothing else: {row}"
+        );
+        assert!(
+            row["created_at"]
+                .as_str()
+                .is_some_and(|at| at.contains('T')),
+            "created_at is the row's own stamp: {row}"
+        );
+    }
+
+    let find = |id: &str| {
+        rows.iter()
+            .find(|row| row["id"] == id)
+            .unwrap_or_else(|| panic!("{id} is missing from the list: {body}"))
+            .clone()
+    };
+    let admin_row = find(&admin_id);
+    assert_eq!(admin_row["name"], "iPad");
+    assert_eq!(admin_row["paired"], true);
+    assert_eq!(
+        admin_row["can_admin"], true,
+        "the ticked box is a fact the list reports: {admin_row}"
+    );
+    let chatty_row = find(&chatty_id);
+    assert_eq!(chatty_row["paired"], true);
+    assert_eq!(
+        chatty_row["can_admin"], false,
+        "an ordinary code grants no administration: {chatty_row}"
+    );
+
+    // No activity has been recorded for either device, so the honest answer is
+    // null rather than a stamp invented for the field.
+    assert_eq!(
+        admin_row["last_seen"],
+        serde_json::Value::Null,
+        "nothing recorded means null: {admin_row}"
+    );
+
+    // Once the daemon records an audited change made as that device, the derived
+    // stamp appears, and it is the recorded one rather than a fresh clock read.
+    harness
+        .engine
+        .auth()
+        .audit(
+            &chatty_id,
+            "settings.persona",
+            Some("enabled=false; characters=0"),
+        )
+        .expect("an audit row");
+    let recorded: String = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT occurred_at FROM audit_log WHERE actor = ?1 ORDER BY id DESC LIMIT 1",
+                [chatty_id.as_str()],
+                |row| row.get(0),
+            )
+        })
+        .expect("the recorded stamp");
+    let again = harness
+        .request(
+            "GET",
+            "/v1/devices",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    let again_body = again.json();
+    let chatty_again = again_body["devices"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|row| row["id"] == chatty_id)
+        .expect("the chatty device")
+        .clone();
+    assert_eq!(
+        chatty_again["last_seen"],
+        serde_json::Value::String(recorded),
+        "last_seen is the stamp the daemon wrote: {chatty_again}"
+    );
+
+    // Newest first: the stamps the list reports never increase down the page.
+    let stamps: Vec<&str> = again_body["devices"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|row| row["created_at"].as_str())
+        .collect();
+    assert!(
+        stamps.windows(2).all(|pair| pair[0] >= pair[1]),
+        "the list is newest first: {stamps:?}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_device_list_is_capped_at_two_hundred_and_says_so() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let store = AuthStore::new(harness.engine.db().clone());
+
+    // The oldest row first, so the cap has a row it has to drop.
+    let oldest = store
+        .register_device("oldest", "ios")
+        .expect("the oldest row");
+    let mut newest = oldest.clone();
+    for index in 0..204 {
+        newest = store
+            .register_device(&format!("phone-{index}"), "ios")
+            .expect("a device row");
+    }
+
+    let listed = harness
+        .request(
+            "GET",
+            "/v1/devices",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["count"], 200);
+    assert_eq!(body["truncated"], true);
+    let ids: Vec<&str> = body["devices"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect();
+    assert_eq!(ids.len(), 200);
+    assert!(
+        !ids.contains(&oldest.as_str()),
+        "the oldest device is what falls off the capped page"
+    );
+    assert!(
+        ids.contains(&newest.as_str()),
+        "the device just registered is on the page"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn revoking_a_device_settles_the_row_audits_the_actor_and_kills_its_token() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (actor_id, admin_token) = harness.device_with_admin_token("iPad");
+    let (victim_id, victim_token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    let revoked = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{victim_id}/revoke"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, 200, "{}", revoked.body);
+    let body = revoked.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["id", "ok", "revoked"],
+        "the body is the documented shape and nothing else: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["id"], victim_id.as_str());
+    assert_eq!(
+        body["revoked"], 1,
+        "the one live token of that device moved: {body}"
+    );
+
+    // The row is settled, and every token of it is retired.
+    let row = AuthStore::new(harness.engine.db().clone())
+        .device(&victim_id)
+        .expect("the device read")
+        .expect("a device row");
+    assert!(row.revoked_at.is_some(), "the device row carries a stamp");
+    let dead = harness
+        .request(
+            "GET",
+            "/v1/devices",
+            &[("authorization", format!("Bearer {victim_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(
+        dead.status, 401,
+        "a revoked device's own token stops verifying: {}",
+        dead.body
+    );
+
+    // The trail: the acting device is the actor, the action is the browser's own
+    // name, and the detail is the device that moved. One history, one place.
+    let entries = web_store::audit_recent(harness.engine.db(), 5).expect("the recent audit rows");
+    let newest = entries.first().expect("a row");
+    assert_eq!(newest.action, "dashboard.device_revoked");
+    assert_eq!(newest.actor, actor_id);
+    assert_eq!(newest.detail.as_deref(), Some(victim_id.as_str()));
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.action == "auth.revoke_device"),
+        "the store's own row is written too, so the browser history is complete: {entries:?}"
+    );
+
+    // A device may revoke the device whose token carried the call. Refusing it
+    // would be a device able to keep itself unrevocable.
+    let itself = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{actor_id}/revoke"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(
+        itself.status, 200,
+        "a device may revoke itself: {}",
+        itself.body
+    );
+    assert_eq!(itself.json()["revoked"], 1, "its own access token moved");
+    let afterwards = harness.request("GET", "/v1/audit", &auth, None).await;
+    assert_eq!(
+        afterwards.status, 401,
+        "the token that made the call stops verifying on the next request: {}",
+        afterwards.body
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn an_unknown_device_id_is_a_404_by_code() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    let missing = harness
+        .request("POST", "/v1/devices/no-such-device/revoke", &auth, None)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.json()["code"], "device_not_found");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_audit_read_is_newest_first_bounded_and_reports_the_real_total() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // More rows than any page this route will serve.
+    for index in 0..205 {
+        harness
+            .engine
+            .auth()
+            .audit("loopback", "p8.audit", Some(&format!("n={index}")))
+            .expect("an audit row");
+    }
+    let total = web_store::audit_count(harness.engine.db()).expect("the row count");
+    assert!(
+        total > 200,
+        "the fixture has more rows than the cap: {total}"
+    );
+
+    // The default page: fifty rows, newest first, and the real total beside it.
+    let page = harness.request("GET", "/v1/audit", &auth, None).await;
+    assert_eq!(page.status, 200, "{}", page.body);
+    let body = page.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["count"], 50);
+    assert_eq!(body["total"], total);
+    let mut top: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    top.sort_unstable();
+    assert_eq!(
+        top,
+        vec!["count", "entries", "ok", "total"],
+        "the body is the documented shape and nothing else: {body}"
+    );
+    let entries = body["entries"].as_array().expect("an entry list");
+    assert_eq!(entries.len(), 50);
+    for entry in entries {
+        let mut keys: Vec<&str> = entry
+            .as_object()
+            .expect("an entry object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["action", "actor", "at", "detail"],
+            "the entry is the documented shape and nothing else: {entry}"
+        );
+        assert!(
+            entry["at"].as_str().is_some_and(|at| at.contains('T')),
+            "at is the row's own stamp: {entry}"
+        );
+    }
+    assert_eq!(entries[0]["detail"], "n=204", "the newest row is first");
+    assert_eq!(entries[1]["detail"], "n=203");
+
+    // A named page is honoured.
+    let five = harness
+        .request("GET", "/v1/audit?limit=5", &auth, None)
+        .await;
+    assert_eq!(five.status, 200, "{}", five.body);
+    let five_body = five.json();
+    assert_eq!(five_body["count"], 5);
+    assert_eq!(five_body["total"], total);
+    let five_entries = five_body["entries"].as_array().expect("entries");
+    assert_eq!(five_entries[0]["detail"], "n=204");
+    assert_eq!(five_entries[4]["detail"], "n=200");
+
+    // A page larger than the cap is capped, not refused.
+    let capped = harness
+        .request("GET", "/v1/audit?limit=500", &auth, None)
+        .await;
+    assert_eq!(capped.status, 200, "{}", capped.body);
+    let capped_body = capped.json();
+    assert_eq!(capped_body["count"], 200);
+    assert_eq!(capped_body["total"], total);
+
+    // A limit that is not a positive number is named, not silently defaulted.
+    for bad in ["abc", "0", "-1"] {
+        let refused = harness
+            .request("GET", &format!("/v1/audit?limit={bad}"), &auth, None)
+            .await;
+        assert_eq!(refused.status, 400, "limit={bad}: {}", refused.body);
+        assert_eq!(refused.json()["code"], "limit_invalid");
+    }
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_browser_devices_page_still_lists_and_revokes() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (device_id, _) = harness.device_with_admin_token("iPad");
+    let app = eris_host::admin::router_with(eris_host::admin::AppState::new(
+        harness.engine.clone(),
+        false,
+    ));
+    let cookie = browser_cookie(&harness);
+
+    let (status, page) = browser_page(&app, &cookie, "/dashboard/devices").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(page.contains("iPad"), "the device is listed: {page}");
+    assert!(
+        page.contains("can administer"),
+        "the access column still states the token's scope: {page}"
+    );
+    assert!(
+        page.contains(r#"action="/dashboard/device/revoke""#),
+        "the revoke form is still on the page: {page}"
+    );
+    assert!(
+        !page.replace("<!DOCTYPE html>", "").contains('!'),
+        "house style holds on this page"
+    );
+
+    // The button still revokes, and the page reads the result back.
+    let (status, after) = browser_post(
+        &app,
+        &cookie,
+        "/dashboard/device/revoke",
+        &format!("device_id={device_id}"),
+    )
+    .await;
+    assert_eq!(status, 200, "{after}");
+    assert!(
+        after.contains("revoked 1 token(s)"),
+        "the browser path reports what it revoked: {after}"
+    );
+    let row = AuthStore::new(harness.engine.db().clone())
+        .device(&device_id)
+        .expect("the device read")
+        .expect("a device row");
+    assert!(row.revoked_at.is_some());
+
+    let (status, page) = browser_page(&app, &cookie, "/dashboard/devices").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        !page.contains(r#"action="/dashboard/device/revoke""#),
+        "a revoked device offers no second revoke: {page}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_browser_activity_page_still_reads_the_trail_a_device_writes() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (actor_id, admin_token) = harness.device_with_admin_token("iPad");
+    let (victim_id, _) = harness.device_with_admin_token("iPhone");
+
+    // The device surface revokes, and the browser page reads the same row.
+    let revoked = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{victim_id}/revoke"),
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, 200, "{}", revoked.body);
+
+    let app = eris_host::admin::router_with(eris_host::admin::AppState::new(
+        harness.engine.clone(),
+        false,
+    ));
+    let cookie = browser_cookie(&harness);
+    let (status, page) = browser_page(&app, &cookie, "/dashboard/activity").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        page.contains("dashboard.device_revoked"),
+        "the action a device wrote is on the page: {page}"
+    );
+    assert!(
+        page.contains(&actor_id),
+        "the acting device is the actor on the page: {page}"
+    );
+    assert!(
+        page.contains(&victim_id),
+        "the revoked device is the detail on the page: {page}"
+    );
+    assert!(
+        !page.replace("<!DOCTYPE html>", "").contains('!'),
+        "house style holds on this page"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_persona_reads_and_writes_the_same_file_the_settings_page_uses() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    let path = eris_host::config::Paths::for_root(harness._dir.path().join("root")).persona_file();
+
+    // Nothing written yet: an empty body, the switch, and the cap.
+    let empty = harness.request("GET", "/v1/persona", &auth, None).await;
+    assert_eq!(empty.status, 200, "{}", empty.body);
+    let body = empty.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["enabled", "limit", "ok", "persona"],
+        "the read body is the documented shape and nothing else: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["persona"], "");
+    assert_eq!(body["enabled"], true, "the documented default is on");
+    assert_eq!(
+        body["limit"].as_u64(),
+        Some(eris_host::persona::MAX_PERSONA_BYTES as u64),
+        "the cap is the one the settings page enforces: {body}"
+    );
+    assert!(!path.exists(), "reading does not create the file");
+
+    let written = harness
+        .request(
+            "POST",
+            "/v1/persona",
+            &auth,
+            Some(r#"{"persona":"You are Kallisti, the operator's chief of staff."}"#),
+        )
+        .await;
+    assert_eq!(written.status, 200, "{}", written.body);
+    let body = written.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["characters", "enabled", "ok"],
+        "the write body is the documented shape and nothing else: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body["characters"].as_u64(),
+        Some(
+            "You are Kallisti, the operator's chief of staff."
+                .chars()
+                .count() as u64
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the persona file"),
+        "You are Kallisti, the operator's chief of staff.",
+        "the text lands in the file the next turn reads"
+    );
+
+    // The trail carries the count and the switch, never the text.
+    let entries = web_store::audit_recent(harness.engine.db(), 1).expect("the newest row");
+    let newest = entries.first().expect("a row");
+    assert_eq!(newest.action, "settings.persona");
+    let detail = newest.detail.as_deref().expect("a detail");
+    assert!(detail.contains("characters="), "{detail}");
+    assert!(
+        !detail.contains("chief of staff"),
+        "the operator's words are not in the trail: {detail}"
+    );
+
+    // Over the cap is refused with the count and the cap, and nothing is written.
+    let oversized = "x".repeat(eris_host::persona::MAX_PERSONA_BYTES + 1);
+    let refused = harness
+        .request(
+            "POST",
+            "/v1/persona",
+            &auth,
+            Some(&serde_json::json!({ "persona": oversized }).to_string()),
+        )
+        .await;
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "persona_too_large");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the persona file"),
+        "You are Kallisti, the operator's chief of staff.",
+        "a refused save leaves the file alone"
+    );
+
+    // An enabled persona with no text is the same refusal the settings page makes.
+    let blank = harness
+        .request("POST", "/v1/persona", &auth, Some(r#"{"persona":"   "}"#))
+        .await;
+    assert_eq!(blank.status, 422, "{}", blank.body);
+    assert_eq!(blank.json()["code"], "persona_empty");
+
+    // Clearing it while the persona is off is allowed, because that is the state
+    // that actually does nothing rather than claiming to do something.
+    web_store::settings_put(
+        harness.engine.db(),
+        eris_host::persona::SETTING_PERSONA_ENABLED,
+        "false",
+    )
+    .expect("the switch");
+    let cleared = harness
+        .request("POST", "/v1/persona", &auth, Some(r#"{"persona":""}"#))
+        .await;
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    assert_eq!(cleared.json()["enabled"], false);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the persona file"),
+        "",
+        "an explicit empty field clears the text"
+    );
+
+    harness.stop();
+}
+
+/// A client with no credential can still learn what it is talking to, which is the
+/// first question worth answering when pairing misbehaves.
+#[tokio::test]
+async fn the_daemon_says_what_it_is_without_a_credential() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+
+    let reply = harness.request("GET", "/v1/version", &[], None).await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let body = reply.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["api"], "v1");
+    assert_eq!(body["version"], eris_host::admin::VERSION);
+    assert_eq!(body["build"], eris_host::admin::BUILD);
+    let frames = body["frames"].as_array().expect("the frame vocabulary");
+    // Named in full rather than counted: a new frame kind is an addition to the
+    // vocabulary a client reads, and a pinned count turns that into a failure that
+    // says nothing about what went wrong.
+    for kind in [
+        "turn.start",
+        "turn.step",
+        "turn.step.result",
+        "turn.artifact.diff",
+        "turn.artifact.page",
+        "turn.ask",
+        "turn.approval",
+        "delta",
+        "reasoning",
+        "tool",
+        "done",
+        "error",
+        "cancelled",
+        "asked",
+        "round",
+        "tool_start",
+        "tool_output",
+        "attachment",
+    ] {
+        assert!(
+            frames.iter().any(|f| f == kind),
+            "the vocabulary names {kind}: {body}"
+        );
+    }
+    assert!(
+        frames.iter().any(|f| f == "reasoning") && frames.iter().any(|f| f == "tool"),
+        "a client can learn that reasoning and tools exist: {body}"
+    );
+    // A phone that shows what a command is printing has to be able to learn the
+    // vocabulary from the daemon rather than pinning a build number.
+    for kind in ["round", "tool_start", "tool_output"] {
+        assert!(
+            frames.iter().any(|f| f == kind),
+            "a client can learn that {kind} exists: {body}"
+        );
+    }
+    // A phone has to know a turn can stop and wait for it, or a client that only
+    // handles deltas will render a parked question as a turn that hung.
+    assert!(
+        frames.iter().any(|f| f == "asked"),
+        "a client can learn that a turn may ask and wait: {body}"
+    );
+    // Nothing here is a secret: no token, no key, no address of anything internal.
+    let text = reply.body.to_ascii_lowercase();
+    for forbidden in ["token", "key", "password", "secret"] {
+        assert!(
+            !text.contains(forbidden),
+            "the version answer carries no {forbidden}: {}",
+            reply.body
+        );
+    }
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Backups and pairing codes from an admin phone
+// ---------------------------------------------------------------------------
+
+/// The archive directory a harness writes into.
+fn archive_dir(harness: &Harness) -> std::path::PathBuf {
+    eris_host::web::backups::directory(harness.engine.paths())
+}
+
+/// Every audit row in the database on disk, oldest first.
+///
+/// Read through a fresh handle rather than the engine's, because a restore moves
+/// a new file into place under the handle the process already holds open.
+fn placed_audit_rows(paths: &Paths) -> Vec<(String, String, Option<String>)> {
+    let db = Db::open(&paths.db_file).expect("the placed database opens");
+    db.with_conn(|conn| {
+        let mut statement = conn
+            .prepare("SELECT actor, action, detail FROM audit_log ORDER BY id")
+            .expect("the audit statement");
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("the audit rows");
+        rows.collect::<Result<Vec<_>, _>>()
+    })
+    .expect("the audit read")
+}
+
+#[tokio::test]
+async fn the_backup_and_code_routes_require_a_bearer_and_the_admin_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, device_token) = harness.device_with_token("iPhone");
+    let (other, _) = harness.device_with_token("iPad");
+
+    let cases: [(&str, String, Option<&str>); 4] = [
+        ("GET", "/v1/backups".to_owned(), None),
+        ("POST", "/v1/backups".to_owned(), None),
+        (
+            "POST",
+            "/v1/backups/kallisti-test.bk/restore".to_owned(),
+            None,
+        ),
+        ("POST", format!("/v1/devices/{other}/code"), None),
+    ];
+
+    for (method, path, body) in &cases {
+        let anonymous = harness.request(method, path, &[], *body).await;
+        assert_eq!(
+            anonymous.status, 401,
+            "{method} {path} without a bearer: {}",
+            anonymous.body
+        );
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+
+        let denied = harness
+            .request(
+                method,
+                path,
+                &[("authorization", format!("Bearer {device_token}"))],
+                *body,
+            )
+            .await;
+        assert_eq!(
+            denied.status, 403,
+            "{method} {path} without admin: {}",
+            denied.body
+        );
+        let refusal = denied.json();
+        assert_eq!(refusal["code"], "scope_denied");
+        let message = refusal["message"].as_str().expect("a message");
+        assert!(
+            message.contains("mint a pairing code with the administration box ticked"),
+            "the refusal names the pairing code that would fix it: {message}"
+        );
+    }
+
+    // None of the refusals minted anything or wrote an archive.
+    let rows = AuthStore::new(harness.engine.db().clone())
+        .pairing_rows()
+        .expect("the pairing rows");
+    assert!(rows.is_empty(), "a 403 mints no code: {rows:?}");
+    assert!(
+        !archive_dir(&harness).exists(),
+        "a 403 writes no archive directory"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_backup_created_from_a_phone_is_listed_newest_first_and_audited() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (actor_id, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // An empty directory is an empty list, not a failure: the first visit to a
+    // screen is supposed to show the empty state.
+    let empty = harness.request("GET", "/v1/backups", &auth, None).await;
+    assert_eq!(empty.status, 200, "{}", empty.body);
+    let empty_body = empty.json();
+    assert_eq!(empty_body["ok"], true);
+    assert_eq!(empty_body["count"], 0);
+    assert_eq!(empty_body["archives"].as_array().expect("a list").len(), 0);
+
+    let first = harness.request("POST", "/v1/backups", &auth, None).await;
+    assert_eq!(first.status, 201, "{}", first.body);
+    let first_body = first.json();
+    let mut keys: Vec<&str> = first_body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["bytes", "members", "name", "ok"],
+        "the create body is the documented shape and nothing else: {first_body}"
+    );
+    let first_name = first_body["name"].as_str().expect("a name").to_owned();
+    assert!(
+        first_name.starts_with("kallisti-") && first_name.ends_with(".bk"),
+        "the archive is named for its product and stamp: {first_name}"
+    );
+    assert!(
+        first_body["members"].as_u64().expect("a member count") > 0,
+        "an archive with no member is not a backup: {first_body}"
+    );
+    let on_disk = std::fs::metadata(archive_dir(&harness).join(&first_name))
+        .expect("the archive is on disk")
+        .len();
+    assert_eq!(
+        first_body["bytes"].as_u64().expect("a size"),
+        on_disk,
+        "the reported size is the file's own size: {first_body}"
+    );
+
+    let second = harness.request("POST", "/v1/backups", &auth, None).await;
+    assert_eq!(second.status, 201, "{}", second.body);
+    let second_name = second.json()["name"].as_str().expect("a name").to_owned();
+    assert_ne!(first_name, second_name, "two creates never share a name");
+
+    let listed = harness.request("GET", "/v1/backups", &auth, None).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["count"], 2);
+    let mut top: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    top.sort_unstable();
+    assert_eq!(
+        top,
+        vec!["archives", "count", "ok"],
+        "the list body is the documented shape and nothing else: {body}"
+    );
+    let archives = body["archives"].as_array().expect("an archive list");
+    assert_eq!(archives.len(), 2);
+    for row in archives {
+        let mut keys: Vec<&str> = row
+            .as_object()
+            .expect("an archive object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["bytes", "created_at", "members", "name"],
+            "the row is the documented shape and nothing else: {row}"
+        );
+        assert!(
+            row["bytes"].as_u64().is_some(),
+            "every archive row carries the size its directory entry reports: {row}"
+        );
+        assert!(
+            row["members"].as_u64().is_some_and(|members| members > 0),
+            "a written archive states its member count: {row}"
+        );
+        assert!(
+            row["created_at"]
+                .as_str()
+                .is_some_and(|at| at.contains('T')),
+            "created_at is the file's own stamp: {row}"
+        );
+    }
+    assert_eq!(
+        archives[0]["name"], second_name,
+        "the newest archive is first: {body}"
+    );
+    assert_eq!(archives[1]["name"], first_name);
+
+    // Both creates audited themselves, naming the acting device and not a secret.
+    let rows: Vec<(String, String, Option<String>)> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT actor, action, detail FROM audit_log \
+                     WHERE action = 'backup.created' ORDER BY id",
+                )
+                .expect("the audit statement");
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .expect("the audit rows");
+            rows.collect::<Result<Vec<_>, _>>()
+        })
+        .expect("the audit read");
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    for (actor, action, detail) in &rows {
+        assert_eq!(action, "backup.created");
+        assert_eq!(actor, &actor_id, "the phone that asked is the actor");
+        let detail = detail.as_deref().expect("a detail");
+        assert!(detail.contains("sha256="), "the detail names the digest");
+        assert!(!detail.to_lowercase().contains("passphrase"), "{detail}");
+    }
+    assert!(
+        rows[1]
+            .2
+            .as_deref()
+            .expect("a detail")
+            .contains(&second_name),
+        "the newest row names the archive it wrote: {rows:?}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_phone_restores_one_archive_and_the_row_names_the_device() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (actor_id, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    let paths = harness.engine.paths().clone();
+
+    let created = harness.request("POST", "/v1/backups", &auth, None).await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let name = created.json()["name"].as_str().expect("a name").to_owned();
+
+    // State that the archive does not contain, so the restore has something to
+    // undo. A device row is visible in the file on disk and needs no turn.
+    AuthStore::new(harness.engine.db().clone())
+        .register_device("after-the-archive", "ios")
+        .expect("a device row");
+    let strays = |paths: &Paths| -> i64 {
+        Db::open(&paths.db_file)
+            .expect("the database opens")
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM devices WHERE name = 'after-the-archive'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .expect("the count")
+    };
+    assert_eq!(strays(&paths), 1, "the fixture row is in the live database");
+
+    let restored = harness
+        .request("POST", &format!("/v1/backups/{name}/restore"), &auth, None)
+        .await;
+    assert_eq!(restored.status, 200, "{}", restored.body);
+    let body = restored.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["name", "ok", "restored"],
+        "the restore body is the documented shape and nothing else: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["name"], name);
+    assert_eq!(body["restored"], true);
+
+    assert_eq!(
+        strays(&paths),
+        0,
+        "the restored database is the archived one, not the live one"
+    );
+    let copies: Vec<String> = std::fs::read_dir(&paths.state_dir)
+        .expect("the state directory")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("pre-restore-"))
+        .collect();
+    assert_eq!(
+        copies.len(),
+        1,
+        "the restore took a safety copy: {copies:?}"
+    );
+
+    // The row is in the database that was placed, naming the device that asked.
+    let rows = placed_audit_rows(&paths);
+    let mine = rows
+        .iter()
+        .rev()
+        .find(|(_, action, _)| action == "backup.restored")
+        .expect("the device restore audits itself");
+    assert_eq!(mine.0, actor_id, "the acting device is the actor");
+    let detail = mine.2.as_deref().expect("a detail");
+    assert!(
+        detail.contains(&name),
+        "the detail names the archive: {detail}"
+    );
+    assert!(
+        detail.contains("safety_copy="),
+        "the detail carries the safety copy: {detail}"
+    );
+    assert!(!detail.contains(&admin_token), "no secret reaches the row");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_name_that_is_not_a_bare_filename_is_refused_by_the_rule() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    let paths = harness.engine.paths().clone();
+
+    let created = harness.request("POST", "/v1/backups", &auth, None).await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let before = std::fs::read(&paths.db_file).expect("the database reads");
+    let entries = std::fs::read_dir(archive_dir(&harness))
+        .expect("the archive directory")
+        .count();
+
+    // `%2e%2e` is `..` once the path is decoded, and `%2f` is a slash: both are
+    // refused by the name rule and not by failing later on the filesystem.
+    for escaped in [
+        "..",
+        "%2e%2e",
+        "..%2feris.db",
+        "%2e%2e%2f%2e%2e%2feris.db",
+        ".hidden.bk",
+        "%2fetc%2fpasswd",
+        "sub%2fkallisti.bk",
+        "back%5cslash.bk",
+    ] {
+        let reply = harness
+            .request(
+                "POST",
+                &format!("/v1/backups/{escaped}/restore"),
+                &auth,
+                None,
+            )
+            .await;
+        assert_eq!(
+            reply.status, 400,
+            "{escaped} must be refused by the name rule: {}",
+            reply.body
+        );
+        assert_eq!(
+            reply.json()["code"],
+            "bad_archive",
+            "{escaped} is refused by code: {}",
+            reply.body
+        );
+        assert!(
+            !reply.body.contains("/etc/passwd"),
+            "the refusal does not echo a path back: {}",
+            reply.body
+        );
+    }
+
+    // A well-shaped name that is not there is its own answer.
+    let missing = harness
+        .request(
+            "POST",
+            "/v1/backups/kallisti-not-here.bk/restore",
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.json()["code"], "archive_not_found");
+
+    // Nothing was placed, nothing was copied, nothing was moved.
+    assert_eq!(
+        std::fs::read(&paths.db_file).expect("the database reads"),
+        before,
+        "a refused restore does not touch the database"
+    );
+    assert_eq!(
+        std::fs::read_dir(archive_dir(&harness))
+            .expect("the archive directory")
+            .count(),
+        entries,
+        "the archive directory is unchanged"
+    );
+    let copies = std::fs::read_dir(&paths.state_dir)
+        .expect("the state directory")
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("pre-restore-")
+        })
+        .count();
+    assert_eq!(copies, 0, "a refused restore takes no safety copy");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_tmp_destination_needs_the_allowance_and_the_passphrase_is_refused() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // The setup passphrase file, present the way a claimed host has it.
+    let config = harness.engine.paths().config_dir.clone();
+    std::fs::create_dir_all(&config).expect("the config directory");
+    std::fs::write(config.join("first-run.txt"), "seven words here").expect("the passphrase file");
+
+    // A body that asks for the passphrase is refused, and the reason is the one
+    // the archive format states rather than a sentence invented here.
+    for body in [
+        r#"{"include_passphrase":true}"#,
+        r#"{"passphrase":"seven words here"}"#,
+    ] {
+        let refused = harness
+            .request("POST", "/v1/backups", &auth, Some(body))
+            .await;
+        assert_eq!(refused.status, 400, "{body}: {}", refused.body);
+        let reply = refused.json();
+        assert_eq!(reply["code"], "passphrase_not_archivable", "{body}");
+        let message = reply["message"].as_str().expect("a message");
+        assert!(
+            message.contains("excluded unconditionally"),
+            "the refusal states the archive format's reason: {message}"
+        );
+        assert!(
+            !message.contains("seven words here"),
+            "the refusal does not echo the passphrase back: {message}"
+        );
+    }
+
+    // A field this route does not read is named rather than silently ignored.
+    let unknown = harness
+        .request(
+            "POST",
+            "/v1/backups",
+            &auth,
+            Some(r#"{"include_workspace":true}"#),
+        )
+        .await;
+    assert_eq!(unknown.status, 400, "{}", unknown.body);
+    let reply = unknown.json();
+    assert_eq!(reply["code"], "field_unknown");
+    let message = reply["message"].as_str().expect("a message");
+    assert!(message.contains("include_workspace"), "{message}");
+    assert!(message.contains("out, allow_tmp"), "{message}");
+
+    // A destination under the system temporary directory is refused without the
+    // explicit allowance, in the crate's own words, and written with it.
+    let tmp_out = harness._dir.path().join("tmp-target.bk");
+    let tmp_out = tmp_out.display().to_string();
+    let refused = harness
+        .request(
+            "POST",
+            "/v1/backups",
+            &auth,
+            Some(&format!(r#"{{"out":"{tmp_out}"}}"#)),
+        )
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    let reply = refused.json();
+    assert_eq!(reply["code"], "usage", "{}", refused.body);
+    let message = reply["message"].as_str().expect("a message");
+    assert!(
+        message.contains("under the system temporary directory"),
+        "the refusal is the CLI's sentence: {message}"
+    );
+    assert!(
+        !std::path::Path::new(&tmp_out).exists(),
+        "a refused create writes no file"
+    );
+
+    let allowed = harness
+        .request(
+            "POST",
+            "/v1/backups",
+            &auth,
+            Some(&format!(r#"{{"out":"{tmp_out}","allow_tmp":true}}"#)),
+        )
+        .await;
+    assert_eq!(allowed.status, 201, "{}", allowed.body);
+    assert_eq!(allowed.json()["name"], "tmp-target.bk");
+    assert!(
+        std::path::Path::new(&tmp_out).exists(),
+        "the explicit allowance writes where it was told"
+    );
+
+    // A passphrase field on a create that would otherwise succeed leaves no
+    // archive behind, and no audit row either.
+    let audited: i64 = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'backup.created'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("the audit count");
+    assert_eq!(audited, 1, "only the create that was allowed is audited");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_minted_ordinary_code_redeems_into_a_token_without_admin() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (actor_id, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    let (target_id, _) = harness.device_with_token("Kitchen iPad");
+
+    let minted = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{target_id}/code"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(minted.status, 201, "{}", minted.body);
+    let body = minted.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("a body object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["admin", "code", "device_id", "expires_at", "ok"],
+        "the mint body is the documented shape and nothing else: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["device_id"], target_id);
+    assert_eq!(body["admin"], false, "absent means the ordinary code");
+    let code = body["code"].as_str().expect("a code").to_owned();
+    assert_eq!(code.len(), 8, "eight characters: {code}");
+    assert!(
+        code.bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()),
+        "the code is uppercase alphanumeric: {code}"
+    );
+    for ambiguous in ['0', 'O', '1', 'I', 'L'] {
+        assert!(
+            !code.contains(ambiguous),
+            "{ambiguous} is not in the hand-copied alphabet: {code}"
+        );
+    }
+    assert!(
+        body["expires_at"]
+            .as_str()
+            .is_some_and(|at| at.contains('T')),
+        "expires_at is a stamp: {body}"
+    );
+
+    // The code redeems, and the token it produces carries no administration.
+    let paired = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(r#"{{"code":"{code}"}}"#)),
+        )
+        .await;
+    assert_eq!(paired.status, 201, "{}", paired.body);
+    let scopes: Vec<String> = paired.json()["scopes"]
+        .as_array()
+        .expect("a scope list")
+        .iter()
+        .filter_map(|scope| scope.as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        !scopes.iter().any(|scope| scope == "admin"),
+        "an ordinary code grants no administration: {scopes:?}"
+    );
+    let redeemed_token = paired.json()["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let refused = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {redeemed_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    // Single use: the second redeem is the same 401 as a code that never existed.
+    let again = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(r#"{{"code":"{code}"}}"#)),
+        )
+        .await;
+    assert_eq!(again.status, 401, "{}", again.body);
+    assert_eq!(again.json()["code"], "pairing_code_invalid");
+
+    // The audit row names the device and never the code.
+    let (audit_actor, detail) = latest_audit_with(&harness, "device.pairing_code_issued");
+    assert_eq!(audit_actor, actor_id, "the phone that minted is the actor");
+    let detail = detail.expect("a detail");
+    assert!(detail.contains("Kitchen iPad"), "{detail}");
+    assert!(
+        !detail.contains(&code),
+        "the audit row never carries the code: {detail}"
+    );
+
+    // Nothing readable is stored: not in the database file, and not in any
+    // listing this daemon serves.
+    let bytes = std::fs::read(&harness.engine.paths().db_file).expect("the database reads");
+    assert!(
+        !bytes
+            .windows(code.len())
+            .any(|window| window == code.as_bytes()),
+        "the code is not in the database in readable form"
+    );
+    for path in ["/v1/devices", "/v1/audit"] {
+        let listed = harness.request("GET", path, &auth, None).await;
+        assert_eq!(listed.status, 200, "{path}: {}", listed.body);
+        assert!(
+            !listed.body.contains(&code),
+            "{path} does not hand the code back: {}",
+            listed.body
+        );
+    }
+    let listed = harness.request("GET", "/v1/devices", &auth, None).await;
+    let body = listed.json();
+    let row = body["devices"]
+        .as_array()
+        .expect("a device list")
+        .iter()
+        .find(|row| row["id"] == target_id)
+        .expect("the target device")
+        .clone();
+    for field in [
+        "id",
+        "name",
+        "created_at",
+        "paired",
+        "can_admin",
+        "last_seen",
+    ] {
+        assert!(
+            !row[field]
+                .as_str()
+                .is_some_and(|value| value.contains(&code)),
+            "no field of the device row carries the code: {row}"
+        );
+    }
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_minted_code_with_allow_admin_redeems_into_an_admin_token() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+    let (target_id, _) = harness.device_with_token("Kitchen iPad");
+
+    let minted = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{target_id}/code"),
+            &auth,
+            Some(r#"{"allow_admin":true}"#),
+        )
+        .await;
+    assert_eq!(minted.status, 201, "{}", minted.body);
+    let body = minted.json();
+    assert_eq!(body["admin"], true, "the body asked and the answer says so");
+    let code = body["code"].as_str().expect("a code").to_owned();
+
+    let paired = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(r#"{{"code":"{code}"}}"#)),
+        )
+        .await;
+    assert_eq!(paired.status, 201, "{}", paired.body);
+    let scopes: Vec<String> = paired.json()["scopes"]
+        .as_array()
+        .expect("a scope list")
+        .iter()
+        .filter_map(|scope| scope.as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        scopes.iter().any(|scope| scope == "admin"),
+        "the ticked box reaches the redeemed token: {scopes:?}"
+    );
+    let redeemed_token = paired.json()["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let allowed = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {redeemed_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(allowed.status, 200, "{}", allowed.body);
+
+    // The mint that asked for administration says so in the trail.
+    let (_, detail) = latest_audit_with(&harness, "device.pairing_code_issued");
+    let detail = detail.expect("a detail");
+    assert!(detail.contains("admin=true"), "{detail}");
+    assert!(!detail.contains(&code), "{detail}");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn minting_refuses_an_unknown_or_revoked_device_by_code() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    let missing = harness
+        .request("POST", "/v1/devices/no-such-device/code", &auth, None)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.json()["code"], "device_not_found");
+
+    // A retired device cannot be handed a code that could not redeem.
+    let (revoked_id, _) = harness.device_with_token("Old iPhone");
+    let revoked = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{revoked_id}/revoke"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, 200, "{}", revoked.body);
+    let refused = harness
+        .request(
+            "POST",
+            &format!("/v1/devices/{revoked_id}/code"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "device_revoked");
+
+    // No code was minted by either refusal.
+    let rows = AuthStore::new(harness.engine.db().clone())
+        .pairing_rows()
+        .expect("the pairing rows");
+    assert!(rows.is_empty(), "neither refusal minted a row: {rows:?}");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_browser_backups_page_still_creates_and_lists() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let app = eris_host::admin::router_with(eris_host::admin::AppState::new(
+        harness.engine.clone(),
+        false,
+    ));
+    let cookie = browser_cookie(&harness);
+
+    let (status, page) = browser_page(&app, &cookie, "/dashboard/backups").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        page.contains(r#"action="/dashboard/backups/create""#),
+        "the create form is still on the page: {page}"
+    );
+
+    let (status, _) = browser_post(&app, &cookie, "/dashboard/backups/create", "").await;
+    assert_eq!(status, 303, "the browser create redirects to the notice");
+    let name = eris_host::web::backups::list(harness.engine.paths())
+        .expect("the archive list")
+        .first()
+        .map(|row| row.name.clone())
+        .expect("an archive was written");
+    let (status, after) = browser_page(&app, &cookie, "/dashboard/backups").await;
+    assert_eq!(status, 200, "{after}");
+    assert!(
+        after.contains(&name),
+        "the page lists the archive it just wrote: {after}"
+    );
+    assert!(
+        after.contains("verified"),
+        "the page still states the verification outcome: {after}"
+    );
+    assert!(
+        !after.replace("<!DOCTYPE html>", "").contains('!'),
+        "house style holds on this page"
+    );
+    assert!(
+        !after.contains('\u{2014}'),
+        "no em dash reaches the page: {after}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_browser_devices_page_still_mints_a_code() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let app = eris_host::admin::router_with(eris_host::admin::AppState::new(
+        harness.engine.clone(),
+        false,
+    ));
+    let cookie = browser_cookie(&harness);
+
+    let (status, page) = browser_page(&app, &cookie, "/dashboard/devices").await;
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        page.contains(r#"action="/dashboard/devices""#),
+        "the mint form is still on the page: {page}"
+    );
+    assert!(
+        page.contains(r#"name="allow_admin""#),
+        "the administration box is still on the form: {page}"
+    );
+
+    let (status, minted) = browser_post(
+        &app,
+        &cookie,
+        "/dashboard/devices",
+        "device_name=Kitchen+iPad&allow_admin=true",
+    )
+    .await;
+    assert_eq!(status, 200, "{minted}");
+    assert!(
+        minted.contains("Pairing code"),
+        "the minted code is shown once: {minted}"
+    );
+    assert!(
+        minted.contains("Kitchen iPad"),
+        "the device the code is bound to is listed: {minted}"
+    );
+    let (_, detail) = latest_audit_with(&harness, "device.pairing_code_issued");
+    let detail = detail.expect("a detail");
+    assert!(detail.contains("Kitchen iPad"), "{detail}");
+    assert!(detail.contains("admin=true"), "{detail}");
+    assert!(
+        !minted.replace("<!DOCTYPE html>", "").contains('!'),
+        "house style holds on this page"
+    );
+    assert!(
+        !minted.contains('\u{2014}'),
+        "no em dash reaches the page: {minted}"
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_file_that_is_not_an_archive_lists_without_invented_numbers() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // A file in the archive directory that is not an archive: its size is a
+    // directory fact, and its member count is not a fact at all.
+    let dir = archive_dir(&harness);
+    eris_host::web::backups::ensure_directory(&dir).expect("the archive directory");
+    let junk = b"not an archive".to_vec();
+    std::fs::write(dir.join("junk.bk"), &junk).expect("a stray file");
+
+    let listed = harness.request("GET", "/v1/backups", &auth, None).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["count"], 1);
+    let row = &body["archives"][0];
+    assert_eq!(row["name"], "junk.bk");
+    assert_eq!(
+        row["bytes"].as_u64(),
+        Some(junk.len() as u64),
+        "the size is the file's own size: {row}"
+    );
+    assert_eq!(
+        row["members"],
+        serde_json::Value::Null,
+        "a file that does not open as an archive has no member count to report: {row}"
+    );
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Attachments: the phone's four steps
+// ---------------------------------------------------------------------------
+
+/// Upload, name on a turn, read back from the conversation, read the bytes from
+/// the id. This is the exact sequence the app runs, over the real listener.
+#[tokio::test]
+async fn a_file_uploads_rides_with_the_turn_and_reads_back() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let created = harness
+        .request("POST", "/v1/conversations", &auth, None)
+        .await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let conversation = created.json()["id"]
+        .as_str()
+        .expect("a conversation id")
+        .to_owned();
+
+    let bytes = "hello from the phone\n";
+    let mut headers = auth.to_vec();
+    headers.push(("x-kallisti-filename", "notes.txt".to_owned()));
+    headers.push(("x-kallisti-conversation", conversation.clone()));
+    let uploaded = harness
+        .request_octets("POST", "/v1/attachments", &headers, bytes)
+        .await;
+    assert_eq!(uploaded.status, 201, "{}", uploaded.body);
+    let attachment = uploaded.json()["attachment"].clone();
+    let id = attachment["id"]
+        .as_str()
+        .expect("an attachment id")
+        .to_owned();
+    assert_eq!(attachment["name"], "notes.txt");
+    assert_eq!(attachment["size"], bytes.len() as u64);
+    assert_eq!(attachment["media_type"], "text/plain");
+
+    let body = serde_json::json!({
+        "text": "what is in the file?",
+        "conversation": conversation.clone(),
+        "attachments": id,
+    })
+    .to_string();
+    let turn = harness
+        .request("POST", "/v1/turns", &auth, Some(&body))
+        .await;
+    assert_eq!(turn.status, 202, "{}", turn.body);
+
+    let read = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let transcript = read.json();
+    let question = transcript["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|message| message["role"] == "user")
+        .expect("the question row");
+    let files = question["attachments"]
+        .as_array()
+        .expect("an array on every row");
+    assert_eq!(files.len(), 1, "{question}");
+    assert_eq!(files[0]["id"], id);
+    assert_eq!(files[0]["name"], "notes.txt");
+
+    let fetched = harness
+        .request_octets("GET", &format!("/v1/attachments/{id}"), &auth, "")
+        .await;
+    assert_eq!(fetched.status, 200, "{}", fetched.body);
+    assert_eq!(fetched.body, bytes);
+    assert!(
+        fetched.headers.to_ascii_lowercase().contains("text/plain"),
+        "{}",
+        fetched.headers
+    );
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch from the phone
+// ---------------------------------------------------------------------------
+
+/// A stub that answers the first request with a `dispatch_agent` call and every
+/// later one with plain text. One parent round dispatches, the parent's next
+/// round answers, and the child's turn reads the same text.
+struct DispatchStub {
+    url: String,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl DispatchStub {
+    async fn start(prompt: &'static str, text: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a dispatch stub listener");
+        let addr = listener.local_addr().expect("an address");
+        let task = tokio::spawn(async move {
+            let mut first = true;
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut scratch = [0u8; 8192];
+                let _ = socket.read(&mut scratch).await;
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                            cache-control: no-cache\r\nconnection: close\r\n\r\n";
+                if socket.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                let arguments =
+                    serde_json::json!({ "prompt": prompt, "label": "phone" }).to_string();
+                let frames: Vec<serde_json::Value> = if first {
+                    first = false;
+                    vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[{
+                            "index":0,"id":"call-1","type":"function",
+                            "function":{"name":"dispatch_agent","arguments":arguments}
+                        }]}}]}),
+                        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+                    ]
+                } else {
+                    vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"content":text}}]}),
+                        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+                    ]
+                };
+                for frame in frames {
+                    let line = format!("data: {frame}\n\n");
+                    if socket.write_all(line.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+                let _ = socket.write_all(b"data: [DONE]\n\n").await;
+            }
+        });
+        Self {
+            url: format!("http://{addr}/v1"),
+            _task: task,
+        }
+    }
+}
+
+/// The phone lane offers `dispatch_agent` and a call to it runs a child turn.
+///
+/// This is the whole capability: the operator's switch on, the Full sandbox, an
+/// answer row to count against, and a model that calls the tool. Before this the
+/// device turn hardcoded `agents: false`, so the tool was never offered and a
+/// child never ran.
+#[tokio::test]
+async fn a_phone_turn_can_dispatch_a_subagent() {
+    let stub = DispatchStub::start("Summarise the deck", "the child's answer").await;
+    let harness = Harness::start(&stub.url, DEFAULT_SSE_BUFFER).await;
+    {
+        let mut permissions = harness.engine.permissions().expect("permissions read");
+        permissions.sandbox_mode = eris_host::onboarding::permissions::SandboxMode::Full;
+        harness
+            .engine
+            .set_permissions(permissions)
+            .expect("permissions written");
+    }
+    harness
+        .engine
+        .set_setting(eris_host::subagents::SETTING_AGENTS_ENABLED, "true")
+        .expect("the dispatch switch");
+
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let created = harness
+        .request("POST", "/v1/conversations", &auth, None)
+        .await;
+    let conversation = created.json()["id"]
+        .as_str()
+        .expect("a conversation")
+        .to_owned();
+    let body =
+        serde_json::json!({ "text": "hand this to a subagent", "conversation": conversation })
+            .to_string();
+    let queued = harness
+        .request("POST", "/v1/turns", &auth, Some(body.as_str()))
+        .await;
+    assert_eq!(queued.status, 202, "{}", queued.body);
+
+    // The child runs on its own task; wait for the row to settle.
+    let db = harness.engine.db();
+    let mut settled = None;
+    for _ in 0..100 {
+        let rows = eris_host::subagents::bar(db, 10).expect("the bar reads");
+        if let Some(row) = rows.into_iter().next()
+            && row.status == eris_host::subagents::Status::Succeeded
+        {
+            settled = Some(row);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let row = settled.unwrap_or_else(|| {
+        let rows = eris_host::subagents::bar(db, 10).unwrap_or_default();
+        panic!("no settled child; rows = {rows:?}");
+    });
+    assert_eq!(row.prompt, "Summarise the deck");
+    assert_eq!(row.model, "p8-model");
+    assert!(
+        row.result
+            .as_deref()
+            .unwrap_or_default()
+            .contains("the child's answer"),
+        "the child's text lands on the row: {:?}",
+        row.result
+    );
+    assert!(
+        row.parent_turn.is_some(),
+        "the row names the answer it was counted against"
+    );
+
+    // And the phone can read what it dispatched. The list is the dashboard bar's
+    // own view, so the two surfaces cannot disagree about what is live.
+    let listed = harness.request("GET", "/v1/subagents", &auth, None).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    assert_eq!(body["count"].as_u64(), Some(1), "{body}");
+    let wire = &body["subagents"][0];
+    assert_eq!(wire["id"].as_str(), Some(row.id.as_str()));
+    assert_eq!(wire["status"].as_str(), Some("succeeded"));
+    assert_eq!(wire["label"].as_str(), Some("phone"));
+    assert!(
+        wire["result"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("the child's answer"),
+        "the result travels: {wire}"
+    );
+
+    // A row is readable by its id even after the bar has aged it out, which is the
+    // point: the id the tool returned is a durable handle.
+    let one = harness
+        .request("GET", &format!("/v1/subagents/{}", row.id), &auth, None)
+        .await;
+    assert_eq!(one.status, 200, "{}", one.body);
+    assert_eq!(one.json()["subagent"]["id"].as_str(), Some(row.id.as_str()));
+
+    let missing = harness
+        .request("GET", "/v1/subagents/not-a-real-id", &auth, None)
+        .await;
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(missing.json()["code"].as_str(), Some("subagent_not_found"));
+
+    // A device without the sessions scope cannot read work it did not send for.
+    let chat_only = {
+        let db = harness.engine.db().clone();
+        let device = AuthStore::new(db.clone())
+            .register_device("chat-only", "ios")
+            .expect("a device row");
+        TokenService::new(db)
+            .mint_access(
+                &device,
+                ScopeSet::device_default().without(Scope::Sessions),
+                TokenOrigin::Device,
+            )
+            .expect("a chat-only token")
+            .token()
+            .to_owned()
+    };
+    let denied = harness
+        .request(
+            "GET",
+            "/v1/subagents",
+            &[("authorization", format!("Bearer {chat_only}"))],
+            None,
+        )
+        .await;
+    assert_eq!(denied.status, 403, "{}", denied.body);
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// The auxiliary roles the phone can pin
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/aux` names every role by its canonical key, and `POST` takes that
+/// key. The image role's key is `image` while its label is "Image generation",
+/// which is the gap a client that sends the label falls into.
+#[tokio::test]
+async fn the_aux_roles_are_readable_and_pinnable_by_key() {
+    let provider = StubProvider::start(&["ok"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let admin = {
+        let db = harness.engine.db().clone();
+        let device = AuthStore::new(db.clone())
+            .register_device("admin-phone", "ios")
+            .expect("a device row");
+        // Admin is only minted from a point where a person decided: the loopback
+        // surface, or a pairing code that carried the tick.
+        TokenService::new(db)
+            .mint_access(
+                &device,
+                ScopeSet::device_default().with(Scope::Admin),
+                TokenOrigin::Loopback,
+            )
+            .expect("an admin token")
+            .token()
+            .to_owned()
+    };
+    let auth = [("authorization", format!("Bearer {admin}"))];
+
+    let listed = harness.request("GET", "/v1/aux", &auth, None).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let body = listed.json();
+    let roles = body["roles"].as_array().expect("a role list");
+    let image = roles
+        .iter()
+        .find(|role| role["key"] == "image")
+        .unwrap_or_else(|| panic!("the image role is published: {body}"));
+    assert_eq!(
+        image["label"].as_str(),
+        Some("Image generation"),
+        "the label is not the key"
+    );
+    assert_eq!(
+        image["probe_validated"].as_bool(),
+        Some(false),
+        "an image endpoint is not the chat-model probe"
+    );
+
+    // The key works.
+    let body = serde_json::json!({
+        "role": "image",
+        "provider": "primary",
+        "model": "primary",
+    })
+    .to_string();
+    let pinned = harness
+        .request("POST", "/v1/aux", &auth, Some(body.as_str()))
+        .await;
+    assert_eq!(pinned.status, 200, "{}", pinned.body);
+
+    // The label does not, and the refusal names what this build knows.
+    let body = serde_json::json!({
+        "role": "Image generation",
+        "provider": "primary",
+        "model": "primary",
+    })
+    .to_string();
+    let refused = harness
+        .request("POST", "/v1/aux", &auth, Some(body.as_str()))
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    let body = refused.json();
+    assert_eq!(body["code"].as_str(), Some("aux_role_unknown"), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("image"),
+        "the refusal lists the keys it knows: {body}"
+    );
+    harness.stop();
+}
+
+/// A stub that answers the first request with one named tool call and every
+/// later request with plain text: one parent round calls the tool, the next one
+/// answers, and any child turn reads the text.
+struct ToolStub {
+    url: String,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl ToolStub {
+    async fn start(name: &'static str, arguments: &'static str, text: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a tool stub listener");
+        let addr = listener.local_addr().expect("an address");
+        let task = tokio::spawn(async move {
+            let mut first = true;
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut scratch = [0u8; 8192];
+                let _ = socket.read(&mut scratch).await;
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                            cache-control: no-cache\r\nconnection: close\r\n\r\n";
+                if socket.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                let frames: Vec<serde_json::Value> = if first {
+                    first = false;
+                    vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[{
+                            "index":0,"id":"call-1","type":"function",
+                            "function":{"name":name,"arguments":arguments}
+                        }]}}]}),
+                        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+                    ]
+                } else {
+                    vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"content":text}}]}),
+                        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+                    ]
+                };
+                for frame in frames {
+                    let line = format!("data: {frame}\n\n");
+                    if socket.write_all(line.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+                let _ = socket.write_all(b"data: [DONE]\n\n").await;
+            }
+        });
+        Self {
+            url: format!("http://{addr}/v1"),
+            _task: task,
+        }
+    }
+}
+
+/// A file the model made is attached to the reply it made it in, and the phone
+/// can open it. Before `attach_file` the model could only name a path in prose.
+#[tokio::test]
+async fn a_phone_turn_can_attach_a_file_it_made() {
+    let stub = ToolStub::start("attach_file", r#"{"path":"report.pdf"}"#, "Done.").await;
+    let harness = Harness::start(&stub.url, DEFAULT_SSE_BUFFER).await;
+    let workspace = harness.engine.workspace_path().expect("the workspace");
+    std::fs::write(workspace.join("report.pdf"), b"%PDF-1.4 fake").expect("a produced file");
+
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let created = harness
+        .request("POST", "/v1/conversations", &auth, None)
+        .await;
+    let conversation = created.json()["id"]
+        .as_str()
+        .expect("a conversation")
+        .to_owned();
+    let body = serde_json::json!({ "text": "attach the report", "conversation": conversation })
+        .to_string();
+    let queued = harness
+        .request("POST", "/v1/turns", &auth, Some(body.as_str()))
+        .await;
+    assert_eq!(queued.status, 202, "{}", queued.body);
+
+    // Settle the turn, then read the transcript the way the app does: the file
+    // has to be on the assistant's own row. Draining the stream is the wait, not
+    // a poll for the row: the worker settles the row and then publishes `done`,
+    // so a terminal frame means the row is already final. This used to poll the
+    // row a hundred times at 50ms, which is a five second ceiling that a cold run
+    // under a loaded suite can miss, and it read as "the answer settled" with no
+    // hint of what it saw.
+    let db = harness.engine.db();
+    let job_id = queued.json()["job_id"]
+        .as_str()
+        .expect("a job id")
+        .to_owned();
+    let mut stream = Sse::open(
+        harness.addr,
+        &format!("/v1/turns/{job_id}/events"),
+        &token,
+        None,
+    )
+    .await;
+    let frames = stream.frames_until_end(Duration::from_secs(30)).await;
+    assert_eq!(frames.last().expect("a terminal frame").event, "done");
+
+    // And the row the stream promised is final is `complete`, not merely present.
+    let state: Option<String> = db
+        .with_conn(|conn| {
+            let found: Result<String, _> = conn.query_row(
+                "SELECT state FROM chat_messages WHERE conversation_id = ?1 AND role = 'assistant'",
+                rusqlite::params![conversation],
+                |row| row.get(0),
+            );
+            match found {
+                Ok(state) => Ok(Some(state)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(error),
+            }
+        })
+        .expect("the row reads");
+    assert_eq!(state.as_deref(), Some("complete"), "the answer settled");
+
+    let transcript = harness
+        .request(
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &auth,
+            None,
+        )
+        .await;
+    assert_eq!(transcript.status, 200, "{}", transcript.body);
+    let body = transcript.json();
+    let messages = body["messages"].as_array().expect("messages");
+    let answer = messages
+        .iter()
+        .find(|message| message["role"] == "assistant")
+        .unwrap_or_else(|| panic!("the answer is in the transcript: {body}"));
+    let files = answer["attachments"].as_array().expect("attachments");
+    assert_eq!(files.len(), 1, "the reply carries the file: {answer}");
+    assert_eq!(files[0]["name"].as_str(), Some("report.pdf"));
+    assert_eq!(files[0]["media_type"].as_str(), Some("application/pdf"));
+
+    // The live stream carried it too, journalled, so a phone watching the turn
+    // draws the chip without a reload and a reconnect replays the same frame.
+    let frames: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM job_events WHERE kind = 'attachment'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("the frame is journalled");
+    assert_eq!(frames, 1, "exactly one attachment frame for one file");
+
+    // And the bytes are served back for the app to open.
+    let id = files[0]["id"].as_str().expect("an id");
+    let bytes = harness
+        .request_octets("GET", &format!("/v1/attachments/{id}"), &auth, "")
+        .await;
+    assert_eq!(bytes.status, 200, "{}", bytes.body);
+    assert_eq!(bytes.body, "%PDF-1.4 fake");
+    harness.stop();
+}
+
+/// A phone turn carries the exchange before it.
+///
+/// The device lane used to send one user message and nothing else, so a model in a
+/// long chat answered as if the conversation had just started: the "it moved to a
+/// new session mid-chat and went dumb" report. This is the contract: the second
+/// turn's request contains the first question and the first answer.
+#[tokio::test]
+async fn a_phone_turn_carries_the_exchange_before_it() {
+    let stub = StubProvider::start(&["first-answer"], Duration::ZERO).await;
+    let harness = Harness::start(&stub.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let created = harness
+        .request("POST", "/v1/conversations", &auth, None)
+        .await;
+    let conversation = created.json()["id"]
+        .as_str()
+        .expect("a conversation")
+        .to_owned();
+
+    let db = harness.engine.db();
+    for (index, text) in ["first-question", "second-question"].iter().enumerate() {
+        let body = serde_json::json!({ "text": text, "conversation": conversation }).to_string();
+        let queued = harness
+            .request("POST", "/v1/turns", &auth, Some(body.as_str()))
+            .await;
+        assert_eq!(queued.status, 202, "{}", queued.body);
+
+        // Settle this turn before starting the next one: the row has to be
+        // final before the second request can carry it. Draining the stream is
+        // the wait, for the same reason as the attach test: the worker settles
+        // the row and then publishes `done`, so a terminal frame means the row
+        // is already written.
+        let expected = index + 1;
+        let job_id = queued.json()["job_id"]
+            .as_str()
+            .expect("a job id")
+            .to_owned();
+        let mut stream = Sse::open(
+            harness.addr,
+            &format!("/v1/turns/{job_id}/events"),
+            &token,
+            None,
+        )
+        .await;
+        let frames = stream.frames_until_end(Duration::from_secs(30)).await;
+        assert_eq!(frames.last().expect("a terminal frame").event, "done");
+
+        let complete: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM chat_messages \
+                      WHERE conversation_id = ?1 AND role = 'assistant' AND state = 'complete'",
+                    rusqlite::params![conversation],
+                    |row| row.get(0),
+                )
+            })
+            .expect("counted");
+        assert_eq!(complete, expected as i64, "turn {expected} settled");
+    }
+
+    let seen = stub.bodies();
+    assert!(seen.len() >= 2, "two model calls: {}", seen.len());
+    let second = &seen[1];
+    assert!(
+        second.contains("first-question"),
+        "the second turn carries the first question: {second}"
+    );
+    assert!(
+        second.contains("first-answer"),
+        "and the first answer: {second}"
+    );
+    harness.stop();
+}
+
+/// The command table is the daemon's, not the client's.
+///
+/// A phone that hardcodes a slash-command list offers commands the daemon refuses
+/// and misses the ones it answers, which is exactly what happened with `/goal`: the
+/// client had no way to know. This is the list a hint menu should render.
+#[tokio::test]
+async fn the_command_table_is_readable_over_the_device_surface() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("GET", "/v1/slash-commands", &auth, None)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    let rows = body["commands"].as_array().expect("a command list");
+    let names: Vec<&str> = rows.iter().filter_map(|row| row["name"].as_str()).collect();
+    for expected in ["help", "new", "clear", "stop", "model", "memory"] {
+        assert!(
+            names.contains(&expected),
+            "`/{expected}` is listed: {names:?}"
+        );
+    }
+    assert!(
+        rows.iter()
+            .all(|row| row["summary"].as_str().is_some_and(|text| !text.is_empty())),
+        "every command carries the line /help prints"
+    );
+    assert_eq!(provider.hits(), 0, "reading the list costs no tokens");
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Skills: the four fields the list grew, and the write/archive pair
+// ---------------------------------------------------------------------------
+
+/// A skill library inside the harness' own temporary root.
+///
+/// Without this the library resolves to the daemon's real `~/.config` skills, and
+/// a test would write into the operator's own shelf. The caller keeps the returned
+/// directory alive for the length of the test.
+fn skill_library(harness: &Harness) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("a temp library root");
+    let library = dir.path().join("skills");
+    std::fs::create_dir_all(&library).expect("the library");
+    harness
+        .engine
+        .set_setting(
+            eris_host::skills::SETTING_DIR,
+            &library.display().to_string(),
+        )
+        .expect("the library setting");
+    (dir, library)
+}
+
+/// One skill directory with a complete `SKILL.md`.
+fn seed_skill_file(library: &std::path::Path, key: &str, name: &str, description: &str) -> String {
+    let directory = library.join(key);
+    std::fs::create_dir_all(&directory).expect("the skill directory");
+    let text = format!("---\nname: {name}\ndescription: {description}\n---\n\n1. do the thing\n");
+    std::fs::write(directory.join("SKILL.md"), &text).expect("the skill file");
+    text
+}
+
+/// The admin bearer, as the header list every request below carries.
+fn admin_auth(harness: &Harness) -> Vec<(&'static str, String)> {
+    let (_, token) = harness.device_with_admin_token("iPad");
+    vec![("authorization", format!("Bearer {token}"))]
+}
+
+#[tokio::test]
+async fn the_skill_list_carries_origin_state_and_pinning_for_both_kinds() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_dir, library) = skill_library(&harness);
+    seed_skill_file(
+        &library,
+        "operator-one",
+        "Operator One",
+        "A skill the operator wrote",
+    );
+    seed_skill_file(
+        &library,
+        "learned-one",
+        "Learned One",
+        "A skill the loop wrote",
+    );
+    let db = harness.engine.db();
+    eris_host::learning::record_created(db, "learned-one", Some("A skill the loop wrote"), None)
+        .expect("a ledger row");
+    eris_host::learning::set_pinned(db, "learned-one", true).expect("pin");
+    eris_host::learning::set_state(db, "learned-one", eris_host::learning::State::Stale)
+        .expect("state");
+    let auth = admin_auth(&harness);
+
+    let response = harness.request("GET", "/v1/skills", &auth, None).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    let rows = body["skills"].as_array().expect("a skill list");
+
+    let operator = rows
+        .iter()
+        .find(|row| row["key"] == "operator-one")
+        .unwrap_or_else(|| panic!("the operator skill is listed: {body}"));
+    assert_eq!(operator["origin"], "operator");
+    assert_eq!(operator["state"], "active");
+    assert_eq!(operator["pinned"], false);
+    assert_eq!(operator["editable"], true);
+    // The shape it already published is unchanged.
+    assert_eq!(operator["name"], "Operator One");
+    assert_eq!(operator["enabled"], true);
+    assert!(operator["bytes"].as_u64().unwrap_or_default() > 0);
+
+    let learned = rows
+        .iter()
+        .find(|row| row["key"] == "learned-one")
+        .unwrap_or_else(|| panic!("the learned skill is listed: {body}"));
+    assert_eq!(learned["origin"], "learned");
+    assert_eq!(learned["state"], "stale");
+    assert_eq!(learned["pinned"], true);
+    assert_eq!(learned["editable"], true);
+
+    assert_eq!(provider.hits(), 0, "reading the library costs no tokens");
+    harness.stop();
+}
+
+#[tokio::test]
+async fn a_skill_write_replaces_the_body_and_refuses_what_it_cannot_take() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_dir, library) = skill_library(&harness);
+    seed_skill_file(&library, "deploy", "Deploy", "Ship it");
+    let auth = admin_auth(&harness);
+
+    let text = "---\nname: Deploy\ndescription: Ship it carefully\n---\n\n1. new step\n";
+    let body = serde_json::json!({ "content": text }).to_string();
+    let response = harness
+        .request("PUT", "/v1/skills/deploy", &auth, Some(&body))
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let written = response.json();
+    assert_eq!(written["ok"], true);
+    assert_eq!(written["key"], "deploy");
+    assert_eq!(written["bytes"], text.len() as u64);
+    assert_eq!(
+        std::fs::read_to_string(library.join("deploy").join("SKILL.md")).expect("the file"),
+        text,
+        "the file is exactly what the caller sent"
+    );
+
+    // An empty body, by content and by absent field, is one refusal.
+    for body in [
+        serde_json::json!({ "content": "   " }).to_string(),
+        serde_json::json!({}).to_string(),
+    ] {
+        let response = harness
+            .request("PUT", "/v1/skills/deploy", &auth, Some(&body))
+            .await;
+        assert_eq!(response.status, 400, "{}", response.body);
+        assert_eq!(response.json()["code"], "skill_content_empty");
+    }
+
+    // A key this daemon will not spell.
+    let body = serde_json::json!({ "content": "x" }).to_string();
+    let response = harness
+        .request("PUT", "/v1/skills/a%2Fb", &auth, Some(&body))
+        .await;
+    assert_eq!(response.status, 400, "{}", response.body);
+    assert_eq!(response.json()["code"], "skill_key_invalid");
+
+    // A key that names nothing in the library is a 404, not a new skill.
+    let response = harness
+        .request("PUT", "/v1/skills/no-such-skill", &auth, Some(&body))
+        .await;
+    assert_eq!(response.status, 404, "{}", response.body);
+    assert_eq!(response.json()["code"], "skill_unknown");
+    assert!(
+        !library.join("no-such-skill").exists(),
+        "nothing was created"
+    );
+
+    // Over the cap: 413, and the file keeps what it had.
+    let huge = "y".repeat((eris_host::skills::MAX_SKILL_BYTES + 1) as usize);
+    let body = serde_json::json!({ "content": huge }).to_string();
+    let response = harness
+        .request("PUT", "/v1/skills/deploy", &auth, Some(&body))
+        .await;
+    assert_eq!(response.status, 413, "{}", response.body);
+    assert_eq!(response.json()["code"], "skill_content_too_large");
+    assert_eq!(
+        std::fs::read_to_string(library.join("deploy").join("SKILL.md")).expect("the file"),
+        text
+    );
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn deleting_a_skill_removes_it_and_names_the_path() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_dir, library) = skill_library(&harness);
+    seed_skill_file(&library, "deploy", "Deploy", "Ship it");
+    let auth = admin_auth(&harness);
+
+    let response = harness
+        .request("DELETE", "/v1/skills/deploy", &auth, None)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["key"], "deploy");
+    let removed = body["removed"]
+        .as_str()
+        .expect("the answer names what was removed");
+    assert!(
+        removed.ends_with("/deploy"),
+        "the path names the skill's own directory: {removed}"
+    );
+    assert!(!library.join("deploy").exists(), "the directory is gone");
+    assert!(
+        !library.join(eris_host::learning::ARCHIVE_DIR).exists(),
+        "a delete is not an archive: nothing lands in .archive/"
+    );
+
+    // The list no longer carries it.
+    let response = harness.request("GET", "/v1/skills", &auth, None).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let keys: Vec<String> = response.json()["skills"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|row| row["key"].as_str().map(str::to_owned))
+        .collect();
+    assert!(!keys.contains(&"deploy".to_owned()), "{keys:?}");
+
+    // Deleting it again is a 404, and an unusable key is a 400.
+    let response = harness
+        .request("DELETE", "/v1/skills/deploy", &auth, None)
+        .await;
+    assert_eq!(response.status, 404, "{}", response.body);
+    assert_eq!(response.json()["code"], "skill_unknown");
+    let response = harness
+        .request("DELETE", "/v1/skills/a%2Fb", &auth, None)
+        .await;
+    assert_eq!(response.status, 400, "{}", response.body);
+    assert_eq!(response.json()["code"], "skill_key_invalid");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_skill_writes_refuse_a_token_without_the_admin_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_dir, library) = skill_library(&harness);
+    seed_skill_file(&library, "deploy", "Deploy", "Ship it");
+    let (_, chat_token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {chat_token}"))];
+
+    let body = serde_json::json!({ "content": "---\nname: Deploy\n---\n\nnew\n" }).to_string();
+    let put = harness
+        .request("PUT", "/v1/skills/deploy", &auth, Some(&body))
+        .await;
+    assert_eq!(put.status, 403, "{}", put.body);
+    assert_eq!(put.json()["code"], "scope_denied");
+    let delete = harness
+        .request("DELETE", "/v1/skills/deploy", &auth, None)
+        .await;
+    assert_eq!(delete.status, 403, "{}", delete.body);
+    assert_eq!(delete.json()["code"], "scope_denied");
+
+    assert!(
+        library.join("deploy").join("SKILL.md").is_file(),
+        "a refused token changes nothing on disk"
+    );
+
+    // No bearer at all is the 401 every other route answers.
+    for method in ["PUT", "DELETE"] {
+        let anonymous = harness
+            .request(method, "/v1/skills/deploy", &[], None)
+            .await;
+        assert_eq!(anonymous.status, 401, "{method}: {}", anonymous.body);
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+    }
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// The update control plane
+// ---------------------------------------------------------------------------
+
+/// Seed the release cache so a check answers without touching the network.
+///
+/// The manifest read is cache-first with a six-hour window, so a freshly stamped
+/// row means [`eris_host::release::check`] never builds a request. That is the
+/// only way a test may exercise this route: no test in this workspace is allowed
+/// to reach github.com.
+fn seed_release(harness: &Harness, tag: &str, version: &str, build: u32, checksum: bool) {
+    let arch = eris_host::release::host_arch();
+    let asset = format!("eris-v{version}-build.{build}-linux-{arch}.tar.gz");
+    let url = format!("{} {tag}", eris_host::release::DOWNLOAD_PREFIX);
+    let url = url.trim().replace(' ', "/eris-").to_owned();
+    let mut assets = vec![serde_json::json!({
+        "name": asset,
+        "browser_download_url": format!("{url}{asset}"),
+    })];
+    if checksum {
+        assets.push(serde_json::json!({
+            "name": format!("{asset}.sha256"),
+            "browser_download_url": format!("{url}{asset}.sha256"),
+        }));
+    }
+    let body = serde_json::json!({
+        "tag_name": tag,
+        "name": format!("Kallisti {version} build {build}"),
+        "body": "seeded for the device update contract",
+        "published_at": "2026-11-10T15:00:00Z",
+        "assets": assets,
+    })
+    .to_string();
+    harness
+        .engine
+        .set_setting(eris_host::release::SETTING_MANIFEST, &body)
+        .expect("seeded manifest");
+    harness
+        .engine
+        .set_setting(
+            eris_host::release::SETTING_CHECKED_AT,
+            &eris_host::auth::format_timestamp(eris_host::auth::now()),
+        )
+        .expect("seeded stamp");
+}
+
+/// The keys the client decodes. Named once so the route test and the contract
+/// cannot drift apart.
+const UPDATE_CHECK_KEYS: [&str; 16] = [
+    "ok",
+    "target",
+    "current",
+    "version",
+    "build",
+    "staged",
+    "checked",
+    "source",
+    "checked_at",
+    "update_available",
+    "latest",
+    "can_install",
+    "blocker",
+    "note",
+    // The legacy keys the shipped client already reads. They stay.
+    "current",
+    "target",
+];
+
+/// The check answers on `GET` and on `POST`, carries every legacy key plus the
+/// release fields, and reports the newest release it knows about.
+#[tokio::test]
+async fn the_update_check_answers_both_methods_and_carries_the_release() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    seed_release(&harness, "v99.0.0-build.999", "99.0.0", 999, true);
+
+    for method in ["GET", "POST"] {
+        let response = harness
+            .request(
+                method,
+                "/v1/gw/update/check",
+                &auth,
+                if method == "POST" {
+                    Some(r#"{"target":"eris"}"#)
+                } else {
+                    None
+                },
+            )
+            .await;
+        assert_eq!(
+            response.status, 200,
+            "{method} must answer, not 405: {}",
+            response.body
+        );
+        let body = response.json();
+        for key in UPDATE_CHECK_KEYS {
+            assert!(
+                body.get(key).is_some(),
+                "{method} is missing `{key}`: {}",
+                response.body
+            );
+        }
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["target"], "eris");
+        assert_eq!(body["update_available"], true, "{}", response.body);
+        assert_eq!(body["latest"]["tag"], "v99.0.0-build.999");
+        assert_eq!(body["latest"]["has_checksum"], true);
+
+        // The legacy envelope, in the SAME document. The shipped phone decodes
+        // `data.components` with the legacy component key; the flat keys above
+        // are what this build and the dashboard read. One answer, both readers.
+        let component = &body["data"]["components"][eris_host::device::wire::COMPONENT];
+        for key in [
+            "currentVersion",
+            "latestVersion",
+            "updateAvailable",
+            "behindCount",
+            "releaseURL",
+            "changelog",
+            "commits",
+            "lastCheckedAt",
+            "error",
+        ] {
+            assert!(
+                component.get(key).is_some(),
+                "{method} envelope is missing `{key}`: {}",
+                response.body
+            );
+        }
+        assert_eq!(component["updateAvailable"], true);
+        assert_eq!(component["commits"], serde_json::json!([]));
+        assert!(
+            component["latestVersion"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("99.0.0"),
+            "the envelope names the newest release: {}",
+            response.body
+        );
+        assert_eq!(
+            body["checked"], false,
+            "a served-from-cache answer does not claim a fresh check"
+        );
+        assert_eq!(body["source"], "cache");
+        // Whether this host can install depends on it - the helper unit being
+        // present, the daemon having been started by systemd - so the claim pinned
+        // here is the contract between the two fields, not a particular value: an
+        // install that cannot run always carries a sentence saying why.
+        let can_install = body["can_install"]
+            .as_bool()
+            .expect("can_install is a boolean");
+        let blocker = body["blocker"].as_str();
+        assert_eq!(
+            can_install,
+            blocker.is_none(),
+            "can_install and blocker must agree: {}",
+            response.body
+        );
+        assert!(
+            blocker.is_none_or(|text| !text.is_empty()),
+            "a blocker is never an empty string: {}",
+            response.body
+        );
+    }
+
+    harness.stop();
+}
+
+/// Decode one line of the fixture: lower-case hex, two characters per byte.
+///
+/// Spelled out here rather than pulled from a crate: the fixture is five short
+/// lines, and a decoder this small keeps the expected bytes in one place with no
+/// dependency added to the test build for it.
+fn decode_hex(line: &str) -> Vec<u8> {
+    assert!(
+        line.len().is_multiple_of(2),
+        "`{line}` has an odd number of hex digits"
+    );
+    line.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).expect("hex is ascii");
+            u8::from_str_radix(text, 16)
+                .unwrap_or_else(|error| panic!("`{text}` is not hex: {error}"))
+        })
+        .collect()
+}
+
+/// Read `contract/fixtures/legacy-wire-keys.hex` as the exact bytes the shipped
+/// phone decodes.
+///
+/// The fixture is hex so the expected byte strings are asserted without any
+/// source line spelling them: one key per line, lower-case, decoded here.
+fn legacy_wire_keys() -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../contract/fixtures/legacy-wire-keys.hex");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} is unreadable: {error}", path.display()));
+    let keys: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let bytes = decode_hex(line);
+            String::from_utf8(bytes)
+                .unwrap_or_else(|error| panic!("`{line}` is not utf-8: {error}"))
+        })
+        .collect();
+    assert_eq!(
+        keys.len(),
+        5,
+        "the fixture carries the five frozen keys, got {keys:?}"
+    );
+    keys
+}
+
+/// The wire keys are frozen bytes a deployed client reads, so they are asserted
+/// against a hex fixture rather than against a literal in this file. If a
+/// constant in `device::wire` is edited, this fails before a phone does.
+#[tokio::test]
+async fn the_wire_keys_are_the_exact_bytes_the_shipped_client_decodes() {
+    let keys = legacy_wire_keys();
+    let [component, ready, connected, home, log_source] = keys.as_slice() else {
+        unreachable!("the length is asserted in the helper");
+    };
+    assert_eq!(eris_host::device::wire::COMPONENT, component);
+    assert_eq!(eris_host::device::wire::KEY_READY, ready);
+    assert_eq!(eris_host::device::wire::KEY_CONNECTED, connected);
+    assert_eq!(eris_host::device::wire::KEY_HOME, home);
+    assert_eq!(eris_host::device::wire::LOG_SOURCE, log_source);
+}
+
+/// The health body and the update envelope carry exactly the frozen key sets:
+/// the component key under `data.components`, and the two booleans on the health
+/// document. Asserted against the same hex fixture, so the contract is the bytes
+/// and not a spelling.
+#[tokio::test]
+async fn the_health_body_and_envelope_carry_the_frozen_component_keys() {
+    let keys = legacy_wire_keys();
+    let component_key = &keys[0];
+    let ready_key = &keys[1];
+    let connected_key = &keys[2];
+
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    // The health document: the two booleans are present under the exact bytes.
+    let received = harness.request("GET", "/v1/gw/health", &auth, None).await;
+    assert_eq!(received.status, 200, "{}", received.body);
+    let health = received.json();
+    let health_keys: Vec<&String> = health
+        .as_object()
+        .expect("the health body is an object")
+        .keys()
+        .collect();
+    assert!(
+        health_keys.contains(&ready_key),
+        "the health body is missing the Ready key: {}",
+        received.body
+    );
+    assert!(
+        health_keys.contains(&connected_key),
+        "the health body is missing the Connected key: {}",
+        received.body
+    );
+    assert_eq!(health[ready_key.as_str()], true);
+    assert_eq!(health[connected_key.as_str()], true);
+
+    // The envelope: exactly one component, under the exact component bytes.
+    seed_release(&harness, "v99.0.0-build.999", "99.0.0", 999, true);
+    let check = harness
+        .request("GET", "/v1/gw/update/check", &auth, None)
+        .await;
+    assert_eq!(check.status, 200, "{}", check.body);
+    let body = check.json();
+    let components = body["data"]["components"]
+        .as_object()
+        .expect("data.components is an object");
+    let component_keys: Vec<&String> = components.keys().collect();
+    assert_eq!(
+        component_keys,
+        vec![component_key],
+        "the envelope carries exactly the frozen component key: {}",
+        check.body
+    );
+
+    harness.stop();
+}
+
+/// An unknown target is refused before anything is written or started.
+#[tokio::test]
+async fn update_apply_refuses_an_unknown_target_and_touches_nothing() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    seed_release(&harness, "v99.0.0-build.999", "99.0.0", 999, true);
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/gw/update/apply",
+            &auth,
+            Some(r#"{"target":"someone-elses-daemon"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 400, "{}", response.body);
+    assert_eq!(response.json()["code"], "target_unknown");
+
+    let request = harness.engine.paths().state_dir.join("update/request.json");
+    assert!(
+        !request.exists(),
+        "a refused target writes no request: {}",
+        request.display()
+    );
+
+    harness.stop();
+}
+
+/// Onboarding unfinished is the same `409 not_ready` the restart route answers.
+#[tokio::test]
+async fn update_apply_is_not_ready_before_onboarding_finishes() {
+    let harness = Harness::start_not_ready().await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/gw/update/apply",
+            &auth,
+            Some(r#"{"target":"eris"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 409, "{}", response.body);
+    assert_eq!(response.json()["code"], "not_ready");
+
+    harness.stop();
+}
+
+/// Nothing newer is a refusal, not a silent success.
+///
+/// Two refusals are correct here and which one wins depends on the host, so both
+/// are accepted. `start_install` reads the real
+/// `$HOME/.config/systemd/user/kallisti-eris-update.service`: on a host where
+/// install.sh wrote it - the developer's - the daemon gets as far as "nothing
+/// staged, no newer release", and the sentence names the running version. On a
+/// bare runner there is no helper unit, so "the update unit is not installed"
+/// answers first and that is the honest answer for that host. Asserting only the
+/// first made this test green here and red on CI, which is a test measuring the
+/// machine rather than the code. The sentence itself is asserted on the pure
+/// function in `device::gateway`.
+#[tokio::test]
+async fn update_apply_refuses_when_there_is_no_newer_release() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    // The release this process is already running: never newer than itself.
+    seed_release(
+        &harness,
+        &format!(
+            "v{}-build.{}",
+            eris_host::admin::VERSION,
+            eris_host::admin::BUILD
+        ),
+        eris_host::admin::VERSION,
+        eris_host::admin::BUILD,
+        true,
+    );
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/gw/update/apply",
+            &auth,
+            Some(r#"{"target":"eris"}"#),
+        )
+        .await;
+    assert_eq!(response.status, 409, "{}", response.body);
+    let body = response.json();
+    assert_eq!(body["code"], "update_unavailable");
+    let message = body["message"].as_str().unwrap_or_default().to_owned();
+    // Either the helper unit is absent, or it is present and there is nothing to
+    // install. Both are refusals and both name what to do about it; a `200` with
+    // an empty body would be the defect this test exists for.
+    let names_the_unit_gap =
+        message.contains("update unit is not installed") && message.contains("install.sh");
+    let names_nothing_newer =
+        message.contains(eris_host::admin::VERSION) && message.contains("nothing newer");
+    assert!(
+        names_the_unit_gap || names_nothing_newer,
+        "the refusal explains itself either way: {message}"
+    );
+
+    harness.stop();
+}
+
+/// Progress is `200 idle` with no state file. A `404` here reads to a polling
+/// client as a dead socket, which is the failure this route exists to avoid.
+#[tokio::test]
+async fn update_progress_is_idle_and_200_when_nothing_is_running() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("GET", "/v1/gw/update/progress", &auth, None)
+        .await;
+    assert_eq!(
+        response.status, 200,
+        "progress is never a 404: {}",
+        response.body
+    );
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["data"]["state"], "idle");
+    assert_eq!(body["data"]["output"], serde_json::json!([]));
+    assert_eq!(body["data"]["error"], serde_json::Value::Null);
+
+    harness.stop();
+}
+
+/// A helper-written state document is passed through, bounded, and keeps its
+/// field names.
+#[tokio::test]
+async fn update_progress_reports_the_helpers_state_with_bounded_output() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let directory = harness.engine.paths().state_dir.join("update");
+    std::fs::create_dir_all(&directory).expect("update dir");
+    let output: Vec<String> = (0..400).map(|index| format!("line {index}")).collect();
+    let state = serde_json::json!({
+        "state": "installing",
+        "exit_code": serde_json::Value::Null,
+        "started_at": "2026-11-10T15:00:00Z",
+        "finished_at": serde_json::Value::Null,
+        "from_version": "1.4.15 build 181",
+        "to_version": "1.5.0 build 182",
+        "output": output,
+        "error": serde_json::Value::Null,
+    });
+    std::fs::write(
+        directory.join("state.json"),
+        serde_json::to_vec(&state).expect("json"),
+    )
+    .expect("state file");
+
+    let response = harness
+        .request("GET", "/v1/gw/update/progress", &auth, None)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    let data = &body["data"];
+    assert_eq!(data["state"], "installing");
+    assert_eq!(data["from_version"], "1.4.15 build 181");
+    assert_eq!(data["to_version"], "1.5.0 build 182");
+    let lines = data["output"].as_array().expect("an array of lines");
+    assert_eq!(
+        lines.len(),
+        200,
+        "the output is bounded to the last 200 lines"
+    );
+    assert_eq!(
+        lines.last().and_then(|line| line.as_str()),
+        Some("line 399"),
+        "the newest line is last"
+    );
+
+    harness.stop();
+}
+
+/// A state document too large to trust is refused rather than parsed into the
+/// phone.
+#[tokio::test]
+async fn update_progress_ignores_an_oversized_state_file() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_admin_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let directory = harness.engine.paths().state_dir.join("update");
+    std::fs::create_dir_all(&directory).expect("update dir");
+    std::fs::write(directory.join("state.json"), vec![b'x'; 70 * 1024]).expect("big file");
+
+    let response = harness
+        .request("GET", "/v1/gw/update/progress", &auth, None)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(response.json()["data"]["state"], "idle");
+
+    harness.stop();
+}
+
+/// Both new routes are bearer-and-admin gated like the rest of the control plane.
+#[tokio::test]
+async fn the_update_routes_require_an_admin_bearer() {
+    let provider = StubProvider::start(&["o"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, plain) = harness.device_with_token("iPhone");
+    let plain = [("authorization", format!("Bearer {plain}"))];
+
+    let anonymous = harness
+        .request("GET", "/v1/gw/update/progress", &[], None)
+        .await;
+    assert_eq!(anonymous.status, 401, "{}", anonymous.body);
+    assert_eq!(anonymous.json()["code"], "token_invalid");
+
+    let not_admin = harness
+        .request(
+            "POST",
+            "/v1/gw/update/apply",
+            &plain,
+            Some(r#"{"target":"eris"}"#),
+        )
+        .await;
+    assert_eq!(not_admin.status, 403, "{}", not_admin.body);
+    assert_eq!(not_admin.json()["code"], "scope_denied");
+
+    harness.stop();
+}
+
+/// A turn names the transcript it lands on, and the job records it.
+///
+/// Every device turn in this database carried a null `jobs.conversation_id` even
+/// when the phone had named one: the handler wrote the question row into the
+/// conversation and then created the job with `None`, so nothing related a turn to
+/// its chat. The transcript was reachable only by reading `chat_messages`.
+#[tokio::test]
+async fn a_turn_stores_the_conversation_it_names() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let conversation = a_conversation(&harness);
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(&format!(r#"{{"text":"hello","conversation":"{conversation}"}}"#)),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"].as_str().expect("job id").to_owned();
+
+    let db = harness.engine.db().clone();
+    let stored: Option<String> = db
+        .with_conn(|conn| {
+            match conn.query_row(
+                "SELECT conversation_id FROM jobs WHERE id = ?1",
+                [&job_id],
+                |row| row.get(0),
+            ) {
+                Ok(value) => Ok(Some(value)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(error),
+            }
+        })
+        .expect("the job row");
+    assert_eq!(
+        stored.as_deref(),
+        Some(conversation.as_str()),
+        "the job records the conversation it was sent to"
+    );
+}
+
+/// A device turn that names no conversation still lands on one.
+///
+/// This used to be a "legitimate mode": stream an answer, store nothing. From the
+/// phone it is indistinguishable from a broken bind - the reply appears and then
+/// exists nowhere - so the daemon opens a conversation instead of answering into
+/// the void.
+#[tokio::test]
+async fn a_turn_without_a_conversation_gets_one() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"hello"}"#))
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"].as_str().expect("job id").to_owned();
+
+    let db = harness.engine.db().clone();
+    let stored: Option<String> = db
+        .with_conn(|conn| {
+            match conn.query_row(
+                "SELECT conversation_id FROM jobs WHERE id = ?1",
+                [&job_id],
+                |row| row.get(0),
+            ) {
+                Ok(value) => Ok(Some(value)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(error),
+            }
+        })
+        .expect("the job row");
+    let conversation = stored.expect("a conversation was created for the turn");
+    assert!(!conversation.is_empty());
+
+    // The question is on that transcript, which is what makes the answer findable
+    // afterwards.
+    let question: String = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT body FROM chat_messages WHERE conversation_id = ?1 AND role = 'user'",
+                [&conversation],
+                |row| row.get(0),
+            )
+        })
+        .expect("the question row");
+    assert_eq!(question, "hello");
+}

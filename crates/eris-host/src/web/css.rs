@@ -1,0 +1,3885 @@
+//! The one stylesheet, served inline and at `/static/app.css`.
+//!
+//! Every colour in this file is listed in `docs/adr/0004-palette.md`, which is
+//! the denylist reference: a hex that is not in the ADR is not allowed in the
+//! UI, and an acceptance test greps the rendered pages for the six purple values
+//! 1.0 refuses. There is no build step, no npm, no CDN, no web font, and no
+//! `<script>`: the pages are server-rendered HTML with one inline stylesheet, so
+//! `curl` can read every step and a browser with JavaScript disabled works.
+//!
+//! The identity is the product one: obsidian ground, platinum accent, and three
+//! semantic colours that only ever mean good, transitional, or refused. There is
+//! no gradient and no decorative colour, so the page is quiet and the numbers
+//! are the loud thing on it.
+
+/// Where the stylesheet is also reachable as a file.
+pub const CSS_ROUTE: &str = "/static/app.css";
+
+/// The whole stylesheet. Obsidian and platinum, system fonts, no purple.
+pub const APP_CSS: &str = r#"
+:root {
+  --deep: #06070a;
+  --bg: #0c0c10;
+  --panel: #131317;
+  --raise: #1a1b20;
+  --line: #24252b;
+  --line-strong: #34363d;
+  --text: #e9eaee;
+  --muted: #9b9da5;
+  --platinum: #c8ccd2;
+  --ok: #86c7a0;
+  --warn: #d8b57c;
+  --bad: #d98a8a;
+  --black: #000000;
+  /* The one ceiling in a reply. The thinking bubble's body and a collapsed
+     answer both stop here, because they are the same thing: a block that is
+     open enough to be read and short enough to be skipped. It was two numbers -
+     320px for the bubble and 7.5rem for the answer - and the answer, at 120px,
+     showed two lines and a fade where the bubble showed a paragraph. */
+  --fold: 320px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: var(--platinum); color: var(--deep); }
+::placeholder { color: var(--muted); opacity: 0.7; }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border: 3px solid var(--bg); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+a { color: var(--platinum); text-decoration: none; text-underline-offset: 3px; }
+a:hover { text-decoration: underline; }
+a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; border-radius: 4px; }
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 34px 30px 72px; width: 100%; }
+
+/* The shell -------------------------------------------------------------- */
+
+/* The application shell: a fixed rail, and a surface the wallpaper sits on. */
+
+.app {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* The rail is a flex item with a basis, not a grid column, because a grid column
+   can only be shown or hidden - and a sidebar that teleports reads as a glitch
+   rather than a decision. */
+.app > .side {
+  flex: 0 0 236px;
+  width: 236px;
+  transition:
+    flex-basis 260ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    width 260ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    transform 260ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 200ms ease;
+  overflow: hidden;
+}
+.app > .wrap { flex: 1 1 auto; min-width: 0; }
+
+/* Collapsing the rail. The transcript takes the whole width, and the control to
+   bring the rail back lives in the content column, because a control that only
+   exists inside the thing you just hid is a one-way door. */
+/* Collapsed: the rail slides out and the transcript takes the room it had. The
+   contents are non-interactive and invisible to a reader, so a hidden rail is not
+   a tab stop in the dark. */
+.app.rail-hidden > .side {
+  flex-basis: 0;
+  width: 0;
+  transform: translateX(-24px);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .app > .side { transition: none; }
+}
+
+.rail-hide {
+  position: absolute;
+  top: 16px;
+  right: 10px;
+  margin: 0;
+}
+.rail-hide button,
+.rail-show button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.rail-hide button:hover,
+.rail-show button:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.rail-show {
+  position: sticky;
+  top: 8px;
+  z-index: 3;
+  display: inline-block;
+  margin: 0 0 10px;
+}
+
+/* A raster wallpaper is a picture, and a picture at full strength competes with
+   the conversation. The chrome is opaque on its own; the art is dimmed so it
+   reads as a room, not as a poster. */
+.app-wall.art { opacity: 0.42; }
+
+.app-wall {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  /*
+   * Stationary has to be spelled out. Sizing this layer to the visual viewport
+   * makes mobile Safari recompute the `cover` scale as the browser chrome hides,
+   * so the picture breathes while you scroll. The large-viewport unit is the one
+   * that does not move, so the scale is constant and the wallpaper stays put.
+   */
+  height: 100lvh;
+  z-index: 0;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  pointer-events: none;
+  /* Its own compositing layer: a fixed background repainted with the document
+     underneath the rail is the other way this image appears to drift. */
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+/* A veil over the artwork so the conversation reads over any image, not only the
+   dimmed default. It is a separate layer, so the wallpaper's own scale, position
+   and `lvh` sizing are untouched; the scrim only darkens what is already there. */
+.app-wall::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 7, 10, 0.25);
+}
+
+.side {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  height: 100vh;
+  height: 100dvh;
+  padding: 22px 16px;
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.side-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.side-foot .badge { align-self: flex-start; }
+.side-foot .ver {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+}
+
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 2px 4px 0; }
+.brand .mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--raise);
+  color: var(--platinum);
+  font-size: 14px;
+  font-weight: 620;
+  letter-spacing: 0.02em;
+}
+.brand .word { display: flex; flex-direction: column; min-width: 0; }
+.brand strong { font-size: 16px; font-weight: 640; letter-spacing: 0.01em; line-height: 1.2; }
+.brand .ver {
+  font-size: 10px;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 3px;
+  white-space: nowrap;
+}
+
+/* The rail's foot, collapsed into the corner it already occupied. Fixed so it
+   stays where the word "Settings" was regardless of scroll. */
+.rail-restore {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* The show control mirrors the hide control's position, so the pair is one toggle
+   rather than a button that appears somewhere new each time. */
+.rail-show-top {
+  position: fixed;
+  top: 16px;
+  left: 12px;
+  z-index: 31;
+  margin: 0;
+}
+.rail-show-top button {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  backdrop-filter: blur(8px);
+}
+.rail-show-top button:hover { color: var(--text); border-color: var(--line-strong); }
+.rail-restore .cog-only {
+  display: inline-flex;
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+  align-items: center;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.rail-restore .cog-only:hover { color: var(--text); border-color: var(--line-strong); }
+.rail-restore .cog-only[aria-current=page] { color: var(--text); border-color: var(--line-strong); }
+.top-nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 10px;
+  background: linear-gradient(to bottom, var(--bg) 70%, transparent);
+}
+/*
+ * The section row.
+ *
+ * Seven outlined pills in a row read as seven buttons, and a page that also
+ * carries its own row of pills above them read as duplicate controls. This is
+ * the quieter shape a system app uses for a top-level switch: plain labels in
+ * one line, the current one in the text colour with a rule under it. It is a
+ * place you are, not a button you press, and there is exactly one row of them.
+ *
+ * The rule under the current label is `box-shadow` rather than `border` so it
+ * does not move the label by two pixels and shift the whole row when the
+ * current section changes.
+ */
+.sections {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 18px;
+}
+.sections a {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 1px 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+  transition: color 0.12s ease;
+}
+.sections a:hover { color: var(--text); text-decoration: none; }
+.sections a[aria-current=page] {
+  color: var(--text);
+  font-weight: 620;
+  box-shadow: inset 0 -2px 0 0 var(--platinum);
+}
+
+/* The subagents control --------------------------------------------------- */
+
+/* Dispatched work, reported where the app talks about itself. The control is a
+   `details` element so it opens with no script, and it is not rendered at all
+   when there is nothing to report, so the row keeps its width. */
+.subagents {
+  position: relative;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.subagents summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  cursor: pointer;
+  list-style: none;
+}
+.subagents summary::-webkit-details-marker { display: none; }
+.subagents summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; border-radius: 999px; }
+.subagents[open] summary { color: var(--text); }
+.subagents-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--raise);
+  color: var(--platinum);
+  font-variant-numeric: tabular-nums;
+  font-weight: 620;
+  text-align: center;
+}
+.subagents-live { color: var(--warn); }
+.subagents-list {
+  position: absolute;
+  right: 0;
+  z-index: 6;
+  width: min(480px, 88vw);
+  margin-top: 6px;
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 18px 40px var(--black);
+}
+.subagent {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raise);
+  font-size: 12px;
+  color: var(--muted);
+}
+.subagent-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.subagent-label { color: var(--text); font-weight: 560; }
+.subagent-status { font-size: 11.5px; }
+.subagent-status.running { color: var(--warn); }
+.subagent-status.succeeded { color: var(--ok); }
+.subagent-status.failed { color: var(--bad); }
+.subagent-status.cancelled { color: var(--bad); }
+.subagent-elapsed { font-variant-numeric: tabular-nums; }
+.subagent-model {
+  margin-left: auto;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.subagent-result {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  max-height: 168px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 8px;
+}
+
+/* The rail: new chat, the conversations, the cog -------------------------- */
+
+.side-action { margin: 0; }
+.side-action button {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 9px 12px;
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--text);
+  font-weight: 560;
+}
+.side-action button:hover { background: var(--raise); filter: none; }
+
+/* New project: a disclosure under "New chat", closed until it is wanted.
+   `details` is the disclosure the browser opens with no script at all, so the
+   control is a summary the rail can afford: the `+` and two words, quieter than
+   the New chat button above it, because starting a conversation is the common
+   action and naming a group for one is the occasional one. */
+.rail-new-project { margin: -18px 0 0; }
+.rail-new-project summary {
+  /* Same solid-outline pill as "New chat", so the two controls read as one
+     action group instead of a button and an off-centre dashed tag. The
+     disclosure still opens the project form; only the chrome matches. */
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 560;
+  font-size: 13.5px;
+  line-height: 1.3;
+  cursor: pointer;
+  list-style: none;
+}
+.rail-new-project summary::-webkit-details-marker { display: none; }
+.rail-new-project summary:hover { background: var(--raise); border-color: var(--muted); }
+.rail-new-project summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
+.rail-new-project[open] summary { color: var(--text); border-color: var(--line-strong); }
+.rail-add-glyph { font-size: 12.5px; line-height: 1; }
+.rail-new-project form {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.rail-new-project input[type=text] {
+  padding: 6px 9px;
+  border-radius: 7px;
+  font-size: 12.5px;
+}
+.rail-new-project button {
+  justify-self: start;
+  padding: 5px 10px;
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 560;
+}
+.rail-new-project button:hover { background: var(--raise); filter: none; }
+.rail-hint { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.4; opacity: 0.85; }
+
+/* The rail's list head: the word over the list, and the order beside it.
+   The order was a field on the settings page, which meant that changing how the
+   rail reads required leaving the rail. It is a disclosure now, so it is one
+   press from the list, and the page it applies to is the page it is on. */
+.rail-list-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 -2px;
+  padding: 0 2px 0 12px;
+}
+.rail-list-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0.8;
+}
+/* Flush right, and quiet: an order is a preference about the list, not an
+   action on it, so it must not out-read the word it sits beside. */
+.rail-sort { margin-left: auto; }
+.rail-sort > summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  line-height: 1.6;
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+.rail-sort > summary::-webkit-details-marker { display: none; }
+.rail-sort > summary:hover { color: var(--text); border-color: var(--line-strong); }
+.rail-sort > summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
+.rail-sort[open] > summary { color: var(--text); border-color: var(--line-strong); }
+.rail-sort-glyph { font-size: 10px; line-height: 1; opacity: 0.8; }
+
+/* The menus, as a platform draws them.
+ *
+ * Every menu in this app is the same object, because there is only one thing a
+ * menu is: a list of rows where the press is the change. A `details` element is
+ * the button and the panel, so the whole thing opens with no script at all, and
+ * the form inside carries the rows.
+ *
+ * The shape is Apple's, from the HIG's Menus page: a raised panel, one row per
+ * choice, a checkmark in its own column on the row that is in force, the
+ * destructive row last and behind a rule, and no chrome inside the panel - no
+ * nested buttons, no borders on the rows, no submit control at the foot. The
+ * row is the control; a menu that makes you pick and then press again is three
+ * actions for one decision.
+ *
+ * Title case, no ellipsis: nothing in these menus asks a second question, and an
+ * ellipsis is a promise that it will.
+ */
+.menu > summary { list-style: none; cursor: pointer; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 6px 0 0;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--raise);
+  /* Above the row it was opened from, and above the rows under it: a menu that
+     is painted under the next conversation is a menu you cannot use. */
+  position: relative;
+  z-index: 12;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+}
+.menu-row {
+  /* The global `button` rule is a platinum slab with a 9px/16px padding box.
+     A row is none of that: it is a line of text on the panel, full width, and
+     its weight is the label rather than the plate. */
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+.menu-row:hover, .menu-row:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  filter: none;
+  text-decoration: none;
+}
+/* The check column is always there, so a checkmark never shifts its row's label
+   sideways and the labels line up down the panel. */
+.menu-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  color: var(--platinum);
+  font-size: 11px;
+  line-height: 1;
+}
+.menu-row[aria-current] .menu-name { color: var(--platinum); font-weight: 620; }
+.menu-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The one row that cannot be undone does not sit beside the ones that can. Apple
+   puts it last, under a rule; the refusal colour is this product's own. */
+.menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line-strong);
+}
+.menu-row.danger { color: var(--bad); }
+.menu-row.danger:hover, .menu-row.danger:focus-visible { background: rgba(217, 138, 138, 0.12); }
+/* The rail's own menu opens under its pill and spans the rail: 236px is not
+   room for a panel that hugs a 60px glyph. */
+.rail-sort .menu-panel { margin-top: 6px; }
+/* A per-row menu is one glyph in a 236px row, so its panel is opened by the grid
+   rule in `.session-menu[open]` above and only the rows live here. */
+.session-menu .menu-panel { margin-top: 6px; }
+
+/* Project headings in the rail. A group is one heading and the rows under it, so
+   the list reads as files rather than as one scroll with no landmarks. The head
+   is the same muted uppercase as every other label in the product. */
+.rail-group { display: flex; flex-direction: column; gap: 1px; }
+.rail-group + .rail-group { margin-top: 10px; }
+.rail-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px 3px;
+}
+.rail-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.rail-group-count {
+  color: var(--muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  opacity: 0.7;
+}
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  min-height: 0;
+  margin: -12px 0 0;
+  padding: 0 0 4px;
+}
+/* A row is a grid rather than a flex line so the menu can span it: the glyph is
+   a column while the disclosure is closed, and the whole row wide once it is
+   open, which is the only way a select and a submit fit in a 236px rail. */
+.session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 2px;
+}
+.session-row a { min-width: 0; }
+
+/* The per-session menu: the "add to project" affordance, in the row it acts on.
+   A summary glyph while it is closed, so forty rows are forty glyphs rather than
+   forty selects; the form inside is the plainer thing a browser posts with every
+   script blocked. */
+.session-menu { margin: 0; grid-column: 2; }
+.session-menu summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  list-style: none;
+}
+.session-menu summary::-webkit-details-marker { display: none; }
+.session-menu summary:hover { color: var(--text); background: var(--raise); }
+.session-menu summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 1px; }
+.session-menu[open] {
+  /* Open, the whole row belongs to the menu: at 236px a panel that hugs its
+     glyph would be one word wide. The panel's own frame comes from
+     `.menu-panel`, so this rule only moves the grid item. */
+  grid-column: 1 / -1;
+  margin: 4px 0 6px;
+}
+.session-menu[open] summary { color: var(--text); background: var(--raise); }
+.sessions a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px 7px 12px;
+  border-left: 2px solid transparent;
+  border-radius: 0 8px 8px 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.sessions a:hover { color: var(--text); background: var(--raise); text-decoration: none; }
+.sessions a[aria-current=page] {
+  color: var(--text);
+  background: var(--raise);
+  border-left-color: var(--platinum);
+}
+.sessions .session-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessions .session-stamp {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+.side-empty { display: block; padding: 6px 12px; font-size: 12px; color: var(--muted); }
+
+.cog {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.cog:hover { color: var(--text); background: var(--raise); text-decoration: none; }
+.cog[aria-current=page] { color: var(--text); background: var(--raise); }
+.cog-glyph { font-size: 14px; line-height: 1; }
+.signout {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12.5px;
+  padding: 7px 10px;
+  text-align: left;
+}
+.signout:hover { color: var(--text); background: var(--raise); }
+.soon { opacity: 0.55; cursor: not-allowed; }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.badge.ready { color: var(--ok); }
+.badge.setup { color: var(--warn); }
+.badge.live { color: var(--ok); }
+.badge.expired { color: var(--warn); }
+.badge.revoked { color: var(--bad); }
+
+footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px 24px;
+  margin-top: 46px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11.5px;
+  letter-spacing: 0.03em;
+}
+/* The app's own facts now live in the rail's foot, not under every page. */
+.side-foot .listener,
+.side-foot .sign {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.side-foot .sign { letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.68; }
+footer .sign {
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+/* Type ------------------------------------------------------------------- */
+
+h1 {
+  font-size: 32px;
+  line-height: 1.12;
+  font-weight: 620;
+  letter-spacing: -0.022em;
+  margin: 0 0 8px;
+}
+h2 { font-size: 19px; font-weight: 620; letter-spacing: -0.01em; margin: 0 0 12px; }
+h3 {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+p { margin: 0 0 14px; }
+.lede { color: var(--muted); font-size: 15px; max-width: 68ch; margin: 0 0 28px; }
+.small { font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+.mono { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+
+/* Surfaces --------------------------------------------------------------- */
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 24px 26px;
+  margin: 0 0 18px;
+}
+.card.tight { padding: 16px 18px; }
+
+/* Transcript search. A plain search box and a list: no suggestions and no
+   dropdown, because the answer arrives as a page and a second surface would be
+   one more thing to keep correct. The excerpt keeps the bracketed match the
+   index produced, so the reason a row matched is visible rather than implied. */
+.search-form {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 20px;
+}
+.search-form input[type="search"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.search-hit h2 { margin: 0 0 6px; font-size: 1rem; }
+.search-hit .snippet { margin: 0 0 8px; line-height: 1.5; }
+.search-hit .small { margin: 0; }
+
+/* The rail's search field, above the conversation list. Sized to sit inside the
+   rail's own padding rather than the page's, so it reads as part of the list. */
+.rail-search { margin: 0 0 10px; }
+.rail-search input[type="search"] {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 0.875rem;
+}
+
+/* A service card: the two settings that change the process itself rather than
+   the answer it gives. The accent is the only warning colour on the page, so the
+   restart reads as the heavier of the two actions without a modal in front of
+   it. */
+.card.service { border-left: 3px solid var(--warn); }
+.card.service > h2 { border-bottom-color: var(--line); }
+.restart-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.restart-actions button.danger { padding-inline: 18px; }
+@media (max-width: 620px) {
+  .restart-actions { flex-direction: column; align-items: stretch; }
+  .restart-actions button { width: 100%; }
+}
+.card > h2 {
+  margin: 0 0 16px;
+  padding-bottom: 13px;
+  border-bottom: 1px solid var(--line);
+  font-size: 16px;
+  font-weight: 640;
+  letter-spacing: -0.005em;
+}
+.card > h2:first-child { margin-top: 0; }
+.card > h2 + p { margin-top: 0; }
+.card > *:last-child { margin-bottom: 0; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.mt { margin-top: 20px; }
+
+/* Forms ------------------------------------------------------------------ */
+
+.field { margin: 0 0 18px; }
+/* The label of a field that is not a `label` element: a radio group and a
+   checkbox list are labelled by the word above them, and a field with no label
+   for its control is a control a screen reader has to guess at. */
+.field .label {
+  display: block;
+  font-size: 13px;
+  font-weight: 560;
+  margin-bottom: 7px;
+  color: var(--text);
+}
+/* Two or three choices on one line, wrapping only when the column cannot hold
+   them. The radio and its word are one target, so a thumb lands on either. */
+.radio-row { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  cursor: pointer;
+}
+.radio input { margin: 0; accent-color: var(--platinum); }
+/* The device picker: one row per device, its name in the reading position and
+   its id under it, because the id is what the setting stores and the operator
+   may want to match it against a device row elsewhere. */
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 4px;
+  background: var(--panel);
+}
+.check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 9px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.check:hover { background: var(--raise); }
+.check input { margin: 0; accent-color: var(--platinum); grid-row: 1 / span 2; }
+.check-name { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.check-id {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+fieldset.field { border: 0; padding: 0; margin: 0 0 22px; }
+.field label { display: block; font-size: 13px; font-weight: 560; margin-bottom: 7px; color: var(--text); }
+.field .hint { display: block; font-size: 12.5px; color: var(--muted); margin-top: 7px; line-height: 1.5; }
+legend {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+  padding: 0;
+}
+
+input[type=text], input[type=password], input[type=number], input[type=search], select, textarea {
+  width: 100%;
+  padding: 10px 13px;
+  border-radius: 9px;
+  border: 1px solid var(--line-strong);
+  background: var(--raise);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  transition: border-color 0.12s ease;
+}
+textarea {
+  min-height: 180px;
+  resize: vertical;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+}
+input[type=text]:focus, input[type=password]:focus, input[type=number]:focus,
+input[type=search]:focus, select:focus, textarea:focus {
+  outline: 2px solid var(--platinum);
+  outline-offset: 1px;
+  border-color: var(--platinum);
+}
+input.invalid, textarea.invalid { border-color: var(--bad); }
+input[type=checkbox], input[type=radio] { accent-color: var(--platinum); }
+input[type=checkbox] { width: 15px; height: 15px; margin: 0 8px 0 0; vertical-align: -2px; }
+input[type=number] { max-width: 160px; font-variant-numeric: tabular-nums; }
+
+.choices { display: grid; gap: 10px; }
+.choice {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raise);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.choice:hover { border-color: var(--line-strong); }
+.choice input { margin: 4px 0 0; width: 15px; height: 15px; }
+.choice .name { display: block; font-weight: 600; font-size: 14px; line-height: 1.35; color: var(--text); }
+.choice .why { display: block; color: var(--muted); font-size: 13px; margin-top: 3px; line-height: 1.5; }
+.choice.selected { border-color: var(--platinum); }
+.choice.selected .name { color: var(--text); }
+.choice.disabled, .choice input:disabled { opacity: 0.45; cursor: not-allowed; }
+.choice.disabled:hover { border-color: var(--line); }
+
+button, .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--platinum);
+  background: var(--platinum);
+  color: var(--deep);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 620;
+  letter-spacing: 0.005em;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: filter 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+button:hover, .button:hover { filter: brightness(1.05); text-decoration: none; }
+button.secondary, .button.secondary {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+button.secondary:hover, .button.secondary:hover {
+  background: var(--raise);
+  border-color: var(--muted);
+  filter: none;
+}
+button.danger {
+  background: transparent;
+  border-color: var(--bad);
+  color: var(--bad);
+}
+button.danger:hover { background: var(--raise); filter: none; }
+button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+button:focus-visible, .button:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+}
+
+.login-box {
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--raise);
+  padding: 14px 16px;
+  margin: 14px 0;
+}
+.login-box h4 { margin: 0 0 8px; font-size: 14px; }
+.login-steps { margin: 0 0 12px; padding-left: 20px; }
+.login-steps li { margin: 0 0 12px; }
+.login-steps a.button { text-decoration: none; }
+input.login-url { width: 100%; font-size: 12px; user-select: all; -webkit-user-select: all; }
+
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
+
+/* Feedback --------------------------------------------------------------- */
+
+.alert {
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--bad);
+  border-radius: 9px;
+  padding: 12px 15px;
+  margin: 0 0 18px;
+  color: var(--text);
+  background: var(--panel);
+  font-size: 14px;
+}
+.alert strong { color: var(--bad); font-weight: 620; margin-right: 6px; }
+.alert.notice { border-left-color: var(--ok); }
+.alert.notice strong { color: var(--ok); }
+
+.tag {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+
+.empty {
+  margin: 0;
+  padding: 26px 22px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+  text-align: center;
+}
+.empty strong { display: block; color: var(--text); font-size: 14px; font-weight: 620; margin-bottom: 6px; }
+
+/* Data ------------------------------------------------------------------- */
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+caption {
+  text-align: left;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  padding: 0 0 10px;
+}
+th, td { text-align: left; vertical-align: top; padding: 11px 12px; border-bottom: 1px solid var(--line); }
+thead th {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--line-strong);
+}
+tbody tr { transition: background 0.1s ease; }
+tbody tr:hover { background: var(--raise); }
+tbody th { font-weight: 620; }
+tr:last-child th, tr:last-child td { border-bottom: none; }
+td.value { white-space: nowrap; font-weight: 620; font-variant-numeric: tabular-nums; }
+td.why { color: var(--muted); font-size: 13px; }
+.locked, .locked .value { color: var(--muted); }
+.locked th { font-weight: 560; }
+td .mono { font-variant-numeric: tabular-nums; }
+
+.kv {
+  display: grid;
+  grid-template-columns: minmax(150px, 190px) 1fr;
+  gap: 0 18px;
+  font-size: 14px;
+  margin: 0;
+}
+.kv dt { color: var(--muted); font-size: 13px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.kv dd {
+  margin: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.kv dt:last-of-type, .kv dd:last-of-type { border-bottom: none; }
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 1px;
+  margin: 16px 0 4px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.stat { background: var(--panel); padding: 13px 15px; }
+.stat .n {
+  display: block;
+  font-size: 24px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.stat .k {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Jobs, sessions, codes -------------------------------------------------- */
+
+.job {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 16px 18px;
+  margin: 0 0 14px;
+  background: var(--raise);
+}
+.job:last-child { margin-bottom: 0; }
+.job-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.job h3 { margin: 16px 0 6px; }
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 16px;
+  border-left: 1px solid var(--line-strong);
+}
+.timeline li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13.5px;
+}
+.timeline li:last-child { border-bottom: none; }
+.timeline .kind {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  min-width: 92px;
+}
+
+/* The scan pair: the SVG and the one sentence saying where it points. The quiet
+   zone lives in the drawing, so the frame is only spacing and a white matte that
+   keeps a dark page from bleeding into the modules. */
+.pairing-scan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-top: 12px;
+}
+.pairing-qr {
+  flex: 0 0 auto;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--text);
+  line-height: 0;
+}
+.pairing-qr svg {
+  display: block;
+  width: 180px;
+  height: 180px;
+}
+
+.pairing-code {
+  display: inline-block;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 28px;
+  letter-spacing: 0.3em;
+  padding: 14px 20px 14px 24px;
+  margin: 8px 0;
+  background: var(--deep);
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  color: var(--platinum);
+  font-variant-numeric: tabular-nums;
+  /* A wide, letter-spaced code must not widen the card past the viewport. */
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+code, .code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  background: var(--deep);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 6px;
+  overflow-wrap: anywhere;
+}
+pre.code {
+  display: block;
+  padding: 14px 16px;
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.6;
+}
+
+
+/* The chat surface ------------------------------------------------------- */
+
+/* The conversation is the page, not a document set on one. The prose wrap caps
+   at 1180px with a 30px gutter because a settings form wants a measure, not a
+   room - the transcript wants the room. Without this the shell sat centred
+   inside that capped column, so on a wide screen a band of empty width ran down
+   each side of the conversation with nothing in it and nowhere to type. The
+   shell below keeps a cap of its own; the wrap just stops holding it back. */
+.app > .wrap:has(> .chat-shell) {
+  max-width: none;
+  /* The conversation fills the column it was given: the shell below is the
+     page, so it takes the room left over rather than a height guessed from
+     the chrome above it. */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* The column is the window, not the transcript. `min-height` was a floor,
+     so a short viewport let the column grow past the screen with its content
+     and the only thing a browser could do with the composer was put it under
+     the fold, out of reach. A height pins the column to the window at every
+     size; the transcript scrolls inside it and the composer sits on the
+     bottom edge. */
+  height: 100vh;
+  height: 100dvh;
+  /* The shell above is a fixed box in a conversation, so this column takes the
+     box it was given rather than restating a viewport unit that could disagree
+     with it once a keyboard or a collapsing toolbar is involved. */
+  height: 100%;
+  padding-left: 18px;
+  padding-right: 18px;
+  /* A gutter, not a tail. The prose rule's 72px bottom padding sat under a
+     shell that already ends at the viewport edge, so it could only ever paint
+     a band of nothing below the composer - the dead space under a reply. What
+     is left is 14px: enough that the composer is not welded to the frame, far
+     too little to read as missing content. The phone breakpoint zeroes it,
+     because there the composer already carries the safe-area inset. */
+  padding-bottom: 14px;
+}
+
+.chat-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* The composer lives at the bottom of the screen, not wherever the transcript
+     happens to end. It gets there by taking the room the shell has left: a
+     measured constant for the chrome above it was the thing that left a band
+     under the composer once the chrome did not match the guess. */
+  flex: 1 1 auto;
+  /* Wide enough to use the window, capped so a very wide display does not turn
+     every paragraph into one 200-character line. */
+  max-width: min(100%, 1180px);
+  margin: 0 auto;
+}
+
+/* A conversation with nothing in it is a different page: greeting and composer,
+   together in the middle, because there is no transcript to sit under. The
+   heading stays at the top; only the group below it is centred, which the auto
+   margins do without moving the header. */
+.chat-shell.new-chat .thread { display: none; }
+.chat-shell.new-chat .chat-greeting { margin-top: auto; }
+.chat-shell.new-chat > .composer { margin-bottom: auto; }
+.chat-greeting {
+  position: relative;
+  z-index: 1;
+  /* Offset, not centred: a hero line on the exact middle of the screen reads as
+     a splash page, and this page is a workspace. It lines up with the composer. */
+  text-align: left;
+  margin: 0 0 14px;
+  padding-left: 14px;
+}
+.chat-greeting .hello {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+.chat-greeting .hint {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+/* The generated line. Quiet on purpose: it sits under a 30px salutation and
+   must not compete with it, and it is absent entirely until a line exists. */
+.chat-greeting .line {
+  margin: 6px 0 0;
+  max-width: 56ch;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.chat-title .lede { margin-bottom: 0; max-width: 62ch; }
+.chat-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.chat-meta form { margin: 0; }
+
+.thread {
+  position: relative;
+  z-index: 1;
+  /* A column, not a grid.
+   *
+   * It was a one-column grid with `minmax(0, 1fr)`, which is a fine way to say
+   * "never wider than the column" and a terrible way to say "stack these". Grid
+   * row sizing gave the engine a size to decide per message, and when a
+   * message's own floor came from its content the two facts formed a cycle:
+   * measured on a real transcript, Chrome settled on 8px rows and Safari on
+   * something that left every message overlapping the one below it, with the
+   * answer inside shrunk to a sliver. A flex column has no such question: an
+   * item that may not shrink is exactly as tall as what it holds, and two of
+   * them cannot occupy one line.
+   *
+   * `min-width: 0` on the items keeps the old promise about width: a long
+   * paragraph, a table or a terminal line scrolls inside its own box instead of
+   * widening the column past the window. */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+  padding: 4px 2px 12px;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  /* Stated, not implied. With only `overflow-y` set, the other axis computes to
+     `auto` and the transcript becomes a sideways scroller: one child wider than
+     the column is enough, and a sideways scroller that has been nudged hides the
+     left edge of every line in the conversation. A wide child scrolls inside
+     itself. */
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+.thread:empty { display: none; }
+
+/* A reply opened in the whole window is above the page, not inside it.
+ *
+ * The window is `position: fixed`, but `fixed` only chooses the viewport as its
+ * containing block: it does not escape a stacking context. This element is one
+ * (`position: relative` plus a z-index), so the window's own z-index was being
+ * compared with the transcript's siblings and lost: the composer (z-index 2)
+ * painted over the bottom of the answer, and below 900px the rail drawer (40)
+ * and its scrim (35) painted over all of it. Raising the transcript while a
+ * window is open makes the window the top layer it claims to be, and it costs
+ * nothing when no window is open because the selector matches nothing.
+ */
+.thread:has(.msg[data-reply-max]) { z-index: 50; }
+
+/* A conversation is the window.
+ *
+ * The shell already states `100dvh`, but a page is allowed to scroll past that:
+ * one card, one long run log or one wide line made the document taller than the
+ * window, and then the composer was not on the bottom edge any more, it was
+ * somewhere in the middle of the document with the transcript running behind it.
+ * Scrolling the page to reach the end of an answer moved the composer up over
+ * the words instead of moving the words. Only the transcript may scroll: the
+ * document that holds a conversation does not.
+ *
+ * `overflow: hidden` on the body alone is not a lock on iOS Safari, which still
+ * pans the document and still rubber-bands it. The lock needs the root element
+ * too, and the height chain has to be definite at every level, or a child falls
+ * back to its content height and the transcript stops being a scroller at all:
+ * it grows, the page pans, and the top of a reply cannot be reached by scrolling
+ * inside the conversation because nothing inside it scrolls.
+ */
+html:has(.chat-shell),
+body:has(.chat-shell) {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body:has(.chat-shell) .app {
+  /* Fixed, not merely tall.
+   *
+   * A height on a static box is a promise the rest of the chain has to keep, and
+   * if any ancestor resolves to `auto` the promise is dropped quietly: the
+   * transcript falls back to its content height, stops being a scroller, and the
+   * conversation becomes one long document that the browser pans. Panning moves
+   * the composer up over the answer, and the top of a reply is then unreachable,
+   * because nothing inside the conversation scrolls.
+   *
+   * A fixed box takes its size from the visual viewport, so the chain below it is
+   * definite without needing every level to restate a viewport unit, and a soft
+   * keyboard resizing that viewport moves the composer instead of hiding it.
+   */
+  position: fixed;
+  inset: 0;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* A bubble is sized by the screen, not by its own text: every bubble takes the
+   same share of the window, so a three-word answer and a table sit in one column
+   and the conversation reads as a column instead of a ragged stack. The ceiling
+   stops a paragraph becoming one 130-character line on a desk display.
+   There is no floor. A `clamp` with a `22rem` minimum was a floor on the bubble
+   and therefore on the column: on a 393 CSS px phone `22rem` is 352px, which beat
+   the `78vw` it was supposed to sit between, so every bubble was 90% of the screen
+   wide and the sizing rule the phone breakpoint restates could not take effect.
+   A percentage of the column is already readable at every width; a rem floor is
+   only ever a wider window's opinion. */
+.msg {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 78%);
+  max-width: 52rem;
+  min-width: 0;
+  /* Never shrinks. A column flex item shrinks by default, and shrinking is how a
+     320px folded answer once came out 45px tall: the transcript had decided the
+     message got less room than its parts needed and the message did as it was
+     told. `0 0 auto` takes that decision away from the container. The ceilings
+     inside a message are `max-height` on the scrollers themselves, so they still
+     bite. */
+  flex: 0 0 auto;
+}
+
+/* A reply with no thinking bubble has nothing to align against, so it takes the
+   width the bubble would have left empty. The cap exists to stop a paragraph
+   becoming one 130-character line; when the column above the answer is absent,
+   that cap was costing the answer a third of its measure for no reason. A reply
+   that does show its thinking keeps the narrower column, because the two blocks
+   have to read as one stack. */
+/* `:not([hidden])` because the live bubble builds its thinking block up front and
+   hides it until the first reasoning fragment arrives. A hidden block is still a
+   child, so asking only whether one exists would leave every streaming answer
+   narrow until it happened to think. */
+.msg.assistant:not(:has(.think:not([hidden]))) {
+  width: min(100%, 90%);
+  max-width: 64rem;
+}
+.msg.user { margin-left: auto; align-items: flex-end; }
+.msg.assistant { margin-right: auto; align-items: flex-start; }
+.msg .who {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 6px;
+  padding: 0 2px;
+  min-width: 0;
+}
+/* The reply's own size control, in the who row. It sits beside the name rather
+   than above the answer, so the three states cost the transcript nothing: the
+   row already existed, and a control that added a line to every reply would have
+   spent the room it was built to save. */
+.msg .reply-cycle {
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.msg .reply-cycle:hover { color: var(--text); border-color: var(--line-strong); }
+/* The second control in the same row: the fold cycle and the window. It sits
+   after the cycle, which is the one that carries `margin-left: auto`, so the pair
+   stays flush right and the row still costs the transcript no line. */
+.msg .reply-max {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.msg .reply-max:hover { color: var(--text); border-color: var(--line-strong); }
+.msg .reply-max:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+}
+.msg .reply-cycle:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+}
+/* Minimized: one line of the answer, and the line is the whole reply. The body is
+   clipped by the stylesheet rather than removed from the page, so find-in-page
+   still finds a word in a reply the operator has folded away, and a browser with
+   no script still reads the answer. */
+.msg .reply-peek {
+  display: none;
+  margin: 0 0 6px;
+  padding: 0 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.msg[data-reply-state="minimized"] .reply-peek { display: block; }
+.msg[data-reply-state="minimized"] .bubble { display: none; }
+/* A question the turn is blocked on takes the answer's place. The operator has
+   one thing to do, and an empty bubble underneath it is a second answer that
+   does not exist yet. The card keeps its own border and background, so it reads
+   as a question rather than as an answer. */
+.msg.assistant[data-asked="open"] .bubble { display: none; }
+/* Collapsed: the opening lines under a fade that states there is more. The fade
+   is the palette's own ground, so the bubble does not grow a second colour. */
+.msg[data-reply-state="collapsed"] .bubble {
+  /* The same ceiling the thinking bubble's body uses: folding an answer puts it
+     in the same class of object as the reasoning beside it, so the two read as
+     one size and a fold lands where the operator already looks. `--fold` is the
+     single number both rules read. */
+  max-height: var(--fold);
+  /* A fold that cannot reveal its own tail is hidden text with a promise: the
+     fade said there was more, and there was no way to reach it except opening
+     the whole window. The box scrolls instead. It is short, so the gesture
+     chains out to the transcript once it reaches its own end rather than
+     trapping it the way `contain` would. */
+  overflow-y: auto;
+  overscroll-behavior: auto;
+  mask-image: linear-gradient(to bottom, var(--black) 78%, transparent 100%);
+}
+/* Once the fold has been read to its end there is nothing below it, so the fade
+   stops being true. The script adds this at the end of the box, and on load for
+   a fold that never needed to scroll. */
+.msg[data-reply-state="collapsed"] .bubble.at-end { mask-image: none; }
+/* The whole reply in the whole window. Not a fourth fold size: the reply leaves
+   the column and takes the viewport, which is what a table, a long answer or a
+   diff needs before it can be read at all. It is one attribute and one rule, so
+   the answer stays in the document behind the window and a reload forgets it,
+   the same way a reload forgets nothing else the operator has not stored.
+   `dvh` is the unit that follows a mobile URL bar; the `vh` line above it is the
+   fallback for a browser that does not know the newer one. */
+.msg.assistant[data-reply-max] {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  width: auto;
+  max-width: none;
+  max-height: 100vh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 18px 18px calc(18px + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg);
+}
+/* The window's own control row travels with it.
+   It is the only way back out of the window, and it is an ordinary row inside a
+   scroller: reading four screens down left it above the fold and the answer had
+   no exit that was reachable. Sticky pins the row to the window's own top edge,
+   and the ground behind it stops the answer from scrolling through the words. */
+.msg.assistant[data-reply-max] .who {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 0 8px;
+  padding: 4px 2px 8px;
+  background: var(--bg);
+}
+.msg.assistant[data-reply-max] .bubble {
+  max-height: none;
+  max-width: 92ch;
+  width: 100%;
+  margin: 0 auto;
+  overflow: visible;
+  /* The fade belongs to the collapsed state, and a window is never collapsed. */
+  mask-image: none;
+}
+/* A reply drawn in the window keeps the preview line out of it: minimizing is
+   what the fold control is for, and the two would contradict each other here. */
+.msg.assistant[data-reply-max] .reply-peek { display: none; }
+.msg .bubble {
+  padding: 13px 16px;
+  border-radius: 14px 14px 14px 5px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14.5px;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+  /* Neither the bubble nor what it holds may widen the column it sits in. */
+  max-width: 100%;
+  min-width: 0;
+  /* The corner control is positioned against the bubble, not the page. */
+  position: relative;
+  /* The answer is as tall as it is. It used to be capped at seventy percent of
+     the viewport and scroll inside itself, which put one scrollbar in the
+     answer, one in the transcript and one on the page for a single reply - and
+     read, correctly, as an attempt to make every response fit on one screen.
+     The ceiling is gone: the transcript is the only scroller in the column, the
+     answer flows through it, and the run log and the thinking bubble scroll
+     their own boxes so a long one cannot push them away. The whole-window
+     control is still the way to read a table or a diff with the transcript
+     behind it. */
+}
+/* The answer's own corner control, the thinking bubble's twin: the same glyph,
+   the same quiet frame, the same offer. The bubble is already bounded and
+   scrolls itself (above), so this is the request for the room instead of the
+   ceiling. It floats in the corner the way the frame control sits on a desktop
+   window, and it does not push the first line of the answer down.
+   
+   A control that could be reached only by tabbing past the whole answer would
+   not be a control, so it sits outside the text flow: absolute in a relative
+   bubble, first in the document order so a screen reader meets it before the
+   words it acts on. The answer takes a top padding only large enough to keep a
+   one-line reply from running under it. */
+.msg.assistant .bubble { padding-top: 30px; }
+.msg .bubble-max {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.msg .bubble-max:hover { color: var(--text); border-color: var(--line-strong); }
+.msg .bubble-max:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
+/* Expanded: the room instead of the ceiling. The same inset the thinking bubble
+   uses, so the two expansions land in the same place on the same page, and one
+   step under the whole-window reply so the two are never confused. */
+.msg .bubble.max {
+  position: fixed;
+  inset: 4vh 5vw;
+  z-index: 45;
+  max-height: none;
+  max-width: none;
+  margin: 0;
+  padding: 30px 18px 18px;
+  background: var(--bg);
+  border-color: var(--line-strong);
+  /* Both axes, exactly like the thinking bubble's expansion: a table wider than
+     the box is as much a reason to be here as a long answer is. */
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+/* A fenced block, a table and a picture are the three things in an answer that
+   can be wider than the column, and each one scrolls inside itself rather than
+   widening the conversation and giving the page a sideways scrollbar. A `pre`
+   needs the rule of its own: `white-space: pre` makes the box as wide as the
+   longest line no matter what `max-width` says about the box it sits in. */
+.msg .bubble pre,
+.msg .bubble pre.code,
+.msg .bubble table,
+.msg .bubble img {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.msg.user .bubble {
+  border-radius: 14px 14px 5px 14px;
+  border-color: var(--line-strong);
+  background: var(--raise);
+}
+.msg .bubble.failed { border-color: var(--bad); }
+.msg .bubble p { margin: 0 0 10px; white-space: pre-wrap; }
+.msg .bubble > *:last-child { margin-bottom: 0; }
+
+/* The thinking bubble. Open by default, because the first thing an operator asks
+   about a slow answer is what it was doing. Dim and italic so it still reads as
+   machinery behind the answer rather than as the answer. */
+.msg .think {
+  margin: 0 0 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.msg .think > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0.8;
+}
+.msg .think-actions { margin-left: auto; display: flex; gap: 4px; }
+.msg .think-max {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.msg .think-max:hover { color: var(--text); border-color: var(--line-strong); }
+/* Maximized: the bubble takes the room it needs instead of a fixed 320px. */
+.msg .think.max {
+  position: fixed;
+  inset: 4vh 5vw;
+  z-index: 40;
+  margin: 0;
+  background: var(--bg);
+  border-color: var(--line-strong);
+  overflow: auto;
+}
+.msg .think.max .think-body { max-height: none; font-size: 14.5px; }
+
+/* A question the turn is waiting on. Not monospace and not inside the run log:
+   the operator has to answer this, so it reads like the bubble it lives beside
+   rather than like a command receipt. The waiting state is the loud one; once it
+   is settled the card keeps its own record instead of a live control. */
+.msg .asked {
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+  max-width: 46rem;
+}
+.msg .asked.settled {
+  border-color: var(--line);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--muted);
+}
+.msg .asked-title {
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.msg .asked-question { margin: 0 0 6px; }
+.msg .asked-choices { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.msg .asked-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.24);
+}
+.msg .asked-label { font-weight: 600; }
+.msg .asked-detail { font-size: 11px; color: var(--muted); }
+.msg .asked-waiting {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warn);
+}
+.msg .asked-answer { color: var(--text); }
+.msg .asked-choice.picked {
+  border-color: var(--platinum);
+  background: rgba(106, 169, 255, 0.18);
+}
+.msg .asked-free {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+.msg .asked-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.32);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.msg .asked-input:focus {
+  outline: none;
+  border-color: var(--platinum);
+}
+.msg .asked-send,
+.msg .asked-commit {
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.msg .asked-send:hover,
+.msg .asked-commit:hover { background: rgba(255, 255, 255, 0.12); }
+.msg .asked-raw {
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* The run log: what the turn actually executed. Monospace and full-width so a
+   command reads like a command and its output reads like output. */
+/* Both of these are flex children of a column that aligns them to the start,
+   which sizes a child to its own content. A run log holding one 400px terminal
+   line was then 400px wide inside a 311px message and gave the whole page a
+   sideways scrollbar - on a phone, before anything was even read. The ceiling
+   and the zero minimum keep every block in a message inside the message. */
+.msg .exec,
+.msg .think {
+  max-width: 100%;
+  min-width: 0;
+}
+.msg .exec {
+  margin: 0 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.28);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+}
+.msg .exec > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.msg .exec > summary::-webkit-details-marker { display: none; }
+/* The turn, in front of the call count. Two facts, so two weights: the turn is
+   what the operator is reading the transcript by, the count is how much the turn
+   spent. Set back from the count so the two numbers do not read as one. */
+.msg .exec-turn {
+  margin-left: auto;
+  opacity: 0.55;
+  letter-spacing: 0.06em;
+}
+.msg .exec-turn[hidden] { display: none; }
+.msg .exec-count { margin-left: auto; opacity: 0.7; }
+.msg .exec-turn + .exec-count { margin-left: 8px; opacity: 0.85; }
+/* Summary mode: one line naming the last call, truncated so it stays one line. */
+.msg .exec.compact > summary { text-transform: none; letter-spacing: 0; font-size: 11.5px; }
+.msg .exec.compact .exec-last {
+  color: var(--text);
+  opacity: 0.85;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The run log's two controls: open every call, or close every one. A row of its
+   own under the summary, because a focusable button inside a summary competes
+   with the disclosure's own Enter and Space. Hidden until the page script
+   reveals it: with no script a button cannot open anything, and the calls are
+   already native disclosures. */
+.msg .runctl {
+  display: flex;
+  gap: 6px;
+  padding: 0 12px 9px;
+}
+.msg .runctl[hidden] { display: none; }
+/* The conversation's own reply-size controls, above the transcript. Rendered
+   hidden and revealed by the script, the same contract the run log's controls
+   follow: a button that cannot act without a script is not worth showing. */
+.replyctl {
+  display: flex;
+  gap: 6px;
+  padding: 0 2px 8px;
+}
+.replyctl[hidden] { display: none; }
+.replyctl .reply-all {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.replyctl .reply-all:hover { color: var(--text); border-color: var(--line-strong); }
+.replyctl .reply-all:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+}
+.msg .run-btn {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.msg .run-btn:hover { color: var(--text); border-color: var(--line-strong); }
+.msg .exec-call {
+  padding: 9px 12px;
+  border-top: 1px dashed var(--line);
+}
+/* Only the running call is on screen by default: the log follows the work in
+   front of the operator instead of stacking every command the turn has run.
+   Show all is the switch that brings the rest back, and it is remembered. */
+.msg .exec-call[hidden] { display: none; }
+/* One call is one window: closed it is a single line naming the call, open it is
+   a short scroll box so a 40-line stdout cannot take over the conversation. */
+.msg .exec-call > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  /* One line when closed: a long argument string is an ellipsis, not four
+     wrapped rows that make fifteen calls look like a wall again. */
+  flex-wrap: nowrap;
+  gap: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.msg .exec-call[open] > summary {
+  flex-wrap: wrap;
+  white-space: normal;
+}
+.msg .exec-call > summary::-webkit-details-marker { display: none; }
+.msg .exec-call > summary::before {
+  content: "\25B8";
+  color: var(--muted);
+  margin-right: 2px;
+}
+.msg .exec-call[open] > summary::before { content: "\25BE"; }
+.msg .exec-call[open] > summary { margin-bottom: 6px; }
+.msg .exec-head { display: flex; gap: 8px; min-width: 0; }
+/* The body of the log scrolls, so twenty calls cost one window rather than the
+   whole conversation. */
+.msg .exec-body {
+  max-height: 60vh;
+  overflow-y: auto;
+  /* Scrolling the log to its end must not start scrolling the page behind it.
+     Sixty percent of the viewport is more log than the echo of one turn needs,
+     and the ceiling stays a ceiling: the conversation does not move. */
+  overscroll-behavior: contain;
+}
+.msg .exec-name { color: var(--text); }
+.msg .exec-args { color: var(--muted); overflow-wrap: anywhere; }
+.msg .exec-call.failed .exec-name { color: var(--bad); }
+/* Output as an application window: traffic lights, a title, the size, the text.
+   It reads as a thing that ran rather than as prose that arrived. */
+.msg .win {
+  margin: 7px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(8, 8, 10, 0.72);
+}
+.msg .win-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+.msg .win-dots { display: flex; gap: 5px; }
+.msg .win-dot { width: 9px; height: 9px; border-radius: 50%; display: block; }
+/* Traffic lights from the palette, not from macOS: the stylesheet test refuses a
+   hex that is not a palette entry, and a fourth red would be a second truth. */
+.msg .win-dot.red { background: var(--bad); }
+.msg .win-dot.yellow { background: var(--warn); }
+.msg .win-dot.green { background: var(--ok); }
+.msg .win-title { font-size: 11px; letter-spacing: 0.04em; color: var(--muted); }
+/* The live dot: the window says it is still being written, in the same green the
+   palette uses for a thing that is working, and vanishes when the call settles. */
+.msg .win-live {
+  margin-left: auto;
+  font-size: 8px;
+  color: var(--ok);
+  animation: caret 1.1s steps(1) infinite;
+}
+.msg .win-size { font-size: 10.5px; color: var(--muted); opacity: 0.8; }
+/* With no live dot the size takes the far edge; with one, the dot leads it. */
+.msg .win-live[hidden] + .win-size { margin-left: auto; }
+/* The body is lines, not one block of pre: a command's output is a prompt line
+   and then what it printed, and stderr has to be paintable without colouring the
+   whole window. Monospace, because output is output. */
+.msg .win-body {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+  opacity: 0.9;
+  max-height: 132px;
+  /* Both axes, because the body no longer wraps: a long line runs past the right
+     edge and the operator scrolls to it. The window keeps its width, so nothing
+     outside it moves. */
+  max-width: 100%;
+  overflow: auto;
+}
+/* Output does not reflow. A command's line is the width it printed, and the
+   window scrolls left to right to reach the end of it. Wrapping here made the
+   log re-lay itself out every time the window or the panel changed width, which
+   moved text under the operator's eyes while they were reading it. The log is
+   something a person reads and scrolls by hand, so it holds its shape. */
+.msg .term-line { white-space: pre; overflow-wrap: normal; }
+/* The command reads like the command, in the accent, because it is the line the
+   operator typed and the rest answers it. */
+.msg .term-line.prompt { color: var(--platinum); opacity: 0.85; }
+.msg .term-line.err { color: var(--bad); }
+/* A notice is this window talking, not the tool: muted, so an exit status never
+   reads as output the command produced. */
+.msg .term-line.notice { color: var(--muted); }
+/* Expanded stays bounded: a bigger window, not the whole file. */
+.msg .exec-call[open] .win-body { max-height: 340px; }
+.msg .think > summary::-webkit-details-marker { display: none; }
+.msg .think > summary::before {
+  content: "▸ ";
+  opacity: 0.7;
+}
+.msg .think[open] > summary::before { content: "▾ "; }
+.msg .think .think-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  font-style: italic;
+  white-space: pre-wrap;
+  opacity: 0.72;
+  /* The token, not a number: a collapsed answer is folded to this same ceiling,
+     so the two blocks are one size and a single edit moves both. */
+  max-height: var(--fold);
+  overflow-y: auto;
+}
+/* What the turn is doing right now, above the settle line and under the bubble.
+   Present only while a call is running: it is cleared on the result, on done and
+   on failure, so a page sitting still never claims work is happening. */
+.msg .meta-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.02em;
+  color: var(--platinum);
+  opacity: 0.9;
+}
+.msg .meta-live[hidden] { display: none; }
+/* A pulse, so a long call reads as alive rather than as a frozen label. Never
+   the only signal: the words say what it is doing. */
+.msg .meta-live::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--platinum);
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg .meta-live::before { animation: none; opacity: 0.85; }
+}
+
+.msg .meta {
+  display: flex;
+  /* The stamp, the model, the turn count, the token counts, the duration and
+     the tag are one line on a desk display and five on a phone. A single
+     unwrapped row is wider than the column at some of those widths, and a row
+     that is wider than the column is what puts a scrollbar where a transcript
+     should be. Wrapping keeps every fact and costs a line on the rare turn that
+     fills all of them. */
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.msg .meta .tag { margin-left: 0; }
+/* A forced answer is not a failure, so it does not wear the failure colour: it
+   is a statement about how the reply ended, and it has to be readable a week
+   later on a reload, which is the whole reason it is stored. */
+.msg .meta .tag.capped {
+  color: var(--warn);
+  border-color: currentColor;
+}
+
+/* The caret on a turn that is still running lives on the status line, not in the
+   answer. An empty bubble with a blinking cursor grew as the turn ran and read
+   as a broken page: there was nothing in it because there was no answer yet. The
+   status line always has a word in it, so the living thing is the thing that can
+   say what is happening. */
+.msg.pending .meta-live::after {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 15px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--platinum);
+  animation: caret 1.1s steps(1) infinite;
+}
+@keyframes caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
+.muted-line { color: var(--muted); margin: 0; font-style: italic; }
+
+.code-block { margin: 12px 0; min-width: 16rem; }
+.code-lang {
+  display: block;
+  padding: 6px 14px 0;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.code-block pre.code { margin: 0; padding: 14px 16px; }
+.msg .bubble .code-block {
+  margin: 12px -16px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--deep);
+}
+.msg .bubble .code-block pre.code { border: 0; border-radius: 0; background: transparent; }
+
+.chat-empty {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  text-align: center;
+  padding: 44px 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  background: var(--panel);
+}
+.chat-empty .mark {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+  background: var(--raise);
+  color: var(--platinum);
+  font-size: 19px;
+  font-weight: 620;
+}
+.chat-empty h2 { margin: 0; font-size: 17px; }
+.chat-empty .small { max-width: 52ch; }
+.prompts { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px; }
+
+.composer {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  /* One column, and that column may not grow past the padding box. The implicit
+     `auto` track is max-content sized, so a wide row would push the last control
+     out over the composer's right edge - the classic grid blowout. The minimum of
+     zero is what lets the row below shrink instead. */
+  grid-template-columns: minmax(0, 1fr);
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px 12px 10px;
+  /* Safari's bottom chrome (home indicator, collapsing toolbar) overlaps the
+     viewport's bottom edge. The composer gives it room so Send and the model
+     picker are never cut in half. `env()` is zero where there is no notch, so
+     the desktop spacing stays exactly as it was. */
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--panel);
+  transition: border-color 0.12s ease;
+}
+.composer:focus-within { border-color: var(--platinum); }
+.composer textarea {
+  width: 100%;
+  /* Box sizing is border-box globally, so 100% already covers the 6px side
+     padding. The minimum of zero is the belt to that brace: a grid item's
+     automatic minimum is its min-content width, which would win over 100%. */
+  min-width: 0;
+  min-height: 46px;
+  max-height: 240px;
+  padding: 6px 6px 2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14.5px;
+  line-height: 1.55;
+  resize: none;
+}
+.composer textarea:focus { outline: none; border-color: transparent; }
+.composer .hint { font-size: 11px; color: var(--muted); }
+.composer button[hidden] { display: none; }
+
+/* The reload control is quiet until the page has a reason to be reloaded. A
+   control that shouts on every visit is noise; a control that stays quiet when
+   the transcript on screen may be behind the daemon is a trap. So it sits in the
+   row as one more secondary button, and the stale mark is the only thing that
+   ever changes its colour. */
+#reload.stale {
+  border-color: var(--platinum);
+  color: var(--platinum);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+
+/* Session stats, the model picker, and the status strip ---------------- */
+
+.chat-stats {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 18px;
+}
+.stat-chip {
+  display: grid;
+  gap: 2px;
+  min-width: 104px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+}
+.stat-chip.wide { flex: 1 1 260px; }
+.stat-chip .n {
+  font-size: 15px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.stat-chip .k {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.meter {
+  height: 3px;
+  margin-top: 7px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  overflow: hidden;
+}
+.meter-fill { height: 100%; background: var(--platinum); border-radius: 999px; }
+
+.msg .meta-model {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--platinum);
+  opacity: 0.75;
+}
+.msg .meta-usage,
+.msg .meta-quota {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.msg .meta > * + *::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--line-strong);
+}
+
+.composer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  /* The row is a flex child of the composer's single column. Without this it
+     takes its max-content width and overruns the column. */
+  min-width: 0;
+}
+.composer-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+.composer-pick #mode { max-width: 150px; }
+.composer-pick select {
+  width: auto;
+  max-width: 260px;
+  /* A select's automatic minimum is the width of its widest option, so a long
+     model id used to hold the row open no matter how little room was left. At
+     zero it shrinks and elides instead, which is what keeps the send control
+     inside the composer at tablet widths. */
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--raise);
+  color: var(--text);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+.composer-pick .nowrap { white-space: nowrap; }
+.composer-send {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* The buttons keep their size and the auto margin keeps them flush right; the
+     pick above gives up width first, so this row does not wrap at tablet widths. */
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* The send control is a control in this row, not a slab beside it: one control
+   height across the attach button, the two selects and the buttons, the same
+   eight-pixel corner, and a quiet raise surface instead of an inverted block.
+   It still reads as the submit because it is the only control wearing the
+   platinum border and the platinum label at rest. */
+.composer-send button {
+  height: 28px;
+  padding: 0 13px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 620;
+  line-height: 1;
+}
+#send {
+  border: 1px solid var(--platinum);
+  background: var(--raise);
+  color: var(--platinum);
+}
+#send:hover {
+  border-color: var(--platinum);
+  background: var(--line);
+  color: var(--text);
+  filter: none;
+}
+#send:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+}
+/* Nothing to send yet. The control stays pressable, because a disabled button
+   cannot explain itself and a press here is harmless; it just reads as waiting.
+   A file in the queue is enough to make it live, which is the whole point. */
+#send.idle {
+  border-color: var(--line);
+  color: var(--muted);
+  background: transparent;
+}
+#send.idle:hover {
+  border-color: var(--line);
+  color: var(--muted);
+  background: transparent;
+}
+
+/* The attach control: a labelled + that opens the picker, and the queued name
+   beside it so a turn never carries a file the operator forgot about. */
+.attach {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.attach:hover { color: var(--text); background: var(--raise); }
+.attach-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+}
+.attach-input:focus-visible + .attach-queue { outline: 2px solid var(--platinum); outline-offset: 2px; }
+
+/* The queue of files waiting to go with the message. A chip per file, its size
+   stated, and its own remove button, because a mis-picked file should cost one
+   click rather than a reload. It wraps under the bar on a phone. */
+.attach-queue {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  /* The chips take a line of their own. A 220px basis beside the controls was
+     enough to push the row over and leave the send control on a line by itself,
+     which reads as detached rather than as part of the composer. */
+  flex: 1 1 100%;
+  order: 5;
+}
+.attach-queue[hidden] { display: none; }
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 3px 4px 3px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--raise);
+  color: var(--text);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.attach-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-chip-size { color: var(--muted); flex: 0 0 auto; }
+.attach-chip-drop {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.attach-chip-drop:hover { background: var(--line-strong); color: var(--text); }
+/* A picture waiting to go is shown as the picture, not only as its name: the
+   one moment a mis-picked screenshot is cheap to notice is before it is sent.
+   The browser draws the local File through an object URL, so nothing is
+   uploaded, re-encoded, or written to disk for the preview. */
+.attach-chip-thumb {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  margin: -3px 0 -3px -5px;
+  border-radius: 999px;
+  object-fit: cover;
+  background: var(--line-strong);
+}
+
+/* A drop landing on the composer says so: the one gesture everybody tries first
+   has to look like it was received. */
+.composer.dropping { border-color: var(--platinum); background: var(--raise); }
+.composer.dropping::after {
+  content: "drop to attach";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+  background: rgba(12, 12, 16, 0.72);
+  color: var(--platinum);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+/* What a sent message carried, under its own words: the files by name and size,
+   so the transcript says what went with the question. An image is shown as the
+   picture, because a screenshot nobody can see is a filename. */
+.msg .attached {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+/* The chip a file that cannot be shown gets: its type badge, its name, its size.
+   The name truncates rather than wrapping, so a long filename does not push the
+   bubble wider than the column. */
+.msg .attached-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 3px 9px 3px 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-decoration: none;
+}
+.msg .attached-badge {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  color: var(--platinum);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+.msg .attached-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg .attached-size {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
+/* A rendered-size thumbnail, not a generated one. There is no image library in
+   this build and none is added: the browser scales the stored bytes with
+   max-width, max-height and object-fit, so the file on disk stays the exact file
+   that was uploaded and nothing is re-encoded or written. */
+.msg .attached-image {
+  display: block;
+  max-width: 260px;
+  max-height: 200px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  overflow: hidden;
+  line-height: 0;
+}
+.msg .attached-image img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 260px;
+  max-height: 200px;
+  object-fit: cover;
+}
+.msg .attached-image:hover { border-color: var(--platinum); }
+
+/* The one control that undoes following the bottom. It sits above the composer,
+   where the eye already is when the page stops moving. */
+.jump-latest {
+  align-self: center;
+  margin: 0 0 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--platinum);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.jump-latest:hover { border-color: var(--platinum); }
+.jump-latest[hidden] { display: none; }
+
+/* A call that is still writing keeps its head visible without the caret that a
+   pending bubble uses: the live dot in the window is the signal. */
+.msg .exec-call.streaming .exec-name { color: var(--platinum); }
+
+/* The conversation totals ride inside the last reply, under a hairline, instead
+   of floating over the wallpaper in a bar of their own. */
+.meta-session {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+.meta-session .dot { color: var(--line-strong); }
+
+/* The wizard rail -------------------------------------------------------- */
+
+.rail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(126px, 1fr));
+  gap: 10px;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 28px;
+}
+.rail li {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--muted);
+  transition: border-color 0.12s ease;
+}
+.rail li.done { border-color: var(--line-strong); color: var(--text); }
+.rail li.current { border-color: var(--platinum); color: var(--text); }
+.rail .num {
+  display: block;
+  font-size: 9.5px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.rail .tag { margin: 4px 0 0; font-size: 9.5px; padding: 0 6px; }
+
+/* The sign-in page ------------------------------------------------------- */
+
+.auth { max-width: 470px; margin: 7vh auto 0; }
+.auth .mark {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--raise);
+  color: var(--platinum);
+  font-size: 19px;
+  font-weight: 620;
+  margin-bottom: 20px;
+}
+.auth h1 { font-size: 28px; }
+.auth .lede { margin-bottom: 22px; }
+
+/* Small screens ---------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  /* The rail becomes an off-canvas drawer below this width. A static or in-flow
+     rail reads as an opaque block over the conversation, and a flattened top
+     strip pushes the "New chat" and project controls into a horizontal scroll
+     and clips the foot text mid-word. The drawer keeps the desktop rail's
+     vertical order and only borrows the screen while it is open. */
+  .app { display: block; }
+  .side {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    height: 100dvh;
+    width: min(84vw, 300px);
+    z-index: 40;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    transform: translateX(0);
+  }
+  /* A scrim behind the open drawer dims the transcript, so the rail reads as a
+     layer above the page rather than a block sitting on top of it. It is
+     non-interactive: the "«" control closes the drawer and no script is needed.
+     The setup and sign-in surfaces have no drawer, so they get no scrim. */
+  .app:not(.rail-hidden):not(.bare)::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    background: rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+  }
+  /* Closed is fully off-canvas, not a 24px nudge, so the drawer slides the whole
+     way out of view. `visibility` is inherited from the base collapse, so the
+     slide-in is smooth and the close is immediate. */
+  .app.rail-hidden > .side {
+    width: min(84vw, 300px);
+    transform: translateX(-105%);
+  }
+  /* The setup and sign-in surfaces carry no section nav, so a drawer would be an
+     empty brand column with no way to close it. They get a compact top bar with
+     the wordmark instead, and the foot (version and any telemetry) stays off the
+     page: onboarding copy does not need the host's own listener list. */
+  .app.bare > .side {
+    position: static;
+    height: auto;
+    width: 100%;
+    z-index: 2;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    transform: none;
+    overflow: visible;
+  }
+  .app.bare > .side .side-foot { display: none; }
+  .wrap { padding: 22px 18px calc(56px + env(safe-area-inset-bottom)); }
+  h1 { font-size: 26px; }
+  .card { padding: 18px 18px; border-radius: 12px; }
+  .kv { grid-template-columns: 1fr; gap: 0; }
+  .kv dt { padding-bottom: 0; border-bottom: none; }
+  .kv dd { padding-top: 2px; }
+  .stats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+  .auth { margin-top: 4vh; }
+  /* The composer still belongs at the bottom on a phone. The drawer is fixed and
+     the app is a block here, so the chat column states its own height and the
+     shell takes what is left of it. */
+  .app > .wrap:has(> .chat-shell) { height: 100vh; height: 100dvh; padding-bottom: 0; }
+  .chat-shell { flex: 1 1 auto; min-height: 0; }
+  .thread { max-height: none; }
+  /* Two selects, an attach control and a button do not fit on one row of a
+     phone. The row wraps rather than pushing Send off the edge, and the pick
+     gives up width first. Send keeps its place in the row: `margin-left: auto`
+     already puts it flush right, so a forced full-width line was only ever
+     making the button look like it had come loose. */
+  .composer-bar { row-gap: 8px; }
+  .composer-pick select { max-width: 100%; }
+  .composer-pick #mode { max-width: 132px; }
+  .composer-send { justify-content: flex-end; }
+  .composer-send button { flex: 0 0 auto; }
+  /* The figure sits right of centre in the artwork. Cropped to a phone's width
+     the centre of the frame is empty sky, so the frame is anchored where she is. */
+  .app-wall { background-position: 88% center; }
+  /* A phone keeps the bubble a share of the column rather than all of it. The
+     desktop rule sizes a bubble by the window and stops a paragraph becoming one
+     long line; this override used to hand it the whole column instead, so a reply
+     ran edge to edge and read as a page. The share is smaller here because the
+     column is narrower, and the gutter it leaves is what makes the turn read as
+     a message. The user's own bubbles take the same share, so the two sides of a
+     conversation still sit in one column and not a ragged stack. */
+  .msg { width: min(100%, 88%); max-width: none; }
+  .msg.assistant:not(:has(.think:not([hidden]))) { width: min(100%, 94%); max-width: none; }
+  /* A pairing code at desktop scale would need a desktop-width screen. It drops
+     to a size that fits a phone and wraps instead of pushing the card wide. */
+  .pairing-code { font-size: 17px; letter-spacing: 0.12em; padding: 12px 14px; }
+}
+
+/*
+ * A phone is the wrong place for a three-column permission table, but it is a
+ * place this page will be read. Below this width the table keeps its columns and
+ * scrolls inside its own card instead of crushing prose into a 70px gutter.
+ */
+@media (max-width: 700px) {
+  th, td { padding: 9px 8px; }
+  .card:has(table) { overflow-x: auto; }
+  .card:has(table) table { min-width: 520px; }
+  .card:has(table) > h2 { position: sticky; left: 0; }
+}
+
+/*
+ * The settings segments.
+ *
+ * A segmented control, not another row of pills. The section row above this page
+ * is already a row of labels, and the first build of this page drew its six
+ * sections as six outlined chips under an outlined chip row - the same control
+ * twice, at the top of one screen, which is what "why so many duplicate buttons"
+ * was looking at.
+ *
+ * So: one track, segments that share its width, and the chosen one raised on the
+ * track the way a system segmented control does it. A segment is still an anchor,
+ * so the whole thing works with no script and survives a bookmark. The current
+ * one is marked with `aria-current=page`, a heavier label and a raised plate, so
+ * nothing depends on colour alone.
+ *
+ * Six segments do not fit one line at 393px, so the track wraps to two rows on a
+ * narrow screen rather than scrolling sideways: a control nobody can see all of
+ * is a control somebody has to guess at.
+ */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 14px 0 10px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--raise);
+}
+.tab {
+  flex: 1 1 auto;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: center;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--text); text-decoration: none; }
+.tab[aria-current=page] {
+  color: var(--text);
+  background: var(--panel);
+  border-color: var(--line-strong);
+  font-weight: 620;
+}
+.tab:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
+.tab-blurb { margin: 0 0 14px; }
+/* The one line under the cards: the page that may ask for a secret is linked
+   from every segment instead of from a card only one of them shows. */
+.settings-foot {
+  margin: 4px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+
+/* The provider table and its form ----------------------------------------- */
+
+/* One row per endpoint, with the two actions in the last cell. The actions are a
+   form and a link, so the cell is a flex row rather than a run of inline boxes:
+   a button and an anchor sitting on the same baseline is the one thing a table
+   cell will not do on its own. */
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.row-actions .button,
+.row-actions button {
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+/* The table is bounded rather than free: seven columns of endpoint data is the
+   widest thing on any settings tab, and a phone has to scroll the table instead
+   of the page. The card already does this for its own tables; this row is here
+   so the rule holds wherever a provider table is rendered. */
+.card table td .mono,
+.card table th .mono { overflow-wrap: anywhere; }
+
+/* The add/edit form sits under the table it edits, separated by a rule and its
+   own heading, because it is a second thing and not another row. */
+#provider-form-heading {
+  margin: 22px 0 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+  font-weight: 620;
+}
+#provider-form-heading + form { margin-top: 0; }
+
+/* The raw JSON editor is the escape hatch, so it is closed until asked for and
+   quieter than the form above it. */
+details.advanced {
+  margin-top: 22px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+details.advanced > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  list-style: none;
+}
+details.advanced > summary::-webkit-details-marker { display: none; }
+details.advanced > summary:hover { color: var(--text); }
+details.advanced > summary:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+details.advanced[open] > summary { color: var(--text); margin-bottom: 12px; }
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The six purples 1.0 refuses, plus the two spellings that appear if a
+    /// stylesheet is written with lowercase hex.
+    const PURPLE_DENYLIST: [&str; 6] = [
+        "#800080", "#7B1FA2", "#6A1B9A", "#9C27B0", "#8E24AA", "#673AB7",
+    ];
+
+    /// The rules inside the phone breakpoint, as one string. Read from the media
+    /// query to the line that closes it, so a rule that moved out of the
+    /// breakpoint stops satisfying a test that reads it here.
+    fn phone_block() -> &'static str {
+        let start = APP_CSS
+            .find("@media (max-width: 900px) {")
+            .expect("the phone breakpoint exists");
+        let rest = &APP_CSS[start..];
+        let end = rest.find("\n}\n").expect("the phone breakpoint closes");
+        &rest[..end]
+    }
+
+    /// One rule, from its selector to the closing brace. The selector is matched
+    /// at the start of a line, so `.composer` never picks up
+    /// `.chat-shell.new-chat > .composer`. Panics when the selector is absent, so
+    /// a renamed rule fails the test that reads it.
+    fn rule(selector: &str) -> &'static str {
+        let opening = format!("\n{selector} {{");
+        let start = APP_CSS
+            .find(&opening)
+            .unwrap_or_else(|| panic!("the {selector} rule exists"));
+        let rest = &APP_CSS[start..];
+        let end = rest.find('}').expect("the rule closes");
+        &rest[..end]
+    }
+
+    /// The composer is a single grid column, and the row inside it can only
+    /// shrink: no child of the row may widen the column past the padding box.
+    /// Without the zero minimums the send control hangs over the right edge,
+    /// which is the defect this pins.
+    #[test]
+    fn the_composer_row_cannot_grow_out_of_its_padding_box() {
+        let composer = rule(".composer");
+        assert!(
+            composer.contains("grid-template-columns: minmax(0, 1fr)"),
+            "the composer's one column is bounded by its content box: {composer}"
+        );
+        assert!(
+            rule(".composer textarea").contains("min-width: 0"),
+            "a grid item's automatic minimum must not beat the textarea's 100% width"
+        );
+        for selector in [".composer-bar", ".composer-pick", ".composer-pick select"] {
+            assert!(
+                rule(selector).contains("min-width: 0"),
+                "{selector} has to be allowed to shrink below its content"
+            );
+        }
+        assert!(
+            rule(".composer-pick").contains("flex-wrap: wrap"),
+            "the pick breaks its own line before the row overflows"
+        );
+        // The chips sit on their own line. A 220px basis beside the controls was
+        // enough to push the send control onto a line by itself.
+        assert!(
+            rule(".attach-queue").contains("flex: 1 1 100%"),
+            "the attachment chips take a line of their own"
+        );
+        // A full-width send group was the small-screen layout, and it is what
+        // made the button look detached from the row rather than flush in it.
+        assert!(
+            APP_CSS.contains(".composer-send { justify-content: flex-end; }"),
+            "the small-screen send rule keeps the button in the row"
+        );
+        assert!(
+            !APP_CSS.contains(".composer-send { width: 100%"),
+            "the send group is not forced onto a full-width line"
+        );
+    }
+
+    /// A turn that is still running says so on the status line, and the answer
+    /// box is not drawn until it has something in it. An empty bubble with a
+    /// blinking caret grew as the turn ran and read as a broken page: there was
+    /// nothing in it because there was no answer yet, and the thing that was
+    /// actually happening was in the status line all along.
+    #[test]
+    fn the_pending_caret_lives_on_the_status_line_not_in_an_empty_bubble() {
+        assert!(
+            !APP_CSS.contains(".msg.pending .bubble::after"),
+            "an empty answer box never gets a caret to blink in"
+        );
+        let status = rule(".msg.pending .meta-live::after");
+        assert!(
+            status.contains("animation: caret"),
+            "the status line is where the turn is alive: {status}"
+        );
+        assert!(
+            status.contains("background: var(--platinum)"),
+            "the caret is a palette entry, not a colour of its own: {status}"
+        );
+        // The status line has a pulse from the classes above; both are motion, so
+        // both must answer the reduced-motion query that already exists.
+        assert!(
+            APP_CSS.contains("@media (prefers-reduced-motion: reduce)"),
+            "the caret is animation, and the stylesheet already respects the setting"
+        );
+    }
+
+    /// One scroller in the column, and two bounded boxes beside it.
+    ///
+    /// The answer used to carry a ceiling of seventy percent of the viewport and
+    /// scroll inside itself. Three scrollers for one reply - the bubble, the run
+    /// log and the transcript - is what made every response look like it was
+    /// being squeezed onto one screen. The answer now flows through the
+    /// transcript; the two blocks that are machinery rather than prose keep
+    /// their own ceilings so a long one cannot push an answer away.
+    #[test]
+    fn the_answer_flows_and_the_machinery_beside_it_scrolls_on_its_own() {
+        let bubble = rule(".msg .bubble");
+        assert!(
+            !bubble.contains("max-height") && !bubble.contains("overflow-y"),
+            "the answer has no ceiling and no scrollbar of its own: {bubble}"
+        );
+        let thread = rule(".thread");
+        assert!(
+            thread.contains("overflow-y: auto") && thread.contains("overscroll-behavior: contain"),
+            "the transcript is the one scroller in the column: {thread}"
+        );
+        // The maximized reply is the whole window, so the box inside it must not
+        // keep a ceiling of its own: the window scrolls, not the bubble.
+        let window = rule(".msg.assistant[data-reply-max] .bubble");
+        assert!(
+            window.contains("max-height: none") && window.contains("overflow: visible"),
+            "a maximized reply scrolls the window and not a box inside it: {window}"
+        );
+        let log = rule(".msg .exec-body");
+        assert!(
+            log.contains("max-height: 60vh"),
+            "the run log holds more than it did without the page moving: {log}"
+        );
+        assert!(
+            log.contains("overscroll-behavior: contain"),
+            "and reaching its end does not scroll the page behind it: {log}"
+        );
+        // The transcript is a column, and its items may not shrink. A grid gave
+        // the engine a row height to decide per message, and a message whose
+        // floor came from its own content made that a cycle: one engine settled on
+        // 8px rows with every message overlapping the next, the other shrank a
+        // 320px folded answer to a sliver.
+        let thread = rule(".thread");
+        assert!(
+            thread.contains("display: flex") && thread.contains("flex-direction: column"),
+            "the transcript stacks its messages instead of grid-placing them: {thread}"
+        );
+        assert!(
+            rule(".msg").contains("flex: 0 0 auto"),
+            "a message is as tall as what it holds and cannot be shrunk"
+        );
+    }
+
+    /// A fenced block, a table and a picture are the three things in an answer
+    /// that can be wider than the column. Each scrolls inside itself, so nothing
+    /// in a reply can give the page a sideways scrollbar. `pre` needs the rule for
+    /// itself: `white-space: pre` sizes the box to its longest line whatever
+    /// `max-width` says about the parent.
+    #[test]
+    fn nothing_inside_an_answer_widens_the_page() {
+        // A selector list, so this reads the whole rule rather than the first
+        // header: `rule()` finds a single selector and would stop at `pre`.
+        let start = APP_CSS
+            .find("\n.msg .bubble pre,")
+            .expect("the answer's wide-content rule exists");
+        let rest = &APP_CSS[start..];
+        let wide = &rest[..rest.find('}').expect("the rule closes")];
+        for part in ["pre", "pre.code", "table", "img"] {
+            assert!(
+                wide.contains(part),
+                "{part} in an answer is covered by the rule: {wide}"
+            );
+        }
+        assert!(
+            wide.contains("max-width: 100%") && wide.contains("overflow-x: auto"),
+            "the three wide things in an answer are bounded and scroll themselves: {wide}"
+        );
+        assert!(
+            rule(".msg .win-body").contains("overflow: auto"),
+            "the terminal window keeps its two-axis scroll: output has to be reachable"
+        );
+    }
+
+    /// A question the turn is blocked on takes the answer's place. The operator
+    /// has one thing to do, and an empty bubble underneath it is a second answer
+    /// that does not exist yet.
+    #[test]
+    fn an_open_question_stands_the_answer_down() {
+        let asked = rule(".msg.assistant[data-asked=\"open\"] .bubble");
+        assert!(
+            asked.contains("display: none"),
+            "the answer's slot belongs to the question while it is open: {asked}"
+        );
+        assert!(
+            !APP_CSS.contains(".msg[data-asked=\"open\"] .asked"),
+            "the card is not hidden by the same rule that hides the bubble"
+        );
+    }
+
+    /// The run log holds its shape. Output is not prose, so it does not reflow:
+    /// a long line runs past the right edge of its window and the operator
+    /// scrolls to the end of it, both axes, by hand. Wrapping was what made the
+    /// log re-lay itself out under the reader whenever the window changed width.
+    #[test]
+    fn the_run_log_holds_its_shape_and_scrolls_instead_of_rewrapping() {
+        let term = rule(".msg .term-line");
+        assert!(
+            term.contains("white-space: pre;"),
+            "output keeps the width it printed: {term}"
+        );
+        assert!(
+            term.contains("overflow-wrap: normal"),
+            "and is never broken mid-token to fit: {term}"
+        );
+        let body = rule(".msg .win-body");
+        assert!(
+            body.contains("overflow: auto"),
+            "the window scrolls on both axes, so a wide line is reachable: {body}"
+        );
+        assert!(
+            body.contains("max-width: 100%"),
+            "and the window never widens the conversation: {body}"
+        );
+    }
+
+    /// A folded answer is the size of the thinking bubble.
+    ///
+    /// The two blocks are the same kind of object: machinery you can read and
+    /// skip. They had two ceilings - 320px for the bubble's body, 120px for a
+    /// collapsed answer - so folding a reply showed two lines under a fade while
+    /// the reasoning beside it showed a paragraph. One token, read by both rules,
+    /// is what stops the pair drifting apart again.
+    #[test]
+    fn a_folded_answer_and_the_thinking_bubble_fold_to_the_same_height() {
+        let root = rule(":root");
+        assert!(
+            root.contains("--fold: 320px"),
+            "there is one fold height, declared once: {root}"
+        );
+        let answer = rule(".msg[data-reply-state=\"collapsed\"] .bubble");
+        let thinking = rule(".msg .think .think-body");
+        assert!(
+            answer.contains("max-height: var(--fold)"),
+            "a collapsed answer folds to the token: {answer}"
+        );
+        assert!(
+            thinking.contains("max-height: var(--fold)"),
+            "and so does the thinking bubble: {thinking}"
+        );
+        // Neither may carry a number of its own again: a literal here is how the
+        // two got out of step in the first place.
+        for (name, block) in [("the answer", answer), ("the bubble", thinking)] {
+            assert!(
+                !block.contains("max-height: 7.5rem") && !block.contains("max-height: 320px"),
+                "{name} has no ceiling of its own outside the token: {block}"
+            );
+        }
+    }
+
+    /// The menus are menus, in the shape a platform draws them.
+    ///
+    /// Apple's HIG for menus: one row per choice, a checkmark on the one in
+    /// force, related rows grouped, the destructive action last and behind a
+    /// rule, and the press is the change. A row that looks like the app's big
+    /// platinum submit button would be a button in a menu, which is the thing
+    /// this replaced.
+    #[test]
+    fn the_menus_are_rows_with_a_check_and_no_plate() {
+        let panel = rule(".menu-panel");
+        assert!(
+            panel.contains("display: flex") && panel.contains("flex-direction: column"),
+            "a menu is a column of rows: {panel}"
+        );
+        assert!(
+            panel.contains("background: var(--raise)"),
+            "the panel is raised off the page it covers: {panel}"
+        );
+        let row = rule(".menu-row");
+        assert!(
+            row.contains("background: transparent") && row.contains("border: 0"),
+            "a row is not a plate with a border, which is what a button is: {row}"
+        );
+        assert!(
+            row.contains("grid-template-columns: 16px minmax(0, 1fr)"),
+            "the check has its own column, so a label never shifts: {row}"
+        );
+        assert!(
+            row.contains("text-align: left"),
+            "a menu row reads as a line, not as a centred button: {row}"
+        );
+        // The check column exists on every row, occupied or not: that is what
+        // keeps the labels aligned down the panel.
+        assert!(
+            rule(".menu-check").contains("justify-content: flex-start"),
+            "the check column is always there"
+        );
+        // And the one row that cannot be undone is separated from the rest.
+        assert!(
+            rule(".menu-sep").contains("background: var(--line-strong)"),
+            "the destructive row sits behind a rule"
+        );
+        assert!(
+            rule(".menu-row.danger").contains("color: var(--bad)"),
+            "and it is drawn in the refusal colour"
+        );
+    }
+
+    /// The answer's expand control is the thinking bubble's twin.
+    ///
+    /// Same frame, same corner of the page, same glyph: two blocks that offer the
+    /// same thing must not look like two different features. The answer's is
+    /// positioned against its bubble and out of the text flow, so it costs the
+    /// transcript no line; the expanded answer lands in the inset the thinking
+    /// bubble already uses, one step under the whole-window reply.
+    #[test]
+    fn the_answer_expands_the_way_the_thinking_bubble_does() {
+        let control = rule(".msg .bubble-max");
+        let twin = rule(".msg .think-max");
+        for shared in ["border-radius: 6px", "border: 1px solid var(--line)"] {
+            assert!(
+                control.contains(shared) && twin.contains(shared),
+                "the two controls share {shared}: {control}"
+            );
+        }
+        assert!(
+            control.contains("position: absolute") && control.contains("right: 8px"),
+            "the answer's control sits in the corner of its bubble: {control}"
+        );
+        assert!(
+            rule(".msg .bubble").contains("position: relative"),
+            "and the bubble is its origin, not the page"
+        );
+        assert!(
+            rule(".msg .bubble-max:focus-visible").contains("outline: 2px solid var(--platinum)"),
+            "the control keeps a visible focus ring"
+        );
+        let expanded = rule(".msg .bubble.max");
+        let thinking = rule(".msg .think.max");
+        for shared in ["position: fixed", "inset: 4vh 5vw", "overflow: auto"] {
+            assert!(
+                expanded.contains(shared) && thinking.contains(shared),
+                "both expansions use {shared}: {expanded}"
+            );
+        }
+        assert!(
+            expanded.contains("max-height: none"),
+            "an expanded answer is out of the ceiling it was bounded by: {expanded}"
+        );
+        // The whole-window reply is the bigger gesture and keeps the higher
+        // stacking order, so the two are never confused for one another.
+        let z = |selector: &str| -> u32 {
+            rule(selector)
+                .split("z-index: ")
+                .nth(1)
+                .and_then(|rest| rest.split(';').next())
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or(0)
+        };
+        assert!(
+            z(".msg.assistant[data-reply-max]") > z(".msg .bubble.max"),
+            "the whole-window reply stays above an expanded answer"
+        );
+    }
+
+    /// The rail's order control is quiet, flush right, and never wider than the
+    /// list it sits over.
+    ///
+    /// It is a preference about the list, not an action on it, so it must not
+    /// out-read the label beside it; and the rail is 236px wide on a desktop and
+    /// narrower on a phone, so the pill may not wrap.
+    #[test]
+    fn the_rails_order_control_is_quiet_and_fits_the_rail() {
+        let head = rule(".rail-list-head");
+        assert!(
+            head.contains("display: flex") && head.contains("align-items: center"),
+            "the label and the order sit on one line: {head}"
+        );
+        assert!(
+            rule(".rail-sort").contains("margin-left: auto"),
+            "the order is flush right, away from the word it qualifies"
+        );
+        let summary = rule(".rail-sort > summary");
+        assert!(
+            summary.contains("white-space: nowrap"),
+            "the pill states one order on one line: {summary}"
+        );
+        assert!(
+            summary.contains("font-size: 10px"),
+            "and is the quietest thing in the rail: {summary}"
+        );
+        assert!(
+            rule(".rail-sort > summary:focus-visible")
+                .contains("outline: 2px solid var(--platinum)"),
+            "the disclosure keeps a visible focus ring"
+        );
+        assert!(
+            rule(".rail-sort .menu-panel").contains("margin-top: 6px"),
+            "the menu opens under the pill rather than beside it"
+        );
+    }
+
+    /// The send control is a control in the row: one height, one corner, a quiet
+    /// surface, and the platinum channel kept for the label so it still reads as
+    /// the submit. It also keeps a focus ring.
+    #[test]
+    fn the_send_control_wears_the_row_metrics_and_stays_the_primary() {
+        let attach = rule(".attach");
+        assert!(
+            attach.contains("height: 28px") && attach.contains("border-radius: 8px"),
+            "the attach control sets the row's height and corner: {attach}"
+        );
+        assert!(
+            rule(".composer-pick select").contains("height: 28px"),
+            "the selects share the row height"
+        );
+        let button = rule(".composer-send button");
+        assert!(
+            button.contains("height: 28px"),
+            "the send control is the same height as the attach control: {button}"
+        );
+        assert!(
+            button.contains("border-radius: 8px"),
+            "the send control speaks the row's radius language: {button}"
+        );
+        let send = rule("#send");
+        assert!(
+            send.contains("background: var(--raise)"),
+            "the resting surface is the quiet raise fill, not an inverted block: {send}"
+        );
+        assert!(
+            send.contains("color: var(--platinum)"),
+            "the label carries the primary channel: {send}"
+        );
+        assert!(
+            send.contains("border: 1px solid var(--platinum)"),
+            "the primary border is what marks the submit: {send}"
+        );
+        assert!(
+            rule("#send:focus-visible").contains("outline: 2px solid var(--platinum)"),
+            "the send control keeps a visible focus ring"
+        );
+    }
+
+    /// The conversation is the page: the transcript is not held inside the prose
+    /// measure, and a bubble is sized by the screen rather than by its own text.
+    /// The 880px shell centred in a capped 1180px column is what left an empty
+    /// band down each side of the chat that nothing could be typed into; the row
+    /// that tracked its widest child is what pushed a reply off the edge.
+    #[test]
+    fn the_transcript_uses_the_width_the_window_has() {
+        let wrap = rule(".app > .wrap:has(> .chat-shell)");
+        assert!(
+            wrap.contains("max-width: none"),
+            "the chat page's wrap is not capped at the prose measure: {wrap}"
+        );
+        assert!(
+            !wrap.contains("padding: "),
+            "only the horizontal gutter moves, so the phone breakpoint keeps its \
+             safe-area inset: {wrap}"
+        );
+        assert!(
+            rule(".chat-shell").contains("max-width: min(100%, 1180px)"),
+            "the shell keeps a readable cap of its own"
+        );
+        assert!(
+            rule(".thread").contains("align-items: stretch")
+                && rule(".msg").contains("min-width: 0"),
+            "the transcript's items take the column and cannot widen it: {}",
+            rule(".thread")
+        );
+        assert!(
+            rule(".msg").contains("width: min(100%, 78%)"),
+            "a bubble is sized by the screen, as a share of the column"
+        );
+        assert!(
+            rule(".msg").contains("max-width: 52rem"),
+            "the readable cap is a ceiling on that share, not a floor under it"
+        );
+        assert!(
+            !rule(".msg").contains("clamp("),
+            "a bubble carries no floor of its own: a rem minimum is wider than a \
+             phone's whole column, so it would win at exactly the size the phone \
+             breakpoint exists for"
+        );
+        // A reply with no thinking bubble takes the width that bubble was holding
+        // open. The selector is stated here rather than eyeballed: `:has` is what
+        // makes it depend on what the answer actually rendered.
+        assert!(
+            rule(".msg.assistant:not(:has(.think:not([hidden])))")
+                .contains("width: min(100%, 90%)"),
+            "an answer with nothing above it is wider than one with a think bubble"
+        );
+        assert!(
+            rule(".msg.assistant:not(:has(.think:not([hidden])))").contains("max-width: 64rem"),
+            "and its cap moves with it, as a ceiling only"
+        );
+        assert!(
+            !rule(".msg.assistant:not(:has(.think:not([hidden])))").contains("52rem"),
+            "the wide rule must not keep the narrow cap"
+        );
+        assert!(
+            rule(".msg .bubble").contains("max-width: 100%"),
+            "a bubble cannot widen the column it sits in"
+        );
+    }
+
+    /// A folded reply is a size, not a deletion: the answer stays in the page and
+    /// the stylesheet clips it. That is what makes find-in-page, a browser with no
+    /// script, and a reload all agree with the live turn.
+    ///
+    /// The contract is stated here rather than left to a screenshot. Minimized is
+    /// one line and no bubble; collapsed is the bubble with a ceiling and a fade;
+    /// expanded adds nothing at all, which is what every earlier build drew.
+    #[test]
+    fn a_folded_reply_is_clipped_rather_than_removed() {
+        assert!(
+            rule(".msg .reply-peek").contains("display: none"),
+            "the preview line is not drawn until a reply is minimized"
+        );
+        assert!(
+            rule(".msg[data-reply-state=\"minimized\"] .reply-peek").contains("display: block"),
+            "minimized is the one state that draws the preview"
+        );
+        assert!(
+            rule(".msg[data-reply-state=\"minimized\"] .bubble").contains("display: none"),
+            "minimized hides the bubble and keeps its text in the document"
+        );
+        let collapsed = rule(".msg[data-reply-state=\"collapsed\"] .bubble");
+        assert!(
+            collapsed.contains("max-height:"),
+            "collapsed is a ceiling on the bubble, not a different bubble: {collapsed}"
+        );
+        assert!(
+            collapsed.contains("mask-image:"),
+            "the fade is what says there is more below: {collapsed}"
+        );
+        assert!(
+            collapsed.contains("var(--black)"),
+            "the fade is the palette's own ground, not a new colour: {collapsed}"
+        );
+        // The fold reveals its own tail. `overflow: hidden` made the last lines
+        // of an answer a promise with no way to keep it: the fade said there was
+        // more and the only door was the whole-window view.
+        assert!(
+            collapsed.contains("overflow-y: auto"),
+            "a folded answer scrolls to its own end: {collapsed}"
+        );
+        assert!(
+            !collapsed.contains("overflow: hidden"),
+            "and it is not clipped shut: {collapsed}"
+        );
+        assert!(
+            rule(".msg[data-reply-state=\"collapsed\"] .bubble.at-end")
+                .contains("mask-image: none"),
+            "the fade stops claiming there is more once the box is at its end"
+        );
+        // Expanded is the absence of both rules rather than a rule of its own, so
+        // the shipped look cannot drift by being restated.
+        assert!(
+            !APP_CSS.contains(".msg[data-reply-state=\"expanded\"]"),
+            "expanded has no rule: it is the whole answer, exactly as before"
+        );
+    }
+
+    /// The reply control sits in the row that already existed. A control that
+    /// added a line to every reply would have spent the room it was built to save.
+    #[test]
+    fn the_reply_control_costs_the_transcript_no_line() {
+        let who = rule(".msg .who");
+        assert!(
+            who.contains("display: flex"),
+            "the author row lays the name and the control side by side: {who}"
+        );
+        assert!(
+            rule(".msg .reply-cycle").contains("margin-left: auto"),
+            "the control is pushed to the end of the author row"
+        );
+        assert!(
+            rule(".msg .reply-cycle:focus-visible").contains("outline: 2px solid var(--platinum)"),
+            "the control keeps a visible focus ring"
+        );
+    }
+
+    /// The composer sits on the bottom of the window, at every window size.
+    ///
+    /// A floor (`min-height`) let the column grow past a short viewport with its
+    /// own content, and the composer went under the fold where it could not be
+    /// reached - measured at 137px below the fold on a 1280x800 window. The
+    /// column now states a height, so the transcript scrolls inside the window
+    /// instead of pushing the composer out of it, and the only gap under the
+    /// composer is the 14px gutter this rule declares.
+    #[test]
+    fn the_composer_is_pinned_to_the_bottom_of_the_window() {
+        let wrap = rule(".app > .wrap:has(> .chat-shell)");
+        assert!(
+            wrap.contains("height: 100vh;"),
+            "the chat column states a height, so it cannot outgrow the window: {wrap}"
+        );
+        assert!(
+            wrap.contains("height: 100dvh;"),
+            "the dynamic viewport unit follows a mobile URL bar: {wrap}"
+        );
+        assert!(
+            !wrap.contains("min-height: 100dvh"),
+            "a floor is what let the composer fall below the fold: {wrap}"
+        );
+        assert!(
+            wrap.contains("padding-bottom: 14px;"),
+            "the tail is a gutter, not a band: {wrap}"
+        );
+        assert!(
+            rule(".chat-shell").contains("flex: 1 1 auto"),
+            "the shell takes the room the column has left"
+        );
+        assert!(
+            rule(".thread").contains("overflow-y: auto"),
+            "the transcript scrolls inside the window rather than growing it"
+        );
+        // The document that holds a conversation does not scroll: it only
+        // scrolls the transcript. A document that can scroll is a composer in
+        // the middle of the page with the answer running behind it.
+        //
+        // The lock is on the root as well as the body, because `overflow: hidden`
+        // on the body alone does not stop iOS Safari panning the document, and
+        // the column is a fixed box rather than a tall one, so nothing below it
+        // has to restate a viewport unit for the chain to stay definite.
+        let page = rule("body:has(.chat-shell)");
+        assert!(
+            page.contains("overflow: hidden"),
+            "the conversation page cannot pan: {page}"
+        );
+        assert!(
+            rule("html:has(.chat-shell),\nbody:has(.chat-shell)").contains("overflow: hidden"),
+            "the root is locked too, or iOS still pans the document"
+        );
+        let pinned = rule("body:has(.chat-shell) .app");
+        assert!(
+            pinned.contains("position: fixed") && pinned.contains("inset: 0"),
+            "the conversation is a fixed box, not a tall one: {pinned}"
+        );
+        assert!(
+            !pinned.contains("min-height: 100dvh"),
+            "a floor is what let the column outgrow the screen: {pinned}"
+        );
+        // And the transcript never travels sideways. `overflow-y` alone makes the
+        // other axis `auto`, so one wide child hid the left edge of every line.
+        assert!(
+            rule(".thread").contains("overflow-x: hidden"),
+            "the transcript cannot be scrolled sideways"
+        );
+        assert!(
+            rule(".msg .meta").contains("flex-wrap: wrap"),
+            "a long stat line wraps instead of widening the column"
+        );
+        assert!(
+            phone_block().contains(".app > .wrap:has(> .chat-shell) { height: 100vh; height: 100dvh; padding-bottom: 0; }"),
+            "a phone keeps the pin and drops the gutter, because its composer \
+             already carries the safe-area inset"
+        );
+    }
+
+    /// A phone sizes a bubble below the full column. The desktop rule sizes a
+    /// bubble by the window; the phone override used to give it the whole column,
+    /// which is what ran a reply edge to edge on a phone and read as a page
+    /// rather than a message.
+    #[test]
+    fn a_phone_sizes_a_bubble_below_the_full_column() {
+        let phone = phone_block();
+        assert!(
+            phone.contains(".msg { width: min(100%, 88%); max-width: none; }"),
+            "a phone bubble keeps a share of the column, not all of it"
+        );
+        assert!(
+            phone.contains(
+                ".msg.assistant:not(:has(.think:not([hidden]))) { width: min(100%, 94%); max-width: none; }"
+            ),
+            "and an answer with nothing above it keeps its own, wider share"
+        );
+        assert!(
+            !phone.contains(".msg { width: 100%"),
+            "a phone bubble is never handed the whole column"
+        );
+        // The share only decides anything if no ceiling from the desktop rule is
+        // still standing: a `max-width` of 52rem on a 393px screen would clamp
+        // the bubble straight back to the whole column it was measured against.
+        assert!(
+            !phone.contains("max-width: 52rem") && !phone.contains("max-width: 64rem"),
+            "the desktop ceilings are released on a phone"
+        );
+    }
+
+    /// The whole reply in the whole window is a real surface, not a wider bubble.
+    ///
+    /// It is one attribute and one rule: the reply leaves the column and takes
+    /// the viewport, which is the thing the fold cycle was being asked to do.
+    /// `dvh` follows a mobile URL bar, and the `vh` line above it is the fallback
+    /// for a browser that does not know the newer unit.
+    #[test]
+    fn a_reply_can_take_the_whole_window() {
+        let window = rule(".msg.assistant[data-reply-max]");
+        assert!(
+            window.contains("position: fixed") && window.contains("inset: 0"),
+            "the window is the viewport, not the column: {window}"
+        );
+        assert!(
+            window.contains("height") || window.contains("max-height: 100vh"),
+            "the window states a height: {window}"
+        );
+        assert!(
+            window.contains("max-height: 100dvh"),
+            "and the dynamic unit follows a mobile URL bar: {window}"
+        );
+        assert!(
+            window.contains("overflow-y: auto"),
+            "a long answer scrolls inside the window rather than off the screen: {window}"
+        );
+        assert!(
+            window.contains("z-index: 60"),
+            "the window is a layer above the page inside its subject: {window}"
+        );
+        // `fixed` picks the viewport as the containing block; it does not escape
+        // a stacking context. The transcript is one, so the window was being
+        // compared with the composer (2), the drawer (40) and its scrim (35) and
+        // losing. The transcript has to move up while a window is open, or the
+        // window is a big answer with a composer printed on it.
+        let z = |block: &str| -> u32 {
+            block
+                .split("z-index: ")
+                .nth(1)
+                .and_then(|rest| rest.split(';').next())
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or(0)
+        };
+        let lifted = rule(".thread:has(.msg[data-reply-max])");
+        assert!(
+            z(lifted) > z(rule(".composer")) && z(lifted) > 40,
+            "the transcript outranks the composer and the drawer while a window is open: {lifted}"
+        );
+        let controls = rule(".msg.assistant[data-reply-max] .who");
+        assert!(
+            controls.contains("position: sticky") && controls.contains("background: var(--bg)"),
+            "the way out of the window travels with it and stays readable: {controls}"
+        );
+        let bubble = rule(".msg.assistant[data-reply-max] .bubble");
+        assert!(
+            bubble.contains("max-height: none"),
+            "a window is never clipped: {bubble}"
+        );
+        assert!(
+            bubble.contains("mask-image: none"),
+            "the collapsed fade is not drawn in a window: {bubble}"
+        );
+        assert!(
+            bubble.contains("max-width: 92ch"),
+            "the answer keeps a readable measure inside the window: {bubble}"
+        );
+    }
+
+    /// The window control is a peer of the fold control, in the row that already
+    /// exists, and it is a toggle rather than a fourth state in the cycle.
+    #[test]
+    fn the_window_control_sits_beside_the_fold_control() {
+        let max = rule(".msg .reply-max");
+        assert!(
+            max.contains("border-radius: 6px") && max.contains("font-size: 10px"),
+            "the two controls speak one language: {max}"
+        );
+        assert!(
+            rule(".msg .reply-max:focus-visible").contains("outline: 2px solid var(--platinum)"),
+            "the window control keeps a visible focus ring"
+        );
+        // One `margin-left: auto` in the row, on the control that comes first.
+        assert!(
+            !max.contains("margin-left"),
+            "the cycle control already pushes the pair to the end: {max}"
+        );
+    }
+
+    /// The stylesheet is inlined into every page, and a rendered page carries no
+    /// `!` outside the doctype, so the stylesheet cannot carry one either.
+    #[test]
+    fn the_stylesheet_carries_no_bang() {
+        assert!(
+            !APP_CSS.contains('!'),
+            "the inlined stylesheet carries no ! anywhere"
+        );
+    }
+
+    /// The wallpaper is fixed, and fixed means fixed: sized by a viewport unit
+    /// that does not change when mobile chrome collapses, on its own layer.
+    #[test]
+    fn the_wallpaper_is_pinned_to_the_stable_viewport_unit() {
+        assert!(APP_CSS.contains("height: 100lvh;"), "the wall uses lvh");
+        let wall = APP_CSS
+            .split(".app-wall {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("the app-wall rule exists");
+        assert!(
+            !wall.contains("inset: 0"),
+            "inset would size the wall to the collapsing visual viewport: {wall}"
+        );
+        assert!(
+            wall.contains("position: fixed"),
+            "the wall does not scroll with the document: {wall}"
+        );
+        assert!(
+            wall.contains("translateZ(0)"),
+            "the wall has its own layer, so it is not repainted with the page: {wall}"
+        );
+    }
+
+    #[test]
+    fn the_stylesheet_carries_no_purple() {
+        let lowered = APP_CSS.to_ascii_lowercase();
+        for banned in PURPLE_DENYLIST {
+            assert!(
+                !lowered.contains(&banned.to_ascii_lowercase()),
+                "the stylesheet carries the banned hex {banned}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_stylesheet_has_no_script_no_cdn_and_no_web_font() {
+        let lowered = APP_CSS.to_ascii_lowercase();
+        for banned in ["@import", "http://", "https://", "@font-face", "url("] {
+            assert!(!lowered.contains(banned), "the stylesheet carries {banned}");
+        }
+    }
+
+    #[test]
+    fn every_hex_in_the_stylesheet_is_a_palette_entry() {
+        // The ADR lists the allowed set; this test reads the stylesheet's own
+        // custom properties and asserts the two agree, so a new colour cannot be
+        // added to the UI without the ADR being updated.
+        let mut declared = Vec::new();
+        for line in APP_CSS.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("--") else {
+                continue;
+            };
+            let Some((_name, value)) = rest.split_once(':') else {
+                continue;
+            };
+            let value = value.trim().trim_end_matches(';').trim();
+            if let Some(hex) = value.strip_prefix('#') {
+                assert_eq!(hex.len(), 6, "{value} is not a six-digit hex");
+                declared.push(value.to_ascii_uppercase());
+            }
+        }
+        declared.sort_unstable();
+        declared.dedup();
+        assert_eq!(
+            declared.len(),
+            13,
+            "the palette is thirteen colours, found {declared:?}"
+        );
+        // Every literal hex used outside the variable block must be one of them.
+        let mut body = String::new();
+        for line in APP_CSS.lines() {
+            if line.trim_start().starts_with("--") {
+                continue;
+            }
+            body.push_str(line);
+            body.push('\n');
+        }
+        let mut index = 0usize;
+        let bytes = body.as_bytes();
+        while index < bytes.len() {
+            if bytes[index] == b'#' && index + 7 <= bytes.len() {
+                let candidate = &body[index..index + 7];
+                if candidate[1..]
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+                {
+                    assert!(
+                        declared
+                            .iter()
+                            .any(|entry| entry.eq_ignore_ascii_case(candidate)),
+                        "{candidate} is used but not declared in the palette"
+                    );
+                    index += 7;
+                    continue;
+                }
+            }
+            index += 1;
+        }
+    }
+}

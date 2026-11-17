@@ -1,0 +1,12686 @@
+//! Server-rendered pages: one layout, one wizard, one dashboard.
+//!
+//! `maud 0.27` builds the markup in Rust, so there is no template directory, no
+//! build step, no partial that can drift from a handler, and nothing for `curl`
+//! to miss. Every page is a plain HTML document with one inline stylesheet and
+//! no script.
+//!
+//! Accessibility rules that are structural rather than aspirational:
+//!
+//! - every input has an `id` and a matching `<label for>`;
+//! - each form carries a region with `role="status"` and `aria-live="polite"`
+//!   that holds the validation message;
+//! - the input that failed is rendered with `autofocus` and `aria-invalid`, so
+//!   focus lands on the first error without any JavaScript;
+//! - colour is never the only signal: the alert carries the message text.
+
+use std::net::SocketAddr;
+
+use maud::{DOCTYPE, Markup, PreEscaped, html};
+
+use crate::admin::{ADMIN_ADDR, BUILD, VERSION};
+use crate::db::SetupState;
+use crate::device::DEVICE_ADDR;
+use crate::onboarding::{
+    ApprovalPolicy, AutopilotCeiling, PermissionRow, Permissions, RowControl, SandboxMode, Step,
+    Telemetry, Wizard,
+};
+
+use super::css::APP_CSS;
+use super::store::{AuditEntry, DeviceOverview, JobRow, SessionRow};
+use super::wallpaper;
+
+/// A validation failure, shaped for the JSON body and for the inline alert.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormError {
+    /// The form field the message belongs to, when it has one.
+    pub field: Option<String>,
+    /// Stable machine-readable code.
+    pub code: String,
+    /// Human-readable message. No secret ever reaches this string.
+    pub message: String,
+}
+
+impl FormError {
+    /// Build one.
+    #[must_use]
+    pub fn new(field: Option<&str>, code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            field: field.map(str::to_owned),
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+
+    /// The JSON body the API answers with.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "ok": false,
+            "field": self.field,
+            "code": self.code,
+            "message": self.message,
+        })
+    }
+}
+
+/// One device, as the dashboard lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRow {
+    /// Row id, which is what the revoke form posts.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Platform label.
+    pub platform: String,
+    /// When its row was created. Not the same thing as paired.
+    pub paired_at: Option<String>,
+    /// True only when a code was redeemed or a live token exists.
+    pub paired: bool,
+    /// True when one of its live tokens carries `admin`.
+    pub admin: bool,
+    /// When it was revoked, if it was.
+    pub revoked_at: Option<String>,
+}
+
+impl DeviceRow {
+    /// Whether this device may change the operator's settings, in plain words.
+    #[must_use]
+    pub fn admin_label(&self) -> &'static str {
+        if self.admin {
+            "can administer"
+        } else {
+            "chat only"
+        }
+    }
+
+    /// The one-word state the table shows.
+    #[must_use]
+    pub fn state_label(&self) -> &'static str {
+        if self.revoked_at.is_some() {
+            "revoked"
+        } else if self.paired {
+            "paired"
+        } else {
+            "awaiting pairing"
+        }
+    }
+}
+
+/// Everything the wizard page needs.
+#[derive(Debug, Clone)]
+pub struct SetupView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Server-side wizard progress.
+    pub wizard: Wizard,
+    /// The validation failure to show, if this render follows a failed POST.
+    pub error: Option<FormError>,
+    /// A success line to show, if this render follows a step.
+    pub notice: Option<String>,
+    /// Stored provider base URL, for pre-filling.
+    pub provider_base_url: String,
+    /// Stored key reference, for pre-filling. A reference, never a value.
+    pub provider_key_ref: String,
+    /// Model ids the probe returned.
+    pub models: Vec<String>,
+    /// Stored default model.
+    pub model: String,
+    /// Current permission tuple.
+    pub permissions: Permissions,
+    /// The rendered permission table.
+    pub permission_rows: Vec<PermissionRow>,
+    /// Current workspace path.
+    pub workspace: String,
+    /// Whether the operator asked for the device listener.
+    pub device_listener: bool,
+    /// A freshly minted pairing code, shown once.
+    pub pairing_code: Option<String>,
+    /// When that code expires.
+    pub pairing_expires: Option<String>,
+    /// The origin the QR carries, stated so a phone that cannot scan knows the
+    /// address by hand.
+    pub pairing_relay: Option<String>,
+    /// The pairing payload drawn as an SVG.
+    pub pairing_qr: Option<String>,
+    /// The version line in the footer.
+    pub version: String,
+}
+
+impl SetupView {
+    /// A view with the documented defaults filled in.
+    #[must_use]
+    pub fn new(state: SetupState, wizard: Wizard, version: impl Into<String>) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            wizard,
+            error: None,
+            notice: None,
+            provider_base_url: String::new(),
+            provider_key_ref: "env:NINEROUTER_API_KEY".to_owned(),
+            models: Vec::new(),
+            model: String::new(),
+            permissions: Permissions::DEFAULT,
+            permission_rows: Vec::new(),
+            workspace: "~/kallisti-workspace".to_owned(),
+            device_listener: false,
+            pairing_code: None,
+            pairing_expires: None,
+            pairing_relay: None,
+            pairing_qr: None,
+            version: version.into(),
+        }
+    }
+}
+
+/// Everything the dashboard page needs.
+#[derive(Debug, Clone)]
+pub struct DashboardView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state, which is `ready` on this page.
+    pub state: SetupState,
+    /// The version line.
+    pub version: String,
+    /// Whether the database answered the health read.
+    pub db_ok: bool,
+    /// Live admin sessions.
+    pub sessions_live: usize,
+    /// Device session rows, revoked or not.
+    pub device_sessions: i64,
+    /// Device rows known to this host, revoked or not.
+    pub devices_known: i64,
+    /// Devices that are genuinely paired: a redeemed code or a live token.
+    pub paired_devices: usize,
+    /// Job counts, every status present and zero filled.
+    pub jobs: Vec<(&'static str, i64)>,
+    /// Stored provider base URL.
+    pub provider_base_url: Option<String>,
+    /// Stored key reference.
+    pub provider_key_ref: Option<String>,
+    /// Stored default model.
+    pub model: Option<String>,
+    /// When the provider was last probed.
+    pub probed_at: Option<String>,
+    /// How many model ids the last probe listed.
+    pub model_count: usize,
+    /// Calls parked and waiting for a person. Non-zero blocks turns.
+    pub approvals_waiting: usize,
+    /// MCP servers configured, and how many are currently failing.
+    pub mcp_servers: usize,
+    /// MCP servers whose last start or call failed.
+    pub mcp_errors: usize,
+    /// Which memory backend a turn recalls from.
+    pub memory_backend: String,
+    /// The last finished turn, as one line, when there is one.
+    pub last_turn: Option<String>,
+    /// The database file size, as a human string.
+    pub db_size: String,
+    /// Known devices.
+    pub devices: Vec<DeviceRow>,
+    /// Current permission tuple.
+    pub permissions: Permissions,
+    /// The rendered permission table.
+    pub permission_rows: Vec<PermissionRow>,
+    /// Whether the operator asked for the device listener.
+    pub device_listener: bool,
+    /// Whether this process has bound the device port.
+    pub device_listener_bound: bool,
+    /// A validation failure to show.
+    pub error: Option<FormError>,
+    /// A success line to show.
+    pub notice: Option<String>,
+    /// Background work this daemon is running, newest first.
+    ///
+    /// Kept as the tool's own JSON so the page, the route and the model cannot
+    /// disagree about a handle's fields.
+    pub processes: Vec<serde_json::Value>,
+    /// How many of those are still running.
+    pub processes_running: usize,
+    /// Cost and latency over the last day.
+    pub cost_day: crate::metrics::Summary,
+    /// Cost and latency over the last week.
+    pub cost_week: crate::metrics::Summary,
+}
+
+impl DashboardView {
+    /// A view with the documented defaults filled in.
+    #[must_use]
+    pub fn new(state: SetupState, version: impl Into<String>) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            version: version.into(),
+            processes: Vec::new(),
+            processes_running: 0,
+            cost_day: crate::metrics::Summary::default(),
+            cost_week: crate::metrics::Summary::default(),
+            db_ok: true,
+            sessions_live: 0,
+            device_sessions: 0,
+            devices_known: 0,
+            paired_devices: 0,
+            jobs: crate::web::store::JOB_STATUSES
+                .iter()
+                .map(|status| (*status, 0))
+                .collect(),
+            provider_base_url: None,
+            provider_key_ref: None,
+            model: None,
+            probed_at: None,
+            model_count: 0,
+            approvals_waiting: 0,
+            mcp_servers: 0,
+            mcp_errors: 0,
+            memory_backend: crate::memory::DEFAULT_BACKEND.to_owned(),
+            last_turn: None,
+            db_size: String::new(),
+            devices: Vec::new(),
+            permissions: Permissions::DEFAULT,
+            permission_rows: Vec::new(),
+            device_listener: false,
+            device_listener_bound: false,
+            error: None,
+            notice: None,
+        }
+    }
+
+    /// The device listener as one line: on or off, and whether the socket exists.
+    #[must_use]
+    pub fn device_listener_line(&self) -> String {
+        let wanted = if self.device_listener { "on" } else { "off" };
+        let bound = if self.device_listener_bound {
+            "bound"
+        } else {
+            "not bound"
+        };
+        format!("{wanted}, {bound} on {DEVICE_ADDR}")
+    }
+
+    /// The job counts as one line, every status named.
+    #[must_use]
+    pub fn jobs_line(&self) -> String {
+        self.jobs
+            .iter()
+            .map(|(status, count)| format!("{status} {count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// A value safe to use as an element id: lowercase, spaces to hyphens.
+///
+/// `L0 notify` becomes `l0-notify`, so `id` and `for` stay one token and the
+/// label association is valid CSS-selectable HTML rather than a space inside an
+/// id.
+fn slug(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// The listener truth every page states in its footer, plus the public URL when
+/// the operator configured one.
+///
+/// It is built from [`crate::admin::AppState::chrome`], which reads the addresses
+/// that actually bound. A page never guesses a listener from a constant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chrome {
+    /// The addresses that bound, in bind order.
+    pub listeners: Vec<SocketAddr>,
+    /// `admin.public_url`, when one is configured.
+    pub public_url: Option<String>,
+    /// The backdrop every signed-in page sits on, when one is chosen.
+    ///
+    /// It lives here rather than on one page because the wallpaper is the
+    /// application's desk, not a chat decoration: Settings, Sessions and the
+    /// dashboard all sit on the same surface.
+    pub wallpaper_url: Option<String>,
+    /// The projects the rail can head a group with, by name.
+    ///
+    /// A rail with no projects is a rail with one flat list, which is what it
+    /// was before projects existed: nothing here is a prerequisite for history.
+    pub projects: Vec<crate::projects::Project>,
+    /// The conversations the rail lists, newest first.
+    pub sessions: Vec<ChatSession>,
+    /// The conversation this page is showing, when it is showing one.
+    pub current_conversation: Option<String>,
+    /// How the rail orders its list, as the operator last chose.
+    ///
+    /// It lives here rather than on one page because every page that renders the
+    /// rail draws the same list: a preference the chat page honoured and the
+    /// dashboard ignored would be two rails.
+    pub conversation_sort: crate::web::chat::ConversationSort,
+    /// The rail's list split into calendar days, when the operator chose
+    /// `By day`. Empty for every other order, so a template that has no day
+    /// headings has nothing to iterate.
+    ///
+    /// The grouping is done on the server because the day boundary is the
+    /// operator's zone and the rail is rendered before any script runs.
+    pub rail_days: Vec<RailDay>,
+    /// True when the operator collapsed the rail.
+    pub rail_hidden: bool,
+    /// The subagents worth reporting: anything still working, plus anything that
+    /// finished recently. Empty means no control is rendered at all.
+    ///
+    /// The rows themselves rather than a copy, so the bar and a page that queries
+    /// the table cannot disagree about a status or an elapsed time.
+    pub subagents: Vec<crate::subagents::Subagent>,
+}
+
+/// One calendar day of the rail's list, as a heading and the rows under it.
+///
+/// Only rendered when the operator chose `By day`. The label is the server's
+/// (`Today`, `Yesterday`, `Mar 14`) because it depends on the operator's clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailDay {
+    /// `YYYY-MM-DD` on the operator's clock, for a stable key.
+    pub key: String,
+    /// What the heading reads.
+    pub label: String,
+    /// The conversations filed under this day, newest first.
+    pub sessions: Vec<ChatSession>,
+}
+
+/// One conversation in the rail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatSession {
+    /// Opaque id, also the route segment.
+    pub id: String,
+    /// What the operator reads.
+    pub title: String,
+    /// A short stamp for the rail.
+    pub stamp: String,
+    /// The project it is filed under, when it is filed under one this rail knows.
+    pub project_id: Option<String>,
+    /// That project's name, so the row can state where it lives without a lookup.
+    pub project_name: Option<String>,
+}
+
+impl Default for Chrome {
+    fn default() -> Self {
+        Self {
+            listeners: vec![
+                ADMIN_ADDR
+                    .parse()
+                    .expect("the default admin address is a literal ip:port"),
+            ],
+            public_url: None,
+            // The documented default, so a page rendered without a resolved
+            // settings row still paints the Kallisti backdrop.
+            wallpaper_url: super::wallpaper::url(super::wallpaper::DEFAULT_WALLPAPER),
+            projects: Vec::new(),
+            sessions: Vec::new(),
+            current_conversation: None,
+            conversation_sort: crate::web::chat::ConversationSort::DEFAULT,
+            rail_days: Vec::new(),
+            rail_hidden: false,
+            subagents: Vec::new(),
+        }
+    }
+}
+
+impl Chrome {
+    /// The first bound address: the one the config or the flag named first.
+    #[must_use]
+    pub fn primary(&self) -> String {
+        self.listeners
+            .first()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| ADMIN_ADDR.to_owned())
+    }
+
+    /// Every bound address as one line, for the System card.
+    #[must_use]
+    pub fn listens_line(&self) -> String {
+        if self.listeners.is_empty() {
+            return ADMIN_ADDR.to_owned();
+        }
+        self.listeners
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The footer line: the primary address, and the count when there is more
+    /// than one listener.
+    #[must_use]
+    pub fn footer_line(&self) -> String {
+        let count = self.listeners.len();
+        if count > 1 {
+            format!("{} ({count} listeners)", self.primary())
+        } else {
+            self.primary()
+        }
+    }
+}
+
+/// The document shell every page shares, without navigation.
+///
+/// Used by the three pages that must stay minimal: the wizard while it is open,
+/// the sign-in form, and an error page. A nav on any of those is a trap, because
+/// the pages it points at are not reachable from there.
+pub fn layout(title: &str, state: SetupState, body: Markup, chrome: &Chrome) -> Markup {
+    shell(title, state, None, body, chrome)
+}
+
+/// The one-page answer after a restart is scheduled: the daemon is about to drop
+/// this connection, so a redirect would race the process exit. A static page that
+/// says what happened and points back at the dashboard once it returns.
+#[must_use]
+pub fn restart_page() -> Markup {
+    let chrome = Chrome::default();
+    layout(
+        "Restarting",
+        SetupState::Ready,
+        html! {
+            h1 { "Restart scheduled" }
+            p .lede { "The daemon is restarting itself. It returns in a few seconds." }
+            p .small {
+                "A restart interrupts anything still running and the process comes back on the "
+                "same addresses. Wait a moment, then return to the dashboard."
+            }
+            div .actions {
+                a .button href=(crate::admin::ROUTE_DASHBOARD) { "Back to the dashboard" }
+            }
+        },
+        &chrome,
+    )
+}
+
+/// The signed-in application shell: top bar, nav, page, footer.
+///
+/// The nav is a `nav` element with an accessible name and one entry per section,
+/// and the current page is marked with `aria-current="page"` in addition to its
+/// colour, so the marker survives a reader, a monochrome screen, and a grep.
+///
+/// `Nav::Sessions` and `Nav::Devices` render as unavailable entries rather than
+/// links: those two pages are not part of this phase, and a nav that answers a
+/// click with a 404 is worse than a nav that says so.
+pub fn shell(
+    title: &str,
+    state: SetupState,
+    nav: Option<Nav>,
+    body: Markup,
+    chrome: &Chrome,
+) -> Markup {
+    let state_class = match state {
+        SetupState::Setup => "badge setup",
+        SetupState::Ready => "badge ready",
+    };
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover";
+                meta name="referrer" content="no-referrer";
+                title { (title) " - Kallisti 1.0" }
+                style { (PreEscaped(APP_CSS)) }
+            }
+            body {
+                @if let Some(url) = &chrome.wallpaper_url {
+                    // The backdrop is a field: the artwork's own edges fade to the
+                    // page colour, so `cover` has nothing to seam against.
+                    // The URL carries a `?v=` cache-buster, so the extension check
+                    // runs against the path only - otherwise the default `.jpg`
+                    // never matches and the art is never dimmed.
+                    @let path = url.split('?').next().unwrap_or(url);
+                    @let art = path.ends_with(".jpg") || path.ends_with(".jpeg")
+                        || path.ends_with(".png") || path.ends_with("custom");
+                    div class=(if art { "app-wall art" } else { "app-wall" })
+                        style=(format!("background-image:url('{url}')")) {}
+                }
+                @let bare = nav.is_none();
+                div class=(match (bare, chrome.rail_hidden) {
+                    (true, true) => "app bare rail-hidden",
+                    (true, false) => "app bare",
+                    (false, true) => "app rail-hidden",
+                    (false, false) => "app",
+                }) {
+                    header .side {
+                        div .brand {
+                            span .mark aria-hidden="true" { "K" }
+                            span .word {
+                                strong { "Kallisti" }
+                                span .ver { "1.0 Eris daemon" }
+                            }
+                        }
+                        @if nav.is_some() {
+                            form .rail-hide method="post" action=(crate::admin::ROUTE_SIDEBAR) {
+                                input type="hidden" name="rail" value="hidden";
+                                button type="submit" title="Hide the sidebar"
+                                    aria-label="Hide the sidebar" { "\u{00AB}" }
+                            }
+                            form .side-action method="post" action=(crate::admin::ROUTE_CHAT_NEW) {
+                                button type="submit" { "+  New chat" }
+                            }
+                            (new_project_control(chrome))
+                            /* The list's own head. The order used to be a field
+                               on the settings page, which meant changing how the
+                               rail reads required leaving the rail. It is a small
+                               disclosure beside the word it applies to. */
+                            /* The transcript is searchable from the rail as well
+                               as from its own page. A person looking at a list of
+                               conversations is the person most likely to want to
+                               find one, and sending them to another page first
+                               would be a step for nothing. */
+                            form .rail-search method="get" action=(crate::admin::ROUTE_SEARCH) role="search" {
+                                label for="rail-search-q" .sr-only {
+                                    "Search every conversation"
+                                }
+                                input type="search" id="rail-search-q" name="q"
+                                    placeholder="Search every chat" autocomplete="off";
+                            }
+                            div .rail-list-head {
+                                span .rail-list-label { "Conversations" }
+                                (rail_sort_control(chrome))
+                            }
+                            nav .sessions id="rail-sessions" aria-label="Conversations" {
+                                @if chrome.sessions.is_empty() {
+                                    span .side-empty { "No conversations yet" }
+                                }
+                                @if !chrome.rail_days.is_empty() {
+                                    /* By day: the headings are calendar days on the
+                                       operator's clock, so a screen reader hears a day
+                                       rather than another conversation. */
+                                    @for day in &chrome.rail_days {
+                                        div .rail-group data-day=(day.key.as_str()) {
+                                            div .rail-group-head {
+                                                span .rail-group-name { (day.label) }
+                                                span .rail-group-count { (day.sessions.len()) }
+                                            }
+                                            @for session in &day.sessions {
+                                                (rail_session_row(chrome, session))
+                                            }
+                                        }
+                                    }
+                                } @else if chrome.projects.is_empty() {
+                                    /* No project has been named, so there is nothing to
+                                       head a group with: the list stays the flat one it
+                                       has always been. */
+                                    @for session in &chrome.sessions {
+                                        (rail_session_row(chrome, session))
+                                    }
+                                } @else {
+                                    @for project in &chrome.projects {
+                                        @let members: Vec<&ChatSession> = chrome
+                                            .sessions
+                                            .iter()
+                                            .filter(|session| {
+                                                session.project_id.as_deref()
+                                                    == Some(project.id.as_str())
+                                            })
+                                            .collect();
+                                        @if !members.is_empty() {
+                                            div .rail-group {
+                                                div .rail-group-head {
+                                                    span .rail-group-name { (project.name) }
+                                                    span .rail-group-count { (members.len()) }
+                                                }
+                                                @for session in members {
+                                                    (rail_session_row(chrome, session))
+                                                }
+                                            }
+                                        }
+                                    }
+                                    @let unfiled: Vec<&ChatSession> = chrome
+                                        .sessions
+                                        .iter()
+                                        .filter(|session| session.project_id.is_none())
+                                        .collect();
+                                    @if !unfiled.is_empty() {
+                                        /* The ungrouped heading keeps its own name: the
+                                           conversations that were here before projects
+                                           existed did not move anywhere. */
+                                        div .rail-group {
+                                            div .rail-group-head {
+                                                span .rail-group-name { "Conversations" }
+                                                span .rail-group-count { (unfiled.len()) }
+                                            }
+                                            @for session in unfiled {
+                                                (rail_session_row(chrome, session))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        div .side-foot {
+                            /* The cog is the way into everything that configures
+                               the daemon, and it only exists for a signed-in
+                               browser: a settings link on the sign-in form would
+                               only bounce back to the sign-in form. */
+                            @if nav.is_some() {
+                                @let on_settings = nav == Some(Nav::Settings);
+                                a .cog href=(crate::admin::ROUTE_SETTINGS)
+                                    aria-label="Settings"
+                                    aria-current=[on_settings.then_some("page")] {
+                                    span .cog-glyph aria-hidden="true" { "\u{2699}" }
+                                    span .cog-label { "Settings" }
+                                }
+                                /* Signing out is the only way back to the sign-in
+                                   form, and therefore to the "keep me signed in"
+                                   checkbox. It sits beside the cog so the pair
+                                   reads as one "this browser" control. */
+                                form method="post" action=(crate::admin::ROUTE_LOGOUT) {
+                                    button type="submit" class="signout"
+                                        title="Clear this browser's session" { "Sign out" }
+                                }
+                            }
+                            span class=(state_class) { (state.as_str()) }
+                            span .ver { "Eris " (VERSION) " build " (BUILD) }
+                            @if nav.is_some() {
+                                /* The bound address and listener count is operator
+                                   telemetry, not onboarding copy: it only names the
+                                   host's own loopback/LAN/tailnet listeners, so it
+                                   belongs on the signed-in pages, never on the setup
+                                   or sign-in surface a fresh browser meets first. */
+                                span .listener title=(format!(
+                                    "admin listener {} | configured in config.toml",
+                                    chrome.footer_line(),
+                                )) {
+                                    (chrome.footer_line())
+                                }
+                                @if let Some(url) = &chrome.public_url {
+                                    span .listener title=(url) { (url) }
+                                }
+                            }
+                            span .sign { "to the most beautiful" }
+                        }
+                    }
+                    div .wrap {
+                        @if chrome.rail_hidden {
+                            /* The show control sits where the hide control sits - at
+                               the top of where the rail was - so the pair reads as
+                               one toggle that moves the rail, not as a stray button
+                               at the top of the page or a passenger on the cog. */
+                            form .rail-show .rail-show-top method="post" action=(crate::admin::ROUTE_SIDEBAR) {
+                                input type="hidden" name="rail" value="shown";
+                                button type="submit" title="Show the sidebar"
+                                    aria-label="Show the sidebar" { "\u{00BB}" }
+                            }
+                        }
+                        @if chrome.rail_hidden && nav.is_some() {
+                            /* The rail's foot, collapsed: the word "Settings" is what
+                               the hidden sidebar took, so the gear stays in the corner
+                               it has always occupied and only its label goes. */
+                            div .rail-restore {
+                                a .cog .cog-only href=(crate::admin::ROUTE_SETTINGS)
+                                    aria-label="Settings"
+                                    aria-current=[(nav == Some(Nav::Settings)).then_some("page")] {
+                                    span .cog-glyph aria-hidden="true" { "\u{2699}" }
+                                }
+                            }
+                        }
+                        /* The section nav is shell furniture, except on the
+                           conversation: chat is the surface, and a row of section
+                           chips above the transcript fights it. Every other page
+                           carries the row, and the cog in the rail reaches
+                           settings from chat. */
+                        @let sections = nav.is_some_and(|current| current != Nav::Chat);
+                        @if sections || !chrome.subagents.is_empty() {
+                            /* The subagents control sits in this row because that is
+                               where the app talks about itself, and on the
+                               conversation it is the only thing in the row: a
+                               dispatch from a chat turn is exactly when the operator
+                               needs to see it. */
+                            div .top-nav {
+                                @if sections {
+                                    @if let Some(current) = nav {
+                                        (nav_bar(current))
+                                    }
+                                }
+                                (subagents_control(chrome))
+                            }
+                        }
+                        (body)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The "New project" control, directly under "New chat".
+///
+/// It is a `details` element because that is the one disclosure the browser
+/// opens and closes without a script, and the rail may carry no script at all.
+/// The control is deliberately quieter than "New chat": starting a conversation
+/// is the common action, and naming a group to put one in is the occasional one.
+fn new_project_control(chrome: &Chrome) -> Markup {
+    html! {
+        details .rail-new-project {
+            summary title="New project" {
+                span .rail-add-glyph aria-hidden="true" { "+" }
+                span .rail-add-label { "New project" }
+            }
+            form method="post" action=(crate::admin::ROUTE_PROJECTS) {
+                label .sr-only for="project_name" { "Project name" }
+                input type="text" id="project_name" name="project_name"
+                    placeholder="Project name" autocomplete="off"
+                    maxlength=(crate::projects::MAX_NAME_CHARS);
+                button type="submit" { "Create" }
+                @if chrome.projects.is_empty() {
+                    span .rail-hint { "No projects yet" }
+                }
+            }
+        }
+    }
+}
+
+/// The rail's order, as a menu beside the list.
+///
+/// A menu, not a form. It used to be a select, a submit button and a second
+/// press to confirm a choice the operator had already made, which is three
+/// actions for one preference. Now it is what a platform menu is: one row per
+/// order, a checkmark on the one in force, and the press is the change. A row is
+/// a `button` inside one `form` that carries nothing else, so the whole thing
+/// still posts with every script blocked, and a row that is already current
+/// simply writes the value it already had.
+///
+/// The summary states the current order, so the control answers "which one" and
+/// "what is it now" before it is opened, and `aria-current` carries the check to
+/// a reader instead of leaving it as a tick in a glyph.
+fn rail_sort_control(chrome: &Chrome) -> Markup {
+    use crate::web::chat::ConversationSort;
+    let current = chrome.conversation_sort;
+    html! {
+        details .rail-sort .menu {
+            summary title="Sort conversations"
+                aria-label=(format!("Sort conversations, currently {}", current.label())) {
+                span .rail-sort-glyph aria-hidden="true" { "\u{2195}" }
+                span .rail-sort-label { (current.label()) }
+            }
+            form .menu-panel method="post" action=(crate::admin::ROUTE_CHAT_SORT) {
+                @for option in ConversationSort::ALL {
+                    @let chosen = option == current;
+                    button .menu-row type="submit" name="sort" value=(option.as_str())
+                        aria-current=[chosen.then_some("true")] {
+                        span .menu-check aria-hidden="true" {
+                            @if chosen { "\u{2713}" }
+                        }
+                        span .menu-name { (option.label()) }
+                        @if chosen {
+                            span .sr-only { " (current)" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One conversation in the rail, with the menu that acts on it.
+///
+/// The menu is the platform shape: rows, a checkmark on the project the
+/// conversation is already filed under, one press to move it, and a destructive
+/// row at the bottom behind a separator. It used to be a select and a Move
+/// button, which asked for two presses, and it put the destructive action
+/// outside the menu as its own glyph - so the rail carried a menu and a second
+/// unlabelled control for the same row.
+///
+/// Everything is still a plain form post: the panel is one form, each row is a
+/// submit button carrying the value, and the destructive row overrides the
+/// action with `formaction`, which the browser honours with no script at all.
+/// `aria-current` carries the checkmark to a reader as well as to the eye.
+fn rail_session_row(chrome: &Chrome, session: &ChatSession) -> Markup {
+    let open = chrome.current_conversation.as_deref() == Some(session.id.as_str());
+    let filed = session.project_id.as_deref();
+    html! {
+        div .session-row .open[open] {
+            a href=(format!("/dashboard/chat/{}", session.id))
+                aria-current=[open.then_some("page")]
+                title=(session.title) {
+                span .session-title { (session.title) }
+                span .session-stamp { (session.stamp) }
+            }
+            details .session-menu .menu {
+                summary title="Conversation actions"
+                    aria-label=(format!("Actions for {}", session.title)) {
+                    "\u{2026}"
+                }
+                form .menu-panel method="post"
+                    action=(crate::admin::ROUTE_PROJECTS_ASSIGN) {
+                    input type="hidden" name="conversation" value=(session.id.as_str());
+                    /* The clear is a row like any other, and it is the one
+                       checked when nothing has been filed: "No project" is a
+                       state, not an absence of one. */
+                    @let loose = filed.is_none();
+                    button .menu-row type="submit" name="project" value=""
+                        aria-current=[loose.then_some("true")] {
+                        span .menu-check aria-hidden="true" {
+                            @if loose { "\u{2713}" }
+                        }
+                        span .menu-name { "No project" }
+                        @if loose { span .sr-only { " (current)" } }
+                    }
+                    @for project in &chrome.projects {
+                        @let chosen = filed == Some(project.id.as_str());
+                        button .menu-row type="submit" name="project"
+                            value=(project.id.as_str())
+                            aria-current=[chosen.then_some("true")] {
+                            span .menu-check aria-hidden="true" {
+                                @if chosen { "\u{2713}" }
+                            }
+                            span .menu-name { (project.name) }
+                            @if chosen { span .sr-only { " (current)" } }
+                        }
+                    }
+                    /* The destructive row lives at the bottom, behind a rule, in
+                       the refusal colour: the one thing here that cannot be
+                       undone does not sit beside the things that can. */
+                    div .menu-sep aria-hidden="true" {}
+                    button .menu-row .danger type="submit"
+                        formaction=(format!("/dashboard/chat/{}/delete", session.id)) {
+                        span .menu-check aria-hidden="true" {}
+                        span .menu-name { "Delete conversation" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One section of the application shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nav {
+    /// The conversation surface: the transcript, the composer, the wallpaper.
+    Chat,
+    /// The dashboard home.
+    Dashboard,
+    /// Every device session, and the jobs each one started.
+    Sessions,
+    /// Search across every past conversation.
+    Search,
+    /// Every device, and the form that mints a pairing code.
+    Devices,
+    /// The settings surface, the only page that writes behaviour.
+    Settings,
+    /// What the daemon learned, and the loop's two controls.
+    Learning,
+    /// The skill library itself: every file, an editor, and the archive button.
+    Skills,
+    /// The standing agents: named specialists a turn can dispatch work to.
+    Roster,
+    /// The webhook triggers: saved prompts with their own tokens.
+    Triggers,
+    /// The audit trail.
+    Activity,
+    /// Tasks that survive the session that named them.
+    Workboard,
+    /// Duties the steward keeps between conversations.
+    Steward,
+    /// The archive list, the create button, and the restore form.
+    Backups,
+    /// The environment file the daemon reads at start, and the form that writes it.
+    Environment,
+}
+
+impl Nav {
+    /// Every entry, in display order. Every one of them is a page: the nav has
+    /// no placeholder in it.
+    pub const ALL: [Self; 15] = [
+        Self::Chat,
+        Self::Dashboard,
+        Self::Sessions,
+        Self::Search,
+        Self::Devices,
+        Self::Settings,
+        Self::Learning,
+        Self::Skills,
+        Self::Roster,
+        Self::Triggers,
+        Self::Activity,
+        Self::Workboard,
+        Self::Steward,
+        Self::Backups,
+        Self::Environment,
+    ];
+
+    /// The path this section is served at.
+    #[must_use]
+    pub fn path(self) -> &'static str {
+        match self {
+            Self::Chat => crate::admin::ROUTE_CHAT,
+            Self::Dashboard => crate::admin::ROUTE_DASHBOARD,
+            Self::Sessions => crate::admin::ROUTE_SESSIONS,
+            Self::Search => crate::admin::ROUTE_SEARCH,
+            Self::Devices => crate::admin::ROUTE_DEVICES,
+            Self::Settings => crate::admin::ROUTE_SETTINGS,
+            Self::Learning => crate::admin::ROUTE_LEARNING,
+            Self::Skills => crate::admin::ROUTE_SKILLS,
+            Self::Roster => crate::admin::ROUTE_ROSTER,
+            Self::Triggers => crate::admin::ROUTE_TRIGGERS,
+            Self::Activity => crate::admin::ROUTE_ACTIVITY,
+            Self::Workboard => crate::admin::ROUTE_WORKBOARD,
+            Self::Steward => crate::admin::ROUTE_STEWARD,
+            Self::Backups => crate::admin::ROUTE_BACKUPS,
+            Self::Environment => crate::admin::ROUTE_ENV,
+        }
+    }
+
+    /// The label a person reads.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Chat => "Chat",
+            Self::Dashboard => "Dashboard",
+            Self::Sessions => "Sessions",
+            Self::Search => "Search",
+            Self::Devices => "Devices",
+            Self::Settings => "Settings",
+            Self::Learning => "Learning",
+            Self::Skills => "Skills",
+            Self::Roster => "Roster",
+            Self::Triggers => "Triggers",
+            Self::Activity => "Activity",
+            Self::Workboard => "Workboard",
+            Self::Steward => "Steward",
+            Self::Backups => "Backups",
+            Self::Environment => "Environment",
+        }
+    }
+}
+
+/// The top-bar navigation.
+///
+/// Every entry is a link to a page that exists, and the current one is marked
+/// with `aria-current="page"` as well as its colour. Nothing here is a disabled
+/// placeholder: the last one became a page, so the nav no longer promises a
+/// section the listener does not serve.
+fn nav_bar(current: Nav) -> Markup {
+    html! {
+        nav class="sections" aria-label="Sections" {
+            @for entry in Nav::ALL {
+                a href=(entry.path()) aria-current=[(current == entry).then_some("page")] {
+                    (entry.label())
+                }
+            }
+        }
+    }
+}
+
+/// The top-bar control that reports dispatched work.
+///
+/// A `details` element, for the same reason the rail's menus are: it is the one
+/// disclosure a browser opens and closes with no script at all, and this control
+/// exists to be readable with JavaScript blocked. Nothing here links anywhere,
+/// because a subagent has no page of its own: the row is the whole record, and its
+/// result is the text it produced.
+///
+/// It renders nothing when there is nothing to report, so the top bar is exactly
+/// as wide as it was before a dispatch existed.
+fn subagents_control(chrome: &Chrome) -> Markup {
+    if chrome.subagents.is_empty() {
+        return Markup::default();
+    }
+    let running = chrome
+        .subagents
+        .iter()
+        .filter(|row| !row.status.settled())
+        .count();
+    html! {
+        details .subagents {
+            summary title="Work the model dispatched, newest first" {
+                span .subagents-word { "Subagents" }
+                span .subagents-count { (chrome.subagents.len()) }
+                @if running > 0 {
+                    span .subagents-live { (running) " running" }
+                }
+            }
+            div .subagents-list aria-label="Dispatched subagents" {
+                @for row in &chrome.subagents {
+                    (subagent_entry(row))
+                }
+            }
+        }
+    }
+}
+
+/// One subagent in the bar: what it is, where it is, and what came back.
+fn subagent_entry(row: &crate::subagents::Subagent) -> Markup {
+    html! {
+        div .subagent {
+            div .subagent-head {
+                span .subagent-label { (row.label) }
+                span class=(format!("subagent-status {}", row.status.as_str())) {
+                    (row.status.as_str())
+                }
+                span .subagent-elapsed { (row.elapsed_label()) }
+                span .subagent-model { (row.model) }
+            }
+            @if let Some(result) = row.result_preview() {
+                pre .subagent-result { (result) }
+            }
+        }
+    }
+}
+
+/// The step rail. Completed steps are marked in text, not only in colour.
+fn rail(wizard: &Wizard) -> Markup {
+    html! {
+        ol .rail aria-label="Onboarding steps" {
+            @for (index, status) in wizard.steps.iter().enumerate() {
+                @let done = status.completed_at.is_some();
+                @let current = wizard.next_step == Some(status.step) && wizard.state == SetupState::Setup;
+                @let class = match (done, current) {
+                    (_, true) => "current",
+                    (true, false) => "done",
+                    (false, false) => "",
+                };
+                li class=(class) {
+                    span .num { "Step " (index + 1) }
+                    (status.step.title())
+                    @if done { " " span .tag { "done" } }
+                    @if status.optional { " " span .tag { "optional" } }
+                }
+            }
+        }
+    }
+}
+
+/// The validation region. `role="status"` plus `aria-live` is the whole
+/// announcement mechanism: no script is involved.
+pub(crate) fn alert_region(error: Option<&FormError>, notice: Option<&str>) -> Markup {
+    html! {
+        div id="form-error" role="status" aria-live="polite" {
+            @if let Some(error) = error {
+                div .alert {
+                    strong { (error.code) }
+                    " "
+                    (error.message)
+                }
+            } @else if let Some(notice) = notice {
+                div .alert .notice {
+                    strong { "ok" }
+                    " "
+                    (notice)
+                }
+            }
+        }
+    }
+}
+
+/// A labelled text input, with the error ring and focus target applied when this
+/// is the field that failed.
+fn text_field(
+    name: &str,
+    label: &str,
+    value: &str,
+    hint: Option<&str>,
+    error: Option<&FormError>,
+    autofocus: bool,
+    secret: bool,
+) -> Markup {
+    // The element id is the field name, so `label for` and the input can never
+    // drift apart and a fragment link can target the field.
+    let invalid = error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        div .field {
+            label for=(name) { (label) }
+            @if secret {
+                input id=(name) type="password" name=(name) value=(value) autocomplete="off"
+                    spellcheck="false" .invalid[invalid] aria-invalid=[invalid.then_some("true")]
+                    autofocus[autofocus];
+            } @else {
+                input id=(name) type="text" name=(name) value=(value) autocomplete="off"
+                    spellcheck="false" .invalid[invalid] aria-invalid=[invalid.then_some("true")]
+                    autofocus[autofocus];
+            }
+            @if let Some(hint) = hint { span .hint { (hint) } }
+        }
+    }
+}
+
+/// One radio group: a labelled fieldset the browser can navigate natively.
+///
+/// When this group is the one that failed, the first *selectable* option takes
+/// the focus: a disabled input cannot hold it, so focusing the first option
+/// blindly would leave the caret nowhere.
+fn radio_group(
+    legend: &str,
+    name: &str,
+    options: &[(&'static str, &'static str, &'static str)],
+    selected: &str,
+    disabled_values: &[&str],
+    error: Option<&FormError>,
+) -> Markup {
+    let invalid = error.is_some_and(|error| error.field.as_deref() == Some(name));
+    let focus_index = options
+        .iter()
+        .position(|(value, _, _)| !disabled_values.contains(value));
+    html! {
+        fieldset .field aria-invalid=[invalid.then_some("true")] {
+            legend { (legend) }
+            div .choices {
+                @for (index, (value, label, why)) in options.iter().enumerate() {
+                    @let checked = *value == selected;
+                    @let disabled = disabled_values.contains(value);
+                    div .choice .selected[checked] .disabled[disabled] {
+                        input type="radio" id=(format!("{name}-{}", slug(value))) name=(name) value=(value)
+                            checked[checked] disabled[disabled]
+                            autofocus[invalid && focus_index == Some(index)];
+                        label for=(format!("{name}-{}", slug(value))) {
+                            span .name { (label) }
+                            span .why { (why) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The permission table. Read-only rows say so; nothing is hidden.
+pub fn permission_table(rows: &[PermissionRow]) -> Markup {
+    html! {
+        table {
+            caption {
+                "What a turn may do. Each row states its consequence."
+            }
+            thead {
+                tr {
+                    th scope="col" { "Permission" }
+                    th scope="col" { "Value" }
+                    th scope="col" { "What that means" }
+                }
+            }
+            tbody {
+                @for row in rows {
+                    @let locked = row.control == RowControl::Locked;
+                    tr class=[locked.then_some("locked")] {
+                        th scope="row" {
+                            (row.name)
+                            @if let Some(reason) = row.lock_reason {
+                                @if locked {
+                                    div .small { "locked: " (reason) }
+                                }
+                            }
+                        }
+                        td .value {
+                            (row.value)
+                            @if locked { " " span .tag { "locked" } }
+                        }
+                        td .why { (row.consequence) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The permission step's own form controls.
+fn permission_form(view: &SetupView) -> Markup {
+    let error = view.error.as_ref();
+    let never_available = view.device_listener && view.state == SetupState::Ready;
+    let disabled: &[&str] = if never_available { &[] } else { &["never"] };
+    html! {
+        form method="post" action="/setup/permissions" novalidate {
+            (radio_group(
+                "Sandbox mode",
+                "sandbox_mode",
+                &SandboxMode::ONBOARDING
+                    .iter()
+                    .map(|mode| (mode.as_str(), mode.label(), mode.consequence()))
+                    .collect::<Vec<_>>(),
+                view.permissions.sandbox_mode.as_str(),
+                &[],
+                error,
+            ))
+            (radio_group(
+                "Approval policy",
+                "approval_policy",
+                &ApprovalPolicy::ALL
+                    .iter()
+                    .map(|policy| (policy.as_str(), policy.label(), policy.consequence()))
+                    .collect::<Vec<_>>(),
+                view.permissions.approval_policy.as_str(),
+                disabled,
+                error,
+            ))
+            (radio_group(
+                "Autopilot ceiling",
+                "autopilot_ceiling",
+                &AutopilotCeiling::ALL
+                    .iter()
+                    .map(|level| (level.as_str(), level.label(), level.consequence()))
+                    .collect::<Vec<_>>(),
+                view.permissions.autopilot_ceiling.as_str(),
+                &[],
+                error,
+            ))
+            (radio_group(
+                "Telemetry",
+                "telemetry",
+                &Telemetry::ALL
+                    .iter()
+                    .map(|sink| (sink.as_str(), sink.label(), sink.consequence()))
+                    .collect::<Vec<_>>(),
+                view.permissions.telemetry.as_str(),
+                &[],
+                error,
+            ))
+            p .small {
+                "Full host sandbox mode is not offered here. Only a restart of eris with "
+                code { "--allow-full" } " can select it."
+            }
+            div .actions {
+                button type="submit" { "Save permissions" }
+            }
+        }
+    }
+}
+
+/// The body of a finished wizard: the summary, and the way to the dashboard.
+fn step_body_ready(view: &SetupView) -> Markup {
+    html! {
+        div .card {
+            h3 { "Onboarding complete" }
+            p { "The daemon is ready. The wizard is locked and no longer writes." }
+            dl .kv {
+                dt { "Provider" } dd { (view.provider_base_url) }
+                dt { "Key reference" } dd { (view.provider_key_ref) }
+                dt { "Model" } dd { (view.model) }
+                dt { "Sandbox mode" } dd { (view.permissions.sandbox_mode.as_str()) }
+                dt { "Approval policy" } dd { (view.permissions.approval_policy.as_str()) }
+                dt { "Autopilot ceiling" } dd { (view.permissions.autopilot_ceiling.as_str()) }
+                dt { "Telemetry" } dd { (view.permissions.telemetry.as_str()) }
+                dt { "Workspace" } dd { (view.workspace) }
+            }
+            div .actions {
+                a .button href="/dashboard" { "Open the dashboard" }
+            }
+        }
+    }
+}
+
+/// The body of the current step, plus everything already done.
+fn step_body(view: &SetupView) -> Markup {
+    let error = view.error.as_ref();
+    let belongs = |field: &str| error.is_some_and(|error| error.field.as_deref() == Some(field));
+
+    // The first error's field gets the focus, and only that field does.
+    let focus_claim = belongs("passphrase");
+    let focus_provider = belongs("base_url") || belongs("api_key_ref");
+    let focus_model = belongs("model");
+    let focus_workspace = belongs("workspace_path");
+
+    if view.state == SetupState::Ready {
+        return step_body_ready(view);
+    }
+    html! {
+        @match view.wizard.next_step {
+            Some(Step::Claim) => {
+                form method="post" action="/setup/claim" novalidate {
+                    (text_field(
+                        "passphrase",
+                        "Setup passphrase",
+                        "",
+                        Some("Six words, separated by spaces, from the first boot."),
+                        error,
+                        focus_claim,
+                        true,
+                    ))
+                    div .actions {
+                        button type="submit" { "Claim this daemon" }
+                    }
+                }
+            }
+            Some(Step::Provider) => {
+                form method="post" action="/setup/provider" novalidate {
+                    (text_field(
+                        "base_url",
+                        "Endpoint",
+                        if view.provider_base_url.is_empty() {
+                            "http://127.0.0.1:20128/v1"
+                        } else {
+                            view.provider_base_url.as_str()
+                        },
+                        Some("An OpenAI-compatible base URL. The probe calls /models on it."),
+                        error,
+                        focus_provider,
+                        false,
+                    ))
+                    (text_field(
+                        "api_key_ref",
+                        "API key",
+                        &view.provider_key_ref,
+                        Some("Paste the provider's key, or write env:NAME to read one the daemon already has. A pasted key is sealed into eris.env at mode 0600 and is never stored in the database."),
+                        error,
+                        false,
+                        false,
+                    ))
+                    div .actions {
+                        button type="submit" { "Probe and store" }
+                    }
+                }
+            }
+            Some(Step::Models) => {
+                form method="post" action="/setup/models" novalidate {
+                    div .field {
+                        label for="model" { "Default model" }
+                        select id="model" name="model" autofocus[focus_model] {
+                            @for model in &view.models {
+                                option value=(model) selected[*model == view.model] { (model) }
+                            }
+                        }
+                        span .hint { "The list came from the provider's own /models response." }
+                    }
+                    div .actions {
+                        button type="submit" { "Use this model" }
+                    }
+                }
+            }
+            Some(Step::Permissions) => { (permission_form(view)) }
+            Some(Step::Workspace) => {
+                form method="post" action="/setup/workspace" novalidate {
+                    (text_field(
+                        "workspace_path",
+                        "Workspace path",
+                        &view.workspace,
+                        Some("Created at mode 0755 if absent. Refused if it overlaps ~/.dsh, ~/.config, ~/.ssh or ~/vault."),
+                        error,
+                        focus_workspace,
+                        false,
+                    ))
+                    div .actions {
+                        button type="submit" { "Use this workspace" }
+                    }
+                }
+            }
+            Some(Step::Device) => {
+                @if let Some(code) = &view.pairing_code {
+                    div .card .tight {
+                        h3 { "Pairing code" }
+                        p .pairing-code .mono { (code) }
+                        p .small {
+                            "Single use. Expires "
+                            @if let Some(expires) = &view.pairing_expires { (expires) } @else { "in five minutes" }
+                            ". It is stored only as a hash, so this is the one time it is readable."
+                        }
+                        @if let Some(qr) = &view.pairing_qr {
+                            div .pairing-scan {
+                                div .pairing-qr { (PreEscaped(qr)) }
+                                p .small {
+                                    "Or scan it. The code carries "
+                                    @if let Some(relay) = &view.pairing_relay {
+                                        span .mono { (relay) }
+                                    } @else {
+                                        "the device listener's address"
+                                    }
+                                    ", so the phone calls the daemon from wherever it is."
+                                }
+                            }
+                        }
+                    }
+                }
+                div .stack {
+                    form method="post" action="/setup/device" novalidate {
+                        (text_field(
+                            "device_name",
+                            "Device name",
+                            "iPhone",
+                            Some("A label for the phone. The code is minted for it."),
+                            error,
+                            false,
+                            false,
+                        ))
+                        div .actions {
+                            button type="submit" class="secondary" { "Mint a pairing code" }
+                        }
+                    }
+                    form method="post" action="/setup/finish" novalidate {
+                        div .actions {
+                            button type="submit" { "Continue to finish" }
+                        }
+                    }
+                }
+            }
+            Some(Step::Finish) | None => {
+                {
+                    dl .kv {
+                        dt { "Provider" } dd { (view.provider_base_url) }
+                        dt { "Key reference" } dd { (view.provider_key_ref) }
+                        dt { "Model" } dd { (view.model) }
+                        dt { "Sandbox mode" } dd { (view.permissions.sandbox_mode.as_str()) }
+                        dt { "Approval policy" } dd { (view.permissions.approval_policy.as_str()) }
+                        dt { "Autopilot ceiling" } dd { (view.permissions.autopilot_ceiling.as_str()) }
+                        dt { "Telemetry" } dd { (view.permissions.telemetry.as_str()) }
+                        dt { "Workspace" } dd { (view.workspace) }
+                    }
+                    form method="post" action="/setup/finish" novalidate {
+                        div .actions {
+                            button type="submit" { "Finish onboarding" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The wizard page.
+pub fn setup_page(view: &SetupView) -> Markup {
+    let error = view.error.as_ref();
+    let notice = view.notice.as_deref();
+    let body = html! {
+        h1 {
+            @if view.state == SetupState::Ready { "Onboarding complete" } @else { "Onboarding" }
+        }
+        p .lede {
+            @if view.state == SetupState::Ready {
+                "Everything 1.0 needs is configured. The wizard no longer writes."
+            } @else {
+                "Seven steps, stored on the server as you go. A refresh never loses a step."
+            }
+        }
+        (rail(&view.wizard))
+        (alert_region(error, notice))
+        section .card aria-labelledby="step-heading" {
+            h2 id="step-heading" {
+                @if view.state == SetupState::Ready {
+                    "Summary"
+                } @else if let Some(step) = view.wizard.next_step {
+                    (step.title())
+                } @else {
+                    "Summary"
+                }
+            }
+            @if view.state == SetupState::Ready {
+                (step_body(view))
+            } @else if let Some(step) = view.wizard.next_step {
+                p .lede { (step.summary()) }
+                (step_body(view))
+                @if step == Step::Device || step == Step::Claim {
+                    p .small { "Step 6 is optional. Finishing without it leaves the phone out." }
+                }
+            } @else {
+                (step_body(view))
+            }
+        }
+        section aria-labelledby="permissions-heading" {
+            h2 id="permissions-heading" { "Permissions" }
+            div .card {
+                (permission_table(&view.permission_rows))
+            }
+        }
+    };
+    layout("Onboarding", view.state, body, &view.chrome)
+}
+
+/// The sign-in page: the way into the dashboard from a browser.
+///
+/// `POST /setup/claim` minted a session exactly once, while the wizard was open.
+/// After onboarding finishes that form is gone, so without this page the
+/// dashboard had no browser path in at all. It asks for the same credential the
+/// claim did, and it writes nothing: a successful post mints a cookie and
+/// redirects.
+pub fn login_page(state: SetupState, error: Option<&FormError>, chrome: &Chrome) -> Markup {
+    let invalid = error.is_some_and(|error| error.field.as_deref() == Some("passphrase"));
+    let body = html! {
+        div .auth {
+            div .mark aria-hidden="true" { "K" }
+            h1 { "Sign in" }
+            p .lede { "The dashboard answers only a browser holding an admin session. This form mints one." }
+            section .card aria-labelledby="login-heading" {
+                h2 id="login-heading" { "Admin sign-in" }
+                (alert_region(error, None))
+                form method="post" action="/login" novalidate {
+                    div .field {
+                        label for="passphrase" { "Admin passphrase" }
+                        input id="passphrase" type="password" name="passphrase" value=""
+                            autocomplete="current-password" spellcheck="false"
+                            .invalid[invalid] aria-invalid=[invalid.then_some("true")]
+                            autofocus[invalid];
+                        span .hint {
+                            "The passphrase you chose during onboarding: six words, separated by spaces."
+                        }
+                    }
+                    div .field {
+                        label for="remember" {
+                            input type="checkbox" id="remember" name="remember" value="true";
+                            " Keep me signed in on this device for 30 days."
+                        }
+                    }
+                    div .actions {
+                        button type="submit" { "Sign in" }
+                    }
+                }
+            }
+            p .small {
+                "Still onboarding? " a href="/setup" { "The wizard" }
+                " is the way in before setup finishes."
+            }
+        }
+    };
+    layout("Sign in", state, body, chrome)
+}
+
+/// A duration the way a person reads it.
+fn duration_ms(value: Option<i64>) -> String {
+    match value {
+        Some(ms) if ms >= 1_000 => format!("{:.1}s", ms as f64 / 1_000.0),
+        Some(ms) => format!("{ms}ms"),
+        None => "-".to_owned(),
+    }
+}
+
+/// One token count, with separators so six digits stay readable.
+fn token_count(value: i64) -> String {
+    let digits = value.unsigned_abs().to_string();
+    let mut out = String::new();
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    if value < 0 { format!("-{out}") } else { out }
+}
+
+/// One cost window, as a table.
+fn cost_table(window: crate::metrics::Window, summary: &crate::metrics::Summary) -> Markup {
+    html! {
+        h3 { "Last " (window.label()) }
+        @if summary.is_empty() {
+            p .small { "No answer finished in this window." }
+        } @else {
+            p .small {
+                (summary.calls) " answer"
+                @if summary.calls != 1 { "s" }
+                ", " (summary.failed) " failed, "
+                (token_count(summary.prompt_tokens)) " prompt tokens in, "
+                (token_count(summary.completion_tokens)) " completion tokens out, "
+                (format!("{:.0}%", summary.cache_rate() * 100.0)) " of the prompt served from cache."
+                @if summary.unmeasured > 0 {
+                    " " (summary.unmeasured) " row"
+                    @if summary.unmeasured != 1 { "s" }
+                    " recorded no duration and are not in the percentiles."
+                }
+            }
+            table {
+                thead {
+                    tr {
+                        th scope="col" { "Model" }
+                        th scope="col" { "Calls" }
+                        th scope="col" { "Median" }
+                        th scope="col" { "p95" }
+                        th scope="col" { "In" }
+                        th scope="col" { "Out" }
+                        th scope="col" { "Cache" }
+                        th scope="col" { "Failed" }
+                    }
+                }
+                tbody {
+                    @for row in &summary.rows {
+                        tr {
+                            td .mono .small { (row.model) }
+                            td .mono .small { (row.calls) }
+                            td .mono .small { (duration_ms(row.median_ms)) }
+                            td .mono .small { (duration_ms(row.p95_ms)) }
+                            td .mono .small { (token_count(row.prompt_tokens)) }
+                            td .mono .small { (token_count(row.completion_tokens)) }
+                            td .mono .small { (format!("{:.0}%", row.cache_rate() * 100.0)) }
+                            td .mono .small { (row.failed) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The dashboard page.
+pub fn dashboard_page(view: &DashboardView) -> Markup {
+    let error = view.error.as_ref();
+    let notice = view.notice.as_deref();
+    let device_listener_label = if view.device_listener { "on" } else { "off" };
+    let body = html! {
+        h1 { "Dashboard" }
+        p .lede { "Health, provider, devices and the kill switches for this host." }
+        (alert_region(error, notice))
+
+        section .card aria-labelledby="at-a-glance" {
+            h2 id="at-a-glance" { "At a glance" }
+            p .small {
+                "Only things the daemon can prove. Nothing here is a guess, and a number that is not "
+                "known says so instead of showing zero."
+            }
+            dl .kv {
+                dt { "Approvals waiting" }
+                dd {
+                    @if view.approvals_waiting == 0 {
+                        "none"
+                    } @else {
+                        strong { (view.approvals_waiting) } " parked, blocking the turns that asked"
+                    }
+                }
+                dt { "MCP servers" }
+                dd {
+                    (view.mcp_servers) " configured"
+                    @if view.mcp_errors > 0 {
+                        " - " span .warn { (view.mcp_errors) " failing" }
+                    }
+                }
+                dt { "Memory" }
+                dd { (view.memory_backend) }
+                dt { "Last answer" }
+                dd {
+                    @if let Some(line) = &view.last_turn {
+                        span .mono { (line) }
+                    } @else {
+                        "nothing answered yet"
+                    }
+                }
+                dt { "Database" }
+                dd { (view.db_size) " on disk" }
+            }
+        }
+
+        section .card aria-labelledby="cost-heading" {
+            h2 id="cost-heading" { "Cost and latency" }
+            p .small {
+                "Every finished answer already recorded its model, its tokens and how long it "
+                "took. This is what those rows say, for the last day and the last week. "
+                "Percentiles are nearest-rank over the turns that recorded a duration, and "
+                "the count that did not is stated rather than hidden."
+            }
+            (cost_table(crate::metrics::Window::Day, &view.cost_day))
+            (cost_table(crate::metrics::Window::Week, &view.cost_week))
+        }
+
+        section .card aria-labelledby="quick-actions" {
+            h2 id="quick-actions" { "Quick actions" }
+            div .actions {
+                a .button href=(Nav::Chat.path()) { "Open chat" }
+                a .button.secondary href=(Nav::Settings.path()) { "Settings" }
+                a .button.secondary href=(Nav::Sessions.path()) { "Sessions" }
+                a .button.secondary href=(Nav::Devices.path()) { "Devices" }
+                a .button.secondary href=(Nav::Activity.path()) { "Activity" }
+            }
+            p .small {
+                "Sessions lists every device sign-in with the jobs it started. Devices lists "
+                "every device, revokes one, and mints the pairing code that adds the next."
+            }
+        }
+
+        section .card aria-labelledby="processes-heading" {
+            h2 id="processes-heading" { "Background work" }
+            @if view.processes.is_empty() {
+                p .small {
+                    "Nothing is running in the background. A command a turn starts with "
+                    code { "background: true" } " appears here with its output until it ends, "
+                    "and keeps running when the turn that started it has finished."
+                }
+            } @else {
+                p .small {
+                    (view.processes.len()) " process"
+                    @if view.processes.len() != 1 { "es" }
+                    ", " (view.processes_running) " running. Output lands under the "
+                    "workspace's " code { ".processes" } " directory."
+                }
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Process" }
+                            th scope="col" { "Command" }
+                            th scope="col" { "Status" }
+                            th scope="col" { "Started" }
+                            th scope="col" { "Action" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.processes {
+                            @let id = row["process_id"].as_str().unwrap_or("-");
+                            @let status = row["status"].as_str().unwrap_or("-");
+                            tr {
+                                td .mono .small { (id) }
+                                td .mono .small { (row["command"].as_str().unwrap_or("-")) }
+                                td {
+                                    (status)
+                                    @if let Some(note) = row["signal_note"].as_str() {
+                                        p .small { (note) }
+                                    }
+                                }
+                                td .mono .small { (row["started_at"].as_str().unwrap_or("-")) }
+                                td {
+                                    @if status == "running" {
+                                        form method="post"
+                                            action=(format!("{}/{}", crate::admin::ROUTE_DASHBOARD_PROCESS_KILL, id)) {
+                                            button type="submit" class="danger" { "Stop" }
+                                        }
+                                    } @else {
+                                        span .small { "finished" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        section .card aria-labelledby="health" {
+            h2 id="health" { "Health" }
+            dl .kv {
+                dt { "State" } dd { (view.state.as_str()) }
+                dt { "Database" } dd { @if view.db_ok { "ok" } @else { "unavailable" } }
+                dt { "Version" } dd { (view.version) }
+            }
+        }
+
+        section .card aria-labelledby="system" {
+            h2 id="system" { "System" }
+            dl .kv {
+                dt { "Setup state" } dd { (view.state.as_str()) }
+                dt { "Version" } dd { (view.version) }
+                dt { "Database" } dd { @if view.db_ok { "ok" } @else { "unavailable" } }
+                dt { "Admin sessions live" } dd { (view.sessions_live) }
+                dt { "Device sessions" } dd { (view.device_sessions) }
+                dt { "Paired devices" } dd { (view.paired_devices) " of " (view.devices_known) }
+                dt { "Admin listeners" } dd { (view.chrome.listens_line()) }
+                @if let Some(url) = &view.chrome.public_url {
+                    dt { "Public URL" } dd { (url) }
+                }
+                dt { "Device listener" } dd { (view.device_listener_line()) }
+            }
+            div .stats aria-label="Jobs by status" {
+                @for (status, count) in &view.jobs {
+                    div .stat {
+                        span .n { (count) }
+                        span .k { (status) }
+                    }
+                }
+            }
+            p .small {
+                "The admin listener binds every address in admin.listen, and every one of them serves "
+                "this page. admin.listen, admin.public_url and admin.trusted_proxies live in config.toml. "
+                "The device listener binds only when it is switched on below."
+            }
+        }
+
+        section .card aria-labelledby="provider" {
+            h2 id="provider" { "Provider" }
+            dl .kv {
+                dt { "Endpoint" } dd { (view.provider_base_url.as_deref().unwrap_or("not set")) }
+                dt { "Key reference" } dd { (view.provider_key_ref.as_deref().unwrap_or("not set")) }
+                dt { "Model" } dd { (view.model.as_deref().unwrap_or("not set")) }
+                dt { "Last probe" } dd { (view.probed_at.as_deref().unwrap_or("never")) }
+                dt { "Models offered" } dd { (view.model_count) }
+            }
+            form method="post" action="/dashboard/provider/rotate" novalidate {
+                div .actions {
+                    button type="submit" class="secondary" { "Rotate: re-read the key and re-probe" }
+                }
+            }
+            p .small {
+                "Rotation re-reads the environment variable the key reference names and probes again. The value itself is never stored."
+                " The endpoint, the reference and the model are edited on the "
+                a href=(Nav::Settings.path()) { "settings page" } "."
+            }
+        }
+
+        section .card aria-labelledby="devices" {
+            h2 id="devices" { "Devices" }
+            @if view.devices.is_empty() {
+                p .empty {
+                    strong { "No device paired yet" }
+                    "Mint a code on the "
+                    a href=(Nav::Devices.path()) { "devices page" }
+                    " and pair the first one."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Device" }
+                            th scope="col" { "Platform" }
+                            th scope="col" { "State" }
+                            th scope="col" { "Access" }
+                            th scope="col" { "Registered" }
+                            th scope="col" { "Action" }
+                        }
+                    }
+                    tbody {
+                        @for device in &view.devices {
+                            tr {
+                                td { (device.name) }
+                                td { (device.platform) }
+                                td { (device.state_label()) }
+                                td .small { (device.admin_label()) }
+                                td .mono { (device.paired_at.as_deref().unwrap_or("not yet")) }
+                                td {
+                                    @if device.revoked_at.is_some() {
+                                        span .small { "revoked" }
+                                    } @else {
+                                        form .inline-form method="post" action="/dashboard/device/revoke" novalidate {
+                                            input type="hidden" name="device_id" value=(device.id);
+                                            button type="submit" class="danger" { "Revoke" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        section .card aria-labelledby="switches" {
+            h2 id="switches" { "Kill switches" }
+            p .small {
+                "The full permission surface, with a consequence on every option, is on the "
+                a href=(Nav::Settings.path()) { "settings page" } "."
+            }
+            form method="post" action="/dashboard/mode" novalidate {
+                (radio_group(
+                    "Sandbox mode",
+                    "sandbox_mode",
+                    &SandboxMode::ALL
+                        .iter()
+                        .filter(|mode| **mode != SandboxMode::Full)
+                        .map(|mode| (mode.as_str(), mode.label(), mode.consequence()))
+                        .collect::<Vec<_>>(),
+                    view.permissions.sandbox_mode.as_str(),
+                    &[],
+                    error,
+                ))
+                (radio_group(
+                    "Approval policy",
+                    "approval_policy",
+                    &ApprovalPolicy::ALL
+                        .iter()
+                        .map(|policy| (policy.as_str(), policy.label(), policy.consequence()))
+                        .collect::<Vec<_>>(),
+                    view.permissions.approval_policy.as_str(),
+                    &[],
+                    error,
+                ))
+                (radio_group(
+                    "Autopilot ceiling",
+                    "autopilot_ceiling",
+                    &AutopilotCeiling::ALL
+                        .iter()
+                        .map(|level| (level.as_str(), level.label(), level.consequence()))
+                        .collect::<Vec<_>>(),
+                    view.permissions.autopilot_ceiling.as_str(),
+                    &[],
+                    error,
+                ))
+                (radio_group(
+                    "Telemetry",
+                    "telemetry",
+                    &Telemetry::ALL
+                        .iter()
+                        .map(|sink| (sink.as_str(), sink.label(), sink.consequence()))
+                        .collect::<Vec<_>>(),
+                    view.permissions.telemetry.as_str(),
+                    &[],
+                    error,
+                ))
+                div .field {
+                    label for="device_listener_enabled" {
+                        input type="checkbox" id="device_listener_enabled" name="device_listener_enabled" value="true"
+                            checked[view.device_listener];
+                        " Enable the device listener"
+                    }
+                    span .hint {
+                        "The listener stays on " (DEVICE_ADDR) ", loopback only. This switch is the "
+                        "only way to change it, and it is currently " (device_listener_label) "."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save kill switches" }
+                }
+            }
+            div .mt {
+                (permission_table(&view.permission_rows))
+            }
+        }
+    };
+    shell(
+        "Dashboard",
+        view.state,
+        Some(Nav::Dashboard),
+        body,
+        &view.chrome,
+    )
+}
+
+/// One group of the settings page: one form, one route, one live region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsGroup {
+    /// Endpoint, key reference, model.
+    Provider,
+    /// The sandbox workspace path.
+    Workspace,
+    /// The permission tuple.
+    Permissions,
+    /// The assistant's identity: the persona text and its switch.
+    Persona,
+    /// The objective every turn carries until it is cleared.
+    Goal,
+    /// The generated line on an empty conversation: its switch, model, window.
+    Greeting,
+    /// The transcript search defaults: how many hits, and what scope it starts on.
+    Search,
+    /// Background jobs: the finish notice and the receipt window.
+    Jobs,
+    /// Schedule delivery: the default channel and the mail gate.
+    Delivery,
+    /// Standing orders: the proactive-cadence switch.
+    Standing,
+    /// Cron schedules and their run history.
+    Schedules,
+    /// The operator's skill library and its per-skill switches.
+    Skills,
+    /// The connected accounts: a browser login per provider, and its status.
+    Accounts,
+    /// The Software card: installing a staged or published build.
+    Update,
+    /// The Steward card: its charter, watch cadence and notes.
+    Steward,
+}
+
+impl SettingsGroup {
+    /// Every group, in page order.
+    pub const ALL: [Self; 15] = [
+        Self::Provider,
+        Self::Accounts,
+        Self::Workspace,
+        Self::Permissions,
+        Self::Persona,
+        Self::Goal,
+        Self::Greeting,
+        Self::Search,
+        Self::Jobs,
+        Self::Delivery,
+        Self::Standing,
+        Self::Schedules,
+        Self::Skills,
+        Self::Update,
+        Self::Steward,
+    ];
+
+    /// The anchor and error-region id for this group.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Provider => "provider",
+            Self::Workspace => "workspace",
+            Self::Permissions => "permissions",
+            Self::Persona => "persona",
+            Self::Goal => "goal",
+            Self::Greeting => "greeting",
+            Self::Search => "search",
+            Self::Jobs => "jobs",
+            Self::Delivery => "delivery",
+            Self::Standing => "standing",
+            Self::Schedules => "schedules",
+            Self::Skills => "skills",
+            Self::Accounts => "accounts",
+            Self::Update => "update",
+            Self::Steward => "steward",
+        }
+    }
+
+    /// Whether a validation failure belongs to this group.
+    ///
+    /// The field names are disjoint across the four forms, so the failure
+    /// carries its own group and the page never has to guess. A failure with no
+    /// field (a database error) belongs to none of them and lands in the page
+    /// level region instead.
+    #[must_use]
+    pub fn owns(self, error: &FormError) -> bool {
+        let Some(field) = error.field.as_deref() else {
+            return false;
+        };
+        match self {
+            Self::Provider => matches!(field, "base_url" | "api_key_ref" | "model"),
+            Self::Workspace => field == "workspace_path",
+            Self::Permissions => matches!(
+                field,
+                "sandbox_mode" | "approval_policy" | "autopilot_ceiling" | "telemetry"
+            ),
+            Self::Persona => matches!(field, "persona_text" | "persona_enabled"),
+            Self::Goal => matches!(field, "goal_text" | "goal_action"),
+            Self::Greeting => matches!(
+                field,
+                "greeting_enabled" | "greeting_model" | "greeting_refresh"
+            ),
+            Self::Search => matches!(field, "search_limit" | "search_scope_default"),
+            Self::Jobs => matches!(field, "jobs_notify_on_complete" | "jobs_receipt_days"),
+            Self::Delivery => matches!(
+                field,
+                "schedule_delivery_default" | "schedule_email_enabled"
+            ),
+            Self::Standing => matches!(field, "standing_orders_enabled"),
+            Self::Schedules => matches!(
+                field,
+                "schedule_name"
+                    | "schedule_cron"
+                    | "schedule_prompt"
+                    | "schedule_id"
+                    | "schedules_action"
+                    | "schedules_enabled"
+            ),
+            Self::Skills => matches!(field, "skills_enabled" | "skills_dir" | "skills_library"),
+            // The accounts panel has one field: which provider the press named.
+            // Anything it refuses is refused inside the panel, next to the row.
+            Self::Accounts => matches!(
+                field,
+                "account_provider" | "account_action" | "account_paste"
+            ),
+            // The Software card is buttons and a progress block: it has no form
+            // field, so nothing can be filed next to one. A refusal from it lands
+            // in the page-level region, which is where the card renders it.
+            Self::Update => false,
+            Self::Steward => false,
+        }
+    }
+
+    /// The sentence a successful save renders.
+    #[must_use]
+    pub fn saved_notice(self) -> &'static str {
+        match self {
+            Self::Provider => "provider settings saved",
+            Self::Workspace => "workspace saved",
+            Self::Permissions => "permissions saved",
+            Self::Persona => "assistant identity saved",
+            Self::Goal => "objective saved",
+            Self::Greeting => "greeting saved",
+            Self::Search => "search defaults saved",
+            Self::Jobs => "job settings saved",
+            Self::Delivery => "delivery settings saved",
+            Self::Standing => "standing orders saved",
+            Self::Schedules => "schedules saved",
+            Self::Skills => "skills saved",
+            Self::Accounts => "account updated",
+            Self::Update => "update requested",
+            Self::Steward => "steward settings saved",
+        }
+    }
+}
+
+/// One auxiliary role as the settings page shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuxRow {
+    /// The settings-row segment and form field suffix.
+    pub key: String,
+    /// The label.
+    pub label: String,
+    /// One line on what the job does.
+    pub purpose: String,
+    /// The model chosen, or `primary`.
+    pub selected: String,
+    /// The provider chosen, or `primary`.
+    pub provider_selected: String,
+    /// What consumes it today, when anything does.
+    pub consumed_by: String,
+}
+
+/// One configured provider, as the registry table shows it.
+///
+/// A row is a *view* of one registry entry and nothing more: it holds the four
+/// fields a person reads and the two flags, all already validated, so the table
+/// cannot present an entry the daemon would refuse. It carries no key value,
+/// because the registry stores a reference and a reference is all there is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRow {
+    /// The stable id every auxiliary role points at.
+    pub id: String,
+    /// What the operator reads.
+    pub name: String,
+    /// The endpoint.
+    pub base_url: String,
+    /// `env:NAME` or `token:NAME`. A pointer, never a secret.
+    pub key_ref: String,
+    /// The request shape, or the empty string for the OpenAI default.
+    pub dialect: String,
+    /// Whether this endpoint inlines its reasoning by default.
+    pub reasoning_split: bool,
+    /// Whether this is the vendor's own API.
+    pub direct: bool,
+    /// The Antigravity cloud project, when one is named.
+    pub project: String,
+    /// Whether this entry is the primary.
+    pub is_primary: bool,
+}
+
+impl ProviderRow {
+    /// The row a registry entry renders as.
+    #[must_use]
+    pub fn of(provider: &crate::providers::Provider, primary: &str) -> Self {
+        Self {
+            id: provider.id.clone(),
+            name: provider.name.clone(),
+            base_url: provider.base_url.clone(),
+            key_ref: provider.key_ref.clone(),
+            dialect: provider.dialect.clone().unwrap_or_default(),
+            reasoning_split: crate::providers::reasoning_split_of(provider),
+            direct: crate::providers::direct_of(provider),
+            project: crate::providers::project_of(provider).unwrap_or_default(),
+            is_primary: provider.id == primary,
+        }
+    }
+}
+
+/// One connected account as the settings page shows it.
+///
+/// Status only. There is no field here that could hold a token, a refresh token,
+/// or any part of one, and the store type it is built from cannot print one: the
+/// panel states whether an account is connected, whose it is, and when the grant
+/// stops working. That is the whole surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountView {
+    /// The provider id the routes take back: `claude` or `antigravity`.
+    pub provider: String,
+    /// The name a person reads.
+    pub label: String,
+    /// The endpoint its models are served from, stated so the operator knows
+    /// which API a connected account points turns at.
+    pub base_url: String,
+    /// Whether a grant is sealed on disk.
+    pub connected: bool,
+    /// The account label the login discovered: an email or a display name.
+    pub account: Option<String>,
+    /// When the grant stops being usable, in the page's own clock.
+    pub expires_at: Option<String>,
+    /// Whether that expiry is already past.
+    pub expired: bool,
+    /// `login` or `migrated`, which decides whether it may ever be refreshed.
+    pub origin: Option<String>,
+    /// The cloud project an Antigravity grant is billed to, when one is known.
+    pub project: Option<String>,
+    /// The `token:NAME` reference a registry entry would carry for it.
+    pub key_ref: String,
+    /// Whether the provider registry already names this account, which is what
+    /// decides between offering the Add press and stating it is wired.
+    pub in_registry: bool,
+    /// A started login that has not finished, as the URL to open.
+    pub pending_url: Option<String>,
+    /// What the last press on this row did, when it did anything.
+    pub outcome: Option<String>,
+    /// Whether the press succeeded, for the row's own styling.
+    pub outcome_ok: bool,
+    /// Why the callback listener is not serving, when it is not.
+    pub listener_error: Option<String>,
+}
+
+/// What the System tab's Update card shows.
+///
+/// Flat and defaulted on purpose: the card is a rendering of one release and one
+/// helper state, and every field here is either a stored value or `None`. The
+/// daemon composes it in `build_update_card`, so the template does no reasoning
+/// beyond `@if`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdateCard {
+    /// What this process is, from the same identity line the footer uses.
+    pub current: String,
+    /// The newest tag GitHub publishes for this host, when one is known.
+    pub latest_tag: Option<String>,
+    /// That release's application version.
+    pub latest_version: String,
+    /// That release's build number.
+    pub latest_build: u32,
+    /// When it was published, RFC 3339 as the API reported it.
+    pub latest_published: String,
+    /// The release body, already truncated by the manifest reader.
+    pub latest_notes: String,
+    /// Whether that release is newer than this process.
+    pub update_available: bool,
+    /// Whether the manifest was confirmed against GitHub on the last check.
+    pub checked: bool,
+    /// `github`, `cache` or `none`.
+    pub source: String,
+    /// When it was last confirmed, RFC 3339.
+    pub checked_at: Option<String>,
+    /// Whether pressing Install would do something.
+    pub can_install: bool,
+    /// The reason it would not, in the daemon's own words.
+    pub blocker: Option<String>,
+    /// A sentence about a manifest that could not be read or has no asset.
+    pub note: Option<String>,
+    /// The helper's state: idle, queued, downloading, ..., done, failed.
+    pub progress_state: String,
+    /// The helper's last lines, already bounded.
+    pub progress_output: Vec<String>,
+    /// The helper's failure sentence, when it failed.
+    pub progress_error: Option<String>,
+    /// Staged `eris.new-<version>-<build>` binaries sitting beside the running one.
+    ///
+    /// This is the thing the Software card's button acts on, so the card states it
+    /// rather than describing it: "nothing staged" is a complete sentence and it is
+    /// the reason the button is disabled.
+    pub staged: Vec<String>,
+}
+
+impl UpdateCard {
+    /// Whether the helper is somewhere in the middle of an install.
+    #[must_use]
+    pub fn running(&self) -> bool {
+        matches!(
+            self.progress_state.as_str(),
+            "queued" | "downloading" | "verifying" | "installing" | "restarting"
+        )
+    }
+}
+
+/// Everything the settings page needs.
+#[derive(Debug, Clone)]
+pub struct SettingsView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state, which is `ready` on this page.
+    pub state: SetupState,
+    /// The version line.
+    pub version: String,
+    /// True when full host sandbox mode may be selected (flag or stored switch).
+    pub allow_full: bool,
+    /// Whether the operator's stored switch is on.
+    pub allow_full_stored: bool,
+    /// Whether this process was started with `--allow-full`.
+    pub allow_full_from_flag: bool,
+    /// Stored provider base URL.
+    pub provider_base_url: String,
+    /// Stored key reference. A reference, never a value.
+    pub provider_key_ref: String,
+    /// Stored default model.
+    pub model: String,
+    /// The resolved workspace path.
+    pub workspace: String,
+    /// The permission tuple as stored.
+    pub permissions: Permissions,
+    /// Devices that are genuinely paired.
+    pub paired_devices: usize,
+    /// Whether the operator asked for the device listener.
+    pub device_listener: bool,
+    /// Whether this process has bound the device port.
+    pub device_listener_bound: bool,
+    /// What the operator calls the assistant.
+    pub assistant_name: String,
+    /// The persona text the daemon would send, as the file holds it.
+    pub persona_text: String,
+    /// Whether the persona is switched on.
+    pub persona_enabled: bool,
+    /// The objective every turn carries, or empty when no goal is set.
+    pub goal_objective: String,
+    /// Whether the model's reasoning is shown in a collapsed bubble.
+    pub show_reasoning: bool,
+    /// Whether the dashboard streams answers to the browser.
+    pub streaming: bool,
+    /// Whether each answer's footer carries the gateway's quota and reset time.
+    pub show_quota: bool,
+    /// The stored soft token cap the `budget` tool reports against.
+    pub soft_cap_tokens: i64,
+    /// Whether the run log is shown at all.
+    pub show_tool_log: bool,
+    /// `full`, `summary` or `off`, for the select.
+    pub tool_log_mode: String,
+    /// `expanded`, `collapsed` or `minimized`: the default size of a reply.
+    pub reply_state: String,
+    /// The device listener's bind addresses, comma separated for the form.
+    pub device_listen: String,
+    /// The origin a phone should call, as the pairing QR carries it.
+    pub device_relay: String,
+    /// Which memory backend a turn recalls from.
+    pub memory_backend: String,
+    /// The vault directory, when the vault backend is chosen.
+    pub memory_vault: String,
+    /// The clock every stamp is shown in: `host`, `UTC`, or an offset.
+    pub timezone: String,
+    /// Whether stamps are written `12h` or `24h`.
+    pub clock_format: crate::zone::ClockFormat,
+    /// Whether a finished reply is announced at all, read through the daemon's
+    /// own reader so the page shows what the daemon would actually do.
+    pub notify_on_reply: bool,
+    /// Which devices a reply notification reaches.
+    pub notify_scope: crate::push::NotifyScope,
+    /// The device ids a `targeted` scope names, comma separated as stored.
+    pub notify_devices: String,
+    /// The devices a scope may name: paired and not revoked, by name.
+    pub push_devices: Vec<(String, String)>,
+    /// The file the persona lives in, stated on the page.
+    pub persona_path: String,
+    /// The System tab's Update card: what is installed, what is newest, and how
+    /// the last install went.
+    pub update: UpdateCard,
+    /// The stored wallpaper id: a preset name, `custom`, or `none`.
+    pub wallpaper: String,
+    /// Whether an uploaded image is on disk and usable.
+    pub wallpaper_custom: bool,
+    /// The provider registry, as the editor shows it.
+    pub providers_json: String,
+    /// The id of the primary provider.
+    pub providers_primary: String,
+    /// Every provider id in the registry, for the primary picker.
+    pub provider_ids: Vec<String>,
+    /// The id and the display name of every configured provider.
+    pub provider_labels: Vec<(String, String)>,
+    /// One row per configured provider, for the registry table.
+    pub providers: Vec<ProviderRow>,
+    /// The provider an edit was asked for, pre-filled in the edit form.
+    ///
+    /// `None` means no edit form is showing. The edit target arrives as
+    /// `?edit=<id>` on the page and is carried into a refusal, so a refused
+    /// edit re-renders the form that was being filled in rather than the add
+    /// form with the message nowhere near the field.
+    pub provider_edit: Option<ProviderRow>,
+    /// Every model on every configured provider, as `(option value, label)`.
+    ///
+    /// The option value is `provider/model`, which is what a turn stores and
+    /// what a picker sends back. The label names the provider, so two providers
+    /// offering an identically spelled model id are still distinguishable.
+    pub model_options: Vec<(String, String)>,
+    /// The stored default model as `provider/model`.
+    pub model_selection: String,
+    /// Whether a turn may call tools at all.
+    pub tools_enabled: bool,
+    /// How many tool rounds one turn may take.
+    pub tool_rounds: String,
+    /// The most a long-job turn may be raised to.
+    ///
+    /// Sits beside `tool_rounds` because the two are one decision: the budget is
+    /// per turn, and this is the largest a turn that asked for a long job may be
+    /// lifted to.
+    pub goal_rounds_ceiling: String,
+    /// Whether a turn may dispatch subagents.
+    pub agents_enabled: bool,
+    /// Whether a generated line is written on an empty conversation at all.
+    pub greeting_enabled: bool,
+    /// The model that writes it, or `primary` to follow the chat model.
+    pub greeting_model: String,
+    /// `hour`, `day` or `week`: how old the stored line may get.
+    pub greeting_refresh: String,
+    /// Whether the compressed tool list is on.
+    pub tool_index_enabled: bool,
+    /// Whether the phone speaks an answer.
+    pub tts_enabled: bool,
+    /// The voice it speaks with.
+    pub tts_voice: String,
+    /// Whether an over-long review is repaired instead of dropped.
+    pub learning_repair: bool,
+    /// How long a skill nothing has ever read may stay in the catalog.
+    pub curator_archive_days: String,
+    /// Whether the consolidation sweep may act unattended.
+    pub consolidate_nightly: bool,
+    /// How many hours the cost and latency panel looks back.
+    pub metrics_window_hours: String,
+    /// The character cap on each self-memory file.
+    pub memory_cap_chars: String,
+    /// Whether interval intents fire on their own cadence.
+    pub standing_orders_enabled: bool,
+    /// Where a schedule's output goes by default.
+    pub schedule_delivery_default: String,
+    /// Whether mail may leave the daemon at all.
+    pub schedule_email_enabled: bool,
+    /// Whether a finished background job announces itself.
+    pub jobs_notify_on_complete: bool,
+    /// How many days a finished job's receipt is kept.
+    pub jobs_receipt_days: String,
+    /// Whether the steward watch loop is armed.
+    pub steward_enabled: bool,
+    /// Seconds between steward watch rounds.
+    pub steward_watch_seconds: String,
+    /// Most watch rounds one steward duty may take.
+    pub steward_max_rounds: String,
+    /// How many recent field notes a turn carries.
+    pub steward_note_window: String,
+    /// How many days a steward field note is kept.
+    pub steward_field_note_days: String,
+    /// Where a steward message goes by default.
+    pub steward_delivery_default: String,
+    /// The operator's mail allowlist for steward messages, comma-separated.
+    pub steward_mail_recipients: String,
+    /// The urgency a steward call is placed at by default.
+    pub steward_call_urgency_default: String,
+    /// The operator's charter for the steward.
+    pub steward_charter: String,
+    /// The steward board's column set.
+    pub steward_board_columns: String,
+    /// The project a new board row starts on.
+    pub workboard_default_project: String,
+    /// How many hits a search returns when the caller does not say.
+    pub search_limit: String,
+    /// `all` or `conversation`: the scope a search starts on.
+    pub search_scope_default: String,
+    /// The line under the salutation, as the form shows it.
+    pub chat_hint: String,
+    /// One row per auxiliary role: what it is, what it does, what it uses.
+    pub aux_roles: Vec<AuxRow>,
+    /// The models the last probe returned, for every picker on the page.
+    pub models: Vec<String>,
+    /// The stored MCP server list, as the editor shows it.
+    pub mcp_servers: String,
+    /// The last start or call failure per server, so a broken one is visible.
+    pub mcp_errors: Vec<(String, String)>,
+    /// The sentence stating what a configured server does, and that it is gated.
+    pub mcp_status: String,
+    /// Whether the cron scheduler is switched on.
+    pub schedules_enabled: bool,
+    /// The clock the page states for cron expressions.
+    pub schedules_clock: String,
+    /// Every schedule, by name.
+    pub schedules: Vec<crate::scheduler::Schedule>,
+    /// Each schedule's newest run history, kept in the same order.
+    pub schedule_runs: std::collections::BTreeMap<String, Vec<crate::scheduler::Run>>,
+    /// Whether the skill library is switched on.
+    pub skills_enabled: bool,
+    /// The stored library directory, or empty for the default.
+    pub skills_dir: String,
+    /// The library as the form lists it, and where it lives.
+    pub skills: Vec<crate::skills::Skill>,
+    /// The directory the skills list was read from, stated on the page.
+    pub skills_path: String,
+    /// Why the library could not be read, when it could not.
+    pub skills_error: Option<String>,
+    /// One row per account this build can log in to, in page order.
+    pub accounts: Vec<AccountView>,
+    /// The failure to show, when this render follows a refused post.
+    pub error: Option<FormError>,
+    /// The group that was saved and the sentence to show, after a redirect.
+    pub notice: Option<(SettingsGroup, String)>,
+    /// Which tab is showing.
+    ///
+    /// A tab is a view, not a setting: it lives on the request rather than in a
+    /// row, so two browsers can look at two tabs and neither is wrong.
+    pub tab: SettingsTab,
+}
+
+impl SettingsView {
+    /// A view with the documented defaults filled in.
+    #[must_use]
+    pub fn new(state: SetupState, version: impl Into<String>) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            version: version.into(),
+            allow_full: false,
+            allow_full_stored: false,
+            allow_full_from_flag: false,
+            provider_base_url: String::new(),
+            provider_key_ref: String::new(),
+            model: String::new(),
+            workspace: crate::onboarding::workspace::DEFAULT_WORKSPACE.to_owned(),
+            permissions: Permissions::DEFAULT,
+            paired_devices: 0,
+            device_listener: false,
+            device_listener_bound: false,
+            assistant_name: crate::persona::DEFAULT_ASSISTANT_NAME.to_owned(),
+            persona_text: String::new(),
+            persona_enabled: true,
+            goal_objective: String::new(),
+            show_reasoning: true,
+            streaming: true,
+            show_quota: false,
+            soft_cap_tokens: crate::budget::DEFAULT_SOFT_CAP,
+            show_tool_log: true,
+            tool_log_mode: "full".to_owned(),
+            reply_state: crate::web::chat::ReplyState::Expanded.as_str().to_owned(),
+            device_listen: "127.0.0.1:7341".to_owned(),
+            device_relay: String::new(),
+            memory_backend: crate::memory::DEFAULT_BACKEND.to_owned(),
+            memory_vault: String::new(),
+            timezone: crate::zone::HOST.to_owned(),
+            clock_format: crate::zone::ClockFormat::TwentyFour,
+            notify_on_reply: true,
+            notify_scope: crate::push::NotifyScope::DEFAULT,
+            notify_devices: String::new(),
+            push_devices: Vec::new(),
+            persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
+            update: UpdateCard::default(),
+            wallpaper: wallpaper::DEFAULT_WALLPAPER.to_owned(),
+            wallpaper_custom: false,
+            providers_json: "[]".to_owned(),
+            providers_primary: crate::providers::DEFAULT_ID.to_owned(),
+            provider_ids: Vec::new(),
+            provider_labels: Vec::new(),
+            providers: Vec::new(),
+            provider_edit: None,
+            model_options: Vec::new(),
+            model_selection: String::new(),
+            tools_enabled: true,
+            tool_rounds: crate::tools::DEFAULT_TOOL_ROUNDS.to_string(),
+            goal_rounds_ceiling: crate::tools::DEFAULT_GOAL_ROUNDS_CEILING.to_string(),
+            agents_enabled: true,
+            greeting_enabled: false,
+            greeting_model: crate::greeting::INHERIT.to_owned(),
+            greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
+            tool_index_enabled: true,
+            tts_enabled: false,
+            tts_voice: crate::speech::DEFAULT_VOICE.to_owned(),
+            learning_repair: true,
+            curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
+            consolidate_nightly: false,
+            metrics_window_hours: "24".to_owned(),
+            memory_cap_chars: crate::selfmemory::MEMORY_LIMIT.to_string(),
+            standing_orders_enabled: true,
+            schedule_delivery_default: crate::delivery::DEFAULT_CHANNEL.to_owned(),
+            schedule_email_enabled: true,
+            jobs_notify_on_complete: true,
+            jobs_receipt_days: "7".to_owned(),
+            steward_enabled: true,
+            steward_watch_seconds: "300".to_owned(),
+            steward_max_rounds: "24".to_owned(),
+            steward_note_window: "8".to_owned(),
+            steward_field_note_days: "30".to_owned(),
+            steward_delivery_default: "push".to_owned(),
+            steward_mail_recipients: String::new(),
+            steward_call_urgency_default: "normal".to_owned(),
+            steward_charter: String::new(),
+            steward_board_columns: "compact".to_owned(),
+            workboard_default_project: String::new(),
+            search_limit: crate::search::DEFAULT_LIMIT.to_string(),
+            search_scope_default: "all".to_owned(),
+            chat_hint: crate::greeting::DEFAULT_HINT.to_owned(),
+            aux_roles: Vec::new(),
+            accounts: Vec::new(),
+            models: Vec::new(),
+            mcp_servers: "[]".to_owned(),
+            mcp_errors: Vec::new(),
+            mcp_status: crate::mcp::STATUS.to_owned(),
+            schedules_enabled: true,
+            schedules_clock: crate::zone::HOST.to_owned(),
+            schedules: Vec::new(),
+            schedule_runs: std::collections::BTreeMap::new(),
+            skills_enabled: true,
+            skills_dir: String::new(),
+            skills: Vec::new(),
+            skills_path: String::new(),
+            skills_error: None,
+            error: None,
+            notice: None,
+            tab: SettingsTab::default(),
+        }
+    }
+
+    /// How many characters the persona text is: the number the page states and
+    /// the audit row records.
+    #[must_use]
+    pub fn persona_characters(&self) -> usize {
+        crate::persona::character_count(&self.persona_text)
+    }
+
+    /// The failure that belongs to one group, if any.
+    #[must_use]
+    pub fn group_error(&self, group: SettingsGroup) -> Option<&FormError> {
+        self.error.as_ref().filter(|error| group.owns(error))
+    }
+
+    /// The notice that belongs to one group, if any.
+    #[must_use]
+    pub fn group_notice(&self, group: SettingsGroup) -> Option<&str> {
+        self.notice
+            .as_ref()
+            .filter(|(saved, _)| *saved == group)
+            .map(|(_, text)| text.as_str())
+    }
+
+    /// `never` is offered only when a device is paired and the daemon is ready.
+    #[must_use]
+    pub fn never_available(&self) -> bool {
+        self.paired_devices > 0 && self.state == SetupState::Ready
+    }
+}
+
+/// The six settings tabs.
+///
+/// The names are the daemon's own capability groups, spelled once, so a field
+/// cannot end up in a group the page has no tab for: `S3`'s record and this enum
+/// say `models`, `assistant`, `memory`, `devices`, `automation`, `system`.
+///
+/// A tab is a *link*, not a widget. The page is server-rendered and has to work
+/// with no script at all, so the active tab is a query parameter and the strip is
+/// a `<nav>` of anchors. That also makes a tab bookmarkable and it makes the back
+/// button do the obvious thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    /// Where a turn is sent, and what it may call.
+    Models,
+    /// How a turn talks and reports.
+    Assistant,
+    /// What a turn recalls.
+    Memory,
+    /// Where phones reach this daemon.
+    Devices,
+    /// What runs without a person asking.
+    Automation,
+    /// What a turn may touch, when it is, and how it looks.
+    System,
+}
+
+/// The tab a page opens on when nobody picked one.
+///
+/// Models is first because it is the tab a fresh install has to fill in: an
+/// endpoint and a model are what makes a turn answer at all.
+impl Default for SettingsTab {
+    fn default() -> Self {
+        Self::Models
+    }
+}
+
+impl SettingsTab {
+    /// Every tab, in strip order.
+    pub const ALL: [Self; 6] = [
+        Self::Models,
+        Self::Assistant,
+        Self::Memory,
+        Self::Devices,
+        Self::Automation,
+        Self::System,
+    ];
+
+    /// The query value, which is also the capability record's group name.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Models => "models",
+            Self::Assistant => "assistant",
+            Self::Memory => "memory",
+            Self::Devices => "devices",
+            Self::Automation => "automation",
+            Self::System => "system",
+        }
+    }
+
+    /// The word on the tab.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Models => "Models",
+            Self::Assistant => "Assistant",
+            Self::Memory => "Memory",
+            Self::Devices => "Devices",
+            Self::Automation => "Automation",
+            Self::System => "System",
+        }
+    }
+
+    /// The one line under the strip, so a tab says what it holds.
+    #[must_use]
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Self::Models => "Where a turn is sent, and what it may call.",
+            Self::Assistant => "How a turn talks, thinks, and reports what it did.",
+            Self::Memory => "What a turn recalls before it answers.",
+            Self::Devices => "Where a phone reaches this daemon, and what it is told.",
+            Self::Automation => "What runs without a person asking.",
+            Self::System => "What a turn may touch, when it is, and how the page looks.",
+        }
+    }
+
+    /// The tab a `?tab=` value names, or `None` when it names none of them.
+    ///
+    /// Case and stray spacing are tolerated: this comes from a URL a person may
+    /// have typed, and refusing an odd spelling would land them on a page that
+    /// looks broken rather than on the tab they asked for.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let wanted = raw.trim();
+        Self::ALL
+            .into_iter()
+            .find(|tab| tab.id().eq_ignore_ascii_case(wanted))
+    }
+
+    /// The path of this tab, for the strip and for a redirect.
+    #[must_use]
+    pub fn path(self) -> String {
+        format!("{}?tab={}", crate::admin::ROUTE_SETTINGS, self.id())
+    }
+
+    /// The tab that holds one of the eight form groups.
+    ///
+    /// The groups and the tabs are different axes - a tab holds several groups -
+    /// so this is the map between them, and it is the only one.
+    #[must_use]
+    pub fn for_group(group: SettingsGroup) -> Self {
+        match group {
+            SettingsGroup::Provider | SettingsGroup::Accounts => Self::Models,
+            SettingsGroup::Persona
+            | SettingsGroup::Goal
+            | SettingsGroup::Greeting
+            | SettingsGroup::Search => Self::Assistant,
+            SettingsGroup::Jobs | SettingsGroup::Delivery | SettingsGroup::Standing => {
+                Self::Automation
+            }
+            SettingsGroup::Schedules | SettingsGroup::Skills => Self::Automation,
+            // The steward spans three tabs; its save names the tab of the field it changed.
+            SettingsGroup::Steward => Self::Assistant,
+            SettingsGroup::Workspace | SettingsGroup::Permissions | SettingsGroup::Update => {
+                Self::System
+            }
+        }
+    }
+
+    /// The tab a `?saved=` value belongs to.
+    ///
+    /// A save redirects to `?saved=<group>`, and the group a notice belongs to is
+    /// also the tab it belongs to, so the notice lands on the card that produced
+    /// it without every redirect constant having to learn about tabs.
+    #[must_use]
+    pub fn for_saved(saved: &str) -> Self {
+        match saved {
+            "provider" | "accounts" | "providers" | "tools" | "aux" | "models" => Self::Models,
+            "persona" | "reasoning" | "streaming" | "quota" | "greeting" | "goal" => {
+                Self::Assistant
+            }
+            "memory" => Self::Memory,
+            "device" | "devices" => Self::Devices,
+            "schedules" | "skills" | "mcp" | "automation" => Self::Automation,
+            "update" | "update_checked" | "update_queued" => Self::System,
+            _ => Self::System,
+        }
+    }
+
+    /// The tab a refused field belongs to.
+    ///
+    /// A refusal re-renders the page, and it has to re-render the tab that holds
+    /// the field or the operator is sent to a page where the reason is nowhere.
+    /// The list is by field name because that is what a [`FormError`] carries.
+    #[must_use]
+    pub fn for_field(field: Option<&str>) -> Self {
+        let Some(field) = field else {
+            return Self::Models;
+        };
+        match field {
+            "base_url"
+            | "api_key_ref"
+            | "model"
+            | "providers_registry"
+            | "providers_primary"
+            | "provider_id"
+            | "provider_name"
+            | "provider_base_url"
+            | "provider_key_ref"
+            | "provider_dialect"
+            | "provider_reasoning_split"
+            | "provider_direct"
+            | "provider_project"
+            | "provider_edit_id"
+            | "tools_enabled"
+            | "tool_rounds"
+            | "goal_rounds_ceiling"
+            | "agents_enabled"
+            | "aux_primary"
+            | "aux_model"
+            | "account_provider"
+            | "account_action"
+            | "account_paste" => Self::Models,
+            "persona_text"
+            | "persona_enabled"
+            | "assistant_name"
+            | "reply_state"
+            | "show_reasoning"
+            | "streaming"
+            | "show_quota"
+            | "show_tool_log"
+            | "tool_log_mode"
+            | "greeting_enabled"
+            | "greeting_model"
+            | "greeting_refresh"
+            | "chat_hint"
+            | "search_limit"
+            | "search_scope_default"
+            | "goal_text"
+            | "goal_action"
+            | "soft_cap_tokens" => Self::Assistant,
+            "steward_charter" | "steward_call_urgency_default" | "steward_board_columns" => {
+                Self::Assistant
+            }
+            "steward_note_window" | "steward_field_note_days" => Self::Memory,
+            "steward_enabled"
+            | "steward_watch_seconds"
+            | "steward_max_rounds"
+            | "steward_delivery_default"
+            | "steward_mail_recipients" => Self::Automation,
+            "memory_backend" | "memory_vault" => Self::Memory,
+            "device_listen" | "device_relay" | "notify_on_reply" | "notify_scope"
+            | "notify_devices" => Self::Devices,
+            "schedule_name" | "schedule_cron" | "schedule_prompt" | "schedule_id"
+            | "schedules_action" | "schedules_enabled" | "skills_enabled" | "skills_dir"
+            | "skills_library" | "mcp_name" | "mcp_url" | "mcp_action" => Self::Automation,
+            _ => Self::System,
+        }
+    }
+}
+
+/// The settings segments, and the line that says what the chosen one holds.
+///
+/// A segmented control rather than a row of chips: the section row above this
+/// page is already a row of chips, and two rows of the same-looking thing at the
+/// top of one screen is what made this page read as duplicated buttons. One
+/// track, equal segments, the chosen one raised, which is the shape iOS uses when
+/// a control switches between views of the same thing.
+///
+/// `aria-current="page"` marks the active segment for a reader, the label is
+/// heavier, and the segment is raised, so nothing here depends on colour alone.
+/// The track wraps to two rows on a phone instead of scrolling sideways: six
+/// segments are all reachable without a gesture nobody knows about.
+fn tab_strip(current: SettingsTab) -> Markup {
+    html! {
+        nav class="tabs" aria-label="Settings sections" {
+            @for tab in SettingsTab::ALL {
+                a class="tab" href=(tab.path())
+                    aria-current=[(tab == current).then_some("page")] {
+                    (tab.label())
+                }
+            }
+        }
+        p .small .tab-blurb { (current.blurb()) }
+    }
+}
+
+/// A live region for one settings group.
+///
+/// The id is the group's, so a caller that lands on `#provider` after a save can
+/// read the outcome without a script.
+fn group_region(view: &SettingsView, group: SettingsGroup) -> Markup {
+    let error = view.group_error(group);
+    let notice = view.group_notice(group);
+    html! {
+        div id=(format!("{}-error", group.id())) role="status" aria-live="polite" {
+            @if let Some(error) = error {
+                div .alert {
+                    strong { (error.code) }
+                    " "
+                    (error.message)
+                }
+            } @else if let Some(notice) = notice {
+                div .alert .notice {
+                    strong { "ok" }
+                    " "
+                    (notice)
+                }
+            }
+        }
+    }
+}
+
+/// The provider group: endpoint, key reference, model.
+fn provider_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    // The first failing field of this form takes the focus, and only the first.
+    let first = ["base_url", "api_key_ref", "model"]
+        .into_iter()
+        .find(|name| focuses(name));
+    html! {
+        form method="post" action="/dashboard/settings/provider" novalidate {
+            (group_region(view, SettingsGroup::Provider))
+            (text_field(
+                "base_url",
+                "Endpoint",
+                &view.provider_base_url,
+                Some("An OpenAI-compatible base URL. Must start with http:// or https://."),
+                error,
+                first == Some("base_url"),
+                false,
+            ))
+            (text_field(
+                "api_key_ref",
+                "API key",
+                &view.provider_key_ref,
+                Some("Paste the provider's key, or write env:NAME to read one the daemon already has. A pasted key is sealed into eris.env at mode 0600 and is never stored in the database."),
+                error,
+                first == Some("api_key_ref"),
+                false,
+            ))
+            div .field {
+                label for="model_selection" { "Default model" }
+                select id="model_selection" name="model_selection"
+                    autofocus[focuses("model_selection")] {
+                    @if view.model_options.is_empty() {
+                        option value="" selected[view.model_selection.is_empty()] {
+                            "no probe has published a model list yet"
+                        }
+                    }
+                    // The stored value may name a model no catalogue holds - a
+                    // row written before this picker existed, or a provider that
+                    // has not been probed. It is shown as its own option rather
+                    // than dropped, so the page never silently re-points a turn.
+                    @if !view.model_selection.is_empty()
+                        && !view.model_options.iter().any(|(value, _)| *value == view.model_selection) {
+                        option value=(view.model_selection)
+                            selected[true] { (view.model_selection) " (not in any probe)" }
+                    }
+                    @for (value, label) in &view.model_options {
+                        option value=(value) selected[view.model_selection == *value] { (label) }
+                    }
+                }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("model_selection")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Every model every configured provider has published, named "
+                    "`provider/model`. Choosing one points turns at that provider, so the model "
+                    "and the endpoint move together."
+                }
+            }
+            (text_field(
+                "model",
+                "Model id, typed",
+                &view.model,
+                Some("A model id as the endpoint spells it, used when the picker above is left on its empty option. Worth preferring when a gateway serves a model it does not list."),
+                error,
+                first == Some("model"),
+                false,
+            ))
+            div .actions {
+                button type="submit" { "Save provider" }
+            }
+            p .small {
+                "Saving here writes the rows and nothing else. It does not call the endpoint: "
+                "the rotate button on the dashboard is the probe."
+            }
+        }
+    }
+}
+
+/// The accounts panel: one row per provider this build can log in to.
+///
+/// Each row is its own form, because each press is one action on one account. The
+/// panel shows status and nothing else: no token, no refresh token, no fragment of
+/// either. A connect press hands back a URL that a second form submits, so the
+/// daemon never has to open a browser on a host that has none - and an operator on
+/// a headless box pastes it into whichever browser they are already using.
+fn accounts_group(view: &SettingsView) -> Markup {
+    html! {
+        (group_region(view, SettingsGroup::Accounts))
+        @for row in &view.accounts {
+            div .account id=(format!("account-{}", row.provider)) {
+                h3 {
+                    (row.label)
+                    " "
+                    @if row.connected {
+                        span .badge { "connected" }
+                    } @else {
+                        span .badge .muted { "not connected" }
+                    }
+                }
+                dl .kv {
+                    dt { "Endpoint" } dd { (row.base_url) }
+                    dt { "Key reference" } dd { code { (row.key_ref) } }
+                    @if row.connected {
+                        @if let Some(account) = &row.account {
+                            dt { "Account" } dd { (account) }
+                        }
+                        @if let Some(origin) = &row.origin {
+                            dt { "Grant" } dd {
+                                (origin)
+                                @if origin == "migrated" {
+                                    " (copied from another program; never refreshed, so it expires once)"
+                                }
+                            }
+                        }
+                        dt { "Expires" } dd {
+                            @match &row.expires_at {
+                                Some(when) => {
+                                    (when)
+                                    @if row.expired { " (past)" }
+                                }
+                                None => { "the provider did not say" }
+                            }
+                        }
+                        @if let Some(project) = &row.project {
+                            dt { "Cloud project" } dd { code { (project) } }
+                        }
+                    }
+                }
+                @if let Some(url) = &row.pending_url {
+                    div .login-box id=(format!("login-{}", row.provider)) {
+                        h4 { "Finish connecting " (row.label) }
+                        ol .login-steps {
+                            li {
+                                strong { "Open the login." }
+                                " This button opens it in a new tab."
+                                div .actions {
+                                    a .button href=(url) target="_blank" rel="noreferrer noopener" {
+                                        "Open " (row.label) " login (new tab)"
+                                    }
+                                }
+                                p .small {
+                                    "If no tab opens, copy this link and open it in any browser:"
+                                }
+                                input type="text" readonly .login-url
+                                    aria-label="Login link"
+                                    value=(url);
+                            }
+                            li {
+                                strong { "Approve it." }
+                                " The browser then lands on an address starting "
+                                code { "localhost" }
+                                ". The page will probably say it cannot load. That is fine."
+                                " Copy the whole address from the address bar."
+                            }
+                            li {
+                                strong { "Paste it here, then press Verify." }
+                            }
+                        }
+                        form method="post" action=(crate::admin::ROUTE_ACCOUNTS_VERIFY) {
+                            input type="hidden" name="account_provider" value=(row.provider);
+                            label for=(format!("paste-{}", row.provider)) { "Address from the browser" }
+                            input type="text" id=(format!("paste-{}", row.provider)) name="account_paste"
+                                autofocus autocomplete="off" autocapitalize="off" spellcheck="false"
+                                placeholder="http://localhost:7345/callback?code=...&state=...";
+                            div .actions {
+                                button type="submit" { "Verify" }
+                            }
+                        }
+                    }
+                }
+                @if row.connected {
+                    form method="post" action=(crate::admin::ROUTE_ACCOUNTS_CONNECT) {
+                        input type="hidden" name="account_provider" value=(row.provider);
+                        div .actions {
+                            button type="submit" { "Reconnect " (row.label) }
+                        }
+                    }
+                    form method="post" action=(crate::admin::ROUTE_ACCOUNTS_DISCONNECT) {
+                        input type="hidden" name="account_provider" value=(row.provider);
+                        div .actions {
+                            button type="submit" .danger { "Disconnect " (row.label) }
+                        }
+                    }
+                } @else {
+                    form method="post" action=(crate::admin::ROUTE_ACCOUNTS_CONNECT) {
+                        input type="hidden" name="account_provider" value=(row.provider);
+                        div .actions {
+                            button type="submit" { "Connect " (row.label) }
+                        }
+                    }
+                }
+                @if row.connected {
+                    @if row.in_registry {
+                        p .small {
+                            "This account is a provider: its models appear in every model picker, "
+                            "including the auxiliary roles and the reply bubble."
+                        }
+                    } @else {
+                        form method="post" action=(crate::admin::ROUTE_ACCOUNTS_REGISTER) {
+                            input type="hidden" name="account_provider" value=(row.provider);
+                            div .actions {
+                                button type="submit" { "Add " (row.label) " to providers" }
+                            }
+                        }
+                    }
+                }
+                @if let Some(outcome) = &row.outcome {
+                    div role="status" aria-live="polite" {
+                        @if row.outcome_ok {
+                            div .alert .notice { (outcome) }
+                        } @else {
+                            div .alert { (outcome) }
+                        }
+                    }
+                }
+                @if let Some(error) = &row.listener_error {
+                    div .alert {
+                        "the browser cannot come back to this host: " (error)
+                    }
+                }
+            }
+        }
+        p .small {
+            "Connect starts the provider's own browser login. Open the link in any browser, "
+            "approve, then paste the address it lands on and press Verify - that works from "
+            "a phone or a laptop. A browser on the daemon's own host finishes by itself. The "
+            "grant is sealed in this daemon's encrypted store. Disconnecting deletes the sealed grant and makes no call to "
+            "the provider."
+        }
+    }
+}
+
+/// The workspace group: one path, one form.
+fn workspace_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focused = error.is_some_and(|error| error.field.as_deref() == Some("workspace_path"));
+    html! {
+        form method="post" action="/dashboard/settings/workspace" novalidate {
+            (group_region(view, SettingsGroup::Workspace))
+            (text_field(
+                "workspace_path",
+                "Workspace path",
+                &view.workspace,
+                Some("Created at mode 0755 if absent. Refused if it overlaps ~/.dsh, ~/.config, ~/.ssh or ~/vault, and refused if a relative path or a .. is in it."),
+                error,
+                focused,
+                false,
+            ))
+            div .actions {
+                button type="submit" { "Save workspace" }
+            }
+            p .small {
+                "This is the one directory a turn may write to. Everything outside it is out of reach, "
+                "so a path inside a reserved root would hand a turn the daemon's own configuration."
+            }
+        }
+    }
+}
+
+/// The permissions group: four closed sets, each with a consequence on the option.
+fn permissions_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let full_disabled: &[&str] = if view.allow_full { &[] } else { &["full"] };
+    let never_disabled: &[&str] = if view.never_available() {
+        &[]
+    } else {
+        &["never"]
+    };
+    html! {
+        form method="post" action="/dashboard/settings/permissions" novalidate {
+            (group_region(view, SettingsGroup::Permissions))
+            (radio_group(
+                "Sandbox mode",
+                "sandbox_mode",
+                &SandboxMode::ALL
+                    .iter()
+                    .map(|mode| (mode.as_str(), mode.label(), mode.consequence()))
+                    .collect::<Vec<_>>(),
+                view.permissions.sandbox_mode.as_str(),
+                full_disabled,
+                error,
+            ))
+            @if !view.allow_full {
+                p .small {
+                    "Full host is off. Turn it on below, or start eris with " code { "--allow-full" }
+                    " which overrides the stored switch for the life of the process."
+                }
+            }
+            (radio_group(
+                "Approval policy",
+                "approval_policy",
+                &ApprovalPolicy::ALL
+                    .iter()
+                    .map(|policy| (policy.as_str(), policy.label(), policy.consequence()))
+                    .collect::<Vec<_>>(),
+                view.permissions.approval_policy.as_str(),
+                never_disabled,
+                error,
+            ))
+            @if !view.never_available() {
+                p .small {
+                    "Never ask is not selectable yet. It unlocks after a device is paired, which is "
+                    "the only proof that someone can answer an approval prompt."
+                }
+            }
+            (radio_group(
+                "Autopilot ceiling",
+                "autopilot_ceiling",
+                &AutopilotCeiling::ALL
+                    .iter()
+                    .map(|level| (level.as_str(), level.label(), level.consequence()))
+                    .collect::<Vec<_>>(),
+                view.permissions.autopilot_ceiling.as_str(),
+                &[],
+                error,
+            ))
+            (radio_group(
+                "Telemetry",
+                "telemetry",
+                &Telemetry::ALL
+                    .iter()
+                    .map(|sink| (sink.as_str(), sink.label(), sink.consequence()))
+                    .collect::<Vec<_>>(),
+                view.permissions.telemetry.as_str(),
+                &[],
+                error,
+            ))
+            div .actions {
+                button type="submit" { "Save permissions" }
+            }
+            p .small {
+                "L0 notify and L1 draft are the only autopilot levels in 1.0. There is no L2 and no L3, "
+                "and no cloud telemetry sink."
+            }
+        }
+    }
+}
+
+/// The assistant identity group: one textarea, one switch, one measured size.
+///
+/// The text is the operator's own words, so it is rendered as an editable value
+/// and nothing else: no preview pane, no transformation, and no copy of it in a
+/// second place on the page that could disagree with the file.
+fn persona_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    let first = ["persona_text", "persona_enabled"]
+        .into_iter()
+        .find(|name| focuses(name));
+    html! {
+        form method="post" action="/dashboard/settings/persona" novalidate {
+            (group_region(view, SettingsGroup::Persona))
+            div .field {
+                label for="assistant_name" { "Name" }
+                input id="assistant_name" type="text" name="assistant_name" value=(view.assistant_name)
+                    autocomplete="off" spellcheck="false";
+                span .hint {
+                    "What the chat surface calls the assistant: the composer placeholder and the "
+                    "label on every answer. It is a label, not part of the system prompt."
+                }
+            }
+            div .field {
+                label for="persona_text" { "Assistant identity" }
+                textarea id="persona_text" name="persona_text" rows="12" spellcheck="false"
+                    autofocus[first == Some("persona_text")] { (view.persona_text) }
+                span .hint {
+                    "The file is " code { (view.persona_path) } ". It is read on every turn, so an "
+                    "edit here takes effect on the next one without a restart."
+                }
+            }
+            p .small {
+                "This text is " (view.persona_characters()) " characters"
+                @if view.persona_characters() > 0 {
+                    " and is sent on every turn."
+                } @else {
+                    "."
+                }
+                " The limit is " (crate::persona::MAX_PERSONA_BYTES) " bytes."
+            }
+            p .small {
+                "Every turn sends this text to the model as the system prompt. Turning it off "
+                "sends no system prompt at all, which is what a bare model gets."
+            }
+            div .field {
+                label for="persona_enabled" {
+                    input type="checkbox" id="persona_enabled" name="persona_enabled" value="true"
+                        autofocus[first == Some("persona_enabled")]
+                        checked[view.persona_enabled];
+                    " Send the assistant identity on every turn"
+                }
+                span .hint {
+                    "Off by default here is honest: a persona that is switched on with nothing in "
+                    "it would send an empty instruction."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save assistant identity" }
+            }
+            p .small {
+                "This text is not a secret and is written to disk readable, at mode 0644. The audit "
+                "row records only how big it is and whether it is on."
+            }
+        }
+    }
+}
+
+/// The thinking bubble: one switch, on by default.
+///
+/// Presentational only. With it off the reasoning is neither rendered nor
+/// streamed, which is the difference between "hidden" and "not sent".
+/// Where the daemon's memory comes from.
+fn memory_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_MEMORY) novalidate {
+            div .field {
+                label for="memory_backend" { "Backend" }
+                select id="memory_backend" name="memory_backend" {
+                    option value="gbrain" selected[view.memory_backend == "gbrain"] {
+                        "gbrain - the page store on this host"
+                    }
+                    option value="vault" selected[view.memory_backend == "vault"] {
+                        "Vault - a directory of markdown"
+                    }
+                    option value="off" selected[view.memory_backend == "off"] {
+                        "Off - answer from the prompt alone"
+                    }
+                }
+                span .hint {
+                    "Before a turn answers, the daemon asks this backend what it already knows and "
+                    "adds what it finds to the prompt. gbrain is the default because it is already "
+                    "the long-term brain here."
+                }
+            }
+            div .field {
+                label for="memory_cap_chars" { "Note cap" }
+                input type="number" id="memory_cap_chars" name="memory_cap_chars"
+                    min=(crate::selfmemory::MIN_CAP_CHARS)
+                    max=(crate::selfmemory::MAX_CAP_CHARS) value=(view.memory_cap_chars);
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("memory_cap_chars")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Characters per note file, 2000 to 200000. An overflow is a hard error that "
+                    "names the cap and the entries in the way; nothing is ever quietly dropped."
+                }
+            }
+            div .field {
+                label for="memory_vault" { "Vault directory" }
+                input id="memory_vault" type="text" name="memory_vault" value=(view.memory_vault)
+                    placeholder="~/.vault";
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("memory_vault")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Only read by the vault backend. A path that does not exist is refused rather "
+                    "than left to return nothing."
+                }
+            }
+            div .field {
+                label for="consolidate_nightly" {
+                    input type="checkbox" id="consolidate_nightly" name="consolidate_nightly"
+                        value="true" checked[view.consolidate_nightly];
+                    " Merge duplicates unattended"
+                }
+                span .hint {
+                    "A sweep retires contradictory duplicates and proposes merged text; it never "
+                    "writes the files. It refuses rather than lose more than a quarter of the live "
+                    "characters. Off, only the preview line is logged."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save memory" }
+            }
+        }
+    }
+}
+
+fn reasoning_group(view: &SettingsView) -> Markup {
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_REASONING) novalidate {
+            div .field {
+                label for="show_reasoning" {
+                    input type="checkbox" id="show_reasoning" name="show_reasoning" value="true"
+                        checked[view.show_reasoning];
+                    " Show the model's reasoning in a collapsed bubble"
+                }
+                span .hint {
+                    "The bubble is opaque and closed by default, and it is never part of the answer. "
+                    "Off means the reasoning is not rendered and not streamed to the browser at all."
+                }
+            }
+            div .field {
+                label for="reply_state" { "Reply bubble" }
+                select id="reply_state" name="reply_state" {
+                    @for state in crate::web::chat::ReplyState::ALL {
+                        option value=(state.as_str()) selected[view.reply_state == state.as_str()] {
+                            (state.label())
+                        }
+                    }
+                }
+                span .hint {
+                    "How much of each settled answer the transcript draws. Expanded is the whole "
+                    "reply, which is what every earlier build did. A reply that is still arriving, "
+                    "one that failed, and one holding a question you have to answer always open in "
+                    "full, whatever this says. The control beside each reply's name overrides this "
+                    "for that one reply, and the choice is remembered."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save thinking bubble" }
+            }
+        }
+    }
+}
+
+/// Whether the browser streams an answer or waits for the rendered page.
+fn streaming_group(view: &SettingsView) -> Markup {
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_STREAMING) novalidate {
+            div .field {
+                label for="stream_responses" {
+                    input type="checkbox" id="stream_responses" name="stream_responses" value="true"
+                        checked[view.streaming];
+                    " Stream answers as they are written"
+                }
+                span .hint {
+                    "On, the answer appears word by word and a second message steers the running "
+                    "turn. Off, the composer sends the turn as a plain form and the finished "
+                    "transcript comes back in one page; nothing else about the turn changes."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save responses" }
+            }
+        }
+    }
+}
+
+/// Whether each answer's footer names the gateway's quota and time to reset.
+fn quota_group(view: &SettingsView) -> Markup {
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_QUOTA) novalidate {
+            div .field {
+                label for="show_quota" {
+                    input type="checkbox" id="show_quota" name="show_quota" value="true"
+                        checked[view.show_quota];
+                    " Show quota and time to reset under each answer"
+                }
+                span .hint {
+                    "Reads the gateway's own record, read-only, after each turn: whether the "
+                    "answering provider is ok, locked or limited, when the lock clears, and how "
+                    "many requests it has served today. A rate or usage limit is always reported "
+                    "on a failed turn, whether this is on or not."
+                }
+            }
+            div .field {
+                label for="soft_cap_tokens" { "Soft token cap" }
+                input id="soft_cap_tokens" type="number" name="soft_cap_tokens"
+                    min=(crate::budget::MIN_SOFT_CAP)
+                    max=(crate::budget::MAX_SOFT_CAP)
+                    value=(view.soft_cap_tokens);
+                span .hint {
+                    "Between " (crate::budget::MIN_SOFT_CAP) " and "
+                    (crate::budget::MAX_SOFT_CAP) " tokens, default "
+                    (crate::budget::DEFAULT_SOFT_CAP) ". This is the ceiling the " code { "budget" }
+                    " tool reports to a turn, so a long job can stop on a number instead of "
+                    "discovering the wall by hitting it. It is a report, not a refusal: a turn "
+                    "over it is told to stop, and nothing is cut off."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save quota line" }
+            }
+        }
+    }
+}
+
+/// The objective the daemon works toward, and the button that clears it.
+///
+/// One textarea and two submits rather than a switch and a text field: a goal is
+/// the text or it is nothing, so an empty box saved is a cleared goal and there is
+/// no third state to explain. The clear button is only drawn when there is
+/// something to clear, since a "Clear" that does nothing is a lie about the state.
+fn goal_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    let set = !view.goal_objective.trim().is_empty();
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_GOAL) novalidate {
+            (group_region(view, SettingsGroup::Goal))
+            div .field {
+                label for="goal_text" { "Objective" }
+                textarea id="goal_text" name="goal_text" rows="4" spellcheck="false"
+                    autofocus[focuses("goal_text")] { (view.goal_objective) }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("goal_text")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "What a turn should keep working toward. Saving it starts nothing on its own: "
+                    "the next message is the one that carries it. Blank clears it. The limit is "
+                    (crate::goal::MAX_OBJECTIVE_CHARS) " characters."
+                }
+            }
+            @if set {
+                p .small {
+                    "Set. Every message carries it until it is cleared, and the round budget is "
+                    "raised to " (crate::goal::ROUNDS) " so a real job can finish in one turn."
+                }
+            } @else {
+                p .small { "No objective is set. Turns answer the message in front of them." }
+            }
+            div .actions {
+                button type="submit" { "Save objective" }
+                @if set {
+                    button type="submit" class="secondary" name="goal_action" value="clear" {
+                        "Clear"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The generated line on an empty conversation: the switch, the model, the window.
+///
+/// Off by default, and the card says so: a line that costs a provider call is not
+/// something anybody should get without asking for it.
+fn search_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_SEARCH) novalidate {
+            (group_region(view, SettingsGroup::Search))
+            div .field {
+                label for="search_limit" { "Results per search" }
+                input type="number" id="search_limit" name="search_limit"
+                    min=(crate::search::MIN_SETTING_LIMIT) max=(crate::search::MAX_SETTING_LIMIT)
+                    value=(view.search_limit)
+                    autofocus[focuses("search_limit")];
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("search_limit")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Five to fifty. A wide number is a longer page, not a slower query: the count "
+                    "and the page are separate statements and the count never over-fetches."
+                }
+            }
+            div .field {
+                label for="search_scope_default" { "Starts on" }
+                select id="search_scope_default" name="search_scope_default"
+                    autofocus[focuses("search_scope_default")] {
+                    @for value in crate::search::SCOPE_VALUES {
+                        option value=(value) selected[view.search_scope_default == *value] {
+                            (search_scope_label(value))
+                        }
+                    }
+                }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("search_scope_default")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Holding to one conversation keeps a follow-up in the transcript already open. "
+                    "Everywhere ranks across the whole history instead."
+                }
+            }
+            div .field {
+                label for="workboard_default_project" { "Default board project" }
+                input id="workboard_default_project" type="text"
+                    name="workboard_default_project" value=(view.workboard_default_project);
+                span .hint {
+                    "What a new workboard row belongs to. Blank leaves rows unattached. The board "
+                    "lives beside Activity and is where a task outlives the session."
+                }
+            }
+            div .actions { button type="submit" { "Save search" } }
+        }
+    }
+}
+
+/// The words a delivery channel is offered under.
+fn delivery_label(value: &str) -> &'static str {
+    match value {
+        "inbox" => "Inbox row",
+        "email" => "Mail",
+        "off" => "Nothing",
+        _ => "Push to devices",
+    }
+}
+
+/// The words a scope is offered under.
+fn search_scope_label(value: &str) -> &'static str {
+    match value {
+        "conversation" => "This conversation",
+        _ => "Every conversation",
+    }
+}
+
+fn greeting_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    let mut models: Vec<(String, String)> = vec![(
+        crate::greeting::INHERIT.to_owned(),
+        "primary model".to_owned(),
+    )];
+    models.extend(view.model_options.iter().cloned());
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_GREETING) novalidate {
+            (group_region(view, SettingsGroup::Greeting))
+            div .field {
+                label for="greeting_enabled" {
+                    input type="checkbox" id="greeting_enabled" name="greeting_enabled"
+                        value="true" checked[view.greeting_enabled];
+                    " Write a line under the salutation"
+                }
+                span .hint {
+                    "It sits under the time of day on an empty conversation. The model is told "
+                    "nothing about you: no name, no path, no hostname, no memory, no transcript. "
+                    "Off by default, because every rewrite is a billed provider call."
+                }
+            }
+            div .field {
+                label for="greeting_model" { "Model" }
+                select id="greeting_model" name="greeting_model"
+                    autofocus[focuses("greeting_model")] {
+                    @if !view.greeting_model.is_empty()
+                        && view.greeting_model != crate::greeting::INHERIT
+                        && !models.iter().any(|(value, _)| *value == view.greeting_model) {
+                        option value=(view.greeting_model) selected[true] {
+                            (view.greeting_model) " (not in any probe)"
+                        }
+                    }
+                    @for (value, label) in &models {
+                        option value=(value) selected[view.greeting_model == *value] { (label) }
+                    }
+                }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("greeting_model")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "primary follows whatever the provider section uses. A model pinned here keeps "
+                    "that choice when the primary moves."
+                }
+            }
+            div .field {
+                label for="chat_hint" { "Line under the salutation" }
+                input id="chat_hint" type="text" name="chat_hint" value=(view.chat_hint)
+                    maxlength=(crate::greeting::MAX_HINT_CHARS)
+                    autofocus[focuses("chat_hint")];
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("chat_hint")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "The sentence that sits under the salutation on an empty conversation. Blank "
+                    "restores the default. The generated line, when it is on, appears above this."
+                }
+            }
+            div .field {
+                label for="greeting_refresh" { "Rewrite it" }
+                select id="greeting_refresh" name="greeting_refresh"
+                    autofocus[focuses("greeting_refresh")] {
+                    @for refresh in crate::greeting::Refresh::ALL {
+                        option value=(refresh.as_str())
+                            selected[view.greeting_refresh == refresh.as_str()] {
+                            (refresh.label())
+                        }
+                    }
+                }
+                span .hint {
+                    "The stored line is served until it is older than this, so a render only asks a "
+                    "model when one is due. With no line stored yet the salutation stands alone."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save greeting" }
+            }
+        }
+    }
+}
+
+/// The clock the operator reads, as its own form.
+///
+/// Free text rather than a fixed list: a dropdown of zones would either be a
+/// short list that omits his zone or a long one that never ends. The three
+/// accepted shapes are stated next to the field.
+fn clock_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_TIMEZONE) novalidate {
+            div .field {
+                label for="timezone" { "Time zone" }
+                input id="timezone" type="text" name="timezone" value=(view.timezone)
+                    list="timezone-options" autocomplete="off" spellcheck="false"
+                    autofocus[focuses("timezone")];
+                datalist id="timezone-options" {
+                    option value=(crate::zone::HOST);
+                    option value="UTC";
+                    option value="-04:00";
+                    option value="-05:00";
+                    option value="-06:00";
+                    option value="-07:00";
+                    option value="-08:00";
+                    option value="+00:00";
+                    option value="+01:00";
+                    option value="+05:30";
+                    option value="+09:00";
+                }
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("timezone")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "`host` follows this machine and handles daylight saving. `UTC` is UTC. "
+                    "An offset like `-04:00` is fixed and does not move when the clocks do."
+                }
+            }
+            div .field {
+                span .label { "Clock" }
+                /* A radio group rather than a select: two options, and both fit
+                   on one line at every width. The pair reads as one question with
+                   the time zone above it, which is why it is one form and one
+                   route - the operator is answering "what time is it", and being
+                   sent to a second page to finish that answer is the kind of
+                   split this page is being cleaned up to remove. */
+                div .radio-row {
+                    label .radio {
+                        input type="radio" name="clock_format" value="24h"
+                            checked[view.clock_format == crate::zone::ClockFormat::TwentyFour];
+                        span { "24-hour" }
+                    }
+                    label .radio {
+                        input type="radio" name="clock_format" value="12h"
+                            checked[view.clock_format == crate::zone::ClockFormat::Twelve];
+                        span { "12-hour" }
+                    }
+                }
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("clock_format")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Every stamp in the product follows this: the transcript, the rail, "
+                    "the admin listings. The shape is the same clock the line above sets."
+                }
+            }
+            div .field {
+                label for="metrics_window_hours" { "Metrics window" }
+                input type="number" id="metrics_window_hours" name="metrics_window_hours"
+                    min=(crate::metrics::MIN_WINDOW_HOURS) max=(crate::metrics::MAX_WINDOW_HOURS)
+                    value=(view.metrics_window_hours);
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("metrics_window_hours")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Hours, 1 to 168. How far back the cost and latency panel on the activity page "
+                    "counts. The panel is drawn from the transcript, so a narrow window is a fast "
+                    "read of the recent shape rather than a different measurement."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save clock" }
+            }
+        }
+    }
+}
+
+/// What one push scope means, in the operator's own words.
+///
+/// `NotifyScope::label` is the short form a refusal and the iOS picker share;
+/// this is the sentence a radio button in a web form carries, where there is
+/// room to say what the choice actually does.
+#[must_use]
+fn scope_sentence(scope: crate::push::NotifyScope) -> &'static str {
+    use crate::push::NotifyScope;
+    match scope {
+        NotifyScope::Origin => "Only the device that asked",
+        NotifyScope::All => "Every paired device",
+        NotifyScope::Targeted => "Only the devices I pick",
+    }
+}
+
+/// The device ids a stored `push.notify_devices` row names, as the picker needs
+/// them.
+///
+/// The row is the stored shape, comma separated and possibly messy; this is the
+/// same trimming and the same de-duplication the daemon's own reader does, so a
+/// tick appears on exactly the devices the router would reach.
+#[must_use]
+fn chosen_devices(stored: &str) -> Vec<String> {
+    crate::push::notify_devices(Some(stored))
+}
+
+/// The provider registry: every endpoint this daemon may talk to.
+fn providers_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    // The first failing field of this form takes the focus, and only the first.
+    let first = [
+        "provider_id",
+        "provider_name",
+        "provider_base_url",
+        "provider_key_ref",
+        "provider_dialect",
+        "provider_project",
+    ]
+    .into_iter()
+    .find(|name| focuses(name));
+    let editing = view.provider_edit.as_ref();
+    let action = if editing.is_some() {
+        crate::admin::ROUTE_SETTINGS_PROVIDERS_EDIT
+    } else {
+        crate::admin::ROUTE_SETTINGS_PROVIDERS_ADD
+    };
+    html! {
+        @if view.providers.is_empty() {
+            p .empty {
+                strong { "No provider is configured yet." }
+                " A turn needs one endpoint and one model before it can answer. Add one below, "
+                "or fill in the three Provider fields above."
+            }
+        } @else {
+            /* One row per endpoint, read-only except for the two actions. The
+               table is the point: before this, the only view of the registry was
+               a JSON document, which is not a thing an operator can check at a
+               glance. `key_ref` is shown as-is because it is already visible in
+               the JSON editor - it is a reference, not a key. */
+            table {
+                caption { "Every endpoint this daemon may talk to" }
+                thead {
+                    tr {
+                        th scope="col" { "Id" }
+                        th scope="col" { "Name" }
+                        th scope="col" { "Endpoint" }
+                        th scope="col" { "Dialect" }
+                        th scope="col" { "Direct" }
+                        th scope="col" { "Keys" }
+                        th scope="col" { "Actions" }
+                    }
+                }
+                tbody {
+                    @for row in &view.providers {
+                        tr id=(format!("provider-row-{}", row.id)) {
+                            th scope="row" {
+                                code { (row.id) }
+                                @if row.is_primary {
+                                    " " span .badge { "primary" }
+                                }
+                            }
+                            td { (row.name) }
+                            td .mono { (row.base_url) }
+                            td {
+                                @if row.dialect.is_empty() {
+                                    span .muted { "openai" }
+                                } @else {
+                                    (row.dialect)
+                                }
+                            }
+                            td { @if row.direct { "yes" } @else { "no" } }
+                            td .mono { (row.key_ref) }
+                            td .row-actions {
+                                a .button .secondary
+                                    href=(format!("{}?tab=models&edit={}", crate::admin::ROUTE_SETTINGS, row.id)) {
+                                    "Edit"
+                                }
+                                /* A delete is a form, not a link: it changes
+                                   stored state and a GET must never do that. The
+                                   row carries the id, and the handler refuses the
+                                   primary by name. */
+                                form method="post"
+                                    action=(crate::admin::ROUTE_SETTINGS_PROVIDERS_DELETE) {
+                                    input type="hidden" name="provider_id" value=(row.id);
+                                    button type="submit" class="danger" {
+                                        "Delete"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        h3 id="provider-form-heading" {
+            @if editing.is_some() { "Edit a provider" } @else { "Add a provider" }
+        }
+        form method="post" action=(action) novalidate aria-labelledby="provider-form-heading" {
+            @if let Some(row) = editing {
+                /* The id is the key every auxiliary role and every stored model
+                   choice points at. Editing it would silently orphan all of
+                   them, so it is shown and submitted unchanged. */
+                div .field {
+                    label for="provider_id" { "Id" }
+                    input id="provider_id" type="text" name="provider_id" value=(row.id)
+                        readonly spellcheck="false";
+                    span .hint {
+                        "The id cannot be changed: auxiliary roles and stored model choices point "
+                        "at it by name. To rename one, add it under the new id and delete this one."
+                    }
+                }
+            } @else {
+                (text_field(
+                    "provider_id",
+                    "Id",
+                    "",
+                    Some("Lowercase letters, digits, hyphen and underscore. Stable: every auxiliary role points at it."),
+                    error,
+                    first == Some("provider_id"),
+                    false,
+                ))
+            }
+            (text_field(
+                "provider_name",
+                "Name",
+                editing.map_or("", |row| row.name.as_str()),
+                Some("What you read in the pickers. Two endpoints may serve the same model id, so this is how you tell them apart."),
+                error,
+                first == Some("provider_name"),
+                false,
+            ))
+            (text_field(
+                "provider_base_url",
+                "Endpoint",
+                editing.map_or("", |row| row.base_url.as_str()),
+                Some("An OpenAI-compatible base URL. Must start with http:// or https://."),
+                error,
+                first == Some("provider_base_url"),
+                false,
+            ))
+            (text_field(
+                "provider_key_ref",
+                "Key",
+                editing.map_or("", |row| row.key_ref.as_str()),
+                Some("Paste the API key and it is written to eris.env at 0600 and stored here as env:NAME, or write env:NAME / token:NAME yourself. A pasted key is never shown again, and never stored in this row."),
+                error,
+                first == Some("provider_key_ref"),
+                false,
+            ))
+            div .field {
+                label for="provider_dialect" { "Dialect" }
+                @let dialect = editing.map_or("", |row| row.dialect.as_str());
+                select id="provider_dialect" name="provider_dialect"
+                    autofocus[first == Some("provider_dialect")] {
+                    option value="" selected[dialect.is_empty()] { "OpenAI chat completions" }
+                    option value="messages" selected[dialect == "messages"] { "Anthropic messages" }
+                    option value="antigravity" selected[dialect == "antigravity"] { "Antigravity" }
+                }
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("provider_dialect")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "The request shape this endpoint speaks. A probe that measures a model's own "
+                    "shape overrides it per turn."
+                }
+            }
+            div .field {
+                span .label { "Flags" }
+                label .check {
+                    input type="checkbox" name="provider_reasoning_split" value="on"
+                        checked[editing.is_some_and(|row| row.reasoning_split)];
+                    span .check-name { "Ask this endpoint to split reasoning from the answer" }
+                }
+                label .check {
+                    input type="checkbox" name="provider_direct" value="on"
+                        checked[editing.is_some_and(|row| row.direct)];
+                    span .check-name { "This is the vendor's own API, not a gateway" }
+                }
+                span .hint {
+                    "Reasoning split is for an endpoint that inlines its chain of thought - MiniMax "
+                    "does - so the thinking lands in the reasoning view. Direct adds the vendor "
+                    "headers on the Messages and Antigravity dialects."
+                }
+            }
+            (text_field(
+                "provider_project",
+                "Cloud project",
+                editing.map_or("", |row| row.project.as_str()),
+                Some("Antigravity only: the cloud project its requests bill to. A login discovers this, so leave it empty unless you know it."),
+                error,
+                first == Some("provider_project"),
+                false,
+            ))
+            div .actions {
+                button type="submit" {
+                    @if editing.is_some() { "Save this provider" } @else { "Add this provider" }
+                }
+                @if editing.is_some() {
+                    a .button .secondary
+                        href=(format!("{}?tab=models", crate::admin::ROUTE_SETTINGS)) {
+                        "Cancel"
+                    }
+                }
+            }
+            p .small {
+                "The registry is validated as a whole before anything is written: a duplicate id, a "
+                "key reference that is not a reference, or a seventeenth entry is refused by field "
+                "and nothing is stored. A probe runs on save, so a new endpoint's models appear in "
+                "every picker without a second press."
+            }
+        }
+
+        /* The raw editor stays, collapsed, and it is the same route it always
+           was: an escape hatch for a registry shape the form does not cover, not
+           a second way to store it. Both paths write the one row. */
+        details .advanced {
+            summary { "Advanced: edit the registry as JSON" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_PROVIDERS) novalidate {
+                div .field {
+                    label for="providers_registry" { "Registry" }
+                    textarea id="providers_registry" name="providers_registry" rows="10"
+                        spellcheck="false" autofocus[focuses("providers_registry")] {
+                        (view.providers_json)
+                    }
+                    @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("providers_registry")) {
+                        span .error { (error.message) }
+                    }
+                    span .hint {
+                        "A JSON array of {\"id\", \"name\", \"base_url\", \"key_ref\"}. The id is "
+                        "what auxiliary roles point at. A key reference is env:NAME for a variable "
+                        "in this daemon's environment, or token:NAME for an account connected above - "
+                        "token:claude and token:antigravity are the two a login seals. Never a key. "
+                        "An optional \"dialect\" of messages makes this endpoint's requests use the "
+                        "Anthropic shape, and of antigravity uses the Antigravity wrapper; a probe "
+                        "that measures a model's own shape overrides it. An optional \"reasoning_split\" "
+                        "of true asks an endpoint that inlines its chain of thought - MiniMax does - to "
+                        "send it separately, so the thinking lands in the reasoning view instead of "
+                        "the reply. For an Antigravity entry, \"direct\" of true adds the OAuth beta "
+                        "headers and \"project\" names the cloud project its requests bill to."
+                    }
+                }
+                div .field {
+                    label for="providers_primary" { "Primary" }
+                    select id="providers_primary" name="providers_primary"
+                        autofocus[focuses("providers_primary")] {
+                        @for (id, name) in &view.provider_labels {
+                            option value=(id) selected[view.providers_primary == *id] { (name) }
+                        }
+                    }
+                    @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("providers_primary")) {
+                        span .error { (error.message) }
+                    }
+                    span .hint {
+                        "The endpoint a turn uses unless a role says otherwise. When the registry is "
+                        "empty the three Provider fields above still seed a default entry."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save providers" }
+                    button type="submit" class="secondary" formaction=(crate::admin::ROUTE_SETTINGS_PROVIDERS_PROBE) {
+                        "Probe all providers now"
+                    }
+                }
+                p .small {
+                    "Saving stores the endpoints and nothing else. Probing calls every configured "
+                    "endpoint and publishes each one's model list, which is what puts those models "
+                    "into every picker on this page."
+                }
+            }
+        }
+    }
+}
+
+/// Tools: whether a turn may call one, and how many rounds it gets.
+fn tools_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_TOOLS) novalidate {
+            div .field {
+                label for="tools_enabled" {
+                    input type="checkbox" id="tools_enabled" name="tools_enabled" value="true"
+                        checked[view.tools_enabled];
+                    " Let a turn call tools"
+                }
+                span .hint {
+                    "Off means the model is offered nothing and answers from the prompt alone. "
+                    "On, it can read, write and run commands within the sandbox mode above."
+                }
+            }
+            div .field {
+                label for="tool_index_enabled" {
+                    input type="checkbox" id="tool_index_enabled" name="tool_index_enabled"
+                        value="true" checked[view.tool_index_enabled];
+                    " Compress the tool list behind an index"
+                }
+                span .hint {
+                    "Only engages at " (crate::tools::TOOL_INDEX_MIN) " tools or more; below that "
+                    "the catalogue costs more than it saves and the payload is unchanged. Engaged, "
+                    "the frequent tools keep their schemas, the rest are one line each behind "
+                    "`tool_index`, and every one of them is still callable by name."
+                }
+            }
+            div .field {
+                label for="agents_enabled" {
+                    input type="checkbox" id="agents_enabled" name="agents_enabled" value="true"
+                        checked[view.agents_enabled];
+                    " Let a turn dispatch subagents"
+                }
+                span .hint {
+                    "Offers dispatch_agent, and only in Full sandbox mode. Each subagent is a "
+                    "background turn with this daemon's own system prompt and its own budget. It "
+                    "gets no tools: it cannot read or write files, run commands, or dispatch "
+                    "another subagent. At most " (crate::subagents::MAX_RUNNING) " run at once and "
+                    (crate::subagents::MAX_PER_TURN) " per turn, each with a "
+                    (crate::subagents::DEADLINE.as_secs()) " second deadline. What it produced "
+                    "appears in the subagents control in the top bar, which needs no script."
+                }
+            }
+            div .field {
+                label for="tool_log" { "Run log" }
+                select id="tool_log" name="tool_log" {
+                    option value="full" selected[view.tool_log_mode == "full"] {
+                        "Full - one openable window per call"
+                    }
+                    option value="summary" selected[view.tool_log_mode == "summary"] {
+                        "Summary - one collapsed line for the whole turn"
+                    }
+                    option value="off" selected[view.tool_log_mode == "off"] { "Off - do not show it" }
+                }
+                span .hint {
+                    "What the turn executed. Summary keeps a single line naming the last call, which "
+                    "opens to the full list when you want it. Off means it is neither rendered nor "
+                    "streamed, so a turn that ran commands shows only its answer."
+                }
+            }
+            div .field {
+                label for="tool_rounds" { "Tool rounds per turn" }
+                input id="tool_rounds" type="number" name="tool_rounds" value=(view.tool_rounds)
+                    min="1" max=(crate::tools::MAX_TOOL_ROUNDS_CEILING) step="1"
+                    autofocus[focuses("tool_rounds")];
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("tool_rounds")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "How many times the model may call a tool before the last round is forced to "
+                    "answer with what it has. Each round is a billed provider call. The ceiling is "
+                    (crate::tools::MAX_TOOL_ROUNDS_CEILING) "."
+                }
+            }
+            div .field {
+                // The label is the same words the device capability record uses, so
+                // the phone and the dashboard name this field identically.
+                label for="goal_rounds_ceiling" { "Long job ceiling" }
+                input id="goal_rounds_ceiling" type="number" name="goal_rounds_ceiling"
+                    value=(view.goal_rounds_ceiling)
+                    min="1" max=(crate::tools::MAX_GOAL_ROUNDS_CEILING) step="1"
+                    autofocus[focuses("goal_rounds_ceiling")];
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("goal_rounds_ceiling")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "The budget above is what every ordinary turn gets. The most a long job turn "
+                    "may be raised to: a message that explicitly asks for a long job (a plan, a "
+                    "research pass, a migration) is lifted to at most this many rounds instead, so "
+                    "an ordinary question cannot spend it. The range is 1 to "
+                    (crate::tools::MAX_GOAL_ROUNDS_CEILING) ", default "
+                    (crate::tools::DEFAULT_GOAL_ROUNDS_CEILING) "."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save tools" }
+            }
+        }
+    }
+}
+
+/// Auxiliary models: one picker per role.
+fn aux_group(view: &SettingsView) -> Markup {
+    // Every model on every provider, provider-qualified, plus the inherit
+    // sentinel. A role pinned to a model keeps that model's provider with it, so
+    // the two selects below cannot disagree about which endpoint is meant.
+    let mut options: Vec<(String, String)> =
+        vec![(crate::aux::INHERIT.to_owned(), "primary model".to_owned())];
+    options.extend(view.model_options.iter().cloned());
+
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_AUX) novalidate {
+            @for row in &view.aux_roles {
+                div .field {
+                    label for=(format!("aux_provider_{}", row.key)) { (row.label) }
+                    select id=(format!("aux_provider_{}", row.key))
+                        name=(format!("aux_provider_{}", row.key)) {
+                        option value=(crate::aux::INHERIT)
+                            selected[row.provider_selected == crate::aux::INHERIT] {
+                            "primary provider"
+                        }
+                        @for (id, name) in &view.provider_labels {
+                            option value=(id) selected[row.provider_selected == *id] { (name) }
+                        }
+                    }
+                    select id=(format!("aux_{}", row.key)) name=(format!("aux_{}", row.key))
+                        aria-label=(format!("{} model", row.label)) {
+                        // A stored pin that no catalogue holds keeps its own
+                        // option, for the same reason the default model does.
+                        @if row.selected != crate::aux::INHERIT
+                            && !options.iter().any(|(value, _)| *value == row.selected) {
+                            option value=(row.selected) selected[true] {
+                                (row.selected) " (not in any probe)"
+                            }
+                        }
+                        @for (value, label) in &options {
+                            option value=(value) selected[row.selected == *value] { (label) }
+                        }
+                    }
+                    span .hint {
+                        (row.purpose) " Used by " (&row.consumed_by) "."
+                    }
+                }
+            }
+            div .actions {
+                button type="submit" { "Save auxiliary models" }
+            }
+        }
+    }
+}
+
+/// MCP servers: an editor for a list nothing runs yet.
+fn mcp_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_MCP) novalidate {
+            div .field {
+                label for="mcp_servers" { "Servers" }
+                textarea id="mcp_servers" name="mcp_servers" rows="8" spellcheck="false"
+                    autofocus[error.is_some_and(|error| error.field.as_deref() == Some("mcp_servers"))] {
+                    (view.mcp_servers)
+                }
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("mcp_servers")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "A JSON array of {\"name\", \"command\", \"args\"}. Validation rejects a "
+                    "missing name or command and a duplicate name."
+                }
+            }
+            @if !view.mcp_errors.is_empty() {
+                dl .kv {
+                    @for (name, error) in &view.mcp_errors {
+                        dt { (name) }
+                        dd .warn { (error) }
+                    }
+                }
+            }
+            p .small .warn { (view.mcp_status) }
+            div .actions {
+                button type="submit" { "Save MCP servers" }
+            }
+        }
+    }
+}
+
+/// The schedules form: the global switch, the create fields, and one row per
+/// schedule with its toggle and delete controls.
+fn schedules_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_SCHEDULES) novalidate {
+            div .field {
+                label for="schedules_enabled" {
+                    input type="checkbox" id="schedules_enabled" name="schedules_enabled"
+                        value="true" checked[view.schedules_enabled];
+                    " Run scheduled turns"
+                }
+                input type="hidden" name="schedules_action" value="switch";
+                span .hint {
+                    "On, each schedule below starts one ordinary conversation turn when its cron "
+                    "expression is due. Cron is read in the " (view.schedules_clock) " clock."
+                }
+                div .actions {
+                    button type="submit" { "Save scheduler" }
+                }
+            }
+        }
+
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_SCHEDULES) novalidate {
+            h3 { "New schedule" }
+            div .field {
+                label for="schedule_name" { "Name" }
+                input id="schedule_name" type="text" name="schedule_name"
+                    maxlength=(crate::scheduler::MAX_NAME_CHARS)
+                    placeholder="Morning brief" autofocus[focuses("schedule_name")];
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("schedule_name")) {
+                    span .error { (error.message) }
+                }
+            }
+            div .field {
+                label for="schedule_cron" { "Cron" }
+                input id="schedule_cron" type="text" name="schedule_cron"
+                    value=(crate::scheduler::DEFAULT_CRON) spellcheck="false"
+                    autofocus[focuses("schedule_cron")];
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("schedule_cron")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Five fields: minute, hour, day of month, month, day of week. "
+                    "Steps, ranges, lists and weekday names are accepted, and the clock is "
+                    (view.schedules_clock) "."
+                }
+            }
+            div .field {
+                label for="schedule_prompt" { "What it asks" }
+                textarea id="schedule_prompt" name="schedule_prompt" rows="3"
+                    autofocus[focuses("schedule_prompt")] {}
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("schedule_prompt")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "The question the scheduled turn sends. The answer lands as an ordinary "
+                    "conversation named after this schedule."
+                }
+            }
+            div .field {
+                label for="schedule_deliver" { "Delivery" }
+                select id="schedule_deliver" name="schedule_deliver" {
+                    @for channel in crate::delivery::DEFAULT_VALUES {
+                        option value=(channel)
+                            selected[*channel == view.schedule_delivery_default] {
+                            (delivery_label(channel))
+                        }
+                    }
+                }
+                span .hint {
+                    "Where the answer goes. Push alerts the paired devices, an inbox row waits in "
+                    "the tray, mail writes to the one permitted address, and nothing leaves it in "
+                    "the conversation. The address rule is not configurable here."
+                }
+            }
+            input type="hidden" name="schedules_action" value="create";
+            div .actions {
+                button type="submit" { "Add schedule" }
+            }
+        }
+
+        @for schedule in &view.schedules {
+            div .row {
+                div .row-main {
+                    strong { (schedule.name) }
+                    code .muted { (schedule.cron) }
+                }
+                div .row-sub {
+                    span .status .ok[schedule.enabled] .off[!schedule.enabled] {
+                        @if schedule.enabled { "on" } @else { "off" }
+                    }
+                    @if let Some(at) = &schedule.next_fire_at {
+                        " next " (at)
+                    }
+                    @if let Some(status) = &schedule.last_status {
+                        " last " (status)
+                    }
+                    " · delivery " (delivery_label(&schedule.deliver))
+                }
+                form method="post" action=(crate::admin::ROUTE_SETTINGS_SCHEDULES) novalidate {
+                    input type="hidden" name="schedule_id" value=(schedule.id.as_str());
+                    input type="hidden" name="schedules_action" value="toggle";
+                    input type="hidden" name="schedule_enabled"
+                        value=@if schedule.enabled { "true" } @else { "false" };
+                    button type="submit" {
+                        @if schedule.enabled { "Disable" } @else { "Enable" }
+                    }
+                    " "
+                    button type="submit" name="schedules_action" value="retry" {
+                        "Send again"
+                    }
+                    " "
+                    button type="submit" class="danger" name="schedules_action" value="delete" {
+                        "Delete"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The skills form: the global switch, the directory, and one switch per skill.
+fn skills_group(view: &SettingsView) -> Markup {
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_SKILLS) novalidate {
+            div .field {
+                label for="skills_enabled" {
+                    input type="checkbox" id="skills_enabled" name="skills_enabled"
+                        value="true" checked[view.skills_enabled];
+                    " Offer the skill library to turns"
+                }
+                span .hint {
+                    "On, a turn is offered the skills below by name and may call read_skill to read "
+                    "one before following it. Bodies are never injected into the prompt."
+                }
+            }
+            div .field {
+                label for="skills_dir" { "Library directory" }
+                input id="skills_dir" type="text" name="skills_dir"
+                    value=(view.skills_dir) placeholder=(view.skills_path);
+                span .hint {
+                    "Blank uses " (view.skills_path) ". Each skill is a subdirectory holding a "
+                    "SKILL.md with a name and description in frontmatter."
+                }
+            }
+            @if let Some(error) = &view.skills_error {
+                p .small .warn { (error) }
+            }
+            @if !view.skills.is_empty() {
+                table {
+                    thead {
+                        tr {
+                            th { "Skill" } th { "On" }
+                        }
+                    }
+                    @for skill in &view.skills {
+                        tr {
+                            td {
+                                strong { (skill.name) }
+                                code .muted { (skill.key) }
+                                @if let Some(description) = &skill.description {
+                                    p .small { (description) }
+                                }
+                            }
+                            td {
+                                input type="checkbox"
+                                    name=(crate::skills::setting_key(&skill.key))
+                                    value="true" checked[skill.enabled];
+                            }
+                        }
+                    }
+                }
+            }
+            div .actions {
+                button type="submit" { "Save skills" }
+            }
+        }
+    }
+}
+
+/// The settings page: four forms, then the rows that are read-only by design.
+/// The security page: the one surface allowed to ask for a secret.
+///
+/// The settings page is tested to contain no `type="password"` at all, because
+/// there is nothing stored there to mask - only references. Rotating the sign-in
+/// credential is the opposite kind of surface, so it gets its own page rather than
+/// an exception.
+pub fn security_page(view: &SettingsView) -> Markup {
+    html! {
+        h1 { "Security" }
+        p .lede {
+            "The credential you sign in with, and nothing else. Changing it signs every device out."
+        }
+        (alert_region(view.error.as_ref().filter(|error| error.field.is_none()), None))
+
+        section .card aria-labelledby="credential-heading" {
+            h2 id="credential-heading" { "Sign-in credential" }
+            p .small {
+                "The six-word passphrase exists because a fresh host has to be claimable by something "
+                "long and unguessable. Once it is yours, a credential you will actually type is a "
+                "better trade - as long as it is not four digits."
+            }
+            form method="post" action=(crate::admin::ROUTE_SECURITY) novalidate {
+                div .field {
+                    label for="current_password" { "Current credential" }
+                    input id="current_password" type="password" name="current_password"
+                        autocomplete="current-password" autofocus;
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("current_password")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    label for="new_password" { "New credential" }
+                    input id="new_password" type="password" name="new_password"
+                        autocomplete="new-password";
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("new_password")) {
+                        span .error { (error.message) }
+                    }
+                    span .hint {
+                        "At least " (crate::web::routes::MIN_SIGN_IN_CHARS)
+                        " characters. Stored as an argon2id verifier, never as text."
+                    }
+                }
+                div .field {
+                    label for="confirm_password" { "Repeat it" }
+                    input id="confirm_password" type="password" name="confirm_password"
+                        autocomplete="new-password";
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("confirm_password")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Change credential" }
+                }
+            }
+            p .small .warn {
+                "Every signed-in session is dropped when this changes, including this one, so you will "
+                "sign in again with the new credential. There is no recovery e-mail on a self-hosted "
+                "daemon: if this is forgotten, the admin_credential row in eris.db is the only way back."
+            }
+        }
+    }
+}
+
+pub fn settings_page(view: &SettingsView) -> Markup {
+    // A refusal reaches the page in one of two ways: next to the field, when a
+    // group claims it, or in the page level region. The second half of that is
+    // not only for an error with no field at all: plenty of forms here have no
+    // `SettingsGroup` of their own - the tools card, the clock, the provider
+    // form's id and endpoint - and an error those cards produced used to be
+    // rendered nowhere, which reads as a save that silently did nothing. So a
+    // field error that no group owns falls back to this region.
+    let page_error = view.error.as_ref().filter(|error| {
+        error.field.is_none() || !SettingsGroup::ALL.iter().any(|group| group.owns(error))
+    });
+    let tab = view.tab;
+    // Only the chosen tab's cards are built. Every card is still a function of
+    // the same view, so the union of the six requests is the whole page, and the
+    // acceptance test walks all six to prove it.
+    let cards = match tab {
+        SettingsTab::Models => tab_models(view),
+        SettingsTab::Assistant => tab_assistant(view),
+        SettingsTab::Memory => tab_memory(view),
+        SettingsTab::Devices => tab_devices(view),
+        SettingsTab::Automation => tab_automation(view),
+        SettingsTab::System => tab_system(view),
+    };
+    let body = html! {
+        /* One title, one set of segments, the cards. The page used to open with
+           an identity card carrying a second copy of the section nav the shell
+           already draws above it, which read as two rows of the same buttons and
+           pushed the settings the operator came for below the fold. The section
+           row is the shell's job; the segments below belong to this page. */
+        h1 { "Settings" }
+
+        /* The segments sit directly under the title and above the cards they
+           switch between. A segment is an anchor, so it works with no script,
+           survives a bookmark, and is what the back button steps through. */
+        (tab_strip(tab))
+        (alert_region(page_error, None))
+        (cards)
+
+        /* The one thing this page must never do is ask for a secret, so the page
+           that may is linked from every segment rather than from a card that
+           only one of them shows. */
+        p .small .settings-foot {
+            "The sign-in credential lives on "
+            a href=(crate::admin::ROUTE_SECURITY) { "its own page" }
+            ", because this one never asks for a secret."
+        }
+    };
+    shell(
+        "Settings",
+        view.state,
+        Some(Nav::Settings),
+        body,
+        &view.chrome,
+    )
+}
+
+/// The Models tab: where a turn is sent, and what it may call.
+fn tab_models(view: &SettingsView) -> Markup {
+    html! {
+        section .card aria-labelledby="provider-heading" {
+            h2 id="provider-heading" { "Provider" }
+            p .small {
+                "The endpoint every turn is sent to, and the name of the environment variable that "
+                "holds its key. A reference travels; a key value never does."
+            }
+            (provider_group(view))
+        }
+
+        section .card aria-labelledby="accounts-heading" {
+            h2 id="accounts-heading" { "Accounts" }
+            p .small {
+                "The providers this daemon can log in to itself, instead of reading a key out "
+                "of the environment. Connecting one makes its models available to every turn "
+                "and every role, with the grant encrypted on disk."
+            }
+            (accounts_group(view))
+        }
+
+        section .card aria-labelledby="providers-heading" {
+            h2 id="providers-heading" { "Providers" }
+            p .small {
+                "Every endpoint this daemon may talk to. One of them is primary, and the auxiliary "
+                "roles below can point at any of them."
+            }
+            (providers_group(view))
+        }
+
+        section .card aria-labelledby="tools-heading" {
+            h2 id="tools-heading" { "Tools" }
+            p .small {
+                "What a turn may call, and how long it may keep calling. The sandbox mode above "
+                "decides what each tool is allowed to touch."
+            }
+            (tools_group(view))
+        }
+
+        section .card aria-labelledby="aux-heading" {
+            h2 id="aux-heading" { "Auxiliary models" }
+            p .small {
+                "A turn answers with the primary model. These are the jobs beside it. A role set to "
+                "primary follows whatever the provider section uses; a role pinned to a model keeps "
+                "that model when the primary moves."
+            }
+            p .small {
+                "Pinning a model to a role is what turns that role on: left on primary, the role does "
+                "nothing, because re-running the primary model for a job the turn already did would be "
+                "cost with no answer behind it. Each row states whether anything reads it yet."
+            }
+            (aux_group(view))
+        }
+    }
+}
+
+/// The Assistant tab: how a turn talks, thinks, and reports what it did.
+fn tab_assistant(view: &SettingsView) -> Markup {
+    html! {
+        section .card aria-labelledby="persona-heading" {
+            h2 id="persona-heading" { "Assistant identity" }
+            p .small {
+                "Who this assistant is. The text here is the system prompt every turn carries, and "
+                "it is the one setting that changes how the model talks rather than what it can reach."
+            }
+            (persona_group(view))
+        }
+
+        section .card aria-labelledby="goal-heading" {
+            h2 id="goal-heading" { "Objective" }
+            p .small {
+                "What this assistant is working toward. While an objective is set, every message "
+                "carries it and the turn is allowed a longer round budget, so a job can be finished "
+                "in one go rather than waiting for the next prompt. A greeting does not carry it: "
+                "with nothing else to act on, an objective in the prompt is the only instruction "
+                "left, and the answer to a plain hello becomes a progress report."
+            }
+            (goal_group(view))
+        }
+
+        section .card aria-labelledby="reasoning-heading" {
+            h2 id="reasoning-heading" { "Thinking bubble" }
+            p .small {
+                "Some models send a separate reasoning stream that is not the reply. When this is on, "
+                "it appears above the answer in a collapsed, faded bubble you can open."
+            }
+            (reasoning_group(view))
+        }
+
+        section .card aria-labelledby="streaming-heading" {
+            h2 id="streaming-heading" { "Responses" }
+            p .small {
+                "How an answer reaches the page. Streaming is the live view; the plain path is the "
+                "one a browser with no script uses and is often the easier read on a slow link."
+            }
+            (streaming_group(view))
+        }
+
+        section .card aria-labelledby="quota-heading" {
+            h2 id="quota-heading" { "Quota" }
+            p .small {
+                "Turns, cache, tokens and latency are always under an answer. This adds the "
+                "provider's limit state and when it resets."
+            }
+            (quota_group(view))
+        }
+
+        section .card aria-labelledby="search-heading" {
+            h2 id="search-heading" { "Search" }
+            p .small {
+                "The transcript search on the dashboard and on the phone reads one index. These two "
+                "values are its defaults: the phone asks for them when it has no opinion, and a "
+                "result list never grows past the limit."
+            }
+            (search_group(view))
+        }
+
+        section .card aria-labelledby="greeting-heading" {
+            h2 id="greeting-heading" { "Greeting" }
+            p .small {
+                "The salutation on an empty conversation comes from the hour. This card adds a "
+                "second line under it, written by a model, cached in the database, and rewritten "
+                "only when it goes stale."
+            }
+            (greeting_group(view))
+        }
+
+        section .card aria-labelledby="steward-assistant-heading" {
+            h2 id="steward-assistant-heading" { "Steward" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STEWARD) novalidate {
+                (alert_region(None, view.group_notice(SettingsGroup::Steward)))
+            p .small {
+                "The charter is the standing instruction the steward works under, one line per "
+                "duty seed. The urgency and board columns are its defaults."
+            }
+            div .field {
+                label for="steward_charter" { "Charter" }
+                textarea id="steward_charter" name="steward_charter" rows="8" spellcheck="false" {
+                    (view.steward_charter)
+                }
+            }
+            div .field {
+                label for="steward_call_urgency_default" { "Call urgency" }
+                select id="steward_call_urgency_default" name="steward_call_urgency_default" {
+                    option value="normal" selected[view.steward_call_urgency_default == "normal"] { "Normal" }
+                    option value="high" selected[view.steward_call_urgency_default == "high"] { "High" }
+                }
+            }
+            div .field {
+                label for="steward_board_columns" { "Board columns" }
+                select id="steward_board_columns" name="steward_board_columns" {
+                    option value="compact" selected[view.steward_board_columns == "compact"] { "Compact" }
+                    option value="full" selected[view.steward_board_columns == "full"] { "Full" }
+                }
+            }
+            div .actions {
+                button type="submit" { "Save steward" }
+            }
+            }
+        }
+    }
+}
+
+/// The Memory tab: what a turn recalls before it answers.
+fn tab_memory(view: &SettingsView) -> Markup {
+    html! {
+        section .card aria-labelledby="memory-heading" {
+            h2 id="memory-heading" { "Memory" }
+            p .small {
+                "Recalled notes are added to the prompt as context and marked as possibly out of "
+                "date. A backend that cannot answer is recorded and the turn goes on without it."
+            }
+            (memory_group(view))
+        }
+
+        section .card aria-labelledby="steward-memory-heading" {
+            h2 id="steward-memory-heading" { "Steward notes" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STEWARD) novalidate {
+                (alert_region(None, view.group_notice(SettingsGroup::Steward)))
+            p .small {
+                "The steward's field notes are its scratch memory. The window is how many recent "
+                "notes a turn carries; the days are how long a note is kept."
+            }
+            div .field {
+                label for="steward_note_window" { "Notes per turn" }
+                input type="number" id="steward_note_window" name="steward_note_window"
+                    min="1" max="64" value=(view.steward_note_window);
+            }
+            div .field {
+                label for="steward_field_note_days" { "Keep field notes for, days" }
+                input type="number" id="steward_field_note_days" name="steward_field_note_days"
+                    min="1" max="365" value=(view.steward_field_note_days);
+            }
+            div .actions {
+                button type="submit" { "Save steward notes" }
+            }
+            }
+        }
+    }
+}
+
+/// The Devices tab: where a phone reaches this daemon, and what it is told.
+fn tab_devices(view: &SettingsView) -> Markup {
+    html! {
+        section .card aria-labelledby="device-bind-heading" {
+            h2 id="device-bind-heading" { "Device listener" }
+            p .small {
+                "Where paired phones reach this daemon. Loopback only by default, which is why an "
+                "iPhone cannot pair until you add an address it can route to - your tailnet address, "
+                "or the LAN address if you are on the same network."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_PUSH) novalidate {
+                div .field {
+                    span .label { "Reply notifications" }
+                    /* The master switch and the scope are one control: off means no
+                       notification whatever the scope says, and a form that showed
+                       the scope without saying so would look like a picker that
+                       does not work.
+
+                       The hidden pair is how an unchecked box is told apart from a
+                       page that never had one: the box posts `on` after `off`, so
+                       reading the last value is the answer and reading no value at
+                       all is an older form. */
+                    label .check {
+                        input type="hidden" name="notify_on_reply" value="off";
+                        input type="checkbox" name="notify_on_reply" value="on"
+                            checked[view.notify_on_reply];
+                        span .check-name { "Announce a finished reply" }
+                    }
+                    span .hint {
+                        "While this is off nothing below it sends anything, whatever scope is "
+                        "chosen. A turn is the only thing this daemon does that a phone wants to "
+                        "hear about, so this is on by default."
+                    }
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("notify_on_reply")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    label for="tts_enabled" {
+                        input type="checkbox" id="tts_enabled" name="tts_enabled" value="true"
+                            checked[view.tts_enabled];
+                        " Speak the answer on the phone"
+                    }
+                    span .hint {
+                        "The phone asks the daemon for audio and plays it. Synthesis goes to the "
+                        "configured provider's speech endpoint; with none, the phone is told "
+                        "`tts_not_configured` rather than going quiet."
+                    }
+                }
+                div .field {
+                    label for="tts_voice" { "Voice" }
+                    select id="tts_voice" name="tts_voice" {
+                        @for (key, label) in crate::speech::VOICES {
+                            option value=(key) selected[view.tts_voice == key] { (label) }
+                        }
+                    }
+                    span .hint {
+                        "The list is the daemon's, not the client's, and `GET /v1/voices` "
+                        "publishes it with the current choice."
+                    }
+                }
+                div .field {
+                    span .label { "Where it is sent" }
+                    div .radio-row {
+                        @for scope in crate::push::NotifyScope::ALL {
+                            label .radio {
+                                input type="radio" name="notify_scope"
+                                    value=(scope.as_str())
+                                    checked[view.notify_scope == scope];
+                                span { (scope_sentence(scope)) }
+                            }
+                        }
+                    }
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("notify_scope")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    span .label { "Chosen devices" }
+                    @if view.push_devices.is_empty() {
+                        span .hint {
+                            "No device is paired, so there is nothing to choose. Pair a phone "
+                            "on the Devices page first."
+                        }
+                    } @else {
+                        @let chosen = chosen_devices(&view.notify_devices);
+                        div .check-list {
+                            @for (id, name) in &view.push_devices {
+                                label .check {
+                                    input type="checkbox" name="notify_devices"
+                                        value=(id.as_str())
+                                        checked[chosen.iter().any(|picked| picked == id)];
+                                    span .check-name { (name) }
+                                    span .check-id { (id) }
+                                }
+                            }
+                        }
+                        span .hint {
+                            "Ticked devices are the ones \"Chosen devices\" reaches. A tick here "
+                            "does nothing until that scope is picked."
+                        }
+                    }
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("notify_devices")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save notifications" }
+                }
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_DEVICE) novalidate {
+                div .field {
+                    label for="device_listen" { "Bind addresses" }
+                    input id="device_listen" type="text" name="device_listen" value=(view.device_listen)
+                        placeholder="127.0.0.1:7341, 100.x.y.z:7341";
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("device_listen")) {
+                        span .error { (error.message) }
+                    }
+                    span .hint {
+                        "Comma separated. The device API is /v1 only and every call needs a paired "
+                        "device token, so opening an address does not open the dashboard. Applied at "
+                        "the next start: a bind is not moved under a live phone."
+                    }
+                }
+                div .field {
+                    label for="device_relay" { "Pairing relay URL" }
+                    input id="device_relay" type="text" name="device_relay" value=(view.device_relay)
+                        placeholder="https://host.tailnet.ts.net";
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("device_relay")) {
+                        span .error { (error.message) }
+                    }
+                    span .hint {
+                        "The origin the pairing QR carries, and the host a paired phone calls. The "
+                        "app appends /v1 itself, so this is a scheme and a host with no path. For a "
+                        "phone on the tailnet, the Tailscale Serve name is the one that works: it is "
+                        "https, on 443, and already routes /v1 to the device listener."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save bind addresses" }
+                }
+            }
+        }
+    }
+}
+
+/// The Automation tab: what runs without a person asking.
+fn tab_automation(view: &SettingsView) -> Markup {
+    html! {
+        section .card aria-labelledby="schedules-heading" {
+            h2 id="schedules-heading" { "Schedules" }
+            p .small {
+                "Cron runs that start ordinary conversation turns. A run is the same turn the "
+                "composer starts, with the question supplied by the row, and its answer lands in "
+                "a conversation named after the schedule."
+            }
+            (schedules_group(view))
+        }
+
+        section .card aria-labelledby="standing-heading" {
+            h2 id="standing-heading" { "Standing orders" }
+            p .small {
+                "Proactive turns on a cadence rather than only when spoken to. An order is a prompt "
+                "and a cooldown; it fires on the daemon's own tick, and its answer lands on the "
+                "default delivery channel above. The budget on each order is the anti-spam guard."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STANDING) novalidate {
+                div .field {
+                    label for="standing_orders_enabled" {
+                        input type="checkbox" id="standing_orders_enabled"
+                            name="standing_orders_enabled" value="true"
+                            checked[view.standing_orders_enabled];
+                        " Let standing orders fire"
+                    }
+                    span .hint {
+                        "Off, nothing fires and the existing orders stay as they are. A held-back "
+                        "evaluation is recorded too, so its cadence waits instead of asking again."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save standing orders" }
+                    a .button href=(format!("{}#mem-intents", crate::admin::ROUTE_SETTINGS)) {
+                        "See the orders"
+                    }
+                }
+            }
+        }
+
+        section .card aria-labelledby="delivery-heading" {
+            h2 id="delivery-heading" { "Schedule delivery" }
+            p .small {
+                "Where a schedule's answer lands. A schedule may choose its own; this is what a new "
+                "one starts on, and it is the switch that lets mail out of this daemon at all. The "
+                "recipient is fixed: one address, no CC, no aliases."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_DELIVERY) novalidate {
+                div .field {
+                    label for="schedule_delivery_default" { "Default channel" }
+                    select id="schedule_delivery_default" name="schedule_delivery_default" {
+                        @for value in crate::delivery::DEFAULT_VALUES {
+                            option value=(value) selected[view.schedule_delivery_default == *value] {
+                                (delivery_label(value))
+                            }
+                        }
+                    }
+                    span .hint {
+                        "Push to every paired device, an inbox row, mail, or nothing but the "
+                        "conversation. Every run records which of them landed."
+                    }
+                }
+                div .field {
+                    label for="schedule_email_enabled" {
+                        input type="checkbox" id="schedule_email_enabled" name="schedule_email_enabled"
+                            value="true" checked[view.schedule_email_enabled];
+                        " Allow mail"
+                    }
+                    span .hint {
+                        "Off, a run that asked for mail falls back to the inbox and its row says so. "
+                        "Mail needs a relay at " code { "deliver.smtp_host" } "; without one the "
+                        "message is written to the outbox and nothing claims it was sent."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save delivery" }
+                    a .button href=(crate::admin::ROUTE_TRIGGERS) { "Open schedules" }
+                }
+            }
+        }
+
+        section .card aria-labelledby="jobs-heading" {
+            h2 id="jobs-heading" { "Background jobs" }
+            p .small {
+                "Work started with the background flag outlives the thirty-second command cap. "
+                "These are how it reports and how long its receipt survives: a job that ends on "
+                "its own arrives as its own turn instead of costing a poll."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_JOBS) novalidate {
+                div .field {
+                    label for="jobs_notify_on_complete" {
+                        input type="checkbox" id="jobs_notify_on_complete"
+                            name="jobs_notify_on_complete" value="true"
+                            checked[view.jobs_notify_on_complete];
+                        " Report a finish instead of polling"
+                    }
+                    span .hint {
+                        "Two quiet checks arm it, and the turn is told to stop asking. Off, every "
+                        "job is polled until it is done."
+                    }
+                }
+                div .field {
+                    label for="jobs_receipt_days" { "Keep receipts for" }
+                    input type="number" id="jobs_receipt_days" name="jobs_receipt_days"
+                        min=(crate::process::MIN_RECEIPT_DAYS)
+                        max=(crate::process::MAX_RECEIPT_DAYS) value=(view.jobs_receipt_days);
+                    span .hint {
+                        "Days, 1 to 30, newest sixty-four kept whatever the age. A receipt carries "
+                        "the exit code and the tail, so a crash is readable afterwards."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save jobs" }
+                    a .button href=(crate::admin::ROUTE_ACTIVITY) { "Open activity" }
+                }
+            }
+        }
+
+        section .card aria-labelledby="steward-automation-heading" {
+            h2 id="steward-automation-heading" { "Steward" }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_STEWARD) novalidate {
+                (alert_region(None, view.group_notice(SettingsGroup::Steward)))
+            /* The marker says this form carries the switch: an unticked box is a
+               real "off", where a form without the marker simply leaves it alone. */
+            input type="hidden" name="steward_form" value="1";
+            p .small {
+                "The steward watches the duties you hand it on a cadence, without being spoken to. "
+                "Off, no duty is watched."
+            }
+            div .field {
+                label for="steward_enabled" {
+                    input type="checkbox" id="steward_enabled" name="steward_enabled"
+                        value="true" checked[view.steward_enabled];
+                    " Let the steward watch duties"
+                }
+            }
+            div .field {
+                label for="steward_watch_seconds" { "Watch interval, seconds" }
+                input type="number" id="steward_watch_seconds" name="steward_watch_seconds"
+                    min="30" max="3600" value=(view.steward_watch_seconds);
+            }
+            div .field {
+                label for="steward_max_rounds" { "Round cap per duty" }
+                input type="number" id="steward_max_rounds" name="steward_max_rounds"
+                    min="1" max="200" value=(view.steward_max_rounds);
+            }
+            div .field {
+                label for="steward_delivery_default" { "Steward delivery" }
+                select id="steward_delivery_default" name="steward_delivery_default" {
+                    option value="push" selected[view.steward_delivery_default == "push"] { "Push" }
+                    option value="inbox" selected[view.steward_delivery_default == "inbox"] { "Inbox" }
+                    option value="email" selected[view.steward_delivery_default == "email"] { "Email" }
+                    option value="off" selected[view.steward_delivery_default == "off"] { "Off" }
+                }
+            }
+            div .field {
+                label for="steward_mail_recipients" { "Steward mail allowlist" }
+                input type="text" id="steward_mail_recipients" name="steward_mail_recipients"
+                    value=(view.steward_mail_recipients);
+                span .hint {
+                    "Addresses the steward may mail, comma-separated. Empty sends no mail: the "
+                    "steward's messages go to the inbox. Copies and reply-all are never used."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save steward" }
+            }
+            }
+        }
+
+        section .card aria-labelledby="learning-heading" {
+            h2 id="learning-heading" { "Learning" }
+            p .small {
+                "The loop reads a finished turn and writes down what it taught. A review is one "
+                "JSON object, and a reply that breaks the loop's own rules used to be thrown away "
+                "with the lesson still inside it."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_LEARNING) novalidate {
+                div .field {
+                    label for="learning_repair" {
+                        input type="checkbox" id="learning_repair" name="learning_repair"
+                            value="true" checked[view.learning_repair];
+                        " Repair an over-long review"
+                    }
+                    span .hint {
+                        "Collapse the whitespace, cut at a word boundary, add the full stop, then "
+                        "re-read it. One re-ask follows if that fails; off, both are skipped and the "
+                        "run fails on the first refusal."
+                    }
+                }
+                div .field {
+                    label for="curator_archive_days" { "Archive a never-read skill after" }
+                    input type="number" id="curator_archive_days" name="curator_archive_days"
+                        min=(crate::learning::MIN_UNUSED_DAYS)
+                        max=(crate::learning::MAX_UNUSED_DAYS)
+                        value=(view.curator_archive_days);
+                    span .hint {
+                        "Days, 7 to 365. A skill nothing has ever opened leaves the catalog when it "
+                        "is that old, stays on disk, and is reachable again with one un-archive. A "
+                        "pinned skill is never archived."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save learning" }
+                    a .button href=(crate::admin::ROUTE_LEARNING) { "Open the loop" }
+                }
+            }
+        }
+
+        section .card aria-labelledby="skills-heading" {
+            h2 id="skills-heading" { "Skills" }
+            p .small {
+                "Your own procedures, offered to a turn by name. The catalog carries names and "
+                "descriptions only; a turn reads one on demand before following it."
+            }
+            (skills_group(view))
+        }
+
+        section .card aria-labelledby="roster-heading" {
+            h2 id="roster-heading" { "Roster" }
+            p .small {
+                "Named specialists a turn can hand work to. A row is a name, a role and a "
+                "standing brief; the prompt lists them and a turn dispatches to one by name "
+                "instead of re-explaining it every time."
+            }
+            p .small {
+                "The enabling switch is " strong { "Agents" } " above; this card is the pointer "
+                "to the table itself, which has its own page because a brief is a paragraph and "
+                "a paragraph in a settings card is a form nobody can read."
+            }
+            div .actions {
+                a .button href=(crate::admin::ROUTE_ROSTER) { "Open the roster" }
+            }
+        }
+
+        section .card aria-labelledby="mcp-heading" {
+            h2 id="mcp-heading" { "MCP servers" }
+            (mcp_group(view))
+        }
+    }
+}
+
+/// The System tab's Update card.
+///
+/// It sits directly above the Daemon card because the two answer the same
+/// question - how does this process become a different process - and the update is
+/// the answer that keeps the settings. Plain English, one paragraph, no jargon:
+/// what is installed, what is newest, and what pressing the button will do.
+fn update_card(view: &SettingsView) -> Markup {
+    let card = &view.update;
+    let staged = !card.staged.is_empty();
+    html! {
+        section .card.service aria-labelledby="update-heading" {
+            h2 id="update-heading" { "Software" }
+            /* One paragraph of plain English: what is installed, what pressing the
+               button does, and where the work happens. The daemon cannot write its
+               own binary, so saying who does is part of being honest about it. */
+            p .small {
+                "This installs a build over the running binary and restarts the daemon. A small "
+                "helper unit does the copy, the backup and the restart, because the daemon runs "
+                "with its home directory read-only and cannot replace the binary it started from. "
+                "If the new binary does not come up, the previous one is put back and the daemon "
+                "restarts on it."
+            }
+            dl .kv {
+                dt { "Running" }
+                dd { code { (card.current) } }
+                dt { "Staged" }
+                dd {
+                    @if staged {
+                        @for (index, name) in card.staged.iter().enumerate() {
+                            @if index > 0 { ", " }
+                            code { (name) }
+                        }
+                    } @else {
+                        "nothing staged beside the running binary"
+                    }
+                }
+                @if let Some(tag) = card.latest_tag.as_ref() {
+                    dt { "Newest release" }
+                    dd {
+                        code { (tag) }
+                        @if card.update_available {
+                            " " span .tag { "available" }
+                        } @else {
+                            " " span .tag { "this is what you run" }
+                        }
+                    }
+                    @if !card.latest_published.is_empty() {
+                        dt { "Published" }
+                        dd { (card.latest_published) }
+                    }
+                }
+                dt { "Last checked" }
+                dd {
+                    @match (card.checked, card.checked_at.as_ref()) {
+                        (true, Some(at)) => { "confirmed with the release server at " code { (at) } }
+                        (false, Some(at)) => {
+                            "not confirmed this time; the cached answer is from " code { (at) }
+                        }
+                        (true, None) => { "confirmed with the release server" }
+                        (false, None) => { "never: no release manifest is cached on this host" }
+                    }
+                }
+            }
+            @if let Some(note) = card.note.as_ref() {
+                p .small .hint { (note) }
+            }
+            @if !card.latest_notes.is_empty() {
+                details {
+                    summary { "Release notes" }
+                    pre .notes { (card.latest_notes) }
+                }
+            }
+            div .update-actions {
+                /* The one write. A plain form, so the card works with JavaScript
+                   blocked and the answer is a page rather than a script's job. */
+                form method="post" action=(crate::admin::ROUTE_SETTINGS_UPDATE) novalidate {
+                    @if card.can_install {
+                        button type="submit" class="danger" { "Install staged update" }
+                    } @else {
+                        button type="submit" class="danger" disabled { "Install staged update" }
+                    }
+                }
+                form method="post" action=(crate::admin::ROUTE_SETTINGS_UPDATE_CHECK) novalidate {
+                    button type="submit" class="secondary" { "Check now" }
+                }
+            }
+            @if let Some(blocker) = card.blocker.as_ref() {
+                p .small .hint { (blocker) }
+            } @else if !staged {
+                p .small .hint {
+                    "Nothing is staged, so there is nothing for this button to install. Stage a "
+                    "build as " code { "eris.new-<version>-<build>" } " beside the running binary "
+                    "first, or wait for a published release."
+                }
+            }
+            @if card.running() {
+                p .small {
+                    "An install is in progress. Reload this page for the next line: the daemon "
+                    "restarts at the end of it and answers again in a few seconds."
+                }
+            }
+            @if card.progress_state != "idle" {
+                div .update-progress {
+                    h3 { "Install progress" }
+                    p .small { "State: " code { (card.progress_state) } }
+                    @if let Some(error) = card.progress_error.as_ref() {
+                        p .error { (error) }
+                    }
+                    @if !card.progress_output.is_empty() {
+                        pre .output {
+                            @for line in &card.progress_output {
+                                (line) "\n"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The System tab: what a turn may touch, when it is, and how the page looks.
+fn tab_system(view: &SettingsView) -> Markup {
+    html! {
+        section .card aria-labelledby="permissions-heading" {
+            h2 id="permissions-heading" { "Permissions" }
+            p .small {
+                "What a turn may do, and who has to approve it. The defaults are the narrow ones: "
+                "read only, ask first, drafts only, telemetry off."
+            }
+            (permissions_group(view))
+            dl .kv .mt {
+                dt { "Paired devices" } dd { (view.paired_devices) }
+                dt { "Device listener" } dd {
+                    @if view.device_listener { "on" } @else { "off" }
+                    ", "
+                    @if view.device_listener_bound { "bound" } @else { "not bound" }
+                    " on " (DEVICE_ADDR)
+                }
+            }
+        }
+
+        section .card aria-labelledby="full-access-heading" {
+            h2 id="full-access-heading" { "Full host access" }
+            p .small {
+                "Whether this operator may select full host sandbox mode at all. It is off by "
+                "default, it needs a typed confirmation to enable, and every change is audited. "
+                "While it is off the option stays greyed out in the permissions table above."
+            }
+            dl .kv {
+                dt { "Stored switch" } dd {
+                    @if view.allow_full_stored { "on" } @else { "off" }
+                }
+                dt { "Command line" } dd {
+                    @if view.allow_full_from_flag { "started with --allow-full" } @else { "not passed" }
+                }
+                dt { "Effective" } dd {
+                    @if view.allow_full { "full host selectable" } @else { "refused" }
+                }
+            }
+            form method="post" action="/dashboard/settings/full-access" novalidate {
+                @if !view.allow_full_stored {
+                    div .field {
+                        label for="confirm" { "Type full to enable" }
+                        input id="confirm" type="text" name="confirm" value=""
+                            autocomplete="off" spellcheck="false"
+                            placeholder="full";
+                        span .hint {
+                            "This unlocks command execution on the whole host for every turn. The "
+                            "rest of the daemon does not change; this is the one switch that decides "
+                            "whether the sandbox may be opened."
+                        }
+                    }
+                    div .actions {
+                        button type="submit" { "Enable full host" }
+                    }
+                } @else {
+                    p .small {
+                        "Full host is enabled. Turning it off refuses the option immediately; a turn "
+                        "that is already running is not interrupted."
+                    }
+                    div .actions {
+                        button type="submit" class="danger" { "Disable full host" }
+                    }
+                }
+            }
+        }
+
+        section .card aria-labelledby="workspace-heading" {
+            h2 id="workspace-heading" { "Workspace" }
+            p .small {
+                "The one directory a turn may write to."
+            }
+            (workspace_group(view))
+        }
+
+        section .card aria-labelledby="clock-heading" {
+            h2 id="clock-heading" { "Clock" }
+            p .small {
+                "Every stamp in the transcript and the rail is shown in this zone. Timestamps are "
+                "stored in UTC and converted for display, so changing this never rewrites history."
+            }
+            (clock_group(view))
+        }
+
+        section .card aria-labelledby="appearance-heading" {
+            h2 id="appearance-heading" { "Appearance" }
+            p .small {
+                "The chat backdrop. It sits behind the conversation only, so the chrome keeps the "
+                "fixed palette and the text on top never depends on which picture is loaded."
+            }
+            form method="post" action=(wallpaper::ROUTE_WALLPAPER_SAVE) novalidate {
+                div .choices {
+                    @for preset in wallpaper::PRESETS {
+                        @let chosen = view.wallpaper == preset.id;
+                        div .choice .selected[chosen] {
+                            input type="radio" id=(format!("wallpaper-{}", preset.id))
+                                name="wallpaper" value=(preset.id) checked[chosen];
+                            label for=(format!("wallpaper-{}", preset.id)) {
+                                span .name { (preset.label) }
+                                span .why { (preset.hint) }
+                            }
+                        }
+                    }
+                    @if view.wallpaper_custom {
+                        @let chosen = view.wallpaper == wallpaper::CUSTOM;
+                        div .choice .selected[chosen] {
+                            input type="radio" id="wallpaper-custom" name="wallpaper"
+                                value=(wallpaper::CUSTOM) checked[chosen];
+                            label for="wallpaper-custom" {
+                                span .name { "Custom image" }
+                                span .why { "The image you uploaded below." }
+                            }
+                        }
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save wallpaper" }
+                }
+            }
+            h3 .mt { "Upload an image" }
+            form method="post" action=(wallpaper::ROUTE_WALLPAPER_UPLOAD)
+                enctype="multipart/form-data" novalidate {
+                div .field {
+                    label for="wallpaper-image" { "PNG, JPEG or WebP" }
+                    input type="file" id="wallpaper-image" name="image"
+                        accept="image/png,image/jpeg,image/webp";
+                    span .hint {
+                        "Up to 8 MiB, checked by the bytes rather than by the filename. SVG is "
+                        "refused: an SVG can carry script, and a wallpaper is not worth an injection."
+                    }
+                }
+                div .actions {
+                    button type="submit" class="secondary" { "Upload and use" }
+                }
+            }
+        }
+
+        (update_card(view))
+
+        section .card.service aria-labelledby="daemon-heading" {
+            h2 id="daemon-heading" { "Daemon" }
+            p .small {
+                "Some changes only take effect once the process starts again: a bind address, a "
+                "flag, a fresh environment. This restarts the daemon's own service unit, not "
+                "anything else on the host."
+            }
+            form method="post" action=(crate::admin::ROUTE_SETTINGS_RESTART) novalidate {
+                div .restart-actions {
+                    button type="submit" class="danger" { "Restart daemon" }
+                }
+            }
+            p .small {
+                "A restart interrupts anything still running and the daemon returns on the same "
+                "addresses in a few seconds."
+            }
+            p .small {
+                "Adding a provider or saving its key does not need this: the model lists are read "
+                "from the database on every page load, and saving the provider table asks each "
+                "endpoint what it serves. Restart when the process itself has to change - a new "
+                "environment file, a flag, a bind address - or after editing a key by hand outside "
+                "this page, so the new value is read."
+            }
+        }
+
+        section .card aria-labelledby="read-only-heading" {
+            h2 id="read-only-heading" { "Read-only" }
+            p .small {
+                "These rows describe 1.0. They have no control here because there is nothing behind "
+                "them to switch."
+            }
+            table {
+                caption {
+                    "What 1.0 does not do, stated on the page rather than left to a guess."
+                }
+                thead {
+                    tr {
+                        th scope="col" { "Setting" }
+                        th scope="col" { "Value" }
+                        th scope="col" { "What that means" }
+                    }
+                }
+                tbody {
+                    tr .locked {
+                        th scope="row" { "External communication" }
+                        td .value { "draft only" " " span .tag { "locked" } }
+                        td .why { "1.0 never transmits in your voice. A draft stops at the review screen." }
+                    }
+                    tr .locked {
+                        th scope="row" { "Financial" }
+                        td .value { "disabled" " " span .tag { "locked" } }
+                        td .why { "No payment, banking, or brokerage action exists in 1.0." }
+                    }
+                    tr .locked {
+                        th scope="row" { "Network" }
+                        td .value { "configured" " " span .tag { "config.toml" } }
+                        td .why {
+                            "The UI can be reached on this host, on a LAN address, on a tailnet "
+                            "address, or through a reverse proxy in front of any of them. That is "
+                            "decided by admin.listen, admin.public_url and admin.trusted_proxies in "
+                            "config.toml, not by anything compiled in. The device listener stays on "
+                            (DEVICE_ADDR) ", loopback only, and the assistant itself reaches only the "
+                            "provider endpoint you configure."
+                        }
+                    }
+                    tr {
+                        th scope="row" { "Telemetry" }
+                        td .value { (view.permissions.telemetry.label()) }
+                        td .why { (view.permissions.telemetry.consequence()) }
+                    }
+                    tr .locked {
+                        th scope="row" { "Admin listener" }
+                        td .value { (view.chrome.listens_line()) " " span .tag { "config.toml" } }
+                        td .why {
+                            "Set by admin.listen in config.toml, plus --admin-listen on the command "
+                            "line, which adds to the list. Every listed address is served at once. "
+                            "0.0.0.0 binds every interface this host has and is a decision to make on "
+                            "purpose, out loud."
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Everything the activity page needs.
+#[derive(Debug, Clone)]
+pub struct ActivityView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// The newest audit rows, newest first.
+    pub rows: Vec<AuditEntry>,
+    /// How many rows the table holds in total.
+    pub total: i64,
+    /// A failure to show, when the read failed.
+    pub error: Option<FormError>,
+    /// A success line, unused today but the page shares the shell's contract.
+    pub notice: Option<String>,
+    /// Live background processes, newest first.
+    pub processes: Vec<serde_json::Value>,
+    /// The retained receipts, newest first.
+    pub receipts: Vec<serde_json::Value>,
+    /// Cost and latency for the stored window.
+    pub metrics: crate::metrics::Summary,
+    /// The window the metrics cover, in hours.
+    pub metrics_hours: i64,
+}
+
+impl ActivityView {
+    /// An empty view, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            rows: Vec::new(),
+            total: 0,
+            error: None,
+            notice: None,
+            processes: Vec::new(),
+            receipts: Vec::new(),
+            metrics: crate::metrics::Summary::default(),
+            metrics_hours: 24,
+        }
+    }
+}
+
+/// How many characters of a detail line the table shows.
+///
+/// An audit detail is a label or an id, and a 400 character one is a paste
+/// accident. Truncating keeps the table readable without hiding the row.
+const DETAIL_DISPLAY_LIMIT: usize = 120;
+
+/// One detail cell, truncated with an ASCII ellipsis.
+#[must_use]
+pub fn display_detail(detail: Option<&str>) -> String {
+    let Some(detail) = detail else {
+        return "-".to_owned();
+    };
+    if detail.chars().count() <= DETAIL_DISPLAY_LIMIT {
+        return detail.to_owned();
+    }
+    let mut out: String = detail.chars().take(DETAIL_DISPLAY_LIMIT).collect();
+    out.push_str("...");
+    out
+}
+
+/// The audit trail, newest first, server-rendered.
+pub fn activity_page(view: &ActivityView) -> Markup {
+    let error = view.error.as_ref();
+    let body = html! {
+        h1 { "Activity" }
+        p .lede {
+            "Cost and latency for the stored window, the background processes this daemon is "
+            "running with their receipts, then the last hundred rows of the audit log. Nothing "
+            "here can be edited from a page."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        section .card aria-labelledby="processes-heading" {
+            h2 id="processes-heading" { "Background processes" }
+            @if view.processes.is_empty() {
+                p .empty {
+                    strong { "Nothing running" }
+                    "No background job belongs to this daemon right now."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Started" }
+                            th scope="col" { "Command" }
+                            th scope="col" { "Status" }
+                            th scope="col" { "Bytes" }
+                            th scope="col" { "Control" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.processes {
+                            tr {
+                                td .mono .small { (row["started_at"].as_str().unwrap_or_default()) }
+                                td .mono .small {
+                                    (row["command"].as_str().unwrap_or_default())
+                                    @if let Some(id) = row["process_id"].as_str() {
+                                        p .small .mono {
+                                            "pid " (row["pid"]) " · " (id)
+                                        }
+                                    }
+                                }
+                                td { (row["status"].as_str().unwrap_or_default()) }
+                                td .mono .small { (row["bytes"]) }
+                                td {
+                                    @if row["status"] == "running" {
+                                        form .inline-form method="post"
+                                            action=(format!("{}/{}", crate::admin::ROUTE_DASHBOARD_PROCESS_KILL,
+                                                row["process_id"].as_str().unwrap_or_default())) novalidate {
+                                            button type="submit" { "Stop" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p .small {
+                "Started through the process tool by a turn. A job outlives the command cap; its "
+                "receipt below outlives the job."
+            }
+        }
+        section .card aria-labelledby="metrics-heading" {
+            h2 id="metrics-heading" { "Cost and latency" }
+            @if view.metrics.is_empty() {
+                p .empty {
+                    strong { "Nothing measured" }
+                    "No answer was recorded in the last " (view.metrics_hours) " hour(s)."
+                }
+            } @else {
+                p .small {
+                    (view.metrics.calls) " answer(s) in the last " (view.metrics_hours)
+                    " hour(s), " (view.metrics.failed) " failed"
+                    @if view.metrics.unmeasured > 0 {
+                        ", " (view.metrics.unmeasured) " with no duration recorded"
+                    }
+                    "."
+                }
+                p .small .mono {
+                    "tokens in " (view.metrics.prompt_tokens)
+                    " · out " (view.metrics.completion_tokens)
+                    " · cache hit " (format!("{:.1}%", view.metrics.cache_rate() * 100.0))
+                }
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Model" }
+                            th scope="col" { "Calls" }
+                            th scope="col" { "p50" }
+                            th scope="col" { "p95" }
+                            th scope="col" { "Failed" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.metrics.rows {
+                            tr {
+                                td .mono .small { (row.model) }
+                                td .mono .small { (row.calls) }
+                                td .mono .small {
+                                    @if let Some(ms) = row.median_ms { (ms) " ms" } @else { "-" }
+                                }
+                                td .mono .small {
+                                    @if let Some(ms) = row.p95_ms { (ms) " ms" } @else { "-" }
+                                }
+                                td .mono .small { (row.failed) }
+                            }
+                        }
+                    }
+                }
+                p .small {
+                    "Nearest-rank percentiles over recorded durations, so a p95 is a turn that "
+                    "happened. The window is a setting on the System tab."
+                }
+            }
+        }
+        section .card aria-labelledby="receipts-heading" {
+            h2 id="receipts-heading" { "Receipts" }
+            @if view.receipts.is_empty() {
+                p .empty { "No receipt is retained." }
+            } @else {
+                @for row in &view.receipts {
+                    article .receipt {
+                        p .mono .small {
+                            (row["finished_at"].as_str().unwrap_or_default()) " · "
+                            (row["status"].as_str().unwrap_or_default())
+                            @if let Some(code) = row["exit_code"].as_i64() { " · exit " (code) }
+                            @if let Some(signal) = row["signal"].as_i64() { " · signal " (signal) }
+                        }
+                        p .mono .small { (row["command"].as_str().unwrap_or_default()) }
+                        @if let Some(note) = row["signal_note"].as_str() {
+                            p .small { (note) }
+                        }
+                        @if let Some(output) = row["output"].as_str().filter(|text| !text.is_empty()) {
+                            pre .tail { (output) }
+                        }
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="audit-heading" {
+            h2 id="audit-heading" { "Audit log" }
+            @if view.rows.is_empty() {
+                p .empty {
+                    strong { "Nothing recorded yet" }
+                    "No audit row has been written yet."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Time" }
+                            th scope="col" { "Actor" }
+                            th scope="col" { "Action" }
+                            th scope="col" { "Detail" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.rows {
+                            tr {
+                                td .mono { (row.occurred_at) }
+                                td { (row.actor) }
+                                td { (row.action) }
+                                td .why.mono { (display_detail(row.detail.as_deref())) }
+                            }
+                        }
+                    }
+                }
+            }
+            p .small {
+                "Showing "
+                (view.rows.len())
+                " of "
+                (view.total)
+                " rows. The table is the source of truth; this page is a read of it."
+            }
+        }
+    };
+    shell(
+        "Activity",
+        view.state,
+        Some(Nav::Activity),
+        body,
+        &view.chrome,
+    )
+}
+
+/// Everything the learning page needs.
+#[derive(Debug, Clone)]
+pub struct LearningView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// The loop's three switches.
+    pub switches: crate::learning::Switches,
+    /// Counts for the header.
+    pub totals: crate::learning::Totals,
+    /// Every skill the ledger knows, newest activity first.
+    pub rows: Vec<crate::learning::Usage>,
+    /// The newest review runs.
+    pub runs: Vec<crate::learning::Run>,
+    /// The last maintenance pass, when one has run.
+    pub curator: Option<crate::learning::CuratorReport>,
+    /// The library directory the loop writes into.
+    pub library: String,
+    /// The maintenance interval the pass uses.
+    pub interval_hours: i64,
+    /// The staleness window.
+    pub stale_days: i64,
+    /// The archive window.
+    pub archive_days: i64,
+    /// A failure to show, when a read failed.
+    pub error: Option<FormError>,
+    /// A success line, when a form just saved.
+    pub notice: Option<String>,
+}
+
+impl LearningView {
+    /// An empty view, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            switches: crate::learning::Switches {
+                enabled: true,
+                review: true,
+                curator: true,
+            },
+            totals: crate::learning::Totals::default(),
+            rows: Vec::new(),
+            runs: Vec::new(),
+            curator: None,
+            library: String::new(),
+            interval_hours: crate::learning::DEFAULT_INTERVAL_HOURS,
+            stale_days: crate::learning::DEFAULT_STALE_DAYS,
+            archive_days: crate::learning::DEFAULT_ARCHIVE_DAYS,
+            error: None,
+            notice: None,
+        }
+    }
+}
+
+/// The learning page: what the loop learned, when it last looked, and the two
+/// controls an operator needs (the switches, and a pass on demand).
+pub fn learning_page(view: &LearningView) -> Markup {
+    let error = view.error.as_ref();
+    let learned: Vec<&crate::learning::Usage> = view
+        .rows
+        .iter()
+        .filter(|row| row.created_by == crate::learning::Origin::Agent)
+        .collect();
+    let operator = view.rows.len() - learned.len();
+    let body = html! {
+        h1 { "Learning" }
+        p .lede {
+            "After a turn finishes, the loop reads the exchange and, when it taught something              durable, writes a rule into this library. Only skills the loop wrote itself are              editable here; a skill you wrote is yours and is never touched. Archiving moves a              directory into " code { ".archive/" } " and restore brings it back."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        section .card aria-labelledby="learning-switches" {
+            h2 id="learning-switches" { "The loop" }
+            form method="post" action=(crate::admin::ROUTE_LEARNING_SAVE) novalidate {
+                div .field {
+                    label for="learning_enabled" {
+                        input type="checkbox" id="learning_enabled" name="learning_enabled"
+                            value="true" checked[view.switches.enabled];
+                        " Run the learning loop"
+                    }
+                    span .hint {
+                        "Off stops the sweep, the review and the curator. Existing skills stay."
+                    }
+                }
+                div .field {
+                    label for="learning_review" {
+                        input type="checkbox" id="learning_review" name="learning_review"
+                            value="true" checked[view.switches.review];
+                        " Review new turns"
+                    }
+                    span .hint {
+                        "One provider call per reviewed turn, at most a few an hour. A turn that                          answered in a sentence and used no tools is skipped."
+                    }
+                }
+                div .field {
+                    label for="learning_curator" {
+                        input type="checkbox" id="learning_curator" name="learning_curator"
+                            value="true" checked[view.switches.curator];
+                        " Run the maintenance pass"
+                    }
+                    span .hint {
+                        "A learned skill goes stale after " (view.stale_days) " days unused and is                          archived after " (view.archive_days) ". The pass runs every "
+                        (view.interval_hours) " hours, and never touches a pinned or operator skill."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save the loop" }
+                }
+            }
+            p .small {
+                "Library: " code .mono { (view.library) }
+            }
+            p .small {
+                (view.totals.active) " learned skill(s) active, "
+                (view.totals.stale) " stale, "
+                (view.totals.archived) " archived, "
+                (view.totals.repaired) " review(s) repaired, "
+                (view.totals.dropped) " dropped, "
+                (view.totals.pending) " review(s) queued. "
+                (operator) " operator-owned skill(s) are in the library and off limits to the loop."
+            }
+        }
+        section .card aria-labelledby="learning-skills" {
+            h2 id="learning-skills" { "Learned skills" }
+            @if learned.is_empty() {
+                p .empty {
+                    strong { "Nothing learned yet" }
+                    "The loop has not written a skill yet. A reviewed turn that taught nothing                      settles as skipped, which is the ordinary outcome."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Skill" }
+                            th scope="col" { "State" }
+                            th scope="col" { "Reads" }
+                            th scope="col" { "Last activity" }
+                            th scope="col" { "Control" }
+                        }
+                    }
+                    tbody {
+                        @for row in &learned {
+                            tr {
+                                td {
+                                    strong { (row.key) }
+                                    @if let Some(description) = &row.description {
+                                        p .small { (description) }
+                                    }
+                                }
+                                td { (row.state.as_str()) }
+                                td { (row.use_count) }
+                                td .mono .small {
+                                    (row.last_activity_at.as_deref().unwrap_or(&row.created_at))
+                                }
+                                td {
+                                    form method="post" action=(crate::admin::ROUTE_LEARNING_SKILL) {
+                                        input type="hidden" name="key" value=(row.key);
+                                        @if row.state == crate::learning::State::Archived {
+                                            button type="submit" name="action" value="restore" {
+                                                "Restore"
+                                            }
+                                        } @else if row.pinned {
+                                            button type="submit" name="action" value="unpin" {
+                                                "Unpin"
+                                            }
+                                        } @else {
+                                            button type="submit" name="action" value="pin" {
+                                                "Pin"
+                                            }
+                                        }
+                                    }
+                                    // The delete a learned skill needs is the same one the
+                                    // skills page performs, so this is a link to that page's
+                                    // confirmation rather than a second implementation of it.
+                                    a .button.danger
+                                        href=(format!("{}?delete={}", crate::admin::ROUTE_SKILLS, row.key)) {
+                                        "Delete"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="learning-curator" {
+            h2 id="learning-curator" { "Maintenance" }
+            @if let Some(report) = &view.curator {
+                p {
+                    "Last pass started " span .mono { (report.started_at) } ": checked "
+                    (report.checked) ", marked stale " (report.marked_stale) ", archived "
+                    (report.archived) ", reactivated " (report.reactivated) "."
+                }
+            } @else {
+                p .small {
+                    "No maintenance pass has run yet. The first observation seeds the clock and the                      first pass runs one interval later."
+                }
+            }
+            form method="post" action=(crate::admin::ROUTE_LEARNING_CURATOR) {
+                div .actions {
+                    button type="submit" { "Run a pass now" }
+                }
+            }
+        }
+        section .card aria-labelledby="learning-runs" {
+            h2 id="learning-runs" { "Reviews" }
+            @if view.runs.is_empty() {
+                p .empty {
+                    strong { "No reviews yet" }
+                    "A finished turn that is worth reading is queued here, then reviewed one at a                      time."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "When" }
+                            th scope="col" { "Status" }
+                            th scope="col" { "Action" }
+                            th scope="col" { "Skill" }
+                            th scope="col" { "Note" }
+                        }
+                    }
+                    tbody {
+                        @for run in &view.runs {
+                            tr {
+                                td .mono .small { (run.created_at) }
+                                td { (run.status) }
+                                td { (run.action.as_deref().unwrap_or("-")) }
+                                td .mono .small { (run.skill_key.as_deref().unwrap_or("-")) }
+                                td .small { (run.summary.as_deref().unwrap_or("")) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    shell(
+        "Learning",
+        view.state,
+        Some(Nav::Learning),
+        body,
+        &view.chrome,
+    )
+}
+
+/// Everything the workboard page needs.
+#[derive(Debug, Clone)]
+pub struct WorkView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every row, in-flow first.
+    pub items: Vec<crate::workboard::Item>,
+    /// The status filter in force, when one is.
+    pub filter: Option<String>,
+    /// The project a new row starts on, from the setting.
+    pub default_project: String,
+    /// A success line, when a form just saved.
+    pub notice: Option<String>,
+    /// A failure to show.
+    pub error: Option<FormError>,
+}
+
+impl WorkView {
+    /// An empty view, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            items: Vec::new(),
+            filter: None,
+            default_project: String::new(),
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The workboard: the table, the add form, and one move control per row.
+///
+/// Server-rendered and scriptless like the rest: every control is a form, and the
+/// status of a row is what the row says rather than a colour.
+pub fn workboard_page(view: &WorkView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    let body = html! {
+        h1 { "Workboard" }
+        p .lede {
+            "Tasks that outlive the session that named them. The list is in the database, so it "
+            "survives a restart and reads the same from the phone. In-flight work leads, then what "
+            "is open, then what is blocked, then what is done."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        p .small .filters {
+            @if view.filter.is_some() {
+                a href=(crate::admin::ROUTE_WORKBOARD) { "Every status" }
+            } @else {
+                @for status in crate::workboard::STATUSES {
+                    a href=(format!("{}?status={status}", crate::admin::ROUTE_WORKBOARD)) {
+                        (status)
+                    }
+                    @if status != crate::workboard::STATUSES[crate::workboard::STATUSES.len() - 1] {
+                        " · "
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="work-add" {
+            h2 id="work-add" { "Add a task" }
+            form method="post" action=(crate::admin::ROUTE_WORKBOARD_ADD) novalidate {
+                div .field {
+                    label for="work_title" { "Title" }
+                    input id="work_title" type="text" name="title" maxlength=(crate::workboard::MAX_TITLE_CHARS)
+                        autofocus[focuses("title")];
+                    @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("title")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    label for="work_project" { "Project" }
+                    input id="work_project" type="text" name="project"
+                        value=(view.default_project);
+                    span .hint { "Blank uses the stored default; clearing it on a row detaches it." }
+                }
+                div .field {
+                    label for="work_due" { "Due" }
+                    input id="work_due" type="text" name="due" placeholder="2026-12-01";
+                }
+                div .actions { button type="submit" { "Add it" } }
+            }
+        }
+        section .card aria-labelledby="work-list" {
+            h2 id="work-list" { "Board" }
+            @if view.items.is_empty() {
+                p .empty {
+                    strong { "Nothing on the board" }
+                    "Add a task above, or let a turn add one."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Task" }
+                            th scope="col" { "Status" }
+                            th scope="col" { "Project" }
+                            th scope="col" { "Due" }
+                            th scope="col" { "Moved" }
+                            th scope="col" { "Control" }
+                        }
+                    }
+                    tbody {
+                        @for item in &view.items {
+                            tr {
+                                td {
+                                    (item.title)
+                                    @if let Some(by) = item.source_conversation.as_deref().filter(|v| !v.is_empty()) {
+                                        p .small .mono { "from " (by) }
+                                    }
+                                }
+                                td { (item.status) }
+                                td .small { (item.project.as_deref().unwrap_or("-")) }
+                                td .mono .small { (item.due.as_deref().unwrap_or("-")) }
+                                td .mono .small { (item.checks) }
+                                td {
+                                    @for status in crate::workboard::STATUSES {
+                                        @if *status != item.status {
+                                            form .inline-form method="post" action=(crate::admin::ROUTE_WORKBOARD_ITEM) novalidate {
+                                                input type="hidden" name="id" value=(item.id);
+                                                input type="hidden" name="action" value="status";
+                                                input type="hidden" name="status" value=(status);
+                                                button type="submit" { (status) }
+                                            }
+                                        }
+                                    }
+                                    form .inline-form method="post" action=(crate::admin::ROUTE_WORKBOARD_ITEM) novalidate {
+                                        input type="hidden" name="id" value=(item.id);
+                                        input type="hidden" name="action" value="delete";
+                                        button type="submit" class="danger" { "Drop" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p .small { (view.items.len()) " task(s)." }
+        }
+    };
+    shell(
+        "Workboard",
+        view.state,
+        Some(Nav::Workboard),
+        body,
+        &view.chrome,
+    )
+}
+
+/// Everything the search page needs.
+#[derive(Debug, Clone)]
+pub struct SearchView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// What was typed, echoed back into the field.
+    pub query: String,
+    /// The ranked rows, best first.
+    pub hits: Vec<crate::search::HitRow>,
+    /// How many rows match in total, from the count query.
+    pub total: i64,
+    /// Where the next page starts, when there is one.
+    pub cursor: Option<String>,
+    /// `all` or `conversation`.
+    pub scope: String,
+    /// `all`, `user` or `assistant`.
+    pub role: String,
+    /// A success line, when a form just saved.
+    pub notice: Option<String>,
+}
+
+impl SearchView {
+    /// An empty view, for the first paint.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            query: String::new(),
+            hits: Vec::new(),
+            total: 0,
+            cursor: None,
+            scope: "all".to_owned(),
+            role: "all".to_owned(),
+            notice: None,
+        }
+    }
+}
+
+/// The search page: one field, and the conversations that matched.
+///
+/// The page states where the answer comes from, because "search" in most
+/// products means a model guessed. Here it is `SQLite FTS5` over the transcript
+/// itself: no provider call, no tokens, milliseconds. A hit opens the
+/// conversation it belongs to at the browser's chat surface.
+pub fn search_page(view: &SearchView) -> Markup {
+    let query = view.query.trim();
+    let body = html! {
+        h1 { "Search" }
+        p .lede {
+            "Every message in every past conversation, indexed. The answer comes from "
+            code { "SQLite FTS5" } " over the transcript itself, so a search costs no model "
+            "call and no tokens. Every word is tried first, then any of them, so a half-remembered "
+            "phrase still finds the conversation. A hit opens it at the chat surface."
+        }
+        form .search-form method="get" action=(crate::admin::ROUTE_SEARCH) role="search" {
+            label for="search-q" .sr-only { "Search the transcript" }
+            input type="search" id="search-q" name="q" value=(view.query)
+                placeholder="What did we work out about ..."
+                autocomplete="off" autofocus;
+            label for="search-scope" .sr-only { "Scope" }
+            select id="search-scope" name="scope" {
+                @for value in crate::search::SCOPE_VALUES {
+                    option value=(value) selected[view.scope == *value] {
+                        (search_scope_label(value))
+                    }
+                }
+            }
+            label for="search-role" .sr-only { "Speaker" }
+            select id="search-role" name="role" {
+                @for value in crate::search::ROLE_VALUES {
+                    option value=(value)
+                        selected[view.role.eq_ignore_ascii_case(value)] { (value) }
+                }
+            }
+            button type="submit" { "Search" }
+        }
+        (alert_region(None, view.notice.as_deref()))
+        @if query.is_empty() {
+            p .small {
+                "Type a word or two. Common words of three letters or fewer are ignored unless "
+                "they are all you typed."
+            }
+        } @else if view.hits.is_empty() {
+            p .small { "Nothing matched " code { (query) } "." }
+        } @else {
+            p .small {
+                (view.total) " message"
+                @if view.total != 1 { "s" }
+                " matched, best first, in " (view.hits.len()) " row"
+                @if view.hits.len() != 1 { "s" }
+                " on this page."
+            }
+            @for hit in &view.hits {
+                article .card .search-hit {
+                    h2 {
+                        a href=(format!("{}?conversation={}", crate::admin::ROUTE_CHAT, hit.conversation_id)) {
+                            (hit.title)
+                        }
+                    }
+                    p .snippet { (PreEscaped(&hit.snippet)) }
+                    p .small .mono {
+                        (hit.ts) " · " (hit.role) " · score " (format!("{:.2}", hit.score))
+                    }
+                }
+            }
+            @if let Some(cursor) = &view.cursor {
+                p .small {
+                    a href=(format!(
+                        "{route}?q={query}&scope={scope}&role={role}&cursor={cursor}",
+                        route = crate::admin::ROUTE_SEARCH,
+                        query = urlencode(query),
+                        scope = view.scope,
+                        role = view.role,
+                    )) { "Next page" }
+                }
+            }
+        }
+    };
+    shell("Search", view.state, Some(Nav::Search), body, &view.chrome)
+}
+
+/// Percent-encode a value for a query string, so a cursor that holds a `:` and a
+/// query that holds a space survive the link.
+fn urlencode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// One skill's file, as the editor renders it.
+///
+/// The text is the whole `SKILL.md`, frontmatter included: the form replaces the
+/// file, so what the box holds is what the file holds. Reading it for one skill at
+/// a time is deliberate. The library on this host is a hundred files and about a
+/// megabyte, and a page that carried every body in a textarea would be a page
+/// nobody waits for.
+#[derive(Debug, Clone)]
+pub struct SkillEditor {
+    /// The skill's key.
+    pub key: String,
+    /// The file being edited, so the page can name it.
+    pub path: String,
+    /// The whole file.
+    pub content: String,
+    /// Its size on disk, as it was read.
+    pub bytes: u64,
+}
+
+/// Everything the skills page needs.
+#[derive(Debug, Clone)]
+pub struct SkillsView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every skill in the library, by key.
+    pub skills: Vec<crate::skills::Skill>,
+    /// The library directory the page names.
+    pub library: String,
+    /// Whether the catalog is switched on for turns.
+    pub enabled: bool,
+    /// Whether the table is showing only archived skills.
+    pub archived_only: bool,
+    /// The skill whose file is in the editor, when one is selected.
+    pub editing: Option<SkillEditor>,
+    /// The key waiting for a second press before it is archived.
+    pub confirming: Option<String>,
+    /// A success line, when a form just saved.
+    pub notice: Option<String>,
+    /// A failure to show.
+    pub error: Option<FormError>,
+}
+
+impl SkillsView {
+    /// An empty view, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            skills: Vec::new(),
+            library: String::new(),
+            enabled: true,
+            archived_only: false,
+            editing: None,
+            confirming: None,
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The skills page: every file in the library, one editor, one delete button.
+///
+/// The page is the library's own surface and it says what the daemon actually
+/// does: a save replaces the whole file, and a delete removes that one skill's
+/// directory from the library for good, leaving every other skill alone. The
+/// second press is a real state of the page rather than a script, so the
+/// confirmation works with JavaScript off, which is the rule every page here
+/// keeps.
+pub fn skills_page(view: &SkillsView) -> Markup {
+    let error = view.error.as_ref();
+    let body = html! {
+        h1 { "Skills" }
+        p .lede {
+            "Every procedure in this library, with the file behind it. A skill is a directory "
+            "holding a " code { "SKILL.md" } ", and the editor below replaces that whole file. "
+            "Delete removes that one skill: its own directory, with its file, and nothing else. "
+            "The library and every other skill stay. It cannot be undone, and a learned skill "
+            "loses its ledger row with it, so the loop cannot write it back."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        p .small .filters {
+            @if view.archived_only {
+                a href=(crate::admin::ROUTE_SKILLS) { "Show every skill" }
+                " · showing archived only"
+            } @else {
+                a href=(format!("{}?archived=1", crate::admin::ROUTE_SKILLS)) { "Show archived only" }
+            }
+        }
+        @if let Some(key) = &view.confirming {
+            section .card aria-labelledby="skills-confirm" {
+                h2 id="skills-confirm" { "Delete " code { (key) } "?" }
+                p {
+                    "This deletes " code { (key) } " and nothing else: its own directory under the "
+                    "library, with its " code { "SKILL.md" } " inside it. The library and every "
+                    "other skill stay where they are. It cannot be undone, and for a learned skill "
+                    "the ledger row goes too, so the learning loop cannot write it back."
+                }
+                div .actions {
+                    form method="post" action=(crate::admin::ROUTE_SKILLS_DELETE) {
+                        input type="hidden" name="key" value=(key);
+                        input type="hidden" name="confirm" value="true";
+                        button .danger type="submit" { "Delete it" }
+                    }
+                    a .button.secondary href=(crate::admin::ROUTE_SKILLS) { "Keep it" }
+                }
+            }
+        }
+        section .card aria-labelledby="skills-library" {
+            h2 id="skills-library" { "Library" }
+            @if !view.enabled {
+                p .small {
+                    "The catalog is switched off on the settings page, so turns are not offered "
+                    "any of these. The files are unaffected."
+                }
+            }
+            @if view.skills.is_empty() {
+                p .empty {
+                    strong { "No skills in this library" }
+                    "The directory " code .mono { (view.library) } " holds no directory with a "
+                    code { "SKILL.md" } " in it. The settings page sets the library."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Skill" }
+                            th scope="col" { "Origin" }
+                            th scope="col" { "State" }
+                            th scope="col" { "Size" }
+                            th scope="col" { "Control" }
+                        }
+                    }
+                    tbody {
+                        @for skill in &view.skills {
+                            tr {
+                                td {
+                                    a .mono href=(format!("{}?edit={}", crate::admin::ROUTE_SKILLS, skill.key)) {
+                                        (skill.key)
+                                    }
+                                    @if let Some(description) = &skill.description {
+                                        p .small { (description) }
+                                    } @else {
+                                        p .small { "no description in the file" }
+                                    }
+                                }
+                                td {
+                                    @if skill.origin == crate::learning::Origin::Agent {
+                                        span .tag { "learned" }
+                                    } @else {
+                                        span .tag { "operator" }
+                                    }
+                                }
+                                td {
+                                    (skill.state.as_str())
+                                    @if skill.pinned { " " span .tag { "pinned" } }
+                                    @if let Some(reason) = &skill.archived_reason {
+                                        p .small { (reason) }
+                                    }
+                                }
+                                td .mono .small {
+                                    (skill.bytes) " bytes · " (skill.use_count) " read"
+                                    @if skill.use_count != 1 { "s" }
+                                }
+                                td {
+                                    a .button.secondary
+                                        href=(format!("{}?edit={}", crate::admin::ROUTE_SKILLS, skill.key)) {
+                                        "Edit"
+                                    }
+                                    @if matches!(skill.state, crate::learning::State::Archived) {
+                                        form .inline-form method="post"
+                                            action=(crate::admin::ROUTE_SKILLS_RESTORE) novalidate {
+                                            input type="hidden" name="key" value=(skill.key);
+                                            button type="submit" { "Un-archive" }
+                                        }
+                                    }
+                                    form .inline-form method="post"
+                                        action=(crate::admin::ROUTE_SKILLS_DELETE) novalidate {
+                                        input type="hidden" name="key" value=(skill.key);
+                                        button type="submit" class="danger" { "Delete" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p .small {
+                "Library: " code .mono { (view.library) } ", " (view.skills.len()) " skill(s)."
+            }
+        }
+        @if let Some(editor) = &view.editing {
+            section .card aria-labelledby="skills-editor" {
+                h2 id="skills-editor" { "Edit " code { (editor.key) } }
+                form method="post" action=(crate::admin::ROUTE_SKILLS_SAVE) novalidate {
+                    input type="hidden" name="key" value=(editor.key);
+                    div .field {
+                        label for="skill_content" { "The whole file" }
+                        textarea id="skill_content" name="content" rows="24" spellcheck="false"
+                            autofocus[error.is_some_and(|error| error.field.as_deref() == Some("content"))] {
+                            (editor.content)
+                        }
+                        span .hint {
+                            (editor.path) " is " (editor.bytes) " bytes. This box is the whole "
+                            "file, frontmatter included, and a save replaces it in one step: the "
+                            "previous version is not kept by this page."
+                        }
+                    }
+                    div .actions {
+                        button type="submit" { "Save the file" }
+                        a .button.secondary href=(crate::admin::ROUTE_SKILLS) { "Cancel" }
+                    }
+                }
+            }
+        }
+    };
+    shell("Skills", view.state, Some(Nav::Skills), body, &view.chrome)
+}
+
+/// Everything the roster page needs.
+///
+/// The page is the roster's only editor. It lists every row with what it may do,
+/// offers one form for a new row and the same form filled in for the row being
+/// edited, and it never invents a state the table does not hold: the list is
+/// [`crate::roster::list`] and nothing else.
+#[derive(Debug, Clone)]
+pub struct RosterView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every row, in the order the table returns them.
+    pub agents: Vec<crate::roster::Agent>,
+    /// The workspace root a `memory_scope` must stay inside.
+    pub workspace: String,
+    /// The row whose fields are in the form, when one is being edited.
+    ///
+    /// `None` with a `notice` of a successful delete is how the form goes back
+    /// to empty. `Some` with an empty name is what a refused create renders: the
+    /// operator's text is still there, and nothing was written.
+    pub editing: Option<RosterDraft>,
+    /// The name waiting for a second press before it is deleted.
+    pub confirming: Option<String>,
+    /// A success line, when a form just saved.
+    pub notice: Option<String>,
+    /// A failure to show.
+    pub error: Option<FormError>,
+}
+
+/// One set of field values, which is both what the form shows and what a save
+/// asked for.
+#[derive(Debug, Clone, Default)]
+pub struct RosterDraft {
+    /// The name as the box carried it.
+    pub name: String,
+    /// The role line.
+    pub role: String,
+    /// The standing brief.
+    pub instructions: String,
+    /// `inherit` or `read_only`.
+    pub tool_policy: &'static str,
+    /// The model role, free text.
+    pub model_role: String,
+    /// The scope directory, relative to the workspace.
+    pub memory_scope: String,
+    /// Whether the row is enabled. A create defaults to on.
+    pub enabled: bool,
+}
+
+impl RosterView {
+    /// An empty view over a ready daemon, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            agents: Vec::new(),
+            workspace: String::new(),
+            editing: None,
+            confirming: None,
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The roster page.
+///
+/// The house rules the rest of the dashboard follows apply here without
+/// exception: every input carries an `id` and a `<label for>`, each form has its
+/// own `role="status"` region, a failed input takes `autofocus` and
+/// `aria-invalid`, there is no script, no purple, and no signal that is colour
+/// alone. A refusal that names no field lands in the page region.
+pub fn roster_page(view: &RosterView) -> Markup {
+    let error = view.error.as_ref();
+    let invalid = |field: &str| error.is_some_and(|error| error.field.as_deref() == Some(field));
+    let draft = view.editing.clone().unwrap_or_default();
+    let creating = draft.name.is_empty();
+    let body = html! {
+        h1 { "Roster" }
+        p .lede {
+            "Named specialists a turn can hand work to. A row is a name, a role and a standing "
+            "brief; the model dispatches to one with " code { "dispatch_agent" } " and the "
+            code { "agent" } " field, and the child turn carries that brief instead of the "
+            "operator re-explaining it. A read-only row is offered no writing tools and its "
+            "files are confined to its scope."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        @if let Some(name) = &view.confirming {
+            section .card aria-labelledby="roster-confirm" {
+                h2 id="roster-confirm" { "Delete " code { (name) } "?" }
+                p {
+                    "This removes the row and nothing else: no file, no child turn, no "
+                    "conversation. Prompts that already dispatched to it keep their transcripts. "
+                    "It cannot be undone, and a prompt that still names it is refused rather "
+                    "than dispatched to nobody."
+                }
+                div .actions {
+                    form method="post" action=(crate::admin::ROUTE_ROSTER_DELETE) {
+                        input type="hidden" name="name" value=(name);
+                        input type="hidden" name="confirm" value="true";
+                        button .danger type="submit" { "Delete it" }
+                    }
+                    a .button.secondary href=(crate::admin::ROUTE_ROSTER) { "Keep it" }
+                }
+            }
+        }
+        section .card aria-labelledby="roster-list" {
+            h2 id="roster-list" { "Standing agents" }
+            @if view.agents.is_empty() {
+                p .empty {
+                    "No standing agents yet. A turn still dispatches ordinary child turns; "
+                    "adding a row is what gives one a name and a standing brief."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th { "Name" } th { "Role" } th { "Tools" } th { "State" } th { "" }
+                        }
+                    }
+                    tbody {
+                        @for agent in &view.agents {
+                            tr {
+                                td {
+                                    strong .mono { (agent.name) }
+                                    @if let Some(scope) = &agent.memory_scope {
+                                        p .small .muted { "scope " code .mono { (scope) } }
+                                    }
+                                }
+                                td { (agent.role) }
+                                td .small { (agent.tool_policy.as_str()) }
+                                td .small {
+                                    @if agent.enabled { "enabled" } @else { "disabled" }
+                                }
+                                td {
+                                    a .button.secondary
+                                        href=(format!("{}?edit={}", crate::admin::ROUTE_ROSTER, agent.name)) {
+                                        "Edit"
+                                    }
+                                    form .inline-form method="post"
+                                        action=(crate::admin::ROUTE_ROSTER_TOGGLE) novalidate {
+                                        input type="hidden" name="name" value=(agent.name);
+                                        input type="hidden" name="enabled"
+                                            value=(if agent.enabled { "false" } else { "true" });
+                                        button type="submit" class="secondary" {
+                                            @if agent.enabled { "Disable" } @else { "Enable" }
+                                        }
+                                    }
+                                    form .inline-form method="post"
+                                        action=(crate::admin::ROUTE_ROSTER_DELETE) novalidate {
+                                        input type="hidden" name="name" value=(agent.name);
+                                        button type="submit" class="danger" { "Delete" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p .small {
+                "Workspace root: " code .mono { (view.workspace) } ". A scope is a directory "
+                "inside it; anything that resolves outside it is refused at dispatch."
+            }
+        }
+        section .card aria-labelledby="roster-form" {
+            h2 id="roster-form" {
+                @if creating { "Add an agent" } @else { "Edit " code { (draft.name) } }
+            }
+            form method="post" action=(crate::admin::ROUTE_ROSTER_SAVE) novalidate {
+                div id="roster-form-status" role="status" aria-live="polite" {
+                    @if let Some(error) = error {
+                        @if error.field.is_some() {
+                            div .alert {
+                                strong { (error.code) } " " (error.message)
+                            }
+                        }
+                    }
+                }
+                div .field {
+                    label for="roster_name" { "Name" }
+                    input id="roster_name" type="text" name="name" value=(draft.name)
+                        autocomplete="off" spellcheck="false"
+                        autofocus[invalid("name")] aria-invalid=[invalid("name").then_some("true")];
+                    span .hint {
+                        "Lowercased on the way in: letters, digits and hyphens, 1 to "
+                        (crate::roster::MAX_NAME_CHARS) " characters. This is what a turn "
+                        "dispatches with, so a rename is a new row."
+                    }
+                }
+                div .field {
+                    label for="roster_role" { "Role" }
+                    input id="roster_role" type="text" name="role" value=(draft.role)
+                        autofocus[invalid("role")] aria-invalid=[invalid("role").then_some("true")];
+                    span .hint {
+                        "One line saying what it is for. This is what the prompt shows, up to "
+                        (crate::roster::MAX_ROLE_CHARS) " characters."
+                    }
+                }
+                div .field {
+                    label for="roster_instructions" { "Standing brief" }
+                    textarea id="roster_instructions" name="instructions" rows="10"
+                        spellcheck="true"
+                        autofocus[invalid("instructions")]
+                        aria-invalid=[invalid("instructions").then_some("true")] {
+                        (draft.instructions)
+                    }
+                    span .hint {
+                        "The child turn carries this. A dispatch that also passes a prompt gets "
+                        "this brief and then the task, still under the dispatch cap. Up to "
+                        (crate::roster::MAX_INSTRUCTIONS_CHARS) " characters; over that is a "
+                        "refusal, never a cut."
+                    }
+                }
+                div .field {
+                    label for="roster_tool_policy" { "Tools" }
+                    select id="roster_tool_policy" name="tool_policy" {
+                        option value="inherit" selected[is_inherit(draft.tool_policy)] {
+                            "Inherit the caller's tools"
+                        }
+                        option value="read_only" selected[!is_inherit(draft.tool_policy)] {
+                            "Read only"
+                        }
+                    }
+                    span .hint {
+                        "Read only drops the writing tools and runs the child in a read-only "
+                        "sandbox, so a write is refused twice rather than once."
+                    }
+                }
+                div .field {
+                    label for="roster_memory_scope" { "Scope directory" }
+                    input id="roster_memory_scope" type="text" name="memory_scope"
+                        value=(draft.memory_scope) autocomplete="off" spellcheck="false"
+                        autofocus[invalid("memory_scope")]
+                        aria-invalid=[invalid("memory_scope").then_some("true")];
+                    span .hint {
+                        "Optional, relative to the workspace root. The child's file tools are "
+                        "rooted here and the parent's root is not reachable from the child."
+                    }
+                }
+                div .field {
+                    label for="roster_model_role" { "Model role" }
+                    input id="roster_model_role" type="text" name="model_role"
+                        value=(draft.model_role) autocomplete="off" spellcheck="false";
+                    span .hint {
+                        "Optional. Stored now and resolved in a later build, so setting it "
+                        "changes nothing about which model answers yet."
+                    }
+                }
+                div .field {
+                    label for="roster_enabled" {
+                        input type="checkbox" id="roster_enabled" name="enabled" value="true"
+                            checked[draft.enabled];
+                        " Enabled"
+                    }
+                    span .hint {
+                        "A disabled row stays in the table and is refused at dispatch, which "
+                        "is different from deleting it."
+                    }
+                }
+                div .actions {
+                    button type="submit" {
+                        @if creating { "Add the agent" } @else { "Save the agent" }
+                    }
+                    @if !creating {
+                        a .button.secondary href=(crate::admin::ROUTE_ROSTER) { "Cancel" }
+                    }
+                }
+            }
+        }
+    };
+    shell("Roster", view.state, Some(Nav::Roster), body, &view.chrome)
+}
+
+/// Whether a stored policy string means "inherit".
+fn is_inherit(policy: &str) -> bool {
+    policy == crate::roster::ToolPolicy::Inherit.as_str()
+}
+
+/// Everything the triggers page needs.
+///
+/// The page's one hard rule is about the token: a minted token is shown once, in
+/// the response that minted it, and never again. So the view carries a `minted`
+/// value that is `Some` only on that one render, and every other render shows the
+/// stored prefix instead.
+#[derive(Debug, Clone)]
+pub struct TriggersView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every trigger, by name.
+    pub triggers: Vec<crate::trigger::Trigger>,
+    /// The most recent fires, for the rows that have any.
+    pub fires: Vec<crate::trigger::Fire>,
+    /// The trigger name whose fields are in the form, when one is being edited.
+    pub editing: Option<TriggerDraft>,
+    /// The name waiting for a second press before it is deleted.
+    pub confirming: Option<String>,
+    /// The token a mint or a rotate just produced. This is the only render that
+    /// carries it.
+    pub minted: Option<MintedToken>,
+    /// A success line.
+    pub notice: Option<String>,
+    /// A failure to show.
+    pub error: Option<FormError>,
+}
+
+/// A token, and the URL that fires it, shown exactly once.
+#[derive(Debug, Clone)]
+pub struct MintedToken {
+    /// The trigger it belongs to.
+    pub name: String,
+    /// The plaintext token.
+    pub token: String,
+    /// The full path, so the operator can select and copy it.
+    pub path: String,
+}
+
+/// One set of trigger field values.
+#[derive(Debug, Clone, Default)]
+pub struct TriggerDraft {
+    /// The operator's name for it.
+    pub name: String,
+    /// The prompt it fires with.
+    pub prompt: String,
+    /// Fires allowed in a trailing hour.
+    pub max_per_hour: i64,
+    /// Whether the row is enabled.
+    pub enabled: bool,
+}
+
+impl TriggersView {
+    /// An empty view over a ready daemon, for the failure path.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            triggers: Vec::new(),
+            fires: Vec::new(),
+            editing: None,
+            confirming: None,
+            minted: None,
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The triggers page.
+pub fn triggers_page(view: &TriggersView) -> Markup {
+    let error = view.error.as_ref();
+    let invalid = |field: &str| error.is_some_and(|error| error.field.as_deref() == Some(field));
+    let draft = view.editing.clone().unwrap_or_default();
+    let creating = draft.name.is_empty();
+    let body = html! {
+        h1 { "Triggers" }
+        p .lede {
+            "A saved prompt with a token. One POST to its URL starts one durable turn in a "
+            "conversation named after the trigger, through the same path a schedule uses. The "
+            "token is the only credential, so it is shown once when it is minted and rotating it "
+            "is how a leaked URL stops working."
+        }
+        (alert_region(error, view.notice.as_deref()))
+        @if let Some(minted) = &view.minted {
+            section .card aria-labelledby="triggers-minted" {
+                h2 id="triggers-minted" { "Token for " code { (minted.name) } }
+                p {
+                    strong { "This is the only time this token is shown." } " It is stored "
+                    "hashed, so it cannot be recovered; if it is lost, rotate the trigger and "
+                    "use the new one."
+                }
+                div .field {
+                    label for="trigger_minted_url" { "The URL to POST" }
+                    input id="trigger_minted_url" type="text" readonly
+                        value=(minted.path) spellcheck="false";
+                    span .hint {
+                        "POST a JSON body of " code { r#"{"text":"..."}"# } " to add a line to "
+                        "the prompt, or POST nothing to fire the prompt as it stands."
+                    }
+                }
+            }
+        }
+        @if let Some(name) = &view.confirming {
+            section .card aria-labelledby="triggers-confirm" {
+                h2 id="triggers-confirm" { "Delete " code { (name) } "?" }
+                p {
+                    "This removes the trigger and its fire ledger. The URL stops working "
+                    "immediately and cannot be recovered: a trigger that is deleted has no token "
+                    "to rotate. Conversations its fires started stay where they are."
+                }
+                div .actions {
+                    form method="post" action=(crate::admin::ROUTE_TRIGGERS_DELETE) {
+                        input type="hidden" name="name" value=(name);
+                        input type="hidden" name="confirm" value="true";
+                        button .danger type="submit" { "Delete it" }
+                    }
+                    a .button.secondary href=(crate::admin::ROUTE_TRIGGERS) { "Keep it" }
+                }
+            }
+        }
+        section .card aria-labelledby="triggers-list" {
+            h2 id="triggers-list" { "Triggers" }
+            @if view.triggers.is_empty() {
+                p .empty {
+                    "No triggers yet. A schedule fires on a clock; a trigger fires when "
+                    "something POSTs to it."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th { "Name" } th { "Token" } th { "Fires" } th { "Limit" }
+                            th { "State" } th { "" }
+                        }
+                    }
+                    tbody {
+                        @for trigger in &view.triggers {
+                            tr {
+                                td {
+                                    strong { (trigger.name) }
+                                    p .small .muted {
+                                        @if let Some(last) = &trigger.last_fired_at {
+                                            "last fired " code .mono { (last) }
+                                        } @else {
+                                            "never fired"
+                                        }
+                                    }
+                                }
+                                td .mono .small { (trigger.token_prefix) "…" }
+                                td .small { (trigger.fire_count) }
+                                td .small { (trigger.max_per_hour) "/hour" }
+                                td .small {
+                                    @if trigger.enabled { "enabled" } @else { "disabled" }
+                                }
+                                td {
+                                    a .button.secondary
+                                        href=(format!("{}?edit={}", crate::admin::ROUTE_TRIGGERS, trigger.name)) {
+                                        "Edit"
+                                    }
+                                    form .inline-form method="post"
+                                        action=(crate::admin::ROUTE_TRIGGERS_TOGGLE) novalidate {
+                                        input type="hidden" name="name" value=(trigger.name);
+                                        input type="hidden" name="enabled"
+                                            value=(if trigger.enabled { "false" } else { "true" });
+                                        button type="submit" class="secondary" {
+                                            @if trigger.enabled { "Disable" } @else { "Enable" }
+                                        }
+                                    }
+                                    form .inline-form method="post"
+                                        action=(crate::admin::ROUTE_TRIGGERS_DELETE) novalidate {
+                                        input type="hidden" name="name" value=(trigger.name);
+                                        button type="submit" class="danger" { "Delete" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        @if !view.fires.is_empty() {
+            section .card aria-labelledby="triggers-fires" {
+                h2 id="triggers-fires" { "Recent fires" }
+                table {
+                    thead {
+                        tr { th { "When" } th { "State" } th { "Conversation" } th { "Note" } }
+                    }
+                    tbody {
+                        @for fire in &view.fires {
+                            tr {
+                                td .mono .small { (fire.fired_at) }
+                                td .small { (fire.status) }
+                                td .small {
+                                    @if let Some(conversation) = &fire.conversation {
+                                        a .mono href=(format!("{}/{}", crate::admin::ROUTE_CHAT, conversation)) {
+                                            (conversation)
+                                        }
+                                    } @else {
+                                        "none"
+                                    }
+                                }
+                                td .small {
+                                    @if let Some(note) = &fire.note { (note) } @else { "" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="trigger-form" {
+            h2 id="trigger-form" {
+                @if creating { "Add a trigger" } @else { "Edit " code { (draft.name) } }
+            }
+            @if !creating {
+                p .small {
+                    "Saving mints a new token and the old URL stops working. That is the rotate: "
+                    "there is no separate button, because the two writes are the same write."
+                }
+            }
+            form method="post" action=(crate::admin::ROUTE_TRIGGERS_SAVE) novalidate {
+                div id="trigger-form-status" role="status" aria-live="polite" {
+                    @if let Some(error) = error {
+                        @if error.field.is_some() {
+                            div .alert {
+                                strong { (error.code) } " " (error.message)
+                            }
+                        }
+                    }
+                }
+                div .field {
+                    label for="trigger_name" { "Name" }
+                    input id="trigger_name" type="text" name="name" value=(draft.name)
+                        autocomplete="off" spellcheck="false"
+                        autofocus[invalid("name")] aria-invalid=[invalid("name").then_some("true")];
+                    span .hint {
+                        "Lowercased on the way in. This is the conversation title a fire lands "
+                        "under, so a rename is a new trigger with a new token."
+                    }
+                }
+                div .field {
+                    label for="trigger_prompt" { "Prompt" }
+                    textarea id="trigger_prompt" name="prompt" rows="8" spellcheck="true"
+                        autofocus[invalid("prompt")]
+                        aria-invalid=[invalid("prompt").then_some("true")] {
+                        (draft.prompt)
+                    }
+                    span .hint {
+                        "The question the turn is asked, up to "
+                        (crate::trigger::MAX_PROMPT_CHARS) " characters. A fire may append one "
+                        "more paragraph to it; the two together are under the same ceiling."
+                    }
+                }
+                div .field {
+                    label for="trigger_max_per_hour" { "Fires per hour" }
+                    input id="trigger_max_per_hour" type="number" name="max_per_hour"
+                        min=(crate::trigger::MIN_PER_HOUR)
+                        max=(crate::trigger::MAX_PER_HOUR)
+                        value=(draft.max_per_hour)
+                        autofocus[invalid("max_per_hour")]
+                        aria-invalid=[invalid("max_per_hour").then_some("true")];
+                    span .hint {
+                        "Between " (crate::trigger::MIN_PER_HOUR) " and "
+                        (crate::trigger::MAX_PER_HOUR) ". A fire over the ceiling is refused "
+                        "with a 429 and recorded, so a hammering caller is visible."
+                    }
+                }
+                div .field {
+                    label for="trigger_enabled" {
+                        input type="checkbox" id="trigger_enabled" name="enabled" value="true"
+                            checked[draft.enabled];
+                        " Enabled"
+                    }
+                    span .hint {
+                        "A disabled trigger answers 404 to its own token, which is the same "
+                        "answer an unknown token gets."
+                    }
+                }
+                div .actions {
+                    button type="submit" {
+                        @if creating { "Add the trigger" } @else { "Save and rotate the token" }
+                    }
+                    @if !creating {
+                        a .button.secondary href=(crate::admin::ROUTE_TRIGGERS) { "Cancel" }
+                    }
+                }
+            }
+        }
+    };
+    shell(
+        "Triggers",
+        view.state,
+        Some(Nav::Triggers),
+        body,
+        &view.chrome,
+    )
+}
+
+/// Everything the backups page needs.
+#[derive(Debug, Clone)]
+pub struct BackupsView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every archive in the archive directory, newest first, each verified.
+    pub rows: Vec<crate::web::backups::ArchiveRow>,
+    /// A success line from the redirect that followed a create or a restore.
+    pub notice: Option<String>,
+    /// A failure to show, when a create or a restore was refused.
+    pub error: Option<FormError>,
+}
+
+impl BackupsView {
+    /// An empty view for a given state.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            rows: Vec::new(),
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The backups page: the create button, the archive table, and the restore form
+/// that lives in each row.
+///
+/// The restore form asks for the filename twice - once hidden, once typed - and
+/// the typed value has to be the exact filename. That is not ceremony: a restore
+/// replaces the live database, and a button that could be hit by reflex is a
+/// button that eventually is.
+///
+/// The page also states the one consequence it cannot perform for the operator:
+/// the running daemon still holds the replaced database file open, so the new
+/// state only takes effect after a service restart. The route never restarts it.
+pub fn backups_page(view: &BackupsView) -> Markup {
+    let body = html! {
+        h1 { "Backups" }
+        p .lede {
+            "Every archive on this host, in one directory, with whether each one still verifies. "
+            "Creating one snapshots the live database rather than copying the file, so a backup "
+            "taken while the daemon runs is a complete one."
+        }
+        (alert_region(view.error.as_ref(), view.notice.as_deref()))
+        section .card aria-labelledby="create-heading" {
+            h2 id="create-heading" { "Create an archive" }
+            p .small {
+                "One file in the archive directory on this host, verified as it is written. It "
+                "carries the database, the session logs, and the two config files. The onboarding "
+                "passphrase is never inside one."
+            }
+            form method="post" action=(crate::admin::ROUTE_BACKUPS_CREATE) novalidate {
+                div .actions {
+                    button type="submit" { "Create a backup now" }
+                }
+            }
+        }
+        section .card aria-labelledby="archives-heading" {
+            h2 id="archives-heading" { "Archives" }
+            @if view.rows.is_empty() {
+                p .empty {
+                    strong { "No archive yet" }
+                    "No archive exists yet. Create one now, and it will appear here with its size "
+                    "and whether every member verifies against its manifest."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Archive" }
+                            th scope="col" { "Written" }
+                            th scope="col" { "Size" }
+                            th scope="col" { "Verifies" }
+                            th scope="col" { "Action" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.rows {
+                            @let confirm_id = format!("confirm-{}", row.name);
+                            tr {
+                                td .mono { (row.name) }
+                                td .mono { (row.modified) }
+                                td .mono { (row.bytes) " bytes" }
+                                td {
+                                    span class=(state_class(row.state_label())) {
+                                        (row.state_label())
+                                    }
+                                    div .small { (row.verification_line()) }
+                                }
+                                td {
+                                    form .stack method="post"
+                                        action=(crate::admin::ROUTE_BACKUPS_RESTORE) novalidate {
+                                        input type="hidden" name="archive" value=(row.name);
+                                        label for=(confirm_id) { "Type the filename to confirm" }
+                                        input type="text" id=(confirm_id) name="confirm"
+                                            autocomplete="off" spellcheck="false" required;
+                                        button type="submit" class="danger" {
+                                            "Restore this archive"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="restart-heading" {
+            h2 id="restart-heading" { "A restore needs a restart" }
+            p {
+                "A restore replaces the state files on disk. This page does not restart the "
+                "daemon and will not: the running daemon keeps its open handle to the replaced "
+                "database file, so the state it serves stays the old one until the service is "
+                "restarted."
+            }
+            p .small {
+                "Run "
+                code { "systemctl --user restart kallisti-eris" }
+                " after a restore for the new state to take effect. Nothing is lost in the "
+                "meantime: what was replaced is moved to a pre-restore directory beside the "
+                "database, and the audit log names it."
+            }
+        }
+    };
+    shell(
+        "Backups",
+        view.state,
+        Some(Nav::Backups),
+        body,
+        &view.chrome,
+    )
+}
+
+/// A standalone error page, for a 403 or a 409 that a browser will read.
+pub fn error_page(state: SetupState, code: &str, message: &str, chrome: &Chrome) -> Markup {
+    let body = html! {
+        h1 { "Not available" }
+        (alert_region(Some(&FormError::new(None, code, message)), None))
+        p .lede {
+            "This is the admin listener on 127.0.0.1. Nothing else is reachable here."
+        }
+        div .actions {
+            a href="/" { "Back to the start" }
+        }
+    };
+    layout("Not available", state, body, chrome)
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+/// How many characters of a user agent the sessions table shows.
+const AGENT_LIMIT: usize = 60;
+
+/// How many characters of a job's request text a job block shows.
+pub const REQUEST_LIMIT: usize = 120;
+
+/// How many characters of an event payload the timeline shows.
+const PAYLOAD_LIMIT: usize = 80;
+
+/// One string for display: whole when it fits, truncated with an ASCII ellipsis
+/// when it does not, and a dash when there is nothing.
+#[must_use]
+pub fn display_text(text: Option<&str>, limit: usize) -> String {
+    let Some(text) = text else {
+        return "-".to_owned();
+    };
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(limit).collect();
+    out.push_str("...");
+    out
+}
+
+/// The class a session or job state carries. The word is always printed too, so
+/// colour is never the only signal.
+fn state_class(state: &str) -> &'static str {
+    match state {
+        "live" | "succeeded" | "paired" | "verified" => "badge live",
+        "running" | "expired" | "awaiting code" => "badge expired",
+        _ => "badge revoked",
+    }
+}
+
+/// Everything the sessions list needs.
+#[derive(Debug, Clone)]
+pub struct SessionsView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every session, newest first.
+    pub rows: Vec<SessionRow>,
+    /// A failure to show, when a read failed.
+    pub error: Option<FormError>,
+    /// A success line, unused today but the shell's contract is shared.
+    pub notice: Option<String>,
+}
+
+impl SessionsView {
+    /// An empty view for a given state.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            rows: Vec::new(),
+            error: None,
+            notice: None,
+        }
+    }
+}
+
+/// Everything one session's page needs.
+#[derive(Debug, Clone)]
+pub struct SessionDetailView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// The session itself.
+    pub session: SessionRow,
+    /// Its jobs, newest first, each with its events.
+    pub jobs: Vec<JobRow>,
+    /// A failure to show, when a cancel was refused.
+    pub error: Option<FormError>,
+    /// A success line, when a job was just cancelled.
+    pub notice: Option<String>,
+}
+
+impl SessionDetailView {
+    /// A view around one session, with no jobs read yet.
+    #[must_use]
+    pub fn new(state: SetupState, session: SessionRow) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            session,
+            jobs: Vec::new(),
+            error: None,
+            notice: None,
+        }
+    }
+}
+
+/// The sessions list: the table, or one friendly line when there is nothing.
+pub fn sessions_page(view: &SessionsView) -> Markup {
+    let body = html! {
+        h1 { "Sessions" }
+        p .lede {
+            "Every device session this host has opened, newest first. A session is one sign-in; "
+            "the jobs it started and every event they recorded are on its own page."
+        }
+        (alert_region(view.error.as_ref(), view.notice.as_deref()))
+        section .card aria-labelledby="sessions-heading" {
+            h2 id="sessions-heading" { "Device sessions" }
+            @if view.rows.is_empty() {
+                p .empty {
+                    strong { "No device session yet" }
+                    "No device session has been opened yet. A session appears here the first time "
+                    "a paired device signs in through the device listener, and this page will list "
+                    "it with the jobs it ran."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Created" }
+                            th scope="col" { "Device" }
+                            th scope="col" { "Agent" }
+                            th scope="col" { "Last seen" }
+                            th scope="col" { "Expires" }
+                            th scope="col" { "State" }
+                            th scope="col" { "Jobs" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.rows {
+                            tr {
+                                td .mono {
+                                    a href=(crate::admin::session_path(&row.id)) { (row.created_at) }
+                                }
+                                td { (row.device_name.as_deref().unwrap_or("unknown")) }
+                                td .why { (display_text(row.user_agent.as_deref(), AGENT_LIMIT)) }
+                                td .mono { (row.last_seen_at.as_deref().unwrap_or("never")) }
+                                td .mono { (row.expires_at) }
+                                td { span class=(state_class(&row.state)) { (row.state) } }
+                                td .mono { (row.job_count) }
+                            }
+                        }
+                    }
+                }
+                p .small {
+                    (view.rows.len())
+                    (if view.rows.len() == 1 { " session, " } else { " sessions, " })
+                    "revoked and expired ones included. Open one to read its jobs and its events."
+                }
+            }
+        }
+    };
+    shell(
+        "Sessions",
+        view.state,
+        Some(Nav::Sessions),
+        body,
+        &view.chrome,
+    )
+}
+
+/// One job: its status, the facts about it, a cancel button while it can still
+/// be cancelled, and its events as a timeline in `seq` order.
+fn job_block(job: &JobRow) -> Markup {
+    html! {
+        article .job aria-label=(format!("Job {}", job.id)) {
+            div .job-head {
+                span class=(state_class(&job.status)) { (job.status) }
+                span .mono { (job.id) }
+                span .small { "kind " (job.kind) ", attempts " (job.attempts) }
+            }
+            dl .kv {
+                dt { "Request" }
+                dd .why { (display_text(job.request_text.as_deref(), REQUEST_LIMIT)) }
+                dt { "Created" }
+                dd { (job.created_at) }
+                dt { "Finished" }
+                dd { (job.finished_at.as_deref().unwrap_or("not yet")) }
+                @if job.error_code.is_some() || job.error_message.is_some() {
+                    dt { "Error" }
+                    dd .why {
+                        (job.error_code.as_deref().unwrap_or("error"))
+                        " "
+                        (job.error_message.as_deref().unwrap_or(""))
+                    }
+                }
+            }
+            @if job.is_cancellable() {
+                form .inline-form method="post" action=(crate::admin::job_cancel_path(&job.id)) novalidate {
+                    button type="submit" class="danger" { "Cancel job" }
+                }
+            }
+            h3 { "Events" }
+            @if job.events.is_empty() {
+                p .empty { "No event has been recorded for this job yet." }
+            } @else {
+                ol .timeline {
+                    @for event in &job.events {
+                        li {
+                            span .mono { (event.occurred_at) }
+                            span .kind { (event.kind) }
+                            span .why {
+                                "seq " (event.seq) ": "
+                                (display_text(event.payload.as_deref(), PAYLOAD_LIMIT))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One session: its identity, then its jobs and their events.
+pub fn session_page(view: &SessionDetailView) -> Markup {
+    let session = &view.session;
+    let where_it_came_from = session.user_agent.as_deref().unwrap_or("unknown");
+    let body = html! {
+        h1 { "Session" }
+        p .lede {
+            "One device session, the jobs it started, and every event each job recorded."
+        }
+        (alert_region(view.error.as_ref(), view.notice.as_deref()))
+        section .card aria-labelledby="session-heading" {
+            h2 id="session-heading" { "Identity" }
+            dl .kv {
+                dt { "Session" } dd { (session.id) }
+                dt { "Device" }
+                dd { (session.device_name.as_deref().unwrap_or("unknown")) }
+                dt { "User agent" } dd .why { (where_it_came_from) }
+                dt { "Created" } dd { (session.created_at) }
+                dt { "Last seen" } dd { (session.last_seen_at.as_deref().unwrap_or("never")) }
+                dt { "Expires" } dd { (session.expires_at) }
+                dt { "Revoked" } dd { (session.revoked_at.as_deref().unwrap_or("no")) }
+                dt { "State" } dd { span class=(state_class(&session.state)) { (session.state) } }
+                dt { "Jobs" } dd { (session.job_count) }
+            }
+            p .small {
+                "A session is a sign-in, not a device: a device that signs in twice has two of "
+                "these, and revoking the device closes both."
+            }
+        }
+        section .card aria-labelledby="jobs-heading" {
+            h2 id="jobs-heading" { "Jobs" }
+            @if view.jobs.is_empty() {
+                p .empty {
+                    strong { "No jobs yet" }
+                    "This session has not started a job yet. A job appears here when the device "
+                    "asks for a turn through the device listener."
+                }
+            } @else {
+                p .small {
+                    "Newest first. A cancel is offered only while a job is queued or running, and "
+                    "it writes an audit row."
+                }
+                @for job in &view.jobs {
+                    (job_block(job))
+                }
+            }
+        }
+        div .actions {
+            a .button.secondary href=(Nav::Sessions.path()) { "All sessions" }
+            a .button.secondary href=(Nav::Devices.path()) { "Devices" }
+        }
+    };
+    shell(
+        "Session",
+        view.state,
+        Some(Nav::Sessions),
+        body,
+        &view.chrome,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Devices
+// ---------------------------------------------------------------------------
+
+/// The longest device name the form accepts. A name is a label in a table, not
+/// a place to paste a paragraph.
+pub const DEVICE_NAME_LIMIT: usize = 64;
+
+/// A pairing code that was just minted, on its way to the one response that will
+/// ever carry it.
+#[derive(Debug, Clone)]
+pub struct IssuedCodeView {
+    /// The eight characters, read from the pairing service once.
+    pub code: String,
+    /// When it stops redeeming.
+    pub expires_at: String,
+    /// The address a phone should call, as the QR carries it.
+    pub relay: String,
+    /// The pairing payload drawn as an SVG a camera can read.
+    pub qr: String,
+}
+
+/// Everything the devices page needs.
+#[derive(Debug, Clone)]
+pub struct DevicesView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every device, newest first, revoked ones included.
+    pub rows: Vec<DeviceOverview>,
+    /// The code minted by this response, if this render follows a mint. It is
+    /// never read back from the database: there is nothing there to read.
+    pub issued: Option<IssuedCodeView>,
+    /// A failure to show, when a mint was refused.
+    pub error: Option<FormError>,
+    /// A success line for anything other than a mint.
+    pub notice: Option<String>,
+}
+
+impl DevicesView {
+    /// An empty view for a given state.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            rows: Vec::new(),
+            issued: None,
+            error: None,
+            notice: None,
+        }
+    }
+}
+
+/// One variable in `eris.env`, as the page lists it.
+///
+/// There is no value field on purpose. Nothing on this surface can read a value
+/// back, so the type that reaches a render function cannot carry one either - a
+/// screenshot or a `dbg!` would have nothing to leak.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvRow {
+    /// The variable name.
+    pub name: String,
+    /// Whether the line is in the file, which is also whether it can be removed
+    /// from this page.
+    pub in_file: bool,
+    /// The provider ids whose registry entry names this variable.
+    pub used_by: Vec<String>,
+}
+
+/// The environment page: what is in the file, and the one form that writes it.
+#[derive(Debug, Clone)]
+pub struct EnvView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every variable, names only.
+    pub rows: Vec<EnvRow>,
+    /// A success line, naming what the redirect just did.
+    pub notice: Option<String>,
+    /// Why the last write was refused.
+    pub error: Option<FormError>,
+}
+
+impl EnvView {
+    /// An empty view for a given state.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            chrome: Chrome::default(),
+            state,
+            rows: Vec::new(),
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The environment page: the list, the remove buttons, and the form.
+pub fn env_page(view: &EnvView) -> Markup {
+    let body = html! {
+        h1 { "Environment" }
+        p .lede {
+            "The variables this daemon reads from its environment file. A value is written once, "
+            "sealed into the file at mode 0600, and never shown again: this page can list a name "
+            "and cannot read a value, and only the name is ever audited or logged."
+        }
+        (alert_region(view.error.as_ref(), view.notice.as_deref()))
+        section .card aria-labelledby="env-list-heading" {
+            h2 id="env-list-heading" { "In the environment" }
+            @if view.rows.is_empty() {
+                p .small {
+                    "Nothing is set yet. A variable added below is usable by the next provider call "
+                    "and is read by the daemon again at its next start."
+                }
+            } @else {
+                form method="post" action=(crate::admin::ROUTE_ENV_DELETE) novalidate {
+                    table {
+                        thead {
+                            tr {
+                                th { "Name" }
+                                th { "Value" }
+                                th { "Used by" }
+                                th { "Action" }
+                            }
+                        }
+                        tbody {
+                            @for row in &view.rows {
+                                tr {
+                                    td .mono { (row.name) }
+                                    td .small {
+                                        @if row.in_file { "set" } @else { "daemon environment" }
+                                    }
+                                    td .small {
+                                        @if row.used_by.is_empty() {
+                                            "not referenced"
+                                        } @else {
+                                            (row.used_by.join(", "))
+                                        }
+                                    }
+                                    td {
+                                        @if row.in_file {
+                                            button type="submit" class="danger"
+                                                name="env_name" value=(row.name) { "Remove" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    p .small {
+                        "Removing a line deletes the value from the file and from this process at "
+                        "the same time, so whatever needed it fails on its next call instead of "
+                        "using a credential the file no longer lists."
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="env-add-heading" {
+            h2 id="env-add-heading" { "Add or replace a variable" }
+            form method="post" action=(crate::admin::ROUTE_ENV) novalidate {
+                div .field {
+                    label for="env_name" { "Name" }
+                    input type="text" id="env_name" name="env_name" value=""
+                        autocomplete="off" autocapitalize="characters" spellcheck="false"
+                        maxlength=(crate::providers::ENV_NAME_LIMIT) required;
+                    span .hint {
+                        "Letters, digits and underscore, such as ANTHROPIC_API_KEY. A name that is "
+                        "already set is replaced, which is also how you rotate a key."
+                    }
+                }
+                div .field {
+                    label for="env_value" { "Value" }
+                    input type="password" id="env_value" name="env_value" value=""
+                        autocomplete="new-password" spellcheck="false" required;
+                    span .hint {
+                        "A key, a username, a password or a token. It is written quoted, so a `#`, "
+                        "a space and a quote all survive the file. It is never shown again."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save variable" }
+                }
+                p .small {
+                    "The file is read by systemd at the daemon's next start. A value saved now also "
+                    "works immediately: the daemon keeps it for the rest of this run, so a provider "
+                    "call does not need a restart to see it."
+                }
+            }
+        }
+    };
+    shell(
+        "Environment",
+        view.state,
+        Some(Nav::Environment),
+        body,
+        &view.chrome,
+    )
+}
+
+/// The devices page: the table, the one-shot code when there is one, and the
+/// form that mints the next one.
+pub fn devices_page(view: &DevicesView) -> Markup {
+    let body = html! {
+        h1 { "Devices" }
+        p .lede {
+            "Every device this host knows about, paired or not, and the one form that mints a "
+            "pairing code for the next one."
+        }
+        (alert_region(view.error.as_ref(), view.notice.as_deref()))
+        @if let Some(issued) = &view.issued {
+            section .card aria-labelledby="issued-heading" {
+                h2 id="issued-heading" { "Pairing code" }
+                p .small {
+                    "This code is shown once, in this response and nowhere else. Only a salted "
+                    "verifier is stored, so it cannot be shown again. Type it on the device before "
+                    "it expires."
+                }
+                p .pairing-code .mono { (issued.code) }
+                p .small { "Expires " (issued.expires_at) "." }
+                @if !issued.qr.is_empty() {
+                    div .pairing-scan {
+                        div .pairing-qr { (PreEscaped(&issued.qr)) }
+                        p .small {
+                            "Or scan it. The code carries the address your phone should reach: "
+                            span .mono { (&issued.relay) }
+                        }
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="devices-heading" {
+            h2 id="devices-heading" { "Devices" }
+            @if view.rows.is_empty() {
+                p .small {
+                    "No device has been registered yet. Mint a code below and pair one, or finish "
+                    "the device step in the wizard."
+                }
+            } @else {
+                // One form around the table, so a selection can be ticked and
+                // acted on in one press. The per-row Revoke button is a submit
+                // button with its own `formaction`: the single-row path is still
+                // the same route, and there is no second form nested in this one,
+                // which is invalid markup and swallows the ticks anyway.
+                form method="post" action=(crate::admin::ROUTE_DEVICE_REMOVE) novalidate {
+                    table {
+                        thead {
+                            tr {
+                                th scope="col" { "Select" }
+                                th scope="col" { "Name" }
+                                th scope="col" { "Platform" }
+                                th scope="col" { "Paired" }
+                                th scope="col" { "Last seen" }
+                                th scope="col" { "State" }
+                                th scope="col" { "Access" }
+                                th scope="col" { "Action" }
+                            }
+                        }
+                        tbody {
+                            @for row in &view.rows {
+                                tr {
+                                    td {
+                                        input type="checkbox"
+                                            name=(format!("device:{}", row.id))
+                                            value="1" aria-label=(format!("Select {}", row.name));
+                                    }
+                                    td { (row.name) }
+                                    td { (row.platform) }
+                                    td .mono {
+                                        @if row.paired {
+                                            (row.paired_at.as_deref().unwrap_or("not yet"))
+                                        } @else {
+                                            "not yet"
+                                        }
+                                    }
+                                    td .mono { (row.last_seen_at.as_deref().unwrap_or("never")) }
+                                    td {
+                                        span class=(state_class(row.state_label())) {
+                                            (row.state_label())
+                                        }
+                                    }
+                                    td .small { (row.admin_label()) }
+                                    td {
+                                        @if row.revoked_at.is_some() {
+                                            span .small { "revoked" }
+                                        } @else {
+                                            button type="submit" class="danger"
+                                                formaction="/dashboard/device/revoke"
+                                                name="device_id" value=(row.id) { "Revoke" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div .actions {
+                        button type="submit" name="action" value="revoke" { "Revoke selected" }
+                        button type="submit" name="action" value="delete" class="danger" {
+                            "Delete selected permanently"
+                        }
+                        button type="submit" name="action" value="delete_revoked" class="danger" {
+                            "Delete all revoked"
+                        }
+                    }
+                    p .small {
+                        "Revoking keeps the row so the list still says the device was cut off. "
+                        "Deleting removes the row and every token it owned, and cannot be undone. "
+                        "\"Delete all revoked\" ignores the ticks and takes every row that is "
+                        "already revoked, which is the fast way to clear a list full of probes; an "
+                        "active device is never swept up by it."
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="pair-heading" {
+            h2 id="pair-heading" { "Mint a pairing code" }
+            form method="post" action=(crate::admin::ROUTE_DEVICES) novalidate {
+                div .field {
+                    label for="device_name" { "Device name" }
+                    input type="text" id="device_name" name="device_name" value=""
+                        autocomplete="off" maxlength=(DEVICE_NAME_LIMIT) required;
+                    span .hint {
+                        "The name the device appears under in the table above. A name that is "
+                        "already known binds the code to that device instead of adding a second row."
+                    }
+                }
+                div .field {
+                    label for="allow_admin" {
+                        input type="checkbox" id="allow_admin" name="allow_admin" value="true";
+                        " Allow this device to administer"
+                    }
+                    span .hint {
+                        "Ticked, the code redeems into a token that may read and change the "
+                        "operator's settings as well as chat; unticked, it can chat and file "
+                        "conversations and nothing more."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Mint pairing code" }
+                }
+            }
+            p .small {
+                "One code per press: eight characters, five minutes, single use. The code is never "
+                "written to the database in readable form, never logged, and never recorded in the "
+                "audit log, which notes the device name and whether administration was asked for."
+            }
+        }
+    };
+    shell(
+        "Devices",
+        view.state,
+        Some(Nav::Devices),
+        body,
+        &view.chrome,
+    )
+}
+
+/// One line of the conversation, as the page renders it.
+///
+/// The body is raw text and is rendered by [`blocks`]: an assistant answer can
+/// carry a fenced code block, and a chat that renders code as one grey paragraph
+/// is not a chat worth using.
+#[derive(Debug, Clone)]
+pub struct ChatLine {
+    /// True for the operator's own message.
+    pub user: bool,
+    /// The name over the bubble.
+    pub who: String,
+    /// What was said, so far.
+    pub body: String,
+    /// The clock time, for the line under the bubble.
+    pub stamp: String,
+    /// True when the turn was refused.
+    pub failed: bool,
+    /// The refusal's code, when it was.
+    pub error_code: Option<String>,
+    /// True while the answer is still arriving.
+    pub pending: bool,
+    /// The model that answered this row, when it is an answer.
+    pub model: Option<String>,
+    /// Prompt tokens the provider reported.
+    pub prompt_tokens: Option<u64>,
+    /// Completion tokens the provider reported.
+    pub completion_tokens: Option<u64>,
+    /// Prompt tokens served from cache.
+    pub cached_tokens: Option<u64>,
+    /// Wall time from request to last byte.
+    pub duration_ms: Option<u64>,
+    /// The context window declared for the model that answered.
+    pub context_window: Option<u64>,
+    /// Which answer this is in the conversation, one-based, counting answers.
+    ///
+    /// The number in front of the run log's call count. The two are different
+    /// facts and used to be conflated: a reply is one turn however many calls it
+    /// ran, and the tool budget decides how many calls that can be. `None` on a
+    /// row that is not an answer, because an operator's message is not a turn.
+    pub turn: Option<u64>,
+    /// Tool rounds the turn ran, when it recorded that.
+    pub rounds: Option<u64>,
+    /// Whether the tool budget, rather than the model, ended this reply.
+    ///
+    /// The footer already prints the round count, which is how much work the
+    /// turn did, not whether it finished. The two were being read as one fact:
+    /// a reply that spent a hundred rounds and was then forced to answer looked
+    /// exactly like a reply that spent a hundred rounds and was done. This says
+    /// which. False on every row written before migration 0022, which had no way
+    /// to record it, so the badge is only ever an addition.
+    pub capped: bool,
+    /// Whether the engine stopped the turn early on purpose and the model wrote
+    /// the answer from what it already had.
+    ///
+    /// The other half of the same question `capped` answers, and a separate tag
+    /// rather than a second word in the same one: a turn that wrapped up finished
+    /// the job, and a turn that was capped did not. False on every row written
+    /// before migration 0023, which had no way to record it.
+    pub wrapped_up: bool,
+    /// The gateway's quota line, when the setting is on and one was read.
+    pub quota: Option<String>,
+    /// The model's own reasoning for this reply, when it streamed any.
+    ///
+    /// Rendered above the answer, and only when the thinking bubble is switched
+    /// on.
+    pub reasoning: Option<String>,
+    /// The tool calls behind this reply, in the order they ran.
+    pub tools: Vec<crate::web::chat::ToolRecord>,
+    /// The files this message carried, by name and size.
+    ///
+    /// Kept on the line rather than looked up per message: the page reads them
+    /// in one query and hands each row its own list, so a transcript with forty
+    /// turns costs the same as one with four.
+    pub files: Vec<Attachment>,
+}
+
+/// One file a message carried, as the transcript states it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    /// What it was called when it arrived.
+    pub name: String,
+    /// Size in bytes, for the chip.
+    pub size: u64,
+    /// Whether it can be shown as a picture rather than named.
+    pub is_image: bool,
+    /// Where the browser may fetch it, when the file is one this route serves.
+    pub url: Option<String>,
+    /// The three or four characters that stand in for a type icon.
+    ///
+    /// A picture is shown as the picture, so this is what a file that cannot be
+    /// shown gets instead of a blank square: `PDF`, `TXT`, `FILE`.
+    pub badge: &'static str,
+}
+
+/// The badge a chip shows for a file of this type.
+///
+/// Read from the type the bytes were sniffed to be when the file landed, so the
+/// chip names what a click actually downloads. A row recorded before sniffing
+/// existed carries an extension-derived value and may disagree with the bytes;
+/// the serving route is the authority either way.
+#[must_use]
+pub fn type_badge(media_type: Option<&str>) -> &'static str {
+    match media_type {
+        Some("image/png") => "PNG",
+        Some("image/jpeg") => "JPG",
+        Some("image/webp") => "WEBP",
+        Some("image/gif") => "GIF",
+        Some("image/heic") => "HEIC",
+        Some("application/pdf") => "PDF",
+        Some("text/plain") => "TXT",
+        Some("text/markdown") => "MD",
+        Some("text/csv") => "CSV",
+        Some("application/json") => "JSON",
+        Some("application/zip") => "ZIP",
+        _ => "FILE",
+    }
+}
+
+/// A size for a human: `812 B`, `14 kB`, `3.4 MB`.
+///
+/// The same rounding the composer's queue uses in its script, so a file's size
+/// before it is sent and after it is in the transcript read the same way.
+#[must_use]
+pub fn human_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    if bytes < 1024 * 1024 {
+        return format!("{} kB", (bytes as f64 / 1024.0).round() as u64);
+    }
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+impl ChatLine {
+    /// What this one reply cost: `1.2k in / 18 out / 900ms`.
+    ///
+    /// Deliberately narrow. Cache share and context fill describe the whole
+    /// conversation, so they are stated once, in the conversation line, instead
+    /// of appearing here with a per-reply value that disagrees with it. A number
+    /// the provider did not report is left out rather than shown as zero.
+    #[must_use]
+    pub fn usage_line(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(rounds) = self.rounds.filter(|rounds| *rounds > 0) {
+            // The operator's word for it is a turn, not a round: a round is one
+            // provider call inside a turn, and the number here is how many of
+            // them this turn spent. The row's column is still `rounds`.
+            let ran = if rounds == 1 {
+                "1 turn".to_owned()
+            } else {
+                format!("{rounds} turns")
+            };
+            // The count says how much it did; this says whether it finished.
+            // Only a capped turn carries the second half, because a count on
+            // its own was being read as the answer to both questions.
+            parts.push(if self.capped {
+                format!("{ran}, then forced")
+            } else {
+                ran
+            });
+        }
+        if let Some(prompt) = self.prompt_tokens {
+            parts.push(format!("{} in", human_tokens(prompt)));
+        }
+        if let Some(out) = self.completion_tokens {
+            parts.push(format!("{} out", human_tokens(out)));
+        }
+        // The share of this reply's prompt the provider served from cache. Only
+        // when both numbers were reported; a guessed percentage would be a lie.
+        if let (Some(prompt), Some(cached)) = (self.prompt_tokens, self.cached_tokens)
+            && prompt > 0
+        {
+            parts.push(format!("{}% cache", (cached.min(prompt) * 100) / prompt));
+        }
+        if let Some(ms) = self.duration_ms {
+            if ms >= 1000 {
+                parts.push(format!("{:.1}s", ms as f64 / 1000.0));
+            } else {
+                parts.push(format!("{ms}ms"));
+            }
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" · "))
+        }
+    }
+}
+
+/// A token count for a human: `812`, `2.4k`, `61.1M`.
+#[must_use]
+pub fn human_tokens(count: u64) -> String {
+    if count < 1_000 {
+        return count.to_string();
+    }
+    if count < 1_000_000 {
+        return format!("{:.1}k", count as f64 / 1_000.0);
+    }
+    format!("{:.1}M", count as f64 / 1_000_000.0)
+}
+
+/// Everything the chat surface needs.
+#[derive(Debug, Clone)]
+pub struct ChatView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state, which is `ready` on this page.
+    pub state: SetupState,
+    /// The version line.
+    pub version: String,
+    /// The configured model, shown as a chip so the answer has a return address.
+    pub model: String,
+    /// The conversation this page shows.
+    pub conversation: String,
+    /// Its name, for the heading and the delete confirmation.
+    pub conversation_title: String,
+    /// The transcript, oldest first.
+    pub messages: Vec<ChatLine>,
+    /// False until a provider is stored; the composer is disabled when it is.
+    pub provider_ready: bool,
+    /// A refusal to show above the transcript.
+    pub error: Option<FormError>,
+    /// What this conversation has cost so far.
+    pub stats: crate::web::chat::Stats,
+    /// Every model every configured provider published, as
+    /// `(provider/model, "Provider - model")`.
+    ///
+    /// The picker is the whole point: the value it sends back names the provider
+    /// as well as the model, so choosing a model on the second provider moves the
+    /// turn there without a settings change. The label names the provider
+    /// because the same model id can appear on both.
+    pub models: Vec<(String, String)>,
+    /// The model the picker starts on.
+    pub selected_model: String,
+    /// Whether to render the model's reasoning in a collapsed bubble.
+    pub show_reasoning: bool,
+    /// Whether this page streams a turn or hands it to the plain form.
+    pub streaming: bool,
+    /// Whether to render the run log at all.
+    pub show_tool_log: bool,
+    /// `full` or `summary`, choosing how it renders.
+    pub tool_log_mode: String,
+    /// How much of each settled reply to draw before the operator asks for
+    /// more: `expanded`, `collapsed` or `minimized`.
+    ///
+    /// Read off the settings row and written onto the shell as `data-reply` so
+    /// the page script paints new replies the same way a reload draws them. A
+    /// per-message choice in `localStorage` overrides it for that one reply.
+    pub reply_state: String,
+    /// The salutation an empty conversation opens with, from the hour.
+    pub greeting: String,
+    /// The line under the salutation, editable in settings.
+    pub hint: String,
+    /// The generated line under that salutation, when one is switched on and
+    /// stored. `None` renders nothing extra at all.
+    pub line: Option<String>,
+    /// What the operator calls the assistant, for the composer and the labels.
+    pub assistant_name: String,
+    /// The sandbox mode the composer's picker starts on.
+    pub sandbox_mode: String,
+    /// Whether full host mode may be offered in that picker at all.
+    pub allow_full: bool,
+    /// The window declared for the selected model, when one is known.
+    pub context_window: Option<u64>,
+    /// How many messages are waiting for a turn that is already running here.
+    ///
+    /// Rendered so a form post that steered a turn lands on a page that says so,
+    /// rather than on one that looks like the message was ignored.
+    pub queued: usize,
+}
+
+/// The greeting a fresh conversation opens with, from the hour of the day.
+///
+/// Pure so the boundaries can be tested without waiting for the clock to move.
+#[must_use]
+pub fn greeting_for(hour: u32) -> &'static str {
+    match hour {
+        5..=11 => "Good morning",
+        12..=16 => "Good afternoon",
+        17..=21 => "Good evening",
+        _ => "Good night",
+    }
+}
+
+/// Where a workspace file link points, without the wildcard axum spells in the
+/// router. The two parts are one decision, so the prefix lives next to the
+/// renderer that writes it.
+const ROUTE_CHAT_WORKSPACE_PREFIX: &str = "/dashboard/chat/workspace/";
+
+/// Percent-encode one path segment for a URL.
+///
+/// Only the unreserved characters survive. The workspace is a filesystem, and a
+/// filename is not HTML: a space, a quote or a `#` must reach the route as data.
+fn encoded_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(char::from(byte));
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// The dashboard URL for one workspace-relative path.
+fn inline_url(path: &str) -> String {
+    let encoded = path
+        .split('/')
+        .map(encoded_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("{}{encoded}", ROUTE_CHAT_WORKSPACE_PREFIX)
+}
+
+/// The badge a file link shows, and whether its bytes are a picture.
+///
+/// Only the extensions this build has a badge for become links. A bracketed
+/// phrase in an answer is ordinary prose, and turning every one into an anchor
+/// would make the transcript lie about what it is showing.
+fn inline_badge(path: &str) -> Option<(&'static str, bool)> {
+    let extension = path.rsplit_once('.')?.1.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "heic" | "heif" => Some(("IMG", true)),
+        "pdf" => Some(("PDF", false)),
+        "ppt" => Some(("PPT", false)),
+        "pptx" => Some(("PPTX", false)),
+        "doc" => Some(("DOC", false)),
+        "docx" => Some(("DOCX", false)),
+        "xls" => Some(("XLS", false)),
+        "xlsx" => Some(("XLSX", false)),
+        "csv" => Some(("CSV", false)),
+        "txt" | "log" => Some(("TXT", false)),
+        "md" | "markdown" => Some(("MD", false)),
+        "json" | "jsonl" => Some(("JSON", false)),
+        "zip" => Some(("ZIP", false)),
+        "rs" | "py" | "sh" | "html" | "sql" => Some(("CODE", false)),
+        _ => None,
+    }
+}
+
+/// The workspace-relative path a bracketed target names, if it is one.
+///
+/// Absolute paths, schemes, traversal and the home shorthand are all refused
+/// here rather than at the route: a link the page draws must name something the
+/// route can serve, and the route refuses the rest anyway. A refusal here just
+/// leaves the text literal.
+fn safe_inline_path(raw: &str) -> Option<&str> {
+    let path = raw.trim();
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.starts_with('~')
+        || path.contains('\\')
+        || path.contains("://")
+        || path.contains('?')
+        || path.contains('#')
+    {
+        return None;
+    }
+    let mut any = false;
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return None;
+        }
+        any = true;
+    }
+    any.then_some(path)
+}
+
+/// A paragraph's worth of text with its file references turned into elements.
+///
+/// Deliberately tiny: `![alt](path)` is a picture and `[label](path)` is a file,
+/// both naming a path inside the workspace. It is not a markdown engine, and
+/// anything that does not parse stays exactly the bytes the model wrote.
+fn inline_pieces(text: &str) -> Vec<Markup> {
+    let mut pieces: Vec<Markup> = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let Some(offset) = text[cursor..].find('[') else {
+            break;
+        };
+        let start = cursor + offset;
+        let image = start > 0 && text[..start].ends_with('!');
+        let label_start = start + 1;
+        let Some(close_offset) = text[label_start..].find("](") else {
+            cursor = start + 1;
+            continue;
+        };
+        let close = label_start + close_offset;
+        let target_start = close + 2;
+        let Some(end_offset) = text[target_start..].find(')') else {
+            cursor = start + 1;
+            continue;
+        };
+        let end = target_start + end_offset;
+        let label = text[label_start..close].trim();
+        let raw = &text[target_start..end];
+        let Some((path, (badge, is_image))) =
+            safe_inline_path(raw).and_then(|path| inline_badge(path).map(|kind| (path, kind)))
+        else {
+            cursor = start + 1;
+            continue;
+        };
+        let before_end = if image {
+            start.saturating_sub(1)
+        } else {
+            start
+        };
+        if before_end > cursor {
+            let before = &text[cursor..before_end];
+            pieces.push(html! { (before) });
+        }
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let url = inline_url(path);
+        let shown = if label.is_empty() { name } else { label };
+        if is_image {
+            pieces.push(html! {
+                a .attached-image href=(url) target="_blank" rel="noreferrer" title=(shown) {
+                    img src=(url) alt=(shown) loading="lazy";
+                }
+            });
+        } else {
+            pieces.push(html! {
+                a .attached-chip href=(url) download=(name) title=(name) {
+                    span .attached-badge { (badge) }
+                    span .attached-name { (shown) }
+                }
+            });
+        }
+        cursor = end + 1;
+    }
+    if cursor < text.len() {
+        let rest = &text[cursor..];
+        pieces.push(html! { (rest) });
+    }
+    pieces
+}
+
+/// One paragraph: the text, with any workspace file references drawn.
+fn inline_paragraph(text: &str) -> Markup {
+    html! {
+        p {
+            @for piece in inline_pieces(text) { (piece) }
+        }
+    }
+}
+
+/// Render message text into blocks: paragraphs, and fenced code as code.
+///
+/// This is deliberately not a markdown engine. A fence is the one structure an
+/// answer from a model needs in order to be readable, and everything else stays
+/// literal text so nothing in an answer can become markup.
+#[must_use]
+pub fn blocks(text: &str) -> Markup {
+    if text.trim().is_empty() {
+        return html! { p .muted-line { "Streaming" } };
+    }
+    let mut pieces: Vec<Markup> = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("```") {
+        let (before, after) = rest.split_at(start);
+        if !before.trim().is_empty() {
+            pieces.push(inline_paragraph(before.trim()));
+        }
+        let after = &after[3..];
+        let (language, body_start) = match after.find('\n') {
+            Some(index) => (&after[..index], index + 1),
+            None => ("", after.len()),
+        };
+        let body = &after[body_start..];
+        let Some(end) = body.find("```") else {
+            pieces.push(html! {
+                pre .code { (body.trim_end()) }
+            });
+            rest = "";
+            break;
+        };
+        let code = &body[..end];
+        pieces.push(html! {
+            div .code-block {
+                @if !language.trim().is_empty() {
+                    span .code-lang { (language.trim()) }
+                }
+                pre .code { (code.trim_end()) }
+            }
+        });
+        rest = &body[end + 3..];
+    }
+    if !rest.trim().is_empty() {
+        pieces.push(inline_paragraph(rest.trim()));
+    }
+    html! { @for piece in pieces { (piece) } }
+}
+
+/// The conversation's running totals, as the last line inside a reply.
+///
+/// These used to sit in a bar under the composer, floating over the wallpaper and
+/// saying nothing about which turn produced them. They belong to the answer being
+/// The conversation totals, stated once.
+///
+/// This is the only place cache share and context fill appear, so the numbers on
+/// a page cannot contradict each other. A value with no denominator is said to be
+/// unknown rather than printed as a confident zero, and a context share under one
+/// percent keeps a decimal instead of rounding to nothing.
+fn session_line(view: &ChatView) -> Markup {
+    let stats = &view.stats;
+    // "Questions", not "turns". This counts the operator's own messages, and the
+    // run log's pill counts replies, and an answer that failed or was stopped is
+    // a row without being a turn. The two were both printed as "turn", so a
+    // conversation with six questions and nine answer rows read as a transcript
+    // that disagreed with itself about how many turns it had.
+    let turns = match stats.turns {
+        1 => "1 question".to_owned(),
+        count => format!("{count} questions"),
+    };
+    let rate = match stats.tokens_per_second {
+        Some(rate) => format!("{rate} tok/s"),
+        None => "tok/s unknown".to_owned(),
+    };
+    let cache = match stats.cache_hit_pct {
+        Some(pct) => format!("cache hit {pct}%"),
+        None => "cache unknown".to_owned(),
+    };
+    let context = context_share(stats.context_used, stats.context_window);
+    html! {
+        div .meta-session aria-label="Conversation totals" {
+            span { (turns) }
+            span .dot { "·" }
+            span { (human_tokens(stats.total_tokens)) " tokens" }
+            span .dot { "·" }
+            span { (rate) }
+            span .dot { "·" }
+            span { (cache) }
+            span .dot { "·" }
+            span { (context) }
+        }
+    }
+}
+
+/// How full the model's window is, with enough precision to be useful.
+///
+/// A transcript of a few thousand tokens against a million-token window is a
+/// fifth of a percent: printing that as `0%` reads as a bug even though the
+/// arithmetic is right.
+#[must_use]
+pub fn context_share(used: Option<u64>, window: Option<u64>) -> String {
+    let (Some(used), Some(window)) = (used, window) else {
+        return "context unknown".to_owned();
+    };
+    if window == 0 {
+        return "context unknown".to_owned();
+    }
+    let pct = used as f64 * 100.0 / window as f64;
+    if pct >= 10.0 {
+        format!("context {pct:.0}%")
+    } else if pct >= 1.0 {
+        format!("context {pct:.1}%")
+    } else if pct > 0.0 {
+        format!("context {pct:.2}%")
+    } else {
+        "context 0%".to_owned()
+    }
+}
+
+/// The chat surface: the transcript, the composer, and the backdrop behind it.
+///
+/// The form is a real POST, so the page works with no script at all and `curl`
+/// can drive it. The inline script at the bottom upgrades that form into a
+/// streaming conversation: it posts the same body, reads the same route as an
+/// event stream, and appends what arrives. It is the only script in the UI, it is
+/// inline (no `src`, no network, no third party), and every other page is still
+/// script-free.
+/// One tool call's output as an application window, the way the iOS client draws
+/// it: traffic lights, a title, the line count, then the readout.
+///
+/// The body is not the tool's JSON. A result is parsed by [`super::term`] into a
+/// prompt line and the lines the command actually printed, because a window
+/// titled `stdout` whose body was `{"stdout":"...\n..."}` was showing the wire
+/// format instead of the terminal. One `div` per line rather than one `pre`: a
+/// monospace `pre` is fine for a paragraph, but stderr has to be paintable and a
+/// thousand-line log has to be scrollable, and both want structure.
+fn tool_window(tool: &crate::web::chat::ToolRecord) -> Markup {
+    let term = super::term::render(&tool.name, &tool.arguments, &tool.output, tool.is_error);
+    let total = term.lines.len();
+    html! {
+        div .win {
+            div .win-bar {
+                span .win-dots {
+                    span .win-dot .red {}
+                    span .win-dot .yellow {}
+                    span .win-dot .green {}
+                }
+                span .win-title { "kallisti \u{2014} stdout" }
+                // The live dot is present and hidden: a settled call has no dot,
+                // and the markup a live turn builds is this same markup, so the
+                // title bar does not reflow when the last chunk lands.
+                span .win-live hidden aria-label="Streaming" { "\u{25CF}" }
+                span .win-size {
+                    (total)
+                    @if total == 1 { " line" } @else { " lines" }
+                }
+            }
+            div .win-body {
+                div .term-line .prompt { (term.prompt) }
+                @for line in &term.lines {
+                    div class=(line.kind.class()) { (line.text) }
+                }
+            }
+        }
+    }
+}
+
+/// The two controls that open or close every call in one run log.
+///
+/// They live in a row directly under the log's summary, not inside it. A
+/// focusable button inside a `summary` competes with the disclosure's own Enter
+/// and Space, and the summary's accessible name would become the buttons'
+/// labels instead of "Run log, n calls". Under the summary the log keeps its own
+/// name and a keyboard user has one disclosure and two plain buttons, in that
+/// order.
+///
+/// The row is rendered `hidden` and the page script reveals it. A reader without
+/// the script cannot press a button into doing anything, so a dead control is
+/// worse than no control: every call is already its own native disclosure, and
+/// the whole log opens and closes natively too.
+fn run_log_controls() -> Markup {
+    html! {
+        div .runctl hidden role="group" aria-label="Run log controls" {
+            button type="button" .run-btn data-run="open"
+                aria-label="Expand every tool call in this run log" { "Expand all" }
+            button type="button" .run-btn data-run="shut"
+                aria-label="Collapse every tool call in this run log" { "Collapse all" }
+            button type="button" .run-btn data-run="all" aria-pressed="false"
+                aria-label="Show every tool call in this run log, not only the running one" {
+                "Show all"
+            }
+        }
+    }
+}
+
+/// Every call of one run log, each a closed window that opens itself.
+///
+/// Closed by default in both modes: one line naming the call, and the reading is
+/// one press away. The body scrolls rather than growing the conversation, so a
+/// long log costs one window.
+fn run_log_calls(tools: &[crate::web::chat::ToolRecord]) -> Markup {
+    html! {
+        @for tool in tools {
+            @if let Some(asked) = tool.asked.as_ref().filter(|asked| asked.answer.is_some()) {
+                // A settled question is a record, and the run log is where the
+                // record of a turn belongs. An unsettled one is not a record, it
+                // is a control: it renders in the reply's own slot, from
+                // `open_questions()`, so the operator answers it where the answer
+                // would have been. One card, one place.
+                (asked_card(asked, tool))
+            } @else {
+                details .exec-call .failed[tool.is_error] {
+                    summary .exec-head {
+                        span .exec-name { (tool.name) }
+                        span .exec-args { (tool.arguments) }
+                    }
+                    (tool_window(tool))
+                }
+            }
+        }
+    }
+}
+
+/// One settled question: what was asked, and what was answered.
+///
+/// Drawn from the transcript rather than from the live registry, because a page
+/// reloaded an hour later has to show the same card without a turn to ask. The
+/// buttons are absent once it is settled: a second answer to a question the model
+/// has already been given changes nothing and would look like it did.
+fn asked_card(asked: &crate::web::chat::Asked, tool: &crate::web::chat::ToolRecord) -> Markup {
+    html! {
+        div .asked .settled[asked.answer.is_some()] {
+            @if let Some(title) = asked.request.title.as_ref().filter(|t| !t.trim().is_empty()) {
+                div .asked-title { (title) }
+            }
+            @for question in &asked.request.questions {
+                div .asked-question { (question.question) }
+                @if let Some(answer) = asked.answer.as_ref() {
+                    div .asked-answer { (answer.render()) }
+                } @else {
+                    div .asked-choices {
+                        @for choice in &question.choices {
+                            // A choice that exists only until a reload is half a
+                            // control. The two data attributes are what the page's
+                            // own handler reads, and they say exactly what the
+                            // live card posts: the question and the label.
+                            span .asked-choice
+                                data-question=(question.question)
+                                data-label=(choice.label) {
+                                span .asked-label { (choice.label) }
+                                @if let Some(detail) = choice.detail.as_ref().filter(|d| !d.trim().is_empty()) {
+                                    span .asked-detail { (detail) }
+                                }
+                            }
+                        }
+                    }
+                    div .asked-waiting { "Waiting for an answer." }
+                }
+            }
+            // What the model actually said, kept for the record. It is the same
+            // string the transcript stores, so the card cannot drift from it.
+            div .asked-raw { (tool.arguments) }
+        }
+    }
+}
+
+/// Every question one reply is still waiting on, with the call that asked it.
+///
+/// The reply's own slot renders these, and the run log skips them: a question the
+/// turn is blocked on is a control, and a control belongs where the answer would
+/// have been rather than inside the log the operator has to open first. A settled
+/// question stays in the log, because by then it is a record.
+#[must_use]
+fn open_questions(
+    line: &ChatLine,
+) -> Vec<(&crate::web::chat::Asked, &crate::web::chat::ToolRecord)> {
+    line.tools
+        .iter()
+        .filter_map(|tool| {
+            let asked = tool.asked.as_ref()?;
+            asked.answer.is_none().then_some((asked, tool))
+        })
+        .collect()
+}
+
+/// How many characters of an answer a minimized reply keeps.
+///
+/// Sixty is one line at every width the transcript has: enough to tell two
+/// answers apart in a folded thread, short enough that the column of summaries
+/// stays a column.
+const REPLY_PEEK_CHARS: usize = 60;
+
+/// The opening words of an answer, for the one line a minimized reply keeps.
+///
+/// The preview is the answer's own text, cut. It is never a summary and never a
+/// model's paraphrase: a folded reply that says something the answer does not say
+/// would be worse than no preview at all, because the operator would trust it.
+/// A fenced block is skipped whole, not just its markers: the contents of one are
+/// not what the answer says, so quoting them in a one-line preview would describe
+/// the formatting instead of the reply. The closing fence turns the skipping off.
+#[must_use]
+pub fn reply_peek(body: &str) -> String {
+    let mut flat = String::new();
+    let mut in_fence = false;
+    for line in body.lines() {
+        let line = line.trim();
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || line.is_empty() {
+            continue;
+        }
+        if !flat.is_empty() {
+            flat.push(' ');
+        }
+        flat.push_str(line);
+        if flat.chars().count() >= REPLY_PEEK_CHARS {
+            break;
+        }
+    }
+    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= REPLY_PEEK_CHARS {
+        return flat;
+    }
+    let mut cut: String = flat.chars().take(REPLY_PEEK_CHARS).collect();
+    cut.push('\u{2026}');
+    cut
+}
+
+/// How much of one reply the page draws before the operator asks for more.
+///
+/// The Settings row is a default, not a command. A reply that is still arriving,
+/// one that failed, and one holding a question the operator has to answer all
+/// open in full whatever the setting says: folding away the thing they have to
+/// act on is the page making a decision that is not its to make. The operator can
+/// still fold any of them deliberately, one click at a time.
+#[must_use]
+fn reply_state_for(default: crate::web::chat::ReplyState, line: &ChatLine) -> &'static str {
+    use crate::web::chat::ReplyState;
+    if line.pending || line.failed {
+        return ReplyState::Expanded.as_str();
+    }
+    let waiting = line.tools.iter().any(|tool| {
+        tool.asked
+            .as_ref()
+            .is_some_and(|asked| asked.answer.is_none())
+    });
+    if waiting {
+        return ReplyState::Expanded.as_str();
+    }
+    default.as_str()
+}
+
+/// The word on the reply's cycle control: what pressing it does next, which is
+/// the same contract the run log's controls follow.
+#[must_use]
+fn reply_next_word(state: &str) -> &'static str {
+    match state {
+        "expanded" => "Collapse",
+        "collapsed" => "Minimize",
+        _ => "Expand",
+    }
+}
+
+/// The control's accessible name. It says what the press does, not what the
+/// reply is currently doing, and it names the state the press lands on.
+#[must_use]
+fn reply_next_label(state: &str) -> &'static str {
+    match state {
+        "expanded" => "Collapse this reply to its first few lines",
+        "collapsed" => "Minimize this reply to one summary line",
+        _ => "Expand this reply to the whole answer",
+    }
+}
+
+pub fn chat_page(view: &ChatView) -> Markup {
+    let body = html! {
+        div .chat-shell .new-chat[view.messages.is_empty()]
+            data-conversation=(view.conversation.clone())
+            data-assistant=(view.assistant_name.clone())
+            data-stream=(if view.streaming { "on" } else { "off" })
+            data-tool-log=(if view.show_tool_log { view.tool_log_mode.clone() } else { "off".to_owned() })
+            data-reply=(view.reply_state.clone())
+            data-file-max=(crate::web::chat::MAX_ATTACHMENT_BYTES)
+            data-file-total=(crate::web::chat::MAX_ATTACHMENT_TOTAL_BYTES) {
+        (alert_region(view.error.as_ref(), None))
+        @if !view.messages.is_empty() {
+            div .replyctl hidden role="group" aria-label="Reply size controls" {
+                button type="button" .reply-all data-reply-all="expand"
+                    aria-label="Expand every reply in this conversation" { "Expand all" }
+                button type="button" .reply-all data-reply-all="minimize"
+                    aria-label="Minimize every reply in this conversation" { "Minimize all" }
+            }
+        }
+        section .thread id="thread" aria-label="Conversation" {
+            @let last_answer = view.messages.iter().rposition(|line| !line.user);
+            @for (index, line) in view.messages.iter().enumerate() {
+                @let klass = format!(
+                    "msg {}{}",
+                    if line.user { "user" } else { "assistant" },
+                    if line.pending { " pending" } else { "" },
+                );
+                @let reply = reply_state_for(crate::web::chat::reply_state(Some(&view.reply_state)), line);
+                @let waiting = open_questions(line);
+                article class=(klass)
+                    data-reply-state=[(!line.user).then_some(reply)]
+                    data-asked=[(!waiting.is_empty()).then_some("open")] {
+                    div .who {
+                        span .who-name { (line.who) }
+                        @if !line.user {
+                            // One control that cycles, rather than three that can
+                            // disagree: there is one `aria-expanded` to be right
+                            // about instead of three, and the word on the button
+                            // is the press, not the current state.
+                            button type="button" .reply-cycle
+                                data-reply-cycle
+                                aria-label=(reply_next_label(reply))
+                                aria-expanded=(if reply == "minimized" { "false" } else { "true" }) {
+                                (reply_next_word(reply))
+                            }
+                            // The second control is not a fourth fold size: it
+                            // is the whole reply in the whole window, which is
+                            // what "expand this" meant to ask for. It is a
+                            // toggle, so it says the state it is in and the
+                            // press takes it back out.
+                            button type="button" .reply-max
+                                data-reply-max
+                                aria-label="Show this reply in the whole window"
+                                aria-expanded="false" {
+                                "Maximize"
+                            }
+                        }
+                    }
+                    @if !line.user {
+                        // What a minimized reply keeps. Rendered always and shown
+                        // by the stylesheet, so a browser with no script, a find in
+                        // the page, and a reload all see the same answer.
+                        p .reply-peek { (reply_peek(&line.body)) }
+                    }
+                    @if view.show_reasoning {
+                        @if let Some(reasoning) = line.reasoning.as_ref().filter(|text| !text.trim().is_empty()) {
+                            details .think open {
+                                summary {
+                                    span .think-label { "Thinking" }
+                                    div .think-actions {
+                                        button type="button" .think-max
+                                            title="Expand" aria-label="Expand the thinking bubble" { "\u{2922}" }
+                                    }
+                                }
+                                div .think-body { (reasoning) }
+                            }
+                        }
+                    }
+                    @if view.show_tool_log {
+                        @if !line.tools.is_empty() {
+                            @if view.tool_log_mode == "summary" {
+                                details .exec .compact {
+                                    summary {
+                                        span .exec-label { "Run log" }
+                                        @if let Some(turn) = line.turn {
+                                            span .exec-turn { "Turn " (turn) }
+                                        }
+                                        span .exec-count {
+                                            (line.tools.len())
+                                            @if line.tools.len() == 1 { " call" } @else { " calls" }
+                                        }
+                                        @if let Some(last) = line.tools.last() {
+                                            span .exec-last {
+                                                (last.name) " " (last.arguments)
+                                            }
+                                        }
+                                    }
+                                    (run_log_controls())
+                                    div .exec-body { (run_log_calls(&line.tools)) }
+                                }
+                            } @else {
+                                // Closed by default: the log is one line until the
+                                // operator opens it, so a turn that ran a dozen
+                                // commands cannot push the answer off the screen.
+                                details .exec {
+                                    summary {
+                                        span .exec-label { "Run log" }
+                                        @if let Some(turn) = line.turn {
+                                            span .exec-turn { "Turn " (turn) }
+                                        }
+                                        span .exec-count {
+                                            (line.tools.len())
+                                            @if line.tools.len() == 1 { " call" } @else { " calls" }
+                                        }
+                                    }
+                                    (run_log_controls())
+                                    div .exec-body { (run_log_calls(&line.tools)) }
+                                }
+                            }
+                        }
+                    }
+                    @if !waiting.is_empty() {
+                        // The question takes the answer's place rather than sitting
+                        // above the run log: the operator has one thing to do, and
+                        // it is where their eye already is. The reply bubble stands
+                        // down while this is open, from `data-asked` on the article.
+                        div .asked-slot {
+                            @for (asked, tool) in &waiting {
+                                (asked_card(asked, tool))
+                            }
+                        }
+                    }
+                    @let streaming = !line.user && line.pending && line.body.trim().is_empty();
+                    @if !streaming {
+                    div .bubble .failed[line.failed] {
+                        @if !line.user {
+                            // The same glyph, the same frame and the same meaning
+                            // as the thinking bubble's control: a bounded block
+                            // that can be asked for the whole window. It sits in
+                            // the corner of the bubble rather than in the who row,
+                            // because it acts on the answer and not on the reply.
+                            button type="button" .bubble-max data-bubble-max
+                                title="Expand" aria-label="Expand this answer" {
+                                "\u{2922}"
+                            }
+                        }
+                        (blocks(&line.body))
+                        @if !line.files.is_empty() {
+                            div .attached {
+                                @for file in &line.files {
+                                    @if file.is_image {
+                                        @if let Some(url) = &file.url {
+                                            a .attached-image href=(url) target="_blank"
+                                                rel="noreferrer" title=(file.name) {
+                                                img src=(url) alt=(file.name) loading="lazy";
+                                            }
+                                        } @else {
+                                            span .attached-chip {
+                                                span .attached-badge { (file.badge) }
+                                                span .attached-name { (file.name) }
+                                            }
+                                        }
+                                    } @else {
+                                        @if let Some(url) = &file.url {
+                                            a .attached-chip href=(url)
+                                                download=(file.name) title=(file.name) {
+                                                span .attached-badge { (file.badge) }
+                                                span .attached-name { (file.name) }
+                                                span .attached-size {
+                                                    (human_bytes(file.size))
+                                                }
+                                            }
+                                        } @else {
+                                            span .attached-chip title=(file.name) {
+                                                span .attached-badge { (file.badge) }
+                                                span .attached-name { (file.name) }
+                                                span .attached-size {
+                                                    (human_bytes(file.size))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    }
+                    @if !line.user {
+                        @if streaming {
+                            // A turn that has not written a word yet. A reload in
+                            // the middle of one draws exactly what the live path
+                            // draws: no bubble, and the status line carrying the
+                            // caret. A fix that only touched the live path would
+                            // come back on every refresh.
+                            div .meta-live aria-live="polite" { "thinking" }
+                        } @else {
+                            // What the turn is doing right now, while it is doing
+                            // it. Rendered hidden and empty on a settled page, and
+                            // filled only by a running turn's own status frames: a
+                            // reloaded transcript has nothing running, so it shows
+                            // nothing.
+                            div .meta-live hidden aria-live="polite" {}
+                        }
+                    }
+                    div .meta {
+                        span .mono { (line.stamp) }
+                        @if let Some(model) = &line.model {
+                            span .meta-model { (model) }
+                        }
+                        @if let Some(usage) = line.usage_line() {
+                            span .meta-usage { (usage) }
+                        }
+                        @if let Some(quota) = &line.quota {
+                            span .meta-quota { (quota) }
+                        }
+                        @if let Some(code) = &line.error_code {
+                            span .tag { (code) }
+                        }
+                        @if line.capped {
+                            // Said in the transcript, not only in the live
+                            // notice: a reload has to be able to tell a reply
+                            // that finished from one the budget forced.
+                            span .tag .capped
+                                title="the tool budget ended this turn, so the answer was forced rather than finished" {
+                                "capped"
+                            }
+                        }
+                        @if line.wrapped_up {
+                            // The same place, a different fact: this turn saw the
+                            // budget coming and answered instead of reaching for
+                            // one more tool, so the answer is the model's own.
+                            span .tag .wrapped-up
+                                title="the engine stopped this turn two rounds early, so the answer was written rather than forced" {
+                                "wrapped up"
+                            }
+                        }
+                    }
+                    @if Some(index) == last_answer && !line.pending && view.provider_ready {
+                        (session_line(view))
+                    }
+                }
+            }
+        }
+        @if view.messages.is_empty() {
+            div .chat-greeting {
+                p .hello { (view.greeting) }
+                @if let Some(line) = &view.line {
+                    p .line { (line) }
+                }
+            }
+        }
+        @if !view.provider_ready {
+            p .small .chat-note {
+                "No provider is configured yet. Set the endpoint and model on the settings page and "
+                "the composer appears."
+            }
+        }
+        @if view.provider_ready {
+            form .composer id="composer-form" method="post"
+                action=(crate::admin::ROUTE_CHAT_SEND) novalidate
+                enctype="multipart/form-data" {
+                input type="hidden" name="conversation" value=(view.conversation);
+                label .sr-only for="composer" { "Message" }
+                textarea id="composer" name="message" rows="1" spellcheck="false"
+                    placeholder=(format!("Message {}", view.assistant_name)) {}
+                div .composer-bar {
+                    label .attach for="attachment" title="Attach files" {
+                        span aria-hidden="true" { "+" }
+                        span .sr-only { "Attach files" }
+                    }
+                    // `multiple`, so one trip to the picker can carry a screenshot,
+                    // a log and a JSON file. The no-script path posts every part to
+                    // the same route under the same name; the script below collects
+                    // them into a queue so a second trip adds to the first.
+                    input type="file" id="attachment" name="file" .attach-input multiple
+                        aria-label="Attach files";
+                    div .attach-queue id="attach-queue" {}
+                    div .composer-pick {
+                        label .sr-only for="mode" { "Access" }
+                        select id="mode" name="mode" aria-label="Access level" {
+                            @for mode in crate::onboarding::SandboxMode::ONBOARDING {
+                                option value=(mode.as_str())
+                                    selected[*mode.as_str() == view.sandbox_mode] {
+                                    (mode.label())
+                                }
+                            }
+                            @if view.allow_full {
+                                option value=(crate::onboarding::SandboxMode::Full.as_str())
+                                    selected[view.sandbox_mode == crate::onboarding::SandboxMode::Full.as_str()] {
+                                    (crate::onboarding::SandboxMode::Full.label())
+                                }
+                            }
+                        }
+                        label .sr-only for="model" { "Model" }
+                        select id="model" name="model" aria-label="Model" {
+                            @for (value, label) in &view.models {
+                                option value=(value) selected[*value == view.selected_model] {
+                                    (label)
+                                }
+                            }
+                        }
+                        @if let Some(window) = view.context_window {
+                            span .small .nowrap { (human_tokens(window)) " window" }
+                        }
+                        // Prompt tokens the provider served from its cache,
+                        // summed over this conversation. It sits beside the model
+                        // and the window because it describes the same thing they
+                        // do: how much of what this chat sends was already known
+                        // to the far end.
+                        @if let Some(cache) = view.stats.cache_hit_pct {
+                            span .small .nowrap
+                                title="Prompt tokens served from cache: this conversation, and the turn that just ran" {
+                                "cache " (cache) "% session"
+                                @if let Some(turn) = view.stats.turn_cache_pct {
+                                    " · " (turn) "% turn"
+                                }
+                            }
+                        }
+                    }
+                    div .composer-send {
+                        span .hint id="composer-status" {}
+                        // The send control is never disabled by a running turn: a
+                        // second message steers it. The hint says so while the
+                        // turn streams, and this one states the count a reloaded
+                        // page also knows about.
+                        @if view.queued > 0 {
+                            span .hint id="composer-queued" {
+                                (view.queued)
+                                @if view.queued == 1 {
+                                    " message queued for the running turn"
+                                } @else {
+                                    " messages queued for the running turn"
+                                }
+                            }
+                        }
+                        // The page's own way back to the daemon. A standalone
+                        // window on a phone has no browser chrome, so it has no
+                        // reload control at all, and a daemon that restarted or
+                        // a stream that dropped leaves the operator with no way
+                        // to ask again. Rendered hidden and revealed by the
+                        // script, like the run log controls: a button that
+                        // cannot act without the script is not a control worth
+                        // showing to a reader who has no script.
+                        button type="button" id="reload" class="secondary" hidden
+                            title="Reload this conversation from the daemon" { "Reload" }
+                        button type="button" id="stop" class="secondary" hidden { "Stop" }
+                        button type="submit" id="send" { "Send" }
+                    }
+                }
+            }
+        } @else {
+            p .empty {
+                strong { "No provider yet" }
+                "Finish onboarding, or set the endpoint and model on the settings page, and the "
+                "composer appears."
+            }
+        }
+        }
+        script { (PreEscaped(CHAT_JS)) }
+    };
+    shell("Chat", view.state, Some(Nav::Chat), body, &view.chrome)
+}
+
+/// The one script in the UI: progressive enhancement for the composer.
+///
+/// It posts the same form body the plain form posts, asks for the event stream,
+/// appends deltas, and offers a stop. With it off, the form still posts and the
+/// answer arrives on the next render.
+const CHAT_JS: &str = r##"(function () {
+  var form = document.getElementById("composer-form");
+  var box = document.getElementById("composer");
+  var thread = document.getElementById("thread");
+  var stop = document.getElementById("stop");
+  var status = document.getElementById("composer-status");
+  var attachmentInput = document.getElementById("attachment");
+  var shellForMode = document.querySelector(".chat-shell");
+
+  // ---- How much run log the operator asked for ---------------------------
+  // `off`, `summary` or `full`, as Settings stores it and the server rendered
+  // it. The live builder reads it here rather than guessing, because a page
+  // opened on `summary` must not stream a full wall of windows and then turn
+  // into one line after a reload. This was the whole bug: the setting only ever
+  // reached the server renderer.
+  var TOOL_LOG_FALLBACK = "full";
+  function toolLogMode() {
+    if (shellForMode === null) { return TOOL_LOG_FALLBACK; }
+    var mode = shellForMode.getAttribute("data-tool-log");
+    if (mode === "off" || mode === "summary" || mode === "full") { return mode; }
+    return TOOL_LOG_FALLBACK;
+  }
+
+  // ---- The run log: two controls, and the choice they remember ------------
+  // Two buttons open or close every call of one log, and the choice carries into
+  // the next answer. It is a preference, not a fourth Settings mode: the server
+  // still renders the default from `full` or `summary`, and this only refines the
+  // per-call state of a full log. Storage can be unavailable (a private window, a
+  // blocked origin), and a browser that refuses to remember is not an error worth
+  // showing, so every read and write is guarded.
+  var RUNLOG_KEY = "kallisti.runlog";
+
+  // Show all: off means the log keeps only the call that is running on screen.
+  // A turn that runs a dozen commands is a wall of windows, and the one the
+  // operator wants while it runs is the last. On is the old behaviour, kept
+  // behind one press because reading a whole run at once is a real thing to
+  // want.
+  var SHOWALL_KEY = "kallisti.runlog.all";
+
+  function rememberedRunLog() {
+    try {
+      var stored = window.localStorage.getItem(RUNLOG_KEY);
+      if (stored === "expanded") { return true; }
+      if (stored === "collapsed") { return false; }
+    } catch (error) {
+      return null;
+    }
+    return null;
+  }
+
+  function rememberRunLog(expanded) {
+    try {
+      window.localStorage.setItem(RUNLOG_KEY, expanded ? "expanded" : "collapsed");
+    } catch (error) {
+      return;
+    }
+  }
+
+  function rememberedShowAll() {
+    try {
+      return window.localStorage.getItem(SHOWALL_KEY) === "on";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function rememberShowAll(on) {
+    try {
+      window.localStorage.setItem(SHOWALL_KEY, on ? "on" : "off");
+    } catch (error) {
+      return;
+    }
+  }
+
+  function runLogButton(kind, label, name) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "run-btn";
+    button.setAttribute("data-run", kind);
+    button.setAttribute("aria-label", name);
+    button.textContent = label;
+    return button;
+  }
+
+  // Open or close every call of one log. The log itself is left as the operator
+  // put it: closing all the calls is not the same request as closing the log.
+  function setRunLogCalls(log, expanded) {
+    var calls = log.querySelectorAll(".exec-call");
+    for (var index = 0; index < calls.length; index += 1) {
+      calls[index].open = expanded;
+    }
+  }
+
+  // Only the running call open. Called when a new call starts and when one
+  // settles, so the log never shows more than the work in front of it unless
+  // Show all is on.
+  function onlyRunning(log) {
+    if (rememberedShowAll()) { return; }
+    var calls = log.querySelectorAll(".exec-call");
+    for (var index = 0; index < calls.length; index += 1) {
+      calls[index].open = index === calls.length - 1;
+    }
+  }
+
+  // Which calls are on screen at all. Off, everything but the call the live
+  // builder last touched is hidden: the log is a report of the work in front of
+  // the operator, not a transcript of every command the turn has run. The count
+  // in the summary still says how many there were, and Show all brings them
+  // back.
+  function applyShowAll(log) {
+    var on = rememberedShowAll();
+    var calls = log.querySelectorAll(".exec-call");
+    // A log that came off the server marked nothing current: it is a finished
+    // run, and the last call is the one worth keeping. The live builder marks
+    // its own as it goes.
+    var anyCurrent = false;
+    for (var scan = 0; scan < calls.length; scan += 1) {
+      if (calls[scan].getAttribute("data-current") === "1") { anyCurrent = true; }
+    }
+    for (var index = 0; index < calls.length; index += 1) {
+      var current = anyCurrent
+        ? calls[index].getAttribute("data-current") === "1"
+        : index === calls.length - 1;
+      calls[index].hidden = on === false && current === false;
+    }
+  }
+
+  // Put the Show all buttons in the state the remembered choice says.
+  function paintShowAll(log) {
+    var on = rememberedShowAll();
+    var buttons = log.querySelectorAll('.run-btn[data-run="all"]');
+    for (var index = 0; index < buttons.length; index += 1) {
+      buttons[index].setAttribute("aria-pressed", on ? "true" : "false");
+      buttons[index].textContent = on ? "Show running" : "Show all";
+    }
+  }
+
+  // The server renders the two controls hidden, because without this script a
+  // button cannot open anything. Revealing them, and honouring a remembered
+  // Expand all, happens before the composer guard below: a transcript outlives
+  // the provider that wrote it, and its run logs still work.
+  var runLogs = document.querySelectorAll(".msg .exec");
+  var remembersAll = rememberedRunLog();
+  for (var logIndex = 0; logIndex < runLogs.length; logIndex += 1) {
+    var bar = runLogs[logIndex].querySelector(".runctl");
+    if (bar) { bar.hidden = false; }
+    paintShowAll(runLogs[logIndex]);
+    // A remembered Expand all carries onto the page as it was rendered: the
+    // operator left the calls open, so that is how they come back. A summary
+    // strip is one deliberate line and is not touched; the default there is
+    // still the server's.
+    if (remembersAll === true && runLogs[logIndex].classList.contains("compact") === false) {
+      setRunLogCalls(runLogs[logIndex], true);
+    }
+    // The same rule a live turn follows: unless Show all is on, a log keeps one
+    // call. The panel is closed on arrival either way, so this only decides what
+    // the operator sees the moment they open it.
+    if (runLogs[logIndex].classList.contains("compact") === false) {
+      applyShowAll(runLogs[logIndex]);
+    }
+  }
+
+  // One listener for every run log control, present and future, so a streamed
+  // answer and a re-rendered transcript behave the same. The row is outside the
+  // summary, so nothing here competes with the disclosure's own toggle; the
+  // handler still stops the event so a click cannot reach the summary.
+  if (thread) {
+    thread.addEventListener("click", function (event) {
+      var button = event.target.closest(".run-btn");
+      if (button === null) { return; }
+      event.preventDefault();
+      event.stopPropagation();
+      var log = button.closest(".exec");
+      if (log === null) { return; }
+      var kind = button.getAttribute("data-run");
+      if (kind === "all") {
+        var on = rememberedShowAll() === false;
+        rememberShowAll(on);
+        paintShowAll(log);
+        if (on) {
+          setRunLogCalls(log, true);
+        }
+        applyShowAll(log);
+        if (on === false) {
+          onlyRunning(log);
+        }
+        return;
+      }
+      var expanded = kind === "open";
+      setRunLogCalls(log, expanded);
+      rememberRunLog(expanded);
+    });
+  }
+
+  // ---- The reply bubble: expanded, collapsed, minimized -------------------
+  // Three sizes for a settled answer, and one rule the page never breaks: a reply
+  // that is still arriving opens in full. An answer being written is never hidden
+  // from the operator, and neither is one that failed or one holding a question
+  // they have to answer. The stylesheet does the clipping, so the answer is
+  // always in the page: a find in the page still finds a word in a reply that is
+  // folded away, and a browser with no script reads the whole answer.
+  var REPLY_KEY = "kallisti.reply";
+  var REPLY_FALLBACK = "expanded";
+
+  // The Settings default, read off the shell rather than guessed, so a page
+  // opened on `minimized` does not stream an expanded column and then turn into
+  // one line after a reload.
+  function replyDefault() {
+    if (shellForMode === null) { return REPLY_FALLBACK; }
+    var state = shellForMode.getAttribute("data-reply");
+    if (state === "expanded" || state === "collapsed" || state === "minimized") { return state; }
+    return REPLY_FALLBACK;
+  }
+
+  // The operator's own choice for one reply, keyed by the conversation and the
+  // reply's ordinal. A reload reads the same two numbers the live page wrote.
+  // Storage can be unavailable, and a browser that refuses to remember is not an
+  // error worth showing, so every read and write is guarded.
+  function replyKey(article) {
+    var conversation = conversationId();
+    var ordinal = answerOrdinal(article);
+    if (conversation === "" || ordinal === 0) { return ""; }
+    return REPLY_KEY + "." + conversation + "." + ordinal;
+  }
+
+  function rememberedReply(article) {
+    var key = replyKey(article);
+    if (key === "") { return null; }
+    try {
+      var stored = window.localStorage.getItem(key);
+      if (stored === "expanded" || stored === "collapsed" || stored === "minimized") {
+        return stored;
+      }
+    } catch (error) {
+      return null;
+    }
+    return null;
+  }
+
+  function rememberReply(article, state) {
+    var key = replyKey(article);
+    if (key === "") { return; }
+    try { window.localStorage.setItem(key, state); } catch (error) { return; }
+  }
+
+  function nextReply(state) {
+    if (state === "expanded") { return "collapsed"; }
+    if (state === "collapsed") { return "minimized"; }
+    return "expanded";
+  }
+
+  function replyWord(state) {
+    if (state === "expanded") { return "Collapse"; }
+    if (state === "collapsed") { return "Minimize"; }
+    return "Expand";
+  }
+
+  // The page carries no exclamation mark outside its doctype, and that rule runs
+  // through the one inline script as well: a strict inequality was thirteen
+  // marks in a page whose house style forbids one. `present` answers the same
+  // question a null comparison did, without the mark, and it also covers
+  // `undefined` from a query that found nothing.
+  function present(value) {
+    return (value === null || value === undefined) === false;
+  }
+
+  // The window control, which is the other thing "expand" can mean: not more of
+  // the answer drawn in the column, but the answer drawn in the whole window.
+  // It is one attribute on the reply and the stylesheet does the rest, so a
+  // find in the page still finds the words and the transcript behind the window
+  // keeps its place.
+  function paintReplyMax(article, on) {
+    if (present(article) === false) { return; }
+    if (on) {
+      article.setAttribute("data-reply-max", "on");
+    } else {
+      article.removeAttribute("data-reply-max");
+    }
+    var button = article.querySelector("[data-reply-max]");
+    if (present(button)) {
+      button.textContent = on ? "Restore" : "Maximize";
+      button.setAttribute(
+        "aria-label",
+        on ? "Put this reply back in the conversation" : "Show this reply in the whole window"
+      );
+      button.setAttribute("aria-expanded", on ? "true" : "false");
+    }
+    if (on) { article.scrollTop = 0; }
+  }
+
+  function replyMaxOpen() {
+    return document.querySelector(".msg.assistant[data-reply-max]");
+  }
+
+  function replyLabel(state) {
+    if (state === "expanded") { return "Collapse this reply to its first few lines"; }
+    if (state === "collapsed") { return "Minimize this reply to one summary line"; }
+    return "Expand this reply to the whole answer";
+  }
+
+  // One line of the answer, for the minimized state. The server renders one for a
+  // reloaded reply; a reply that arrives live is given one here, from the text on
+  // screen, so both paths show the same sentence.
+  function replyPeekText(article) {
+    var bubble = article.querySelector(".bubble");
+    // The corner control lives inside the bubble, so the answer's own words are
+    // read from a copy with the control taken out: a preview that opened with an
+    // arrow glyph would be the control being read as the answer.
+    var words = bubble;
+    if (present(bubble)) {
+      words = bubble.cloneNode(true);
+      var controls = words.querySelectorAll(".bubble-max");
+      for (var at = 0; at < controls.length; at += 1) {
+        controls[at].parentNode.removeChild(controls[at]);
+      }
+    }
+    var text = present(words) ? (words.textContent || "") : "";
+    text = text.replace(/\s+/g, " ").trim();
+    return text.length > 60 ? text.slice(0, 60) + "\u2026" : text;
+  }
+
+  function paintReply(article, state) {
+    if (present(article) === false) { return state; }
+    article.setAttribute("data-reply-state", state);
+    var button = article.querySelector("[data-reply-cycle]");
+    if (present(button)) {
+      button.textContent = replyWord(state);
+      button.setAttribute("aria-label", replyLabel(state));
+      button.setAttribute("aria-expanded", state === "minimized" ? "false" : "true");
+    }
+    if (state === "minimized") {
+      var peek = article.querySelector(".reply-peek");
+      if (present(peek)) { peek.textContent = replyPeekText(article); }
+    }
+    markFoldEnd(article.querySelector(".bubble"));
+    return state;
+  }
+
+  // The fade on a folded answer says "there is more below". Once the fold has
+  // been scrolled to its end that sentence is false, and a permanently dimmed
+  // last line reads as more text that is still cut off. So the fade tracks the
+  // scroll position instead of the state.
+  function markFoldEnd(bubble) {
+    if (present(bubble) === false) { return; }
+    var atEnd = bubble.scrollTop + bubble.clientHeight >= bubble.scrollHeight - 2;
+    bubble.classList.toggle("at-end", atEnd);
+  }
+
+  // A reply that has finished takes the operator's choice for that reply, then
+  // the Settings default. Called from the one place a reply becomes settled, so a
+  // live turn and a reloaded transcript agree about how much to draw.
+  function settleReply(article) {
+    if (present(article) === false) { return; }
+    if (article.classList.contains("pending")) { return; }
+    if (present(article.querySelector(".asked:not(.settled)"))) { return; }
+    if (present(article.querySelector(".bubble.failed"))) { return; }
+    paintReply(article, rememberedReply(article) || replyDefault());
+  }
+
+  if (thread) {
+    var settledReplies = thread.querySelectorAll(".msg.assistant");
+    for (var replyIndex = 0; replyIndex < settledReplies.length; replyIndex += 1) {
+      var remembered = rememberedReply(settledReplies[replyIndex]);
+      if (present(remembered)) { paintReply(settledReplies[replyIndex], remembered); }
+    }
+    // The conversation's own controls, revealed only where a script can act on
+    // them. A transcript outlives the provider that wrote it, so this sits above
+    // the composer guard below with the run log's controls.
+    var replyBar = document.querySelector(".replyctl");
+    if (present(replyBar)) { replyBar.hidden = false; }
+
+    // A folded answer scrolls inside its own ceiling. The fade at its bottom
+    // edge is the statement that more follows, so it has to stop saying that
+    // once the box is at its end, and start saying it again on the way back up.
+    var folds = thread.querySelectorAll('.bubble');
+    for (var foldIndex = 0; foldIndex < folds.length; foldIndex += 1) {
+      (function (bubble) {
+        markFoldEnd(bubble);
+        bubble.addEventListener("scroll", function () { markFoldEnd(bubble); }, { passive: true });
+      })(folds[foldIndex]);
+    }
+
+    thread.addEventListener("click", function (event) {
+      var cycle = event.target.closest("[data-reply-cycle]");
+      if (cycle === null) { return; }
+      // The reply's own control, so a press here never reaches the bubble.
+      event.preventDefault();
+      event.stopPropagation();
+      var article = cycle.closest(".msg.assistant");
+      if (article === null) { return; }
+      var next = nextReply(article.getAttribute("data-reply-state") || "expanded");
+      paintReply(article, next);
+      rememberReply(article, next);
+    });
+
+    thread.addEventListener("click", function (event) {
+      var control = event.target.closest("[data-reply-max]");
+      if (control === null) { return; }
+      event.preventDefault();
+      event.stopPropagation();
+      var article = control.closest(".msg.assistant");
+      if (article === null) { return; }
+      // One window at a time: a second Maximize takes the first one back out
+      // rather than stacking a second full-window reply under the first.
+      var open = replyMaxOpen();
+      if (present(open) && (open === article) === false) { paintReplyMax(open, false); }
+      paintReplyMax(article, article.hasAttribute("data-reply-max") === false);
+    });
+
+    // Escape closes the window, which is the one control every full-window
+    // surface owes the operator.
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        var open = replyMaxOpen();
+        if (present(open)) {
+          event.preventDefault();
+          paintReplyMax(open, false);
+          var control = open.querySelector("[data-reply-max]");
+          if (present(control)) { control.focus(); }
+        }
+      }
+    });
+  }
+
+  // Expand all and Minimize all. They live above the transcript rather than in
+  // it, so the listener is on the document: the bar is a sibling of the thread.
+  document.addEventListener("click", function (event) {
+    var all = event.target.closest("[data-reply-all]");
+    if (all === null) { return; }
+    event.preventDefault();
+    var wanted = all.getAttribute("data-reply-all") === "minimize" ? "minimized" : "expanded";
+    var replies = document.querySelectorAll(".thread .msg.assistant");
+    for (var index = 0; index < replies.length; index += 1) {
+      paintReply(replies[index], wanted);
+      rememberReply(replies[index], wanted);
+    }
+  });
+
+  if (form === null || box === null || thread === null) { return; }
+
+  var busy = false;
+  var controller = null;
+
+  // ---- Follow the bottom, unless the operator scrolled up ----------------
+  // Following every fragment is what a live turn should do. Yanking the page
+  // back after someone has deliberately scrolled up to read is what makes a
+  // long turn unreadable, so the pin is released by a scroll and restored by
+  // the jump control.
+  var pinned = true;
+  var NEAR = 64;
+  function atBottom() {
+    return thread.scrollHeight - thread.scrollTop - thread.clientHeight <= NEAR;
+  }
+
+  // Follow the bottom, but never while the operator is typing.
+  //
+  // Two things were wrong with the old one-liner. It ran on every token, which
+  // meant a full layout of the transcript per fragment; and writing
+  // `scrollTop` while the composer has focus is what drops the keyboard on iOS,
+  // which is why the box felt like it could not be typed in mid-turn. Now the
+  // page is followed at most once per frame, and not at all while the composer
+  // is focused: the answer is one screen away and the operator's cursor is not
+  // worth moving.
+  var followQueued = false;
+  function toBottom() {
+    if (followQueued) { return; }
+    followQueued = true;
+    var run = function () {
+      followQueued = false;
+      if (pinned === false) { return; }
+      // Focus alone is not typing. The composer is focused on load and after
+      // every send, so bailing on focus meant the transcript never followed its
+      // own turn on a desktop at all. What the guard was protecting is the iOS
+      // keyboard: writing scrollTop while somebody is mid-sentence is what drops
+      // it. So the guard is a draft with text in it, which is the only state
+      // where moving the page under the cursor costs anything.
+      if (document.activeElement === box && box.value.length > 0) { return; }
+      thread.scrollTop = thread.scrollHeight;
+    };
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(run);
+      return;
+    }
+    run();
+  }
+
+  // The thinking bubble is bounded and scrolls itself, so the newest thought is
+  // visible without the bubble growing over the answer. Only the send path did
+  // this; a turn this page re-attached to appended to a bubble that stayed at
+  // its first line.
+  function thinkToBottom(container, body) {
+    if (container === null || body === null) { return; }
+    container.hidden = false;
+    body.scrollTop = body.scrollHeight;
+  }
+
+
+  var jump = document.createElement("button");
+  jump.type = "button";
+  jump.className = "jump-latest";
+  jump.textContent = "Jump to latest";
+  jump.hidden = true;
+  jump.addEventListener("click", function () {
+    pinned = true;
+    jump.hidden = true;
+    thread.scrollTop = thread.scrollHeight;
+  });
+  if (form.parentNode) {
+    form.parentNode.insertBefore(jump, form);
+  }
+
+  thread.addEventListener("scroll", function () {
+    var next = atBottom();
+    if (next === pinned) { return; }
+    pinned = next;
+    jump.hidden = next;
+  });
+
+  // ---- Asking the daemon again -------------------------------------------
+  // A page in a standalone window on a phone has no browser chrome, so it has
+  // no reload control at all: a daemon that restarted, a session that expired or
+  // a stream that dropped leaves the operator looking at a transcript they
+  // cannot refresh. This is that control, and it asks the same route the address
+  // bar would, so what appears is what the daemon actually has rather than what
+  // this tab had.
+  var reloadControl = document.getElementById("reload");
+  var RELOAD_KEY = "kallisti.askedAgain";
+  // A page that is possibly behind the daemon says so in the place the operator
+  // is already looking, and offers the fix in the same breath. It is a mark, not
+  // a modal: reading the transcript is not blocked by the warning about it.
+  function markStale(sentence) {
+    if (reloadControl) { reloadControl.classList.add("stale"); }
+    if (status && sentence) { status.textContent = sentence; }
+  }
+  function askAgain() {
+    // The reload lands at the bottom of the conversation, not at its beginning:
+    // the newest message is why anybody asked for it.
+    try { window.sessionStorage.setItem(RELOAD_KEY, "1"); } catch (error) {}
+    window.location.reload();
+  }
+  if (reloadControl) {
+    reloadControl.hidden = false;
+    reloadControl.addEventListener("click", askAgain);
+  }
+  var cameBack = false;
+  try {
+    cameBack = window.sessionStorage.getItem(RELOAD_KEY) === "1";
+    if (cameBack) { window.sessionStorage.removeItem(RELOAD_KEY); }
+  } catch (error) {}
+  if (cameBack) {
+    pinned = true;
+    thread.scrollTop = thread.scrollHeight;
+  }
+  // Back and forward between pages can restore this one from the browser's own
+  // cache without asking the daemon anything. The transcript on screen is then
+  // as old as the last visit, which is exactly the state the reload control is
+  // for, so it says so instead of looking current.
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) {
+      markStale("this page came back from the browser cache and may be out of date");
+    }
+  });
+
+  // ---- Watching a turn this page did not start ----------------------------
+  // The response that carries a turn belongs to the tab that sent it. A tablet
+  // that suspends Safari mid-answer, a second window, a reload: all of them lose
+  // that response, and the page was then left with a row the server marks
+  // `streaming` and no way to see any of it. The word sat there for as long as
+  // the turn ran - which at a fifty-round budget is half an hour - and the reload
+  // control redrew the same nothing.
+  //
+  // The daemon publishes the same frames to the conversation, so this attaches to
+  // them. The first frame says where the turn already is; every frame after it is
+  // a change to that state, and the same functions that paint a live send paint
+  // these.
+  var liveSource = null;
+  var liveTarget = null;
+  var liveAnswer = "";
+
+  function conversationId() {
+    var shell = document.querySelector(".chat-shell");
+    return shell === null ? "" : (shell.getAttribute("data-conversation") || "");
+  }
+
+  function assistantLabel() {
+    var shell = document.querySelector(".chat-shell");
+    return shell === null ? "assistant" : (shell.getAttribute("data-assistant") || "assistant");
+  }
+
+  // Which answer this article is, counting assistant rows in the thread. The
+  // transcript is in order, so position is the ordinal - and a live turn that was
+  // appended a moment ago reads the same number a reload will render.
+  function answerOrdinal(article) {
+    if (article === null || article === undefined || thread === null) { return 0; }
+    var all = thread.querySelectorAll(".msg.assistant");
+    for (var index = 0; index < all.length; index += 1) {
+      if (all[index] === article) { return index + 1; }
+    }
+    return 0;
+  }
+
+  // A turn, not a round. A round is one provider call; the label was counting
+  // calls and calling them rounds, which read as a count of the operator's own
+  // messages and was off by whatever the tools spent.
+  function roundLabel(round, max, toolsAllowed) {
+    if (toolsAllowed === false) {
+      return "turn " + round + " of " + max + " \u00b7 answering without tools";
+    }
+    return "turn " + round + " of " + max;
+  }
+
+  function closeLive() {
+    if (liveSource === null) {
+      liveTarget = null;
+      liveAnswer = "";
+      return;
+    }
+    liveSource.close();
+    liveSource = null;
+    liveTarget = null;
+    liveAnswer = "";
+  }
+
+  // Fill the bubble from a snapshot. Authoritative rather than additive, so a
+  // reconnect repaints the same state instead of doubling the answer.
+  function paintSnapshot(target, snapshot) {
+    // Monotonic, not authoritative: a page that streamed part of an answer and
+    // then re-attached would otherwise watch its own text shorten back to
+    // whatever the row last flushed. The row is only ever behind, never ahead.
+    var incoming = typeof snapshot.body === "string" ? snapshot.body : "";
+    if (incoming.length >= liveAnswer.length) { liveAnswer = incoming; }
+    if (typeof target.setAnswer === "function") { target.setAnswer(liveAnswer); }
+    else { target.text.textContent = liveAnswer; }
+    if (target.think && target.thinkBody && typeof snapshot.reasoning === "string") {
+      target.thinkBody.textContent = snapshot.reasoning;
+      if (snapshot.reasoning.length > 0) { thinkToBottom(target.think, target.thinkBody); }
+    }
+    if (Array.isArray(snapshot.tools)) {
+      snapshot.tools.forEach(function (tool) { target.addTool(tool); });
+    }
+    if (typeof snapshot.rounds === "number" && snapshot.rounds > 0 && status) {
+      status.textContent = snapshot.rounds === 1 ? "1 turn run" : snapshot.rounds + " turns run";
+    }
+    toBottom();
+  }
+
+  // Settle the live bubble in place, without the reload the answer would
+  // otherwise need: the transcript is only re-rendered by the server, and the
+  // text and the footer are what the operator came back for.
+  function finishLive(target, snapshot) {
+    target.article.className = "msg assistant";
+    // A settled reply claims nothing. Whatever the last status frame said is a
+    // fact about the past, and the run log is where the past is read.
+    if (typeof target.setLive === "function") { target.setLive(""); }
+    if (snapshot && typeof snapshot.body === "string") {
+      liveAnswer = snapshot.body;
+      target.settleAnswer(liveAnswer);
+    }
+    if (snapshot && target.meta) {
+      target.meta.textContent = metaFor({
+        model: snapshot.model,
+        rounds: snapshot.rounds
+      });
+    }
+    renderAnswerFiles(target.text, liveAnswer);
+    // The turn is over, so the reply takes the size the operator chose for it.
+    // A failed answer or one still waiting on a question never folds: those are
+    // the two states the operator has to act on.
+    settleReply(target.article);
+    closeLive();
+    toBottom();
+  }
+
+  function attachLive(existing) {
+    // One live view at a time. EventSource reconnects on its own, so a second
+    // attach here would only stack two readers on the same turn.
+    if (liveSource) { return; }
+    var target = null;
+    if (existing) {
+      // A page whose own send lost its stream keeps what it already drew and
+      // rejoins the turn from there.
+      target = existing;
+      liveAnswer = existing.text.textContent;
+    } else {
+      // Only when this page is behind a turn that is still running. A page opened
+      // on a settled conversation has nothing to attach to.
+      var pending = thread.querySelector(".msg.assistant.pending");
+      if (pending === null || busy === true) { return; }
+      // The pending row is server-rendered markup: a bubble and a footer, with no
+      // run log yet and no machinery to grow one. Replacing it with the builder
+      // the live send uses means one painter for both paths, rather than a second
+      // one that would drift.
+      pending.parentNode.removeChild(pending);
+      target = line("assistant", assistantLabel());
+      liveAnswer = "";
+    }
+    var conversation = conversationId();
+    if (conversation === "") { return; }
+    target.article.className = "msg assistant pending";
+    // The reply's ordinal, read off the transcript it was just appended to. A
+    // resumed page reads the same number from position, so the pill cannot
+    // disagree with what a reload renders.
+    target.setTurn(answerOrdinal(target.article));
+    liveTarget = target;
+
+    var source = new EventSource(
+      "/dashboard/chat/live?conversation=" + encodeURIComponent(conversation)
+    );
+    liveSource = source;
+
+    source.addEventListener("snapshot", function (event) {
+      var snapshot = {};
+      try { snapshot = JSON.parse(event.data); } catch (error) {}
+      if (snapshot.id === null || snapshot.id === undefined) {
+        // Nothing left to watch: the row this page was told about is gone.
+        closeLive();
+        markStale("that turn is no longer running - reload to read the transcript");
+        return;
+      }
+      paintSnapshot(target, snapshot);
+      if (snapshot.state === "streaming") {
+        if (status) { status.textContent = "attached to the running turn"; }
+      } else {
+        finishLive(target, snapshot);
+      }
+    });
+
+    source.addEventListener("delta", function (event) {
+      var frame = {};
+      try { frame = JSON.parse(event.data); } catch (error) { return; }
+      stopTick();
+      liveAnswer += frame.text;
+      // Through the answer's own writer: a delta with nothing in it does not
+      // bring the bubble into the page, and the first real one does.
+      target.setAnswer(liveAnswer);
+      toBottom();
+    });
+
+    // A round is announced, then the model thinks. On a long context that silence
+    // lasts minutes and the page said one static sentence, so the screen looked
+    // finished and the answer then arrived as a wall of text. The label now ticks,
+    // so a slow model reads as a slow model rather than as a page that stopped.
+    var liveTicker = null;
+    var liveTicking = false;
+    var liveTickLabel = "";
+    var liveTickStart = 0;
+    function paintTick() {
+      if (present(status) === false) { return; }
+      var seconds = Math.max(0, Math.round((Date.now() - liveTickStart) / 1000));
+      status.textContent = liveTickLabel + (liveTickLabel === "" ? "" : " \u00b7 ") + seconds + "s";
+    }
+    function startTick(label) {
+      liveTickLabel = label || "";
+      if (liveTicking) { return; }
+      liveTicking = true;
+      liveTickStart = Date.now();
+      paintTick();
+      liveTicker = window.setInterval(paintTick, 1000);
+    }
+    function stopTick() {
+      if (liveTicking) { window.clearInterval(liveTicker); liveTicker = null; liveTicking = false; }
+    }
+
+    source.addEventListener("round", function (event) {
+      var frame = {};
+      try { frame = JSON.parse(event.data); } catch (error) { return; }
+      startTick(roundLabel(frame.round, frame.max_rounds, frame.tools_allowed));
+    });
+
+    source.addEventListener("working", function (event) {
+      var frame = {};
+      try { frame = JSON.parse(event.data); } catch (error) { return; }
+      // The bubble's own status line, not the composer hint: the hint answers
+      // "what does a second message do", and this answers "what is happening".
+      target.setLive(frame.activity || frame.name || "");
+      toBottom();
+    });
+
+    source.addEventListener("attachment", function (event) {
+      var file = {};
+      try { file = JSON.parse(event.data); } catch (error) { return; }
+      target.addAttachment(file);
+    });
+
+    source.addEventListener("tool", function (event) {
+      var tool = {};
+      try { tool = JSON.parse(event.data); } catch (error) { return; }
+      stopTick();
+      target.addTool(tool);
+      // The call that was running has finished, so the claim it made is over.
+      // Cleared rather than replaced with "ran": a receipt is the run log's job.
+      target.setLive("");
+      toBottom();
+    });
+
+    source.addEventListener("tool_output", function (event) {
+      var chunk = {};
+      try { chunk = JSON.parse(event.data); } catch (error) { return; }
+      target.streamChunk(chunk.name, chunk.chunk);
+    });
+
+    source.addEventListener("reasoning", function (event) {
+      var frame = {};
+      try { frame = JSON.parse(event.data); } catch (error) { return; }
+      if (target.think === null || target.thinkBody === null) { return; }
+      target.thinkBody.textContent += frame.text;
+      thinkToBottom(target.think, target.thinkBody);
+      if (offMode === false) { toBottom(); }
+    });
+
+    source.addEventListener("asked", function (event) {
+      var frame = {};
+      try { frame = JSON.parse(event.data); } catch (error) { return; }
+      // A turn waiting on an answer is not a turn that hung. The card goes into
+      // the bubble it belongs to, and the status line says what is happening
+      // while the model is stopped.
+      if (typeof target.askCard === "function") { target.askCard(frame); }
+      if (status) { status.textContent = "waiting for your answer"; }
+      toBottom();
+    });
+
+    source.addEventListener("notice", function (event) {
+      var notice = {};
+      try { notice = JSON.parse(event.data); } catch (error) { return; }
+      if (status) { status.textContent = notice.message || ""; }
+    });
+
+    source.addEventListener("subagent", function (event) {
+      try { noteSubagent(JSON.parse(event.data)); } catch (error) {}
+    });
+
+    source.addEventListener("done", function (event) {
+      var final = {};
+      try { final = JSON.parse(event.data); } catch (error) { return; }
+      if (typeof final.text === "string") {
+        liveAnswer = final.text;
+        target.settleAnswer(liveAnswer);
+      }
+      if (target.meta) { target.meta.textContent = metaFor(final); }
+      if (typeof final.reasoning === "string" && final.reasoning.trim().length > 0
+          && target.think && target.thinkBody) {
+        target.thinkBody.textContent = final.reasoning;
+        target.think.hidden = false;
+      }
+      if (status) {
+        // A capped turn does not get to look finished. The notice frame said so
+        // before this one arrived, and the plain clear that followed it was the
+        // reason the sentence vanished a second after it appeared.
+        status.textContent = final.capped === true
+          ? "the tool budget ended this turn, so the answer above was forced. send it again to continue"
+          : "";
+      }
+      target.setLive("");
+      finishLive(target, null);
+    });
+
+    source.addEventListener("error", function (event) {
+      // Two different events share this name: a frame the daemon sent, and the
+      // transport giving up. A frame is the answer failing; a transport error is
+      // this page's problem, and EventSource retries by itself.
+      if (typeof event.data === "string" && event.data.length > 0) {
+        // A frame the daemon sent: the answer failed.
+      } else {
+        // The transport gave up; EventSource retries by itself.
+        if (status) { status.textContent = "lost the live view - reconnecting"; }
+        return;
+      }
+      var failure = {};
+      try { failure = JSON.parse(event.data); } catch (error) { return; }
+      // Put the bubble in the page first, then say what failed in it: a failure
+      // with nowhere to land is the worst version of the blank bubble.
+      target.showBubble();
+      target.bubble.className = "bubble failed";
+      target.text.textContent = failure.message || "that turn failed";
+      if (target.meta) {
+        var tail = [failure.code];
+        if (failure.resets_in) { tail.push("resets in " + failure.resets_in); }
+        target.meta.textContent = tail.join(" \u00b7 ");
+      }
+      if (status) { status.textContent = ""; }
+      finishLive(target, null);
+      target.bubble.className = "bubble failed";
+    });
+
+    source.addEventListener("resync", function (event) {
+      // This page fell behind the turn. Reopening re-reads the row, which is the
+      // same state a reload has and costs one request.
+      closeLive();
+      attachLive();
+    });
+  }
+
+  // A suspended page comes back with a dead connection and a live turn. This is
+  // the difference between "still streaming" and "still streaming, and here is
+  // what happened while you were away".
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") {
+      // Rejoin below.
+    } else {
+      return;
+    }
+    if (thread.querySelector(".msg.assistant.pending") === null) { closeLive(); return; }
+    closeLive();
+    attachLive();
+  });
+  window.addEventListener("online", function () {
+    if (thread.querySelector(".msg.assistant.pending") === null) { return; }
+    closeLive();
+    attachLive();
+  });
+
+  // ---- One window per call, streamed -------------------------------------
+  // The daemon sends `tool_output` while a command runs and one `tool` event
+  // when it settles. The window opens on the first chunk, so a twenty second
+  // command looks like a terminal filling in rather than a receipt printed at
+  // the end. `tool` then replaces the provisional body with the same lines the
+  // server would have rendered, so a live turn and a reload agree.
+  function windowFor(call) {
+    var win = document.createElement("div");
+    win.className = "win";
+    var bar = document.createElement("div");
+    bar.className = "win-bar";
+    var dots = document.createElement("span");
+    dots.className = "win-dots";
+    ["red", "yellow", "green"].forEach(function (tone) {
+      var dot = document.createElement("span");
+      dot.className = "win-dot " + tone;
+      dots.appendChild(dot);
+    });
+    var title = document.createElement("span");
+    title.className = "win-title";
+    title.textContent = "kallisti \u2014 stdout";
+    var live = document.createElement("span");
+    live.className = "win-live";
+    live.textContent = "\u25CF";
+    live.hidden = true;
+    live.setAttribute("aria-label", "Streaming");
+    var size = document.createElement("span");
+    size.className = "win-size";
+    size.textContent = "0 lines";
+    bar.appendChild(dots);
+    bar.appendChild(title);
+    bar.appendChild(live);
+    bar.appendChild(size);
+    var out = document.createElement("div");
+    out.className = "win-body";
+    win.appendChild(bar);
+    win.appendChild(out);
+    call.appendChild(win);
+    return { win: win, out: out, live: live, size: size };
+  }
+
+  function countLines(text) {
+    if (text === "") { return 0; }
+    return text.split("\n").length;
+  }
+
+  // Write the settled reading into a window: a prompt line, then one row per
+  // line. An older daemon sends no `term`, and the raw result is still the
+  // truth, so it is shown as one block instead of being dropped.
+  function paint(parts, tool) {
+    parts.out.textContent = "";
+    var term = tool.term;
+    if (term === undefined || term === null) {
+      var fallback = document.createElement("div");
+      fallback.className = "term-line";
+      fallback.textContent = tool.output;
+      parts.out.appendChild(fallback);
+      parts.size.textContent = "1 line";
+      return;
+    }
+    var prompt = document.createElement("div");
+    prompt.className = "term-line prompt";
+    prompt.textContent = term.prompt;
+    parts.out.appendChild(prompt);
+    (term.lines || []).forEach(function (entry) {
+      var row = document.createElement("div");
+      row.className = entry.kind === "err"
+        ? "term-line err"
+        : (entry.kind === "notice" ? "term-line notice" : "term-line");
+      row.textContent = entry.text;
+      parts.out.appendChild(row);
+    });
+    var total = (term.lines || []).length;
+    parts.size.textContent = total + (total === 1 ? " line" : " lines");
+  }
+
+  function line(role, who) {
+    var article = document.createElement("article");
+    article.className = "msg " + role;
+    var label = document.createElement("div");
+    label.className = "who";
+    var whoName = document.createElement("span");
+    whoName.className = "who-name";
+    whoName.textContent = who;
+    label.appendChild(whoName);
+    // The same control the server renders, built here so a reply that arrives
+    // live offers the sizes a reloaded one does. Absent on the operator's own
+    // line: a question is theirs to read, not a thing to fold away.
+    var replyPeek = null;
+    if (role === "assistant") {
+      var replyButton = document.createElement("button");
+      replyButton.type = "button";
+      replyButton.className = "reply-cycle";
+      replyButton.setAttribute("data-reply-cycle", "");
+      replyButton.textContent = "Collapse";
+      replyButton.setAttribute("aria-label", "Collapse this reply to its first few lines");
+      replyButton.setAttribute("aria-expanded", "true");
+      label.appendChild(replyButton);
+      var maxButton = document.createElement("button");
+      maxButton.type = "button";
+      maxButton.className = "reply-max";
+      maxButton.setAttribute("data-reply-max", "");
+      maxButton.textContent = "Maximize";
+      maxButton.setAttribute("aria-label", "Show this reply in the whole window");
+      maxButton.setAttribute("aria-expanded", "false");
+      label.appendChild(maxButton);
+      replyPeek = document.createElement("p");
+      replyPeek.className = "reply-peek";
+    }
+    // Hidden until the first reasoning fragment, so a turn that never thinks
+    // does not leave an empty shell above its answer.
+    var think = document.createElement("details");
+    think.className = "think";
+    think.hidden = true;
+    think.open = true;
+    var thinkSummary = document.createElement("summary");
+    var thinkLabel = document.createElement("span");
+    thinkLabel.className = "think-label";
+    thinkLabel.textContent = "Thinking";
+    var thinkActions = document.createElement("div");
+    thinkActions.className = "think-actions";
+    var thinkMax = document.createElement("button");
+    thinkMax.type = "button";
+    thinkMax.className = "think-max";
+    thinkMax.title = "Expand";
+    thinkMax.setAttribute("aria-label", "Expand the thinking bubble");
+    thinkMax.textContent = "\u2922";
+    thinkActions.appendChild(thinkMax);
+    thinkSummary.appendChild(thinkLabel);
+    thinkSummary.appendChild(thinkActions);
+    var thinkBody = document.createElement("div");
+    thinkBody.className = "think-body";
+    think.appendChild(thinkSummary);
+    think.appendChild(thinkBody);
+
+    // The run log starts hidden and appears at the first executed call, so a
+    // turn that called nothing does not leave an empty panel behind.
+    //
+    // Its shape comes from the operator's own setting, read off the shell. The
+    // builder used to ignore that setting and always produce the full wall of
+    // windows, so a page opened on `summary` streamed one thing and reloaded as
+    // another. `off` builds nothing worth opening; `summary` is one line naming
+    // the last call, opening onto the same calls; `full` is one window per call.
+    var mode = toolLogMode();
+    // The page is written without a bang, so the three readings are named once
+    // and compared by identity afterwards.
+    var summaryMode = mode === "summary";
+    var offMode = mode === "off";
+    var fullMode = mode === "full";
+    var exec = document.createElement("details");
+    exec.className = summaryMode ? "exec compact" : "exec";
+    exec.hidden = true;
+    // Closed, like the server-rendered panel: a streamed turn that ran a dozen
+    // calls must not push its own answer off the screen. Summary is a strip and
+    // is never opened by the script.
+    exec.open = false;
+    var execSummary = document.createElement("summary");
+    var execLabel = document.createElement("span");
+    execLabel.className = "exec-label";
+    execLabel.textContent = "Run log";
+    // The turn this reply is, in front of the call count. Two numbers that were
+    // being read as one: a reply is one turn however many calls the budget let it
+    // run. Left out entirely until the page knows which answer it is drawing,
+    // rather than printed as a confident zero.
+    var execTurn = document.createElement("span");
+    execTurn.className = "exec-turn";
+    execTurn.hidden = true;
+    execSummary.appendChild(execLabel);
+    execSummary.appendChild(execTurn);
+    var execCount = document.createElement("span");
+    execCount.className = "exec-count";
+    execSummary.appendChild(execCount);
+    // The one-line reading summary mode shows: the call that last ran.
+    var execLast = document.createElement("span");
+    execLast.className = "exec-last";
+    execLast.hidden = summaryMode === false;
+    execSummary.appendChild(execLast);
+    exec.appendChild(execSummary);
+    // The same controls the server renders, in the same place: under the
+    // summary, never in it. This builder is only reachable with the script, so
+    // here they are live immediately.
+    var execCtl = document.createElement("div");
+    execCtl.className = "runctl";
+    execCtl.setAttribute("role", "group");
+    execCtl.setAttribute("aria-label", "Run log controls");
+    execCtl.appendChild(runLogButton("open", "Expand all",
+      "Expand every tool call in this run log"));
+    execCtl.appendChild(runLogButton("shut", "Collapse all",
+      "Collapse every tool call in this run log"));
+    // Show all: the way back to every call of this run. Off is the default and
+    // what the operator asked for: the log follows the command in front of them.
+    var showAllButton = runLogButton("all", "Show all",
+      "Show every tool call in this run log, not only the running one");
+    showAllButton.setAttribute("aria-pressed", "false");
+    execCtl.appendChild(showAllButton);
+    exec.appendChild(execCtl);
+    var body = document.createElement("div");
+    body.className = "exec-body";
+    exec.appendChild(body);
+
+    var calls = 0;
+    var open = [];
+    // The operator's own decision about the panel, once they have made one. A
+    // log that reopened itself after being closed would be the same forcing that
+    // made it unreadable, only slower.
+    var execClosedByOperator = false;
+    exec.addEventListener("toggle", function () {
+      if (exec.open === false) { execClosedByOperator = true; return; }
+      execClosedByOperator = false;
+    });
+    function refreshCount() {
+      execCount.textContent = calls + (calls === 1 ? " call" : " calls");
+    }
+    // Set once, by the page, from the answer it is about to stream. A live turn
+    // that never hears the number leaves the pill hidden.
+    function setTurn(turn) {
+      if (typeof turn === "number" && turn >= 1) {
+        execTurn.textContent = "Turn " + turn;
+        execTurn.hidden = false;
+        return;
+      }
+      execTurn.hidden = true;
+    }
+
+    // One call becomes the current one, and the log is repainted around it: the
+    // previous window closes and (unless Show all is on) goes away, so what is
+    // on screen is the work happening now rather than a backlog.
+    function markCurrent(call) {
+      var all = body.querySelectorAll(".exec-call");
+      for (var index = 0; index < all.length; index += 1) {
+        all[index].setAttribute("data-current", all[index] === call ? "1" : "0");
+      }
+      if (fullMode && Boolean(call) && calls === 1 && execClosedByOperator === false) {
+        // The first call of a turn opens the panel once, because a running
+        // command is the reason it is worth reading. After that it is left as
+        // the operator put it: a log that reopens after every fragment is the
+        // wall this replaced.
+        exec.open = true;
+      }
+      applyShowAll(exec);
+      if (summaryMode === false) { onlyRunning(exec); }
+    }
+
+    // Summary mode's one line, kept in step with the call that just ran.
+    function refreshLast(tool) {
+      if (summaryMode === false) { return; }
+      var name = tool === undefined ? "" : tool.name;
+      var args = tool === undefined ? "" : tool.arguments;
+      execLast.textContent = name + (args === "" ? "" : " " + args);
+    }
+
+    function attachHead(head, name) {
+      var headName = document.createElement("span");
+      headName.className = "exec-name";
+      headName.textContent = name;
+      var headArgs = document.createElement("span");
+      headArgs.className = "exec-args";
+      head.appendChild(headName);
+      head.appendChild(headArgs);
+      return headArgs;
+    }
+
+    // A provisional call, opened by its first chunk of output.
+    function streamStart(name) {
+      for (var index = 0; index < open.length; index += 1) {
+        if (open[index].name === name) { return open[index]; }
+      }
+      calls += 1;
+      refreshCount();
+      var call = document.createElement("details");
+      call.className = "exec-call streaming";
+      call.open = true;
+      var head = document.createElement("summary");
+      head.className = "exec-head";
+      var args = attachHead(head, name);
+      args.textContent = "";
+      call.appendChild(head);
+      var parts = windowFor(call);
+      parts.live.hidden = false;
+      body.appendChild(call);
+      markCurrent(call);
+      // Only a log the operator asked to see is revealed. `off` is off, however
+      // many commands the turn runs.
+      exec.hidden = offMode;
+      var entry = {
+        name: name,
+        call: call,
+        head: head,
+        args: args,
+        parts: parts,
+        buffer: ""
+      };
+      open.push(entry);
+      return entry;
+    }
+
+    function streamChunk(name, chunk) {
+      var entry = streamStart(name);
+      // Bounded like the server's own window: a command that prints all day
+      // stops growing here rather than in the tab's memory.
+      if (entry.buffer.length < 131072) {
+        entry.buffer += chunk;
+      }
+      entry.parts.out.textContent = entry.buffer;
+      entry.parts.size.textContent = countLines(entry.buffer) + " lines";
+      entry.parts.out.scrollTop = entry.parts.out.scrollHeight;
+      // The panel is not forced open on every fragment. That line was what made
+      // the log a wall: a summary strip or a closed log opened itself and stayed
+      // open for the rest of the turn.
+      if (offMode === false) { toBottom(); }
+    }
+
+    // The settled reading for one call. A provisional window with the same name
+    // is finished in place, which keeps it where it appeared.
+    function addTool(tool) {
+      var entry = null;
+      for (var index = 0; index < open.length; index += 1) {
+        if (open[index].name === tool.name) {
+          entry = open[index];
+          open.splice(index, 1);
+          break;
+        }
+      }
+      if (entry === null) {
+        calls += 1;
+        refreshCount();
+        entry = { name: tool.name, call: document.createElement("details") };
+        entry.call.className = "exec-call";
+        entry.head = document.createElement("summary");
+        entry.head.className = "exec-head";
+        entry.args = attachHead(entry.head, tool.name);
+        entry.call.appendChild(entry.head);
+        entry.parts = windowFor(entry.call);
+        // A call that printed nothing before it settled was never opened by a
+        // stream, so it takes the state the operator last chose. A provisional
+        // call that already showed its output stays open: the reading is what
+        // they were watching.
+        entry.call.open = rememberedRunLog() === true;
+        body.appendChild(entry.call);
+      }
+      if (tool.is_error === true) {
+        entry.call.className = "exec-call failed";
+      } else {
+        entry.call.className = "exec-call";
+      }
+      entry.args.textContent = tool.arguments;
+      entry.parts.live.hidden = true;
+      paint(entry.parts, tool);
+      markCurrent(entry.call);
+      refreshLast(tool);
+      exec.hidden = offMode;
+    }
+
+    var bubble = document.createElement("div");
+    bubble.className = "bubble";
+    // The same control the server renders, in the same corner: a reply that
+    // arrives live offers the expand a reloaded one does.
+    var bubbleMax = document.createElement("button");
+    bubbleMax.type = "button";
+    bubbleMax.className = "bubble-max";
+    bubbleMax.setAttribute("data-bubble-max", "");
+    bubbleMax.title = "Expand";
+    bubbleMax.setAttribute("aria-label", "Expand this answer");
+    bubbleMax.textContent = "\u2922";
+    bubble.appendChild(bubbleMax);
+    var text = document.createElement("p");
+    bubble.appendChild(text);
+    // What the turn is doing right now, if anything. Hidden until a status frame
+    // arrives and hidden again the moment one settles, so a finished reply carries
+    // no leftover claim about work that is over.
+    var metaLive = document.createElement("div");
+    metaLive.className = "meta-live";
+    metaLive.setAttribute("aria-live", "polite");
+    // Something in it from the first frame: the caret on a pending turn lives
+    // here now, and a status line with nothing in it is a caret with nowhere to
+    // be. A `working` frame replaces this word with the tool's own phrase.
+    metaLive.textContent = "thinking";
+    metaLive.hidden = false;
+    var meta = document.createElement("div");
+    meta.className = "meta";
+    article.appendChild(label);
+    if (present(replyPeek)) { article.appendChild(replyPeek); }
+    article.appendChild(think);
+    article.appendChild(exec);
+    // The bubble is built here and put in the page only when there is something
+    // to put in it. A turn that is thinking or calling tools used to show an
+    // empty bubble with a blinking caret, growing as the turn ran: it read as a
+    // broken page because there was nothing in it and nothing to read. The
+    // status line carries the pending state instead, and it is in the page from
+    // the first frame.
+    article.appendChild(metaLive);
+    article.appendChild(meta);
+    var bubbleShown = false;
+    // Put the answer's bubble in its slot, once. The slot is between the run log
+    // and the status line, which is where the server renders it too.
+    function showBubble() {
+      if (bubbleShown) { return; }
+      article.insertBefore(bubble, metaLive);
+      bubbleShown = true;
+    }
+    // The answer has no scroll box of its own: it is as tall as it is, and the
+    // transcript is the scroller. It used to keep its own ceiling and follow its
+    // own tail, which meant three scrollbars for one reply and a page that
+    // insisted every answer fit on one screen. What follows the answer now is
+    // the transcript's one follow (toBottom), which already yields while the
+    // operator is reading above or typing a draft.
+    //
+    // Kept as a named no-op rather than deleted call sites: every write of
+    // answer text still asks the transcript to stay at the bottom, and that is
+    // the cheapest thing to keep correct in one place.
+    function bubbleFollow() {
+      toBottom();
+    }
+
+    // Every write of answer text goes through here, so the one place that knows
+    // whether there is an answer is also the one place that decides whether the
+    // bubble exists. An empty string is not an answer: it is the turn still
+    // working, and the status line says so.
+    function setAnswer(value) {
+      var next = typeof value === "string" ? value : "";
+      if (next.length > 0) { showBubble(); }
+      text.textContent = next;
+      bubbleFollow();
+      return next;
+    }
+    // A settled turn's answer, even an empty one. An empty answer is still an
+    // answer: the failure sentence, the "Streaming" placeholder the server
+    // renders and the blank reply of a turn that produced nothing all need a box.
+    function settleAnswer(value) {
+      showBubble();
+      text.textContent = typeof value === "string" ? value : "";
+      bubbleFollow();
+    }
+
+    // The status line. It replaces the composer hint as the answer to "what is it
+    // doing": the hint was carrying a control message, a round count and a tool
+    // receipt in one span, and none of them was the thing the operator wanted.
+    function setLive(activity) {
+      if (typeof activity === "string" && activity.length > 0) {
+        metaLive.textContent = activity;
+        metaLive.hidden = false;
+        return;
+      }
+      metaLive.hidden = true;
+      metaLive.textContent = "";
+    }
+    // A question the turn is waiting on. Built inside the answer's own article so
+    // it scrolls with the reply it belongs to. The answer is posted to the route
+    // the turn is blocked on, and a card that failed to land stays on screen with
+    // the reason rather than disappearing.
+    function askCard(frame) {
+      var slot = article.querySelector(".asked-slot");
+      if (slot === null) {
+        slot = document.createElement("div");
+        slot.className = "asked-slot";
+        // In the reply's own slot: after the run log and the thinking bubble,
+        // where the answer would have gone. the operator asked for this - the question
+        // is what the operator has to act on, and their eye is already in the
+        // answer's position, not at the top of a log they have to scroll back to
+        // find. `bubble` is hoisted, so it is assigned by the time a frame
+        // arrives, and the slot goes in front of it whether or not it is in the
+        // page yet.
+        article.insertBefore(slot, bubble);
+      }
+      // The answer stands down while the question is open. Built here as a class
+      // and an attribute rather than inline styles, so the stylesheet stays the
+      // one place that decides what a hidden bubble is.
+      article.setAttribute("data-asked", "open");
+      var request = (frame && frame.request) || {};
+      var conversation = (frame && frame.conversation) || "";
+      while (slot.firstChild) { slot.removeChild(slot.firstChild); }
+      var card = document.createElement("div");
+      card.className = "asked";
+      slot.appendChild(card);
+      if (typeof request.title === "string" && request.title.length > 0) {
+        var title = document.createElement("div");
+        title.className = "asked-title";
+        title.textContent = request.title;
+        card.appendChild(title);
+      }
+      var questions = Array.isArray(request.questions) ? request.questions : [];
+      questions.forEach(function (question) {
+        var ask = document.createElement("div");
+        ask.className = "asked-question";
+        ask.textContent = question.question || "";
+        card.appendChild(ask);
+        var choices = document.createElement("div");
+        choices.className = "asked-choices";
+        var picked = [];
+        var multi = question.multi === true;
+        (Array.isArray(question.choices) ? question.choices : []).forEach(function (choice) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "asked-choice";
+          var label = document.createElement("span");
+          label.className = "asked-label";
+          label.textContent = choice.label || "";
+          button.appendChild(label);
+          if (typeof choice.detail === "string" && choice.detail.length > 0) {
+            var detail = document.createElement("span");
+            detail.className = "asked-detail";
+            detail.textContent = choice.detail;
+            button.appendChild(detail);
+          }
+          button.addEventListener("click", function () {
+            if (multi) {
+              var at = picked.indexOf(choice.label);
+              if (at === -1) { picked.push(choice.label); } else { picked.splice(at, 1); }
+              button.classList.toggle("picked");
+              return;
+            }
+            sendAnswer(conversation, question.question || "", [choice.label || ""], "");
+          });
+          choices.appendChild(button);
+        });
+        card.appendChild(choices);
+        // Free text is always offered, after the buttons: a card of choices with
+        // no way to say something else is the one shape an operator cannot work
+        // around when none of the choices is right.
+        var row = document.createElement("div");
+        row.className = "asked-free";
+        var field = document.createElement("input");
+        field.type = "text";
+        field.className = "asked-input";
+        field.placeholder = "Or type an answer";
+        var send = document.createElement("button");
+        send.type = "button";
+        send.className = "asked-send";
+        send.textContent = "Send";
+        send.addEventListener("click", function () {
+          var words = field.value.trim();
+          if (picked.length === 0 && words.length === 0) { return; }
+          sendAnswer(conversation, question.question || "", picked, words);
+        });
+        row.appendChild(field);
+        row.appendChild(send);
+        card.appendChild(row);
+        if (multi && picked.length > 0) {
+          var commit = document.createElement("button");
+          commit.type = "button";
+          commit.className = "asked-commit";
+          commit.textContent = "Answer with these";
+          commit.addEventListener("click", function () {
+            sendAnswer(conversation, question.question || "", picked, field.value.trim());
+          });
+          card.appendChild(commit);
+        }
+      });
+      return slot;
+    }
+
+    // One answer, posted to the route the blocked turn is waiting on. Nothing is
+    // assumed about it landing: a refusal leaves the card where it is, with the
+    // daemon's own words in the status line.
+    async function sendAnswer(conversation, question, labels, note) {
+      var body = new URLSearchParams();
+      body.append("conversation", conversation);
+      body.append("question", question);
+      body.append("labels", labels.join("\u001f"));
+      body.append("text", note);
+      try {
+        var response = await fetch("/dashboard/chat/answer", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-url" + "-urlencoded" },
+          body: body
+        });
+        if (response.ok === false) {
+          var reason = "that answer did not reach the turn";
+          try {
+            var refused = JSON.parse(await response.text());
+            if (refused && refused.message) { reason = refused.message; }
+          } catch (error) {}
+          if (status) { status.textContent = reason; }
+          return;
+        }
+        if (status) { status.textContent = "answered - the turn is carrying on"; }
+        // The question is answered, so the answer's slot goes back to being the
+        // answer's: the card out of the page, the bubble back in it. The turn is
+        // still running and whatever it writes next lands where the card was.
+        var answeredSlot = article.querySelector(".asked-slot");
+        if (present(answeredSlot)) { answeredSlot.parentNode.removeChild(answeredSlot); }
+        article.removeAttribute("data-asked");
+      } catch (error) {
+        if (status) { status.textContent = "that answer did not reach the turn"; }
+      }
+    }
+
+    // The same card, after a reload. A page opened on a turn that is parked on a
+    // question renders the choices as spans with the question and the label on
+    // them, so they are answerable without waiting for another frame. One
+    // listener on the article, because the card is rebuilt on every frame.
+    // Written without a bang, like the rest of the page: the two comparisons are
+    // the same predicate spelled out, because an exclamation mark anywhere on
+    // this page fails the house test that keeps the copy calm.
+    article.addEventListener("click", function (event) {
+      var node = event.target;
+      var climbing = true;
+      while (climbing) {
+        if (present(node) === false) { climbing = false; }
+        else if (node === article) { climbing = false; }
+        else if (node.classList && node.classList.contains("asked-choice")) { climbing = false; }
+        else { node = node.parentNode; }
+      }
+      if (present(node) === false || node === article) { return; }
+      if ((node.classList && node.classList.contains("asked-choice")) === false) { return; }
+      var question = node.getAttribute("data-question");
+      var label = node.getAttribute("data-label");
+      if (present(question) === false || present(label) === false) { return; }
+      sendAnswer(conversationId(), question, [label], "");
+    });
+
+    // One file this turn attached to its reply, drawn the way the transcript
+    // draws it: the badge, the name, the size, and a download. The transcript gets
+    // these from the rows it loads; a bubble that arrived over the stream has no
+    // rows, which is why an attached file used to appear only after a reload.
+    function addAttachment(file) {
+      if (present(file) === false || present(file.id) === false) { return; }
+      var chip = document.createElement("a");
+      chip.className = "attached-chip";
+      chip.setAttribute("href", "/dashboard/chat/file/" + encodeURIComponent(file.id));
+      chip.setAttribute("download", file.name || "attachment");
+      chip.setAttribute("title", file.name || "attachment");
+      var badge = document.createElement("span");
+      badge.className = "attached-badge";
+      badge.textContent = badgeForName(file.name || "");
+      var name = document.createElement("span");
+      name.className = "attached-name";
+      name.textContent = file.name || "attachment";
+      var size = document.createElement("span");
+      size.className = "attached-size";
+      size.textContent = humanSize(file.size || 0);
+      chip.appendChild(badge);
+      chip.appendChild(name);
+      chip.appendChild(size);
+      body.appendChild(chip);
+      toBottom();
+    }
+
+    thread.appendChild(article);
+    return {
+      article: article,
+      bubble: bubble,
+      text: text,
+      showBubble: showBubble,
+      setAnswer: setAnswer,
+      settleAnswer: settleAnswer,
+      meta: meta,
+      think: think,
+      thinkBody: thinkBody,
+      streamChunk: streamChunk,
+      addTool: addTool,
+      addAttachment: addAttachment,
+      setTurn: setTurn,
+      metaLive: metaLive,
+      setLive: setLive,
+      askCard: askCard
+    };
+  }
+
+  // The operator's own line, in the shape the server renders, so a live turn and
+  // a reloaded transcript put the message in the same place. Used by a send and by
+  // a steer, because both are a message the operator typed.
+  function appendUser(text, files) {
+    var article = document.createElement("article");
+    article.className = "msg user";
+    var who = document.createElement("div");
+    who.className = "who";
+    who.textContent = "You";
+    var bubble = document.createElement("div");
+    bubble.className = "bubble";
+    var body = document.createElement("p");
+    body.textContent = text;
+    bubble.appendChild(body);
+    if (files.length > 0) {
+      var listed = document.createElement("div");
+      listed.className = "attached";
+      files.forEach(function (file) {
+        // The live bubble shows the picture immediately, from the File the
+        // operator picked; the re-rendered transcript serves the stored copy.
+        appendFilePreview(listed, file);
+      });
+      bubble.appendChild(listed);
+    }
+    article.appendChild(who);
+    article.appendChild(bubble);
+    thread.appendChild(article);
+    return article;
+  }
+
+  // One listener for every thinking bubble on the page: present and future, so
+  // a streamed reply and a re-rendered transcript behave the same.
+  thread.addEventListener("click", function (event) {
+    var button = event.target.closest(".think-max");
+    if (button === null) { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    var think = button.closest(".think");
+    if (think === null) { return; }
+    think.classList.toggle("max");
+  });
+
+  // The answer's expand, the same gesture as the thinking bubble's: bounded and
+  // scrolling until it is asked for the window, then the same window. The glyph
+  // turns around to say the press takes it back out.
+  thread.addEventListener("click", function (event) {
+    var button = event.target.closest(".bubble-max");
+    if (button === null) { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    var bubble = button.closest(".bubble");
+    if (bubble === null) { return; }
+    var on = bubble.classList.contains("max") === false;
+    bubble.classList.toggle("max");
+    button.textContent = on ? "\u2921" : "\u2922";
+    button.setAttribute("aria-label", on
+      ? "Put this answer back in the conversation"
+      : "Expand this answer");
+    if (on) { bubble.scrollTop = 0; }
+  });
+
+  // Escape takes the expanded answer back, exactly as it takes back the expanded
+  // thinking bubble and the whole-window reply. One key, every size.
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") {
+      var openBubble = document.querySelector(".msg .bubble.max");
+      if (present(openBubble)) {
+        event.preventDefault();
+        openBubble.classList.remove("max");
+        var control = openBubble.querySelector(".bubble-max");
+        if (present(control)) {
+          control.textContent = "\u2922";
+          control.setAttribute("aria-label", "Expand this answer");
+          control.focus();
+        }
+      }
+    }
+  });
+
+  function human(count) {
+    if (count === null || count === undefined) { return ""; }
+    if (count < 1000) { return String(count); }
+    if (count < 1000000) { return (count / 1000).toFixed(1) + "k"; }
+    return (count / 1000000).toFixed(1) + "M";
+  }
+
+  function metaFor(payload) {
+    var parts = [];
+    if (payload.model) { parts.push(payload.model); }
+    if (typeof payload.rounds === "number" && payload.rounds > 0) {
+      // Same words as the server's usage line. A round count alone was being
+      // read as "how many turns this session has", which is a different number
+      // in a different place, and the two were three digits apart.
+      var ran = payload.rounds === 1 ? "1 turn" : payload.rounds + " turns";
+      parts.push(payload.capped === true ? ran + ", then forced" : ran);
+    }
+    if (typeof payload.prompt_tokens === "number") {
+      parts.push(human(payload.prompt_tokens) + " in");
+    }
+    if (typeof payload.completion_tokens === "number") {
+      parts.push(human(payload.completion_tokens) + " out");
+    }
+    // Same reading as the server: cached is a share of the prompt, not added to it.
+    var prompt = payload.prompt_tokens || 0;
+    var cached = payload.cached_tokens || 0;
+    if (prompt > 0 && typeof payload.cached_tokens === "number") {
+      parts.push(Math.floor((Math.min(cached, prompt) * 100) / prompt) + "% cache");
+    }
+    if (payload.duration_ms) {
+      parts.push(payload.duration_ms >= 1000
+        ? (payload.duration_ms / 1000).toFixed(1) + "s"
+        : payload.duration_ms + "ms");
+    }
+    if (typeof payload.quota === "string" && payload.quota.length > 0) {
+      parts.push(payload.quota);
+    }
+    return parts.join(" \u00b7 ");
+  }
+
+  // While a turn streams the composer stays usable, and the send control says
+  // what a second message does: it steers the running turn instead of starting a
+  // second one. Nothing here is disabled, because the operator's correction is
+  // the most useful thing they can send mid-turn.
+  function setBusy(next) {
+    busy = next;
+    var send = document.getElementById("send");
+    if (send) {
+      send.textContent = next ? "Steer" : "Send";
+      send.disabled = false;
+      paintSend();
+    }
+    if (stop) { stop.hidden = next === false; }
+    if (status) {
+      status.textContent = next ? "streaming - a second message steers this turn" : "";
+    }
+  }
+
+  function parseFrame(frame) {
+    var event = "message";
+    var data = "";
+    var lines = frame.split("\n");
+    for (var index = 0; index < lines.length; index += 1) {
+      if (lines[index].indexOf("event:") === 0) {
+        event = lines[index].slice(6).trim();
+      }
+      if (lines[index].indexOf("data:") === 0) {
+        data += lines[index].slice(5).trim();
+      }
+    }
+    return { event: event, data: data };
+  }
+
+  // ---- Subagents: the bar's count, without a reload ----------------------
+  // The control is rendered by the daemon, so this only ever adjusts a number
+  // that is already on the page. A turn that dispatched nothing has no control,
+  // and a page with no control simply does nothing: the next load renders the
+  // row, which is the same answer a browser with no script gets.
+  var subagentsSeen = {};
+  function noteSubagent(change) {
+    if (change.id === undefined) { return; }
+    if (subagentsSeen[change.id] === true) { return; }
+    subagentsSeen[change.id] = true;
+    var control = document.querySelector(".subagents");
+    if (control === null) { return; }
+    var count = control.querySelector(".subagents-count");
+    if (count === null) { return; }
+    count.textContent = String(parseInt(count.textContent, 10) + 1);
+  }
+
+  // A conversation stops being new the moment a turn starts: drop the empty
+  // state layout so the transcript is visible.
+  function leaveEmptyState() {
+    var shell = document.querySelector(".chat-shell");
+    if (shell) { shell.classList.remove("new-chat"); }
+    var greeting = document.querySelector(".chat-greeting");
+    if (greeting) { greeting.remove(); }
+  }
+
+  // ---- Files: a queue, not one slot --------------------------------------
+  // A multiple picker plus a second trip to the picker plus a drag plus a paste
+  // all land in the same queue, and every file leaves as its own `file` part on
+  // the same message. Files are held in memory until the turn is sent, so a
+  // mis-picked file is one click to remove rather than a reload.
+  var queue = [];
+  var LIMIT = 8;
+  // The daemon's own caps, read off the shell rather than guessed: a file it
+  // will refuse should be refused here, where the operator still has the words
+  // and the picker in front of them, and where nothing has been sent at all.
+  function shellCap(name, fallback) {
+    var shell = document.querySelector(".chat-shell");
+    if (shell === null) { return fallback; }
+    var raw = shell.getAttribute(name);
+    var value = raw === null ? NaN : parseInt(raw, 10);
+    return isNaN(value) || value <= 0 ? fallback : value;
+  }
+  var FILE_MAX = shellCap("data-file-max", 26214400);
+  var FILE_TOTAL = shellCap("data-file-total", 67108864);
+  var queueBox = document.getElementById("attach-queue");
+  // One object URL per picture, reused across renders and revoked when the chip
+  // goes, so a preview costs a decoded thumbnail rather than a second copy of
+  // the file in memory.
+  var thumbs = new Map();
+
+  function looksLikeImage(file) {
+    if (file.type && file.type.indexOf("image/") === 0) { return true; }
+    return /\.(png|jpe?g|webp|gif|hei[cf])$/i.test(file.name);
+  }
+
+  function thumbFor(file) {
+    if (thumbs.has(file) === false) {
+      if (typeof URL === "undefined") { return ""; }
+      if (typeof URL.createObjectURL === "undefined") { return ""; }
+      thumbs.set(file, URL.createObjectURL(file));
+    }
+    return thumbs.get(file);
+  }
+
+  function forgetThumb(file) {
+    if (thumbs.has(file) === false) { return; }
+    var url = thumbs.get(file);
+    thumbs.delete(file);
+    if (typeof URL === "undefined") { return; }
+    if (typeof URL.revokeObjectURL === "undefined") { return; }
+    URL.revokeObjectURL(url);
+  }
+
+  function humanSize(bytes) {
+    if (bytes < 1024) { return bytes + " B"; }
+    if (bytes < 1048576) { return Math.round(bytes / 1024) + " kB"; }
+    return (bytes / 1048576).toFixed(1) + " MB";
+  }
+
+  // The line a message with no words still needs, in the daemon's own wording so
+  // a live bubble and the reloaded transcript say the same thing.
+  function attachedLine(files) {
+    if (files.length === 1) { return "Attached " + files[0].name; }
+    var names = [];
+    for (var index = 0; index < files.length; index += 1) {
+      names.push(files[index].name);
+    }
+    return "Attached " + files.length + " files: " + names.join(", ");
+  }
+
+  // The send control follows the composer: text or a file is what it takes. It
+  // is never disabled for a running turn, because a second message steers one.
+  function paintSend() {
+    var send = document.getElementById("send");
+    if (send === null) { return; }
+    var ready = box.value.trim().length > 0 || queue.length > 0;
+    send.classList.toggle("idle", ready === false);
+  }
+
+  // The badge map the server uses, in the one script: a file chip in a live
+  // transcript and the same chip after a reload have to agree.
+  var FILE_BADGES = {
+    png: "PNG", jpg: "JPG", jpeg: "JPG", webp: "WEBP", gif: "GIF",
+    heic: "HEIC", heif: "HEIC", pdf: "PDF", ppt: "PPT", pptx: "PPTX",
+    doc: "DOC", docx: "DOCX", xls: "XLS", xlsx: "XLSX", csv: "CSV",
+    txt: "TXT", log: "TXT", md: "MD", markdown: "MD", json: "JSON",
+    jsonl: "JSON", zip: "ZIP", rs: "CODE", py: "CODE", sh: "CODE",
+    html: "CODE", sql: "CODE"
+  };
+  // A bang is written without the character, because the page's one script is
+  // checked for bangs: the image marker is the same byte, built at run time.
+  var BANG = String.fromCharCode(33);
+
+  function badgeForName(name) {
+    var dot = name.lastIndexOf(".");
+    if (dot < 0) { return "FILE"; }
+    var badge = FILE_BADGES[name.slice(dot + 1).toLowerCase()];
+    return badge === undefined ? "FILE" : badge;
+  }
+
+  function safeWorkspacePath(raw) {
+    var path = raw.trim();
+    if (path === "") { return null; }
+    if (path.charAt(0) === "/" || path.charAt(0) === "~") { return null; }
+    if (path.indexOf("://") >= 0 || path.indexOf("\\") >= 0) { return null; }
+    if (path.indexOf("?") >= 0 || path.indexOf("#") >= 0) { return null; }
+    var parts = path.split("/");
+    for (var index = 0; index < parts.length; index += 1) {
+      var part = parts[index];
+      if (part === "" || part === "." || part === "..") { return null; }
+    }
+    return path;
+  }
+
+  function workspaceUrl(path) {
+    return "/dashboard/chat/workspace/" + path.split("/").map(encodeURIComponent).join("/");
+  }
+
+  function workspaceKind(path) {
+    var dot = path.lastIndexOf(".");
+    if (dot < 0) { return null; }
+    var ext = path.slice(dot + 1).toLowerCase();
+    if (ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "webp" ||
+        ext === "gif" || ext === "heic" || ext === "heif") {
+      return { image: true };
+    }
+    var badge = FILE_BADGES[ext];
+    if (badge === undefined) { return null; }
+    return { image: false, badge: badge };
+  }
+
+  // One picture or chip in a bubble, from the File the operator just picked.
+  function appendFilePreview(container, file) {
+    if (looksLikeImage(file)) {
+      var url = thumbFor(file);
+      if (url) {
+        var link = document.createElement("a");
+        link.className = "attached-image";
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.title = file.name;
+        var img = document.createElement("img");
+        img.src = url;
+        img.alt = file.name;
+        img.loading = "lazy";
+        link.appendChild(img);
+        container.appendChild(link);
+        return;
+      }
+    }
+    var chip = document.createElement("span");
+    chip.className = "attached-chip";
+    var badge = document.createElement("span");
+    badge.className = "attached-badge";
+    badge.textContent = badgeForName(file.name);
+    var name = document.createElement("span");
+    name.className = "attached-name";
+    name.textContent = file.name;
+    name.title = file.name;
+    var size = document.createElement("span");
+    size.className = "attached-size";
+    size.textContent = humanSize(file.size);
+    chip.appendChild(badge);
+    chip.appendChild(name);
+    chip.appendChild(size);
+    container.appendChild(chip);
+  }
+
+  // The answer's own file references, drawn after the stream ends. While the
+  // text is still arriving it stays plain, so a fragment is never re-parsed a
+  // hundred times; the finished answer gets the pictures the page would have
+  // rendered on a reload.
+  function renderAnswerFiles(element, text) {
+    element.textContent = "";
+    var pattern = /\[([^\]]*)\]\(([^)]+)\)/g;
+    var last = 0;
+    var found = false;
+    var match;
+    while (true) {
+      match = pattern.exec(text);
+      if (match === null) { break; }
+      var path = safeWorkspacePath(match[2]);
+      var kind = path === null ? null : workspaceKind(path);
+      if (kind === null) { continue; }
+      found = true;
+      var image = match.index > 0 && text.charAt(match.index - 1) === BANG;
+      var start = image ? match.index - 1 : match.index;
+      if (start > last) {
+        element.appendChild(document.createTextNode(text.slice(last, start)));
+      }
+      var shown = match[1].trim() || path.split("/").pop();
+      var url = workspaceUrl(path);
+      if (kind.image) {
+        var link = document.createElement("a");
+        link.className = "attached-image";
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.title = shown;
+        var img = document.createElement("img");
+        img.src = url;
+        img.alt = shown;
+        img.loading = "lazy";
+        link.appendChild(img);
+        element.appendChild(link);
+      } else {
+        var chip = document.createElement("a");
+        chip.className = "attached-chip";
+        chip.href = url;
+        chip.setAttribute("download", path.split("/").pop());
+        chip.title = path.split("/").pop();
+        var badge = document.createElement("span");
+        badge.className = "attached-badge";
+        badge.textContent = kind.badge;
+        var name = document.createElement("span");
+        name.className = "attached-name";
+        name.textContent = shown;
+        chip.appendChild(badge);
+        chip.appendChild(name);
+        element.appendChild(chip);
+      }
+      last = pattern.lastIndex;
+    }
+    if (found === false) {
+      element.textContent = text;
+      return;
+    }
+    if (last < text.length) {
+      element.appendChild(document.createTextNode(text.slice(last)));
+    }
+  }
+
+  function renderQueue() {
+    if (queueBox === null) { return; }
+    queueBox.textContent = "";
+    queue.forEach(function (file, index) {
+      var chip = document.createElement("span");
+      chip.className = "attach-chip";
+      if (looksLikeImage(file)) {
+        var thumb = document.createElement("img");
+        thumb.className = "attach-chip-thumb";
+        thumb.alt = "";
+        thumb.src = thumbFor(file);
+        chip.appendChild(thumb);
+      }
+      var name = document.createElement("span");
+      name.className = "attach-chip-name";
+      name.textContent = file.name;
+      name.title = file.name;
+      var size = document.createElement("span");
+      size.className = "attach-chip-size";
+      size.textContent = humanSize(file.size);
+      var drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "attach-chip-drop";
+      drop.setAttribute("aria-label", "Remove " + file.name);
+      drop.textContent = "\u00d7";
+      drop.addEventListener("click", function () {
+        forgetThumb(file);
+        queue.splice(index, 1);
+        renderQueue();
+      });
+      chip.appendChild(name);
+      chip.appendChild(size);
+      chip.appendChild(drop);
+      queueBox.appendChild(chip);
+    });
+    queueBox.hidden = queue.length === 0;
+    paintSend();
+  }
+
+  function queueBytes() {
+    var total = 0;
+    queue.forEach(function (file) { total += file.size; });
+    return total;
+  }
+
+  // A file the daemon would refuse is refused here instead, by name and by the
+  // size a person reads. The alternative is a send that fails after the operator
+  // has typed a message around it.
+  function addFiles(list) {
+    var refused = 0;
+    var tooBig = "";
+    var overTotal = "";
+    for (var index = 0; index < list.length; index += 1) {
+      var file = list[index];
+      if (queue.length >= LIMIT) { refused += 1; continue; }
+      var duplicate = queue.some(function (existing) {
+        return existing.name === file.name && existing.size === file.size;
+      });
+      if (duplicate) { continue; }
+      if (file.size > FILE_MAX) {
+        tooBig = file.name + " is " + humanSize(file.size) + ", and one file may be "
+          + humanSize(FILE_MAX);
+        continue;
+      }
+      if (queueBytes() + file.size > FILE_TOTAL) {
+        overTotal = "that would take the message past " + humanSize(FILE_TOTAL)
+          + ", which is all the files in one message together";
+        continue;
+      }
+      queue.push(file);
+    }
+    renderQueue();
+    if (status) {
+      if (tooBig) {
+        status.textContent = tooBig;
+      } else if (overTotal) {
+        status.textContent = overTotal;
+      } else if (refused > 0) {
+        status.textContent = "at most " + LIMIT + " files per message";
+      } else {
+        status.textContent = "";
+      }
+    }
+  }
+
+  // The composer tells the send control when there is something to send, which
+  // is either words or a file.
+  box.addEventListener("input", paintSend);
+  paintSend();
+
+  if (attachmentInput) {
+    attachmentInput.addEventListener("change", function () {
+      // The input is emptied straight away so the same file can be picked
+      // again after a removal; the queue holds the File objects themselves.
+      addFiles(attachmentInput.files);
+      attachmentInput.value = "";
+    });
+  }
+
+  // A drop anywhere on the composer is a file for the message, which is the
+  // one gesture everybody tries first.
+  ["dragenter", "dragover"].forEach(function (name) {
+    form.addEventListener(name, function (event) {
+      event.preventDefault();
+      form.classList.add("dropping");
+    });
+  });
+  ["dragleave", "drop"].forEach(function (name) {
+    form.addEventListener(name, function (event) {
+      event.preventDefault();
+      if (name === "dragleave" && form.contains(event.relatedTarget)) { return; }
+      form.classList.remove("dropping");
+    });
+  });
+  form.addEventListener("drop", function (event) {
+    if (event.dataTransfer === null) { return; }
+    if (event.dataTransfer.files.length > 0) {
+      addFiles(event.dataTransfer.files);
+    }
+  });
+
+  // A screenshot pasted straight into the composer is the same as an attach.
+  box.addEventListener("paste", function (event) {
+    if (event.clipboardData === null) { return; }
+    var files = event.clipboardData.files;
+    if (files && files.length > 0) {
+      event.preventDefault();
+      addFiles(files);
+    }
+  });
+
+  // A message sent while a turn is streaming steers it. It goes to the same route
+  // the composer posts to, and the daemon queues it for the turn that is already
+  // running: one turn, one bill, and the instruction the operator just typed is
+  // what the model continues with at its next boundary.
+  async function steer(text) {
+    var shell = document.querySelector(".chat-shell");
+    var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
+    var body = new URLSearchParams();
+    body.append("message", text);
+    body.append("conversation", conversation);
+    var words = text === "" ? attachedLine(queue) : text;
+    box.value = "";
+    appendUser(words, []);
+    toBottom();
+    // The count a reloaded page rendered is about to be wrong, so it goes: the
+    // status line below carries the live answer instead.
+    var stale = document.getElementById("composer-queued");
+    if (stale) { stale.remove(); }
+    try {
+      var response = await fetch("/dashboard/chat/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form" + "-urlencoded"
+        },
+        body: body
+      });
+      if (response.ok === false) {
+        if (status) { status.textContent = "that message was not queued"; }
+        return;
+      }
+      if (status) {
+        // A steer is text: the running turn built its prompt before any newly
+        // picked file existed, so the files stay queued for the next turn rather
+        // than pretending to have been read.
+        status.textContent = queue.length > 0
+          ? "queued - the files stay queued for the next turn"
+          : "queued - steers the turn that is running";
+      }
+    } catch (error) {
+      if (status) { status.textContent = "that message was not queued"; }
+    }
+  }
+
+  // A message that starts with a slash is a command, and a command is answered
+  // by the daemon rather than streamed by a model. It goes out as one small form
+  // post because the frame it answers with says which conversation the answer
+  // landed in: `/new` creates one, so the page has to be told where it now is
+  // instead of being left on the conversation the command has just left.
+  async function command(text) {
+    var shell = document.querySelector(".chat-shell");
+    var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
+    var body = new URLSearchParams();
+    body.append("message", text);
+    body.append("conversation", conversation);
+    box.value = "";
+    setBusy(true);
+    try {
+      var response = await fetch("/dashboard/chat/send", {
+        method: "POST",
+        headers: {
+          "Accept": "text/event-stream",
+          "Content-Type": "application/x-www-form-url" + "-urlencoded"
+        },
+        body: body
+      });
+      if (response.ok === false) {
+        throw new Error("HTTP " + response.status);
+      }
+      // The frame is read with the same parser the answer uses, so a command and
+      // a turn arrive as one kind of thing. No reader in this browser, no frame:
+      // the plain form is the fallback, and it renders the answer itself.
+      if (response.body === null || typeof response.body.getReader === "undefined") {
+        setBusy(false);
+        form.submit();
+        return;
+      }
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = "";
+      var running = true;
+      while (running) {
+        var chunk = await reader.read();
+        if (chunk.done) { running = false; break; }
+        buffer += decoder.decode(chunk.value, { stream: true });
+        var frames = buffer.split("\n\n");
+        buffer = frames.pop();
+        for (var index = 0; index < frames.length; index += 1) {
+          var parsed = parseFrame(frames[index]);
+          if (parsed.event === "command") {
+            var done = JSON.parse(parsed.data);
+            // The answer is in a transcript already, so the page goes to the
+            // conversation it belongs to and reads it there. A command that did
+            // not move is a plain reload: the row is what the operator came for.
+            if (done.url && (done.url === window.location.pathname) === false) {
+              window.location.assign(done.url);
+              return;
+            }
+            window.location.reload();
+            return;
+          }
+        }
+      }
+    } catch (error) {
+      // A command that could not be delivered is not a command that ran, so the
+      // words go back into the box rather than disappearing.
+      if (status) { status.textContent = "that command did not go through"; }
+      box.value = text;
+    }
+    setBusy(false);
+    box.focus();
+  }
+
+  async function send() {
+    var text = box.value.trim();
+    // A file is a message. Empty box plus a queued attachment used to return
+    // here, before the queue was ever consulted, so the attach button and the
+    // send button together did nothing at all.
+    if (text === "" && queue.length === 0) { return; }
+    // The daemon writes a line naming the files when there are no words, and so
+    // does this: the bubble hangs the attachments under it either way.
+    var shown = text === "" ? attachedLine(queue) : text;
+    // Streaming off: hand the whole turn to the form and let the daemon answer
+    // with the rendered page. Same request, same files, no reader in between.
+    var streamShell = document.querySelector(".chat-shell");
+    if (streamShell) {
+      if (streamShell.getAttribute("data-stream") === "off") {
+        if (attachmentInput && typeof DataTransfer === "object" && queue.length > 0) {
+          var carrier = new DataTransfer();
+          queue.forEach(function (file) { carrier.items.add(file); });
+          attachmentInput.files = carrier.files;
+        }
+        form.submit();
+        return;
+      }
+    }
+    // A command is decided first, mid-turn or not: it is not text to steer with,
+    // and the daemon answers it whether or not a turn is running.
+    if (text.charAt(0) === "/" && text.length > 1) {
+      await command(text);
+      return;
+    }
+    if (busy) {
+      await steer(text);
+      return;
+    }
+    leaveEmptyState();
+    var picker = document.getElementById("model");
+    var chosen = picker === null ? "" : picker.value;
+    var shell = document.querySelector(".chat-shell");
+    var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
+    var sending = queue.slice();
+    var userLine = appendUser(shown, sending);
+    box.value = "";
+    setBusy(true);
+    toBottom();
+    var shellName = document.querySelector(".chat-shell");
+    var assistantName = shellName === null ? "assistant" : (shellName.getAttribute("data-assistant") || "assistant");
+    var target = line("assistant", assistantName);
+    target.article.className = "msg assistant pending";
+    // Which reply this is, counted off the thread it has just joined. The number
+    // sits in front of the run log's call count, which is a different fact.
+    target.setTurn(answerOrdinal(target.article));
+    var answer = "";
+    var thinking = "";
+    var lostConnection = false;
+    // Whether the turn's own closing frame arrived. A stream that ends without
+    // one is not an answer that finished, it is this page losing the socket, and
+    // the turn carries on either way.
+    var sawDone = false;
+    controller = new AbortController();
+    try {
+      var response = await fetch("/dashboard/chat/send", {
+        method: "POST",
+        // No Content-Type here on purpose: the body is FormData, and setting the
+        // header by hand omits the multipart boundary, which the server then
+        // cannot parse. The browser writes the correct header itself.
+        headers: { "Accept": "text/event-stream" },
+        body: (function () {
+          var body = new FormData();
+          body.append("message", text);
+          body.append("model", chosen);
+          body.append("conversation", conversation);
+          sending.forEach(function (file) {
+            body.append("file", file, file.name);
+          });
+          return body;
+        })(),
+        signal: controller.signal
+      });
+      if (response.ok === false) {
+        // A refused send is not a dropped stream. Read the daemon's own words
+        // and show them instead of the connection message the catch below uses.
+        var problem = "the daemon refused that message (HTTP " + response.status + ")";
+        try {
+          var refusal = await response.text();
+          var parsed = JSON.parse(refusal);
+          if (parsed && parsed.message) { problem = parsed.message; }
+        } catch (parseError) {
+          if (response.status === 413) {
+            problem = "that message is larger than the daemon accepts in one send; attach smaller files";
+          }
+        }
+        var refusalError = new Error(problem);
+        refusalError.fromServer = true;
+        // The words are the operator's, not the daemon's: a refused send hands
+        // them back rather than leaving a bubble on the page for a message that
+        // was never recorded. The files need no handling - the queue is only
+        // emptied once the daemon has accepted the body, so it is still exactly
+        // as the operator left it.
+        refusalError.keepWords = text;
+        throw refusalError;
+      }
+      queue = [];
+      renderQueue();
+      if (response.body === null || typeof response.body.getReader === "undefined") {
+        // No streaming in this browser: hand the turn to the plain form, whose
+        // answer arrives rendered. The queue is written back into the picker so
+        // the files are not lost on the way.
+        target.article.remove();
+        userLine.remove();
+        box.value = text;
+        setBusy(false);
+        if (attachmentInput && typeof DataTransfer === "object") {
+          var carrier = new DataTransfer();
+          sending.forEach(function (file) { carrier.items.add(file); });
+          attachmentInput.files = carrier.files;
+        }
+        form.submit();
+        return;
+      }
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = "";
+      var running = true;
+      while (running) {
+        var chunk = await reader.read();
+        if (chunk.done) { running = false; break; }
+        buffer += decoder.decode(chunk.value, { stream: true });
+        var frames = buffer.split("\n\n");
+        buffer = frames.pop();
+        for (var index = 0; index < frames.length; index += 1) {
+          var parsed = parseFrame(frames[index]);
+          if (parsed.event === "delta") {
+            answer += JSON.parse(parsed.data).text;
+            target.setAnswer(answer);
+            toBottom();
+          }
+          if (parsed.event === "working") {
+            var working = JSON.parse(parsed.data);
+            target.setLive(working.activity || working.name || "");
+          }
+          if (parsed.event === "tool_output") {
+            var output = JSON.parse(parsed.data);
+            target.streamChunk(output.name, output.chunk);
+          }
+          if (parsed.event === "tool") {
+            target.addTool(JSON.parse(parsed.data));
+            // The call finished, so the status line has nothing left to claim.
+            target.setLive("");
+            toBottom();
+          }
+          if (parsed.event === "asked") {
+            target.askCard(JSON.parse(parsed.data));
+            if (status) { status.textContent = "waiting for your answer"; }
+            toBottom();
+          }
+          if (parsed.event === "reasoning") {
+            thinking += JSON.parse(parsed.data).text;
+            target.thinkBody.textContent = thinking;
+            target.think.hidden = false;
+            // The bubble is bounded and scrolls itself, so the newest thought
+            // stays visible without the bubble growing over the answer.
+            target.thinkBody.scrollTop = target.thinkBody.scrollHeight;
+            toBottom();
+          }
+          if (parsed.event === "done") {
+            sawDone = true;
+            var final = JSON.parse(parsed.data);
+            answer = final.text;
+            target.settleAnswer(answer);
+            target.setLive("");
+            target.meta.textContent = metaFor(final);
+            if (typeof final.reasoning === "string" && final.reasoning.trim().length > 0) {
+              target.thinkBody.textContent = final.reasoning;
+              target.think.hidden = false;
+            }
+          }
+          if (parsed.event === "error") {
+            var failure = JSON.parse(parsed.data);
+            target.setLive("");
+            target.showBubble();
+            target.bubble.className = "bubble failed";
+            target.text.textContent = failure.message;
+            var tail = [failure.code];
+            if (failure.resets_in) { tail.push("resets in " + failure.resets_in); }
+            if (failure.quota) { tail.push(failure.quota); }
+            target.meta.textContent = tail.join(" \u00b7 ");
+          }
+          // Not a failure of the answer: a message that arrived after the turn had
+          // finished, said out loud rather than left to disappear.
+          if (parsed.event === "notice") {
+            var notice = JSON.parse(parsed.data);
+            if (status) { status.textContent = notice.message || ""; }
+          }
+          // A subagent started or finished. The count is the only thing a stream
+          // can be sure of: the row itself is rendered on the next load, which is
+          // what an operator with no script sees.
+          if (parsed.event === "subagent") {
+            noteSubagent(JSON.parse(parsed.data));
+          }
+        }
+      }
+      renderAnswerFiles(target.text, answer);
+    } catch (error) {
+      if (controller && controller.signal.aborted) {
+        target.settleAnswer(answer + " [stopped]");
+      } else if (error && error.fromServer) {
+        // The daemon answered and refused. Its sentence is the useful one, and
+        // it goes where the operator is already looking rather than into a
+        // reply bubble that claims a turn happened.
+        controller = null;
+        target.article.remove();
+        userLine.remove();
+        if (typeof error.keepWords === "string") { box.value = error.keepWords; }
+        setBusy(false);
+        if (status) { status.textContent = error.message; }
+        renderQueue();
+        paintSend();
+        box.focus();
+        return;
+      } else {
+        // A dropped stream is not a failed turn. The daemon keeps working after
+        // the browser lets go, so the answer is very likely on its way to the
+        // transcript. Printing the browser's own words ("Load failed") would be
+        // jargon standing in for a fact the operator can act on.
+        lostConnection = true;
+        target.bubble.className = "bubble failed";
+        target.text.textContent =
+          "Lost the connection to the daemon. The turn may have finished anyway - " +
+          "reload to see the transcript, or send again.";
+      }
+    }
+    controller = null;
+    target.article.className = "msg assistant";
+    // A turn that ends without ever writing a word still gets its box: the reply
+    // exists and it is empty, which is a fact the footer and the transcript both
+    // state. An empty bubble here is the answer, not the placeholder that was
+    // being drawn before there was one.
+    target.settleAnswer(answer);
+    // The same rule the reattached path follows: a finished answer takes the size
+    // the operator chose, and a failed one or one waiting on a question stays
+    // open in full.
+    settleReply(target.article);
+    setBusy(false);
+    // Said after the composer settles, because settling clears the status line:
+    // the point of the sentence is that the page is behind the daemon, and the
+    // way out is the control beside it.
+    if (lostConnection || sawDone === false) {
+      // The opening page lost the thread mid-answer: rejoin the turn instead of
+      // leaving a bubble that will never be written to. Attaching is cheaper than
+      // a reload and keeps whatever already streamed here.
+      markStale("the connection dropped - rejoining the turn");
+      target.article.className = "msg assistant pending";
+      attachLive(target);
+    }
+    // Nothing is waiting any more: the turn this page said had a message queued
+    // for it has just ended, so the count goes rather than going stale.
+    var drained = document.getElementById("composer-queued");
+    if (drained) { drained.remove(); }
+    toBottom();
+    await refreshRail();
+    box.focus();
+  }
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    send();
+  });
+
+  box.addEventListener("keydown", function (event) {
+    if (event.key === "Enter" && event.shiftKey === false) {
+      event.preventDefault();
+      send();
+    }
+  });
+
+  // The rail is a server-rendered list, so a conversation that earns its name
+  // during this turn would not show up until a reload. One small JSON read after
+  // the turn keeps the list honest, headings and menus included: the script never
+  // paints a rail the page itself would not have rendered.
+  function railLink(session, openId) {
+    var link = document.createElement("a");
+    link.href = "/dashboard/chat/" + session.id;
+    link.title = session.title;
+    if (session.id === openId) { link.setAttribute("aria-current", "page"); }
+    var title = document.createElement("span");
+    title.className = "session-title";
+    title.textContent = session.title;
+    var stamp = document.createElement("span");
+    stamp.className = "session-stamp";
+    stamp.textContent = session.stamp;
+    link.appendChild(title);
+    link.appendChild(stamp);
+    return link;
+  }
+
+  // The same menu the server renders: one row per project plus the "No project"
+  // clear, a checkmark on the one the conversation is filed under, and the
+  // destructive row at the bottom behind a rule. A row is a submit button
+  // carrying the value, so the panel posts with no script involved anywhere.
+  function railMenu(session, projects) {
+    var menu = document.createElement("details");
+    menu.className = "session-menu menu";
+    var summary = document.createElement("summary");
+    summary.title = "Conversation actions";
+    summary.setAttribute("aria-label", "Actions for " + session.title);
+    summary.textContent = "\u2026";
+    menu.appendChild(summary);
+    var form = document.createElement("form");
+    form.className = "menu-panel";
+    form.method = "post";
+    form.action = "/dashboard/projects/assign";
+    var hidden = document.createElement("input");
+    hidden.type = "hidden";
+    hidden.name = "conversation";
+    hidden.value = session.id;
+    form.appendChild(hidden);
+
+    function row(label, value, current, formaction, danger) {
+      var button = document.createElement("button");
+      button.type = "submit";
+      button.className = danger ? "menu-row danger" : "menu-row";
+      if (value === null) {
+        button.removeAttribute("name");
+      } else {
+        button.name = "project";
+        button.value = value;
+      }
+      if (formaction) { button.setAttribute("formaction", formaction); }
+      if (current) { button.setAttribute("aria-current", "true"); }
+      var check = document.createElement("span");
+      check.className = "menu-check";
+      check.setAttribute("aria-hidden", "true");
+      check.textContent = current ? "\u2713" : "";
+      var name = document.createElement("span");
+      name.className = "menu-name";
+      name.textContent = label;
+      button.appendChild(check);
+      button.appendChild(name);
+      if (current) {
+        var only = document.createElement("span");
+        only.className = "sr-only";
+        only.textContent = " (current)";
+        button.appendChild(only);
+      }
+      return button;
+    }
+
+    form.appendChild(row("No project", "", session.project_id === null, "", false));
+    for (var index = 0; index < projects.length; index += 1) {
+      form.appendChild(row(
+        projects[index].name,
+        projects[index].id,
+        session.project_id === projects[index].id,
+        "",
+        false
+      ));
+    }
+    var separator = document.createElement("div");
+    separator.className = "menu-sep";
+    separator.setAttribute("aria-hidden", "true");
+    form.appendChild(separator);
+    form.appendChild(row(
+      "Delete conversation",
+      null,
+      false,
+      "/dashboard/chat/" + session.id + "/delete",
+      true
+    ));
+    menu.appendChild(form);
+    return menu;
+  }
+
+  function railRow(session, projects, openId) {
+    var row = document.createElement("div");
+    row.className = session.id === openId ? "session-row open" : "session-row";
+    row.appendChild(railLink(session, openId));
+    row.appendChild(railMenu(session, projects));
+    return row;
+  }
+
+  function railGroup(name, sessions, projects, openId) {
+    var group = document.createElement("div");
+    group.className = "rail-group";
+    var head = document.createElement("div");
+    head.className = "rail-group-head";
+    var label = document.createElement("span");
+    label.className = "rail-group-name";
+    label.textContent = name;
+    var count = document.createElement("span");
+    count.className = "rail-group-count";
+    count.textContent = String(sessions.length);
+    head.appendChild(label);
+    head.appendChild(count);
+    group.appendChild(head);
+    for (var index = 0; index < sessions.length; index += 1) {
+      group.appendChild(railRow(sessions[index], projects, openId));
+    }
+    return group;
+  }
+
+  async function refreshRail() {
+    var rail = document.getElementById("rail-sessions");
+    if (rail === null) { return; }
+    try {
+      var response = await fetch("/dashboard/chat/sessions.json", {
+        headers: { "Accept": "application/json" }
+      });
+      if (response.ok === false) { return; }
+      var payload = await response.json();
+      var shell = document.querySelector(".chat-shell");
+      var openId = shell === null ? "" : shell.getAttribute("data-conversation");
+      var projects = payload.projects || [];
+      rail.textContent = "";
+      if (payload.sessions.length === 0) {
+        var empty = document.createElement("span");
+        empty.className = "side-empty";
+        empty.textContent = "No conversations yet";
+        rail.appendChild(empty);
+        return;
+      }
+      if (projects.length === 0) {
+        for (var flat = 0; flat < payload.sessions.length; flat += 1) {
+          rail.appendChild(railRow(payload.sessions[flat], projects, openId));
+        }
+        return;
+      }
+      for (var p = 0; p < projects.length; p += 1) {
+        var members = [];
+        for (var s = 0; s < payload.sessions.length; s += 1) {
+          if (payload.sessions[s].project_id === projects[p].id) {
+            members.push(payload.sessions[s]);
+          }
+        }
+        if (members.length > 0) {
+          rail.appendChild(railGroup(projects[p].name, members, projects, openId));
+        }
+      }
+      var unfiled = [];
+      for (var u = 0; u < payload.sessions.length; u += 1) {
+        var known = false;
+        for (var k = 0; k < projects.length; k += 1) {
+          if (payload.sessions[u].project_id === projects[k].id) { known = true; }
+        }
+        if (known === false) { unfiled.push(payload.sessions[u]); }
+      }
+      if (unfiled.length > 0) {
+        rail.appendChild(railGroup("Conversations", unfiled, projects, openId));
+      }
+    } catch (error) {
+      // A rail that cannot refresh is not worth interrupting the conversation for.
+    }
+  }
+
+  var mode = document.getElementById("mode");
+  if (mode) {
+    mode.addEventListener("change", async function () {
+      var previous = mode.getAttribute("data-last") || "";
+      var body = new URLSearchParams({ sandbox_mode: mode.value });
+      try {
+        var response = await fetch("/dashboard/chat/mode", {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form" + "-urlencoded"
+          },
+          body: body
+        });
+        if (response.ok === false) {
+          var refusal = await response.json().catch(function () { return {}; });
+          if (previous) { mode.value = previous; }
+          if (status) { status.textContent = refusal.message || "access level refused"; }
+          return;
+        }
+        mode.setAttribute("data-last", mode.value);
+        if (status) { status.textContent = ""; }
+      } catch (error) {
+        if (previous) { mode.value = previous; }
+      }
+    });
+    mode.setAttribute("data-last", mode.value);
+  }
+
+  if (stop) {
+    stop.addEventListener("click", async function () {
+      // The daemon stops the turn, not the browser: a page that stops reading a
+      // stream leaves the turn running on the server. This is the same `/stop`
+      // command the composer accepts, so there is one cancellation path, and the
+      // turn stops at its next boundary - the copy says so rather than implying a
+      // socket was cut.
+      stop.disabled = true;
+      if (status) { status.textContent = "stopping at the next boundary"; }
+      var shell = document.querySelector(".chat-shell");
+      var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
+      var body = new URLSearchParams();
+      body.append("message", "/stop");
+      body.append("conversation", conversation);
+      try {
+        await fetch("/dashboard/chat/send", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-url" + "-urlencoded"
+          },
+          body: body
+        });
+      } catch (error) {
+        // The abort below is still the operator's own answer if the post fails.
+      }
+      stop.disabled = false;
+      // Then stop listening, so the page is not left waiting on a stream whose
+      // answer has already been decided.
+      if (controller) { controller.abort(); }
+    });
+  }
+
+  // Land on the newest message. A scroll box opens at the top of its content,
+  // which is where the answer was forty turns ago: every visit to a conversation
+  // began with a scroll to find the thing it was opened for. Twice, because the
+  // height this measures is not final while the fonts and any attachments are
+  // still arriving.
+  function land() {
+    pinned = true;
+    thread.scrollTop = thread.scrollHeight;
+  }
+  land();
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(land);
+  }
+  // Twice was the old reading of "the height is not final yet". It is not final
+  // for longer than two frames: a web font that arrives after the first paint
+  // re-measures every line, and the answer ends up one scrollbar-length short of
+  // the bottom with nothing having said so. Both of these fire once, and only
+  // while the page is still pinned - a reading somebody has taken hold of is not
+  // theirs to move.
+  window.addEventListener("load", function () { if (pinned) { land(); } });
+  if (document.fonts && typeof document.fonts.ready === "object") {
+    document.fonts.ready.then(function () { if (pinned) { land(); } });
+  }
+  // A tab that was hidden while the fonts arrived comes back with the same
+  // problem, and `visibilitychange` is the only notification of it.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && pinned) { land(); }
+  });
+
+  // A page that loads with a row still marked streaming is behind a turn whose
+  // response it never had. Attach before the composer is focused, so the status
+  // line is already saying what is happening.
+  attachLive();
+
+  box.focus();
+})();"##;
+
+#[cfg(test)]
+mod tests {
+    /// A count of the work and a "was it forced" flag are two facts. The footer
+    /// used to print only the first, so a reply cut off at a hundred calls read
+    /// exactly like a reply that chose to stop at a hundred calls.
+    ///
+    /// The word is `turn`, not `round`: a round is one provider call inside a
+    /// turn, and the number here is how many of them one turn of the operator's
+    /// spent. The column is still called `rounds` and this test pins the word an
+    /// operator reads, which is the thing that was wrong.
+    #[test]
+    fn a_forced_reply_says_so_beside_its_count() {
+        use super::ChatLine;
+        let line = |rounds: Option<u64>, capped: bool| ChatLine {
+            user: false,
+            who: "Kallisti".to_owned(),
+            body: "done".to_owned(),
+            stamp: "20:04".to_owned(),
+            failed: false,
+            error_code: None,
+            pending: false,
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+            duration_ms: None,
+            context_window: None,
+            turn: Some(1),
+            rounds,
+            capped,
+            wrapped_up: false,
+            quota: None,
+            reasoning: None,
+            tools: Vec::new(),
+            files: Vec::new(),
+        };
+        assert_eq!(
+            line(Some(100), false).usage_line().as_deref(),
+            Some("100 turns")
+        );
+        assert_eq!(
+            line(Some(100), true).usage_line().as_deref(),
+            Some("100 turns, then forced"),
+            "the same count, and the thing the operator cannot otherwise see"
+        );
+        assert_eq!(
+            line(Some(1), true).usage_line().as_deref(),
+            Some("1 turn, then forced"),
+            "the singular, because `1 turns` is the kind of thing that makes a page "
+        );
+        assert_eq!(
+            line(None, true).usage_line(),
+            None,
+            "no count and no line: a bare \"forced\" with nothing to attach to is noise"
+        );
+        // The word cannot come back without this going red.
+        for rounds in [1_u64, 7, 100] {
+            let word = line(Some(rounds), false).usage_line().unwrap_or_default();
+            assert!(
+                !word.contains("round"),
+                "the footer says turn, not round: {word}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tiny_context_share_keeps_enough_precision_to_not_read_as_zero() {
+        // 2.2k of a 1M window is a fifth of a percent.
+        assert_eq!(
+            super::context_share(Some(2_200), Some(1_000_000)),
+            "context 0.22%"
+        );
+        assert_eq!(
+            super::context_share(Some(50_000), Some(1_000_000)),
+            "context 5.0%"
+        );
+        assert_eq!(
+            super::context_share(Some(250_000), Some(1_000_000)),
+            "context 25%"
+        );
+        assert_eq!(
+            super::context_share(None, Some(1_000_000)),
+            "context unknown"
+        );
+        assert_eq!(
+            super::context_share(Some(2_200), None),
+            "context unknown",
+            "a share with no denominator is unknown, not zero"
+        );
+    }
+
+    use super::*;
+    use crate::onboarding::Wizard;
+
+    #[test]
+    fn a_minimized_reply_keeps_one_line_of_its_own_words() {
+        // The preview is the answer cut, never a summary: a folded reply that
+        // says something the answer does not say is worse than no preview.
+        assert_eq!(
+            reply_peek("Sure. The build is green."),
+            "Sure. The build is green."
+        );
+        // Markup lines and blank lines are skipped, so the line describes the
+        // answer rather than its formatting.
+        assert_eq!(
+            reply_peek("```sh\nls -l\n```\n\nAll four files are there."),
+            "All four files are there."
+        );
+        // Flattened: a short two-line answer becomes one line, because the
+        // minimized state is one line.
+        assert_eq!(
+            reply_peek("First line.\nSecond line."),
+            "First line. Second line."
+        );
+        // Bounded, with an ellipsis, counted in characters rather than bytes.
+        let long = reply_peek(&"word ".repeat(40));
+        assert_eq!(long.chars().count(), REPLY_PEEK_CHARS + 1, "{long}");
+        assert!(long.ends_with('\u{2026}'), "{long}");
+        // An empty answer has no preview line, not a fabricated one.
+        assert_eq!(reply_peek(""), "");
+        assert_eq!(reply_peek("   \n\n  "), "");
+    }
+
+    /// The rendered markup only: no stylesheet, no script.
+    ///
+    /// Both carry the selectors these tests assert about, as CSS rules and as
+    /// strings the script builds its own DOM from. A markup assertion that ran
+    /// over either would pass or fail on the source of the thing it is checking
+    /// against, which is the opposite of what these tests are for.
+    fn markup(page: &str) -> String {
+        let body = page.split("<script").next().unwrap_or(page);
+        match (body.find("<style"), body.find("</style>")) {
+            (Some(start), Some(end)) => format!("{}{}", &body[..start], &body[end + 8..]),
+            _ => body.to_owned(),
+        }
+    }
+
+    /// A line with nothing set but what a test says, so the transcript tests
+    /// below read as one fact each rather than as a wall of `None`.
+    fn a_line(user: bool) -> ChatLine {
+        ChatLine {
+            user,
+            who: if user { "You" } else { "Kallisti" }.to_owned(),
+            body: String::new(),
+            stamp: "20:04".to_owned(),
+            failed: false,
+            error_code: None,
+            pending: false,
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+            duration_ms: None,
+            context_window: None,
+            turn: Some(1),
+            rounds: None,
+            capped: false,
+            wrapped_up: false,
+            quota: None,
+            reasoning: None,
+            tools: Vec::new(),
+            files: Vec::new(),
+        }
+    }
+
+    /// A view holding exactly the lines a test passes, so the transcript can be
+    /// rendered and read as HTML rather than only reasoned about in the source.
+    fn a_view(messages: Vec<ChatLine>) -> crate::web::templates::ChatView {
+        crate::web::templates::ChatView {
+            chrome: super::Chrome::default(),
+            state: crate::db::SetupState::Ready,
+            version: "1.4.10".to_owned(),
+            model: "deepseek/test".to_owned(),
+            conversation: "conv".to_owned(),
+            conversation_title: "Test".to_owned(),
+            messages,
+            provider_ready: true,
+            error: None,
+            stats: crate::web::chat::Stats::default(),
+            models: vec![("deepseek/test".to_owned(), "DeepSeek - test".to_owned())],
+            selected_model: "deepseek/test".to_owned(),
+            show_reasoning: false,
+            streaming: true,
+            show_tool_log: true,
+            tool_log_mode: "full".to_owned(),
+            reply_state: "expanded".to_owned(),
+            greeting: "Good evening".to_owned(),
+            hint: String::new(),
+            line: None,
+            assistant_name: "Kallisti".to_owned(),
+            sandbox_mode: "full".to_owned(),
+            allow_full: true,
+            context_window: None,
+            queued: 0,
+        }
+    }
+
+    /// A clarify call, answered or not, for the transcript tests.
+    fn a_clarify(answered: bool) -> crate::web::chat::ToolRecord {
+        crate::web::chat::ToolRecord {
+            name: "clarify".to_owned(),
+            arguments: "{\"questions\":[]}".to_owned(),
+            output: String::new(),
+            is_error: false,
+            asked: Some(crate::web::chat::Asked {
+                request: crate::web::clarify::Request {
+                    title: Some("Which lane?".to_owned()),
+                    questions: vec![crate::web::clarify::Question {
+                        question: "Which lane should this land on?".to_owned(),
+                        choices: vec![crate::web::clarify::Choice {
+                            label: "Sports".to_owned(),
+                            detail: None,
+                        }],
+                        multi: false,
+                    }],
+                },
+                answer: answered.then(|| crate::web::clarify::Answer::Typed {
+                    question: "Which lane should this land on?".to_owned(),
+                    text: "Sports".to_owned(),
+                }),
+            }),
+        }
+    }
+
+    /// The answer is a bounded scroller with its own way out of the ceiling.
+    ///
+    /// The thinking bubble has carried an expand control since it was written;
+    /// the answer had none, so a long reply could only be read by scrolling a box
+    /// inside a page. The control is the same gesture, in the same corner of the
+    /// same kind of block, on both paths: a reload and a live turn must not
+    /// disagree about what a reply can do.
+    #[test]
+    fn an_answer_carries_the_expand_control_the_thinking_bubble_has() {
+        let mut line = a_line(false);
+        line.body = "A reply long enough to be worth the room.".to_owned();
+        let page = super::chat_page(&a_view(vec![a_line(true), line])).into_string();
+        let page = markup(&page);
+        assert!(
+            page.contains(r#"class="bubble-max""#) && page.contains("data-bubble-max"),
+            "the answer offers the expand the thinking bubble offers: {page}"
+        );
+        assert!(
+            page.contains(r#"aria-label="Expand this answer""#),
+            "and it is a control with a name, not a glyph: {page}"
+        );
+        // It belongs to the answer, so the operator's own message does not get
+        // one: there is nothing to expand about what they just said.
+        let bubbles = page.matches(r#"<button class="bubble-max""#).count();
+        assert_eq!(
+            bubbles, 1,
+            "one answer in the page, so one control in the page: {page}"
+        );
+        // The live builder carries the same control, or a streamed reply would
+        // lose the ability on the next reload the other way round.
+        let js = super::CHAT_JS;
+        assert!(
+            js.contains("bubbleMax.className = \"bubble-max\"")
+                && js.contains(r#"bubbleMax.setAttribute("aria-label", "Expand this answer")"#),
+            "the live builder builds the server's control"
+        );
+    }
+
+    /// The control sits outside the text flow and the answer keeps its measure.
+    ///
+    /// A button written into the flow would push the first line of every answer
+    /// down by its own height, which is a line of the transcript spent on chrome.
+    #[test]
+    fn the_answer_expands_without_spending_a_line_of_the_transcript() {
+        let mut line = a_line(false);
+        line.body = "short".to_owned();
+        let page = super::chat_page(&a_view(vec![line])).into_string();
+        let page = markup(&page);
+        let bubble = page
+            .split(r#"<div class="bubble">"#)
+            .nth(1)
+            .unwrap_or_else(|| panic!("the answer's bubble renders: {page}"));
+        // The control is the bubble's first child, so a reader meets it before
+        // the words it acts on rather than after a thousand of them.
+        assert!(
+            bubble.trim_start().starts_with("<button"),
+            "the control is first in the bubble: {bubble}"
+        );
+    }
+
+    /// The rail's order is a control on the rail, not a field on a page about it.
+    ///
+    /// It posts a stored setting, because the rail is server-rendered and its own
+    /// live refresh fetches the list with no parameters at all: an order passed as
+    /// a query string would be forgotten after the next turn.
+    #[test]
+    fn the_rail_carries_its_own_order_control() {
+        let chrome = super::Chrome {
+            conversation_sort: crate::web::chat::ConversationSort::Day,
+            ..super::Chrome::default()
+        };
+        let page = super::shell(
+            "Chat",
+            crate::db::SetupState::Ready,
+            Some(super::Nav::Chat),
+            html! {},
+            &chrome,
+        )
+        .into_string();
+        let page = markup(&page);
+        assert!(
+            page.contains(&format!(r#"action="{}""#, crate::admin::ROUTE_CHAT_SORT)),
+            "the order is a form that posts the stored setting: {page}"
+        );
+        assert!(
+            page.contains(r#"<span class="rail-list-label">Conversations</span>"#),
+            "it sits beside the word it applies to: {page}"
+        );
+        // The control states the order it is in before it is opened, and each
+        // order is offered by the name an operator reads.
+        assert!(
+            page.contains(r#"<span class="rail-sort-label">By day</span>"#),
+            "the summary names the current order: {page}"
+        );
+        // Each order is one row of the menu, by the name an operator reads.
+        for label in ["Recently used", "Newest", "Title", "By day"] {
+            assert!(
+                page.contains(&format!(r#"<span class="menu-name">{label}</span>"#)),
+                "every order is offered, {label} among them: {page}"
+            );
+        }
+        // The row in force carries the check, and the check is on the row whose
+        // value is the one stored.
+        assert!(
+            page.contains(r#"value="day" aria-current="true">"#),
+            "the stored order is the row marked current: {page}"
+        );
+        assert!(
+            !page.contains(r#"value="updated" aria-current"#),
+            "and no other row claims to be the one in force: {page}"
+        );
+        // The menu is a row per order, so it is one press rather than a pick and
+        // a confirm. There is no submit control of its own.
+        assert!(
+            !page.contains(">Sort</button>"),
+            "the menu has no separate confirm: {page}"
+        );
+        // A disclosure, not a scripted menu: the rail may carry no script at all.
+        assert!(
+            page.contains(r#"<details class="rail-sort menu">"#),
+            "the control is the browser's own disclosure: {page}"
+        );
+    }
+
+    /// The tag that says a turn wrapped up instead of being cut off.
+    ///
+    /// S2 added the fact and S5 drew it, and neither left a test behind it: the
+    /// two tags can regress independently, and until now nothing would have said
+    /// so. The words differ on purpose, because the two things are not the same:
+    /// one turn stopped early and still answered, the other ran out.
+    #[test]
+    fn a_wrapped_turn_says_so_and_a_capped_one_says_something_else() {
+        let mut wrapped = a_line(false);
+        wrapped.body = "an answer, with the budget nearly gone".to_owned();
+        wrapped.rounds = Some(10);
+        wrapped.wrapped_up = true;
+        let page = super::chat_page(&a_view(vec![wrapped])).into_string();
+        let page = markup(&page);
+        assert!(
+            page.contains(r#"class="tag wrapped-up""#) && page.contains(">wrapped up</span>"),
+            "a turn that wrapped up is marked as one: {page}"
+        );
+        assert!(
+            !page.contains(r#"class="tag capped""#),
+            "and it is not marked as cut off, because it was not: {page}"
+        );
+
+        let mut capped = a_line(false);
+        capped.body = "an answer the budget forced out".to_owned();
+        capped.rounds = Some(10);
+        capped.capped = true;
+        let page = super::chat_page(&a_view(vec![capped])).into_string();
+        let page = markup(&page);
+        assert!(
+            page.contains(r#"class="tag capped""#),
+            "a forced turn keeps its own word: {page}"
+        );
+        assert!(
+            !page.contains("wrapped up"),
+            "and does not borrow the other one: {page}"
+        );
+    }
+
+    /// A turn that is still running and has written nothing. The live path does
+    /// not draw an answer box for it, and neither may a reload: a fix that only
+    /// touched the script comes back on every refresh.
+    #[test]
+    fn a_pending_turn_with_no_answer_draws_no_answer_box() {
+        let mut line = a_line(false);
+        line.pending = true;
+        // Only the answer is on the page, so `class="bubble"` can only be the
+        // answer's box: the operator's own message has one too and it is not the
+        // one this test is about.
+        let page = super::chat_page(&a_view(vec![line])).into_string();
+        assert!(
+            !page.contains(r#"<div class="bubble"#),
+            "a pending answer with an empty body draws no bubble: {page}"
+        );
+        assert!(
+            page.contains(r#"<div class="meta-live" aria-live="polite">thinking</div>"#),
+            "the status line carries the turn instead, with the word the live path uses: {page}"
+        );
+    }
+
+    /// The same row once it has a word in it: the bubble comes back, because now
+    /// there is something to read.
+    #[test]
+    fn a_pending_turn_that_has_written_a_word_draws_its_answer() {
+        let mut line = a_line(false);
+        line.pending = true;
+        line.body = "Working on it".to_owned();
+        let page = super::chat_page(&a_view(vec![a_line(true), line])).into_string();
+        assert!(
+            page.contains(r#"<div class="bubble">"#),
+            "a pending answer with text draws the box it is writing into: {page}"
+        );
+        assert!(page.contains("Working on it"), "{page}");
+    }
+
+    /// An unsettled question is a control, and it sits in the answer's slot, after
+    /// the run log, with the answer standing down. A settled one is a record and
+    /// stays in the log.
+    #[test]
+    fn an_open_question_takes_the_answers_slot_and_a_settled_one_stays_in_the_log() {
+        let mut open = a_line(false);
+        open.tools.push(a_clarify(false));
+        open.body = "one moment".to_owned();
+        let page = super::chat_page(&a_view(vec![a_line(true), open])).into_string();
+        let open_page = markup(&page);
+        let open_page = open_page.as_str();
+        assert!(
+            open_page.contains(r#"data-asked="open""#),
+            "the article says the question is open, which is what hides the bubble: {page}"
+        );
+        let slot = open_page
+            .find(r#"<div class="asked-slot">"#)
+            .unwrap_or_else(|| panic!("the card renders in the reply's slot: {page}"));
+        let log = open_page
+            .find(r#"<details class="exec""#)
+            .unwrap_or_else(|| panic!("the run log is on the page: {page}"));
+        assert!(
+            slot > log,
+            "the card is after the run log, not above it: {page}"
+        );
+        assert!(
+            open_page.contains(r#"data-question="Which lane should this land on?""#),
+            "a server-rendered choice is answerable without waiting for a frame: {page}"
+        );
+        assert!(
+            !open_page.contains(r#"<span class="asked-waiting">"#),
+            "the card is the live control here, not a settled record read out of the log {page}"
+        );
+
+        // Settled: the card is a record, so it renders inside the log and the
+        // reply has its answer back.
+        let mut settled = a_line(false);
+        settled.tools.push(a_clarify(true));
+        settled.body = "one moment".to_owned();
+        let page = super::chat_page(&a_view(vec![a_line(true), settled])).into_string();
+        let settled_page = markup(&page);
+        let settled_page = settled_page.as_str();
+        assert!(
+            !settled_page.contains(r#"data-asked="open""#),
+            "an answered question does not hide the answer: {page}"
+        );
+        assert!(
+            !settled_page.contains(r#"asked-slot"#),
+            "and it is not in the reply's slot: {page}"
+        );
+        assert!(
+            page.contains(r#"<div class="asked settled">"#),
+            "it stays in the run log as the record it now is: {page}"
+        );
+    }
+
+    fn line_for(state: &mut ChatLine, body: &str) -> &'static str {
+        state.body = body.to_owned();
+        reply_state_for(crate::web::chat::ReplyState::Minimized, state)
+    }
+
+    #[test]
+    fn a_reply_that_needs_the_operator_never_folds_itself() {
+        let mut line = ChatLine {
+            user: false,
+            who: "Kallisti".to_owned(),
+            body: String::new(),
+            stamp: String::new(),
+            failed: false,
+            error_code: None,
+            pending: false,
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+            duration_ms: None,
+            context_window: None,
+            turn: None,
+            rounds: None,
+            capped: false,
+            wrapped_up: false,
+            quota: None,
+            reasoning: None,
+            tools: Vec::new(),
+            files: Vec::new(),
+        };
+        // The default the operator chose is `minimized`, so anything that comes
+        // back expanded came back expanded for a reason.
+        assert_eq!(line_for(&mut line, "an ordinary answer"), "minimized");
+
+        line.pending = true;
+        assert_eq!(
+            line_for(&mut line, "still arriving"),
+            "expanded",
+            "an answer being written is never hidden"
+        );
+        line.pending = false;
+
+        line.failed = true;
+        assert_eq!(
+            line_for(&mut line, "refused"),
+            "expanded",
+            "a failure is the thing the operator has to read"
+        );
+        line.failed = false;
+
+        // A parked question with no answer yet. The card above the bubble is what
+        // they must act on, and folding the reply would hide it behind a press.
+        let mut tool = crate::web::chat::ToolRecord {
+            name: "clarify".to_owned(),
+            arguments: "{}".to_owned(),
+            output: String::new(),
+            is_error: false,
+            asked: Some(crate::web::chat::Asked {
+                request: crate::web::clarify::Request {
+                    title: None,
+                    questions: Vec::new(),
+                },
+                answer: None,
+            }),
+        };
+        line.tools.push(tool.clone());
+        assert_eq!(
+            line_for(&mut line, "a question is waiting"),
+            "expanded",
+            "a reply holding an unanswered question stays open"
+        );
+
+        // Answered is settled: the card is a record now, so the reply folds like
+        // any other.
+        tool.asked = Some(crate::web::chat::Asked {
+            request: crate::web::clarify::Request {
+                title: None,
+                questions: Vec::new(),
+            },
+            answer: Some(crate::web::clarify::Answer::Typed {
+                question: "which one".to_owned(),
+                text: "the second one".to_owned(),
+            }),
+        });
+        line.tools = vec![tool];
+        assert_eq!(
+            line_for(&mut line, "the question was answered"),
+            "minimized",
+            "a settled question is a record, not a call to act"
+        );
+    }
+
+    #[test]
+    fn the_reply_control_names_the_press_and_not_the_state() {
+        // A control whose word is the current state leaves the operator guessing
+        // whether pressing it means the state or the way out of it.
+        assert_eq!(reply_next_word("expanded"), "Collapse");
+        assert_eq!(reply_next_word("collapsed"), "Minimize");
+        assert_eq!(reply_next_word("minimized"), "Expand");
+        // Every label names what the press does, in a sentence.
+        for state in ["expanded", "collapsed", "minimized"] {
+            let label = reply_next_label(state);
+            assert!(label.len() > 20, "{state}: {label}");
+            assert!(
+                label.starts_with("Collapse")
+                    || label.starts_with("Minimize")
+                    || label.starts_with("Expand"),
+                "{state}: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chip_names_the_type_its_bytes_were_sniffed_to_be() {
+        assert_eq!(type_badge(Some("image/png")), "PNG");
+        assert_eq!(type_badge(Some("image/gif")), "GIF");
+        assert_eq!(type_badge(Some("application/pdf")), "PDF");
+        assert_eq!(type_badge(Some("text/plain")), "TXT");
+        assert_eq!(
+            type_badge(Some("application/octet-stream")),
+            "FILE",
+            "a format nothing recognised is a file, not a guess"
+        );
+        assert_eq!(type_badge(None), "FILE");
+    }
+
+    #[test]
+    fn a_chip_states_a_size_the_way_the_composer_did() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(812), "812 B");
+        assert_eq!(human_bytes(1024), "1 kB");
+        assert_eq!(human_bytes(14_336), "14 kB");
+        assert_eq!(human_bytes(3_565_158), "3.4 MB");
+    }
+
+    fn ready_wizard() -> Wizard {
+        Wizard {
+            state: SetupState::Setup,
+            steps: Step::ALL
+                .iter()
+                .map(|step| crate::onboarding::StepStatus {
+                    step: *step,
+                    completed_at: None,
+                    optional: step.is_optional(),
+                })
+                .collect(),
+            next_step: Some(Step::Claim),
+        }
+    }
+
+    #[test]
+    fn the_claim_form_labels_its_input_and_focuses_the_error() {
+        let mut view = SetupView::new(SetupState::Setup, ready_wizard(), "1.0.0");
+        view.error = Some(FormError::new(
+            Some("passphrase"),
+            "passphrase_rejected",
+            "the setup passphrase was rejected",
+        ));
+        let page = setup_page(&view).into_string();
+        assert!(page.contains(r#"<label for="passphrase">"#), "{page}");
+        assert!(page.contains(r#"id="passphrase""#));
+        assert!(page.contains("autofocus"), "the failed field takes focus");
+        assert!(page.contains(r#"aria-live="polite""#));
+        assert!(page.contains("passphrase_rejected"));
+        assert!(page.contains(r#"aria-invalid="true""#));
+        assert!(!page.contains("<script"), "there is no script in the UI");
+    }
+
+    #[test]
+    fn a_fenced_block_becomes_code_and_everything_else_stays_text() {
+        let rendered = blocks("Use this:\n```sh\nls -l\n```\nThat is all.").into_string();
+        assert!(
+            rendered.contains(r#"<span class="code-lang">sh</span>"#),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"<pre class="code">ls -l</pre>"#),
+            "{rendered}"
+        );
+        assert!(rendered.contains("<p>Use this:</p>"), "{rendered}");
+        assert!(rendered.contains("<p>That is all.</p>"), "{rendered}");
+
+        // An empty answer is a placeholder, not a blank bubble.
+        assert!(blocks("   ").into_string().contains("Streaming"));
+
+        // Markup in an answer stays text: the renderer never trusts the model.
+        let hostile = blocks("<script>alert(1)</script>").into_string();
+        assert!(!hostile.contains("<script>"), "{hostile}");
+        assert!(hostile.contains("&lt;script&gt;"), "{hostile}");
+    }
+
+    #[test]
+    fn a_workspace_reference_becomes_a_picture_or_a_file_chip() {
+        let rendered = blocks("Here ![shot](generated/two words.png) and [brief](docs/brief.pdf).")
+            .into_string();
+        assert!(
+            rendered.contains(r#"class="attached-image""#),
+            "the picture is drawn: {rendered}"
+        );
+        assert!(
+            rendered.contains(r#"src="/dashboard/chat/workspace/generated/two%20words.png""#),
+            "the path is served and encoded: {rendered}"
+        );
+        assert!(rendered.contains(r#"alt="shot""#), "{rendered}");
+        assert!(
+            rendered.contains(r#"class="attached-badge">PDF<"#),
+            "the document is a chip: {rendered}"
+        );
+        assert!(
+            rendered.contains(r#"href="/dashboard/chat/workspace/docs/brief.pdf""#),
+            "the document links to the bytes: {rendered}"
+        );
+        assert!(rendered.contains(r#"download="brief.pdf""#), "{rendered}");
+        assert!(!rendered.contains("!["), "the syntax is gone: {rendered}");
+    }
+
+    #[test]
+    fn a_reference_outside_the_workspace_stays_literal_text() {
+        for hostile in [
+            "[x](../../etc/passwd)",
+            "![y](/etc/secret.png)",
+            "[z](https://example.com/a.png)",
+            "[w](~/.ssh/id_ed25519)",
+        ] {
+            let rendered = blocks(hostile).into_string();
+            assert!(
+                !rendered.contains("attached-chip") && !rendered.contains("attached-image"),
+                "{hostile} must not become a link: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_clock_comes_from_the_database_stamp() {
+        // The clock lives in `crate::zone` so every surface shares one conversion.
+        assert_eq!(
+            crate::zone::clock_in("2026-10-19T23:41:43.937Z", 0),
+            "23:41"
+        );
+        assert_eq!(crate::zone::clock_in("nonsense", 0), "nonsense");
+    }
+
+    #[test]
+    fn the_pages_carry_no_herald_and_no_purple() {
+        let view = SetupView::new(SetupState::Setup, ready_wizard(), "1.0.0");
+        let setup = setup_page(&view).into_string().to_ascii_lowercase();
+        let dashboard = dashboard_page(&DashboardView::new(SetupState::Ready, "1.0.0"))
+            .into_string()
+            .to_ascii_lowercase();
+        let chrome = Chrome::default();
+        let error = error_page(SetupState::Setup, "not_loopback", "denied", &chrome)
+            .into_string()
+            .to_ascii_lowercase();
+        let learning = learning_page(&LearningView::new(SetupState::Ready))
+            .into_string()
+            .to_ascii_lowercase();
+        for page in [&setup, &dashboard, &error, &learning] {
+            assert!(!page.contains("herald"), "the old name is gone");
+            for banned in [
+                "#800080", "#7b1fa2", "#6a1b9a", "#9c27b0", "#8e24aa", "#673ab7",
+            ] {
+                assert!(
+                    !page.contains(banned),
+                    "purple {banned} is in a rendered page"
+                );
+            }
+            assert!(!page.contains('\u{2014}'), "no em dash reaches a page");
+        }
+    }
+
+    #[test]
+    fn the_learning_page_names_the_loop_and_its_library() {
+        let mut view = LearningView::new(SetupState::Ready);
+        view.library = "/home/operator/.config/kallisti/skills".to_owned();
+        view.totals.active = 3;
+        let page = learning_page(&view).into_string();
+        assert!(page.contains("Learning"), "{page}");
+        assert!(page.contains("Run the learning loop"), "{page}");
+        assert!(page.contains("Library:"), "{page}");
+        assert!(
+            page.contains("/home/operator/.config/kallisti/skills"),
+            "{page}"
+        );
+        assert!(page.contains("Run a pass now"), "{page}");
+        assert!(page.contains(r#"href="/dashboard/learning""#) || page.contains("Learning"));
+    }
+
+    #[test]
+    fn the_skills_page_offers_the_file_and_calls_the_delete_a_delete() {
+        let mut view = SkillsView::new(SetupState::Ready);
+        view.library = "/home/operator/.config/kallisti/skills".to_owned();
+        view.skills = vec![crate::skills::Skill {
+            key: "deploy".to_owned(),
+            name: "Deploy".to_owned(),
+            description: Some("Ship it behind the guard.".to_owned()),
+            path: "skills/deploy/SKILL.md".to_owned(),
+            enabled: true,
+            bytes: 42,
+            origin: crate::learning::Origin::Operator,
+            state: crate::learning::State::Active,
+            pinned: false,
+            editable: true,
+            use_count: 3,
+            last_used: Some("2026-11-01T00:00:00.000Z".to_owned()),
+            archived_at: None,
+            archived_reason: None,
+        }];
+        view.editing = Some(SkillEditor {
+            key: "deploy".to_owned(),
+            path: "skills/deploy/SKILL.md".to_owned(),
+            content: "---\nname: Deploy\n---\n\n1. step\n".to_owned(),
+            bytes: 42,
+        });
+        let page = skills_page(&view).into_string();
+
+        // The row states what the file is and who wrote it.
+        assert!(page.contains("deploy"), "{page}");
+        assert!(page.contains("Ship it behind the guard."), "{page}");
+        assert!(page.contains("operator"), "{page}");
+        assert!(page.contains("42"), "{page}");
+        // Both forms, and the editor carrying the whole file rather than a body.
+        assert!(
+            page.contains(r#"action="/dashboard/skills/save""#),
+            "{page}"
+        );
+        assert!(page.contains(r#"name="content""#), "{page}");
+        assert!(page.contains("name: Deploy"), "{page}");
+        assert!(
+            page.contains(r#"action="/dashboard/skills/delete""#),
+            "{page}"
+        );
+        // The page says what a delete is here: that skill's directory, gone, and
+        // nothing else in the library.
+        assert!(
+            page.contains("Delete removes that one skill"),
+            "the page says the delete is scoped to the skill: {page}"
+        );
+        assert!(
+            !page.contains("instead of destroying it"),
+            "the page no longer claims a delete is an archive move: {page}"
+        );
+        // The nav entry, beside Learning.
+        assert!(page.contains(r#"href="/dashboard/skills""#), "{page}");
+    }
+
+    #[test]
+    fn the_ready_wizard_says_so_and_links_the_dashboard() {
+        let mut view = SetupView::new(SetupState::Ready, ready_wizard(), "1.0.0");
+        view.state = SetupState::Ready;
+        let page = setup_page(&view).into_string();
+        assert!(page.contains("Onboarding complete"));
+        assert!(page.contains(r#"href="/dashboard""#));
+    }
+
+    #[test]
+    fn the_device_listener_is_presented_as_off_by_default() {
+        let page = dashboard_page(&DashboardView::new(SetupState::Ready, "1.0.0")).into_string();
+        assert!(page.contains("Device listener"));
+        assert!(page.contains("127.0.0.1:7341"));
+        assert!(
+            !page.contains(r#"value="true" checked"#),
+            "the listener checkbox starts unchecked"
+        );
+    }
+}

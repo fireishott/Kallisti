@@ -1,0 +1,2067 @@
+//! The tool layer: what a turn may call, and the sandbox that decides whether it
+//! may actually do it.
+//!
+//! Two rules shape this module.
+//!
+//! The first is that a path from a model is untrusted input. Every path is
+//! resolved against the workspace, and a resolution that lands outside it is
+//! refused by name rather than clamped quietly: a model that asked for
+//! `/etc/shadow` should learn that it was refused, not receive a nearby file.
+//!
+//! The second is that a sandbox is a boundary enforced in code, not a sentence
+//! in a settings page. `read-only` refuses every write at the tool, and
+//! `workspace-write` confines writes to the workspace even when the caller asks
+//! for somewhere else.
+
+use std::path::{Component, Path, PathBuf};
+
+pub use crate::onboarding::permissions::SandboxMode;
+use core_runtime::provider::ToolSpec;
+
+/// The largest file a turn may read in one call.
+///
+/// A model that pages through a 2 GB file is not reading it, it is burning a
+/// context window. Bigger than this is refused by size, and the refusal says so
+/// rather than silently truncating into a half-file the model will trust.
+pub const MAX_READ_BYTES: u64 = 256 * 1024;
+
+/// How long one command may run before `timeout` kills it.
+pub const COMMAND_TIMEOUT_SECS: u64 = 30;
+
+/// How much of a command's output is handed back to the model.
+pub const MAX_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
+
+/// How much of a command's output is streamed to a watching browser.
+///
+/// The same budget as the capture, so what the operator watches and what the
+/// model reads are the same size. A command that prints past it keeps running;
+/// the live view simply stops growing, and the final record states the omission.
+pub const MAX_LIVE_OUTPUT_BYTES: usize = MAX_COMMAND_OUTPUT_BYTES;
+
+/// Why a tool could not do the thing it was asked to do.
+#[derive(Debug, thiserror::Error)]
+pub enum ToolError {
+    /// The requested path resolves outside the workspace.
+    #[error("path escapes the workspace: {requested}")]
+    Escape {
+        /// What the caller asked for, verbatim.
+        requested: String,
+    },
+    /// The path was empty or only whitespace.
+    #[error("a tool path cannot be empty")]
+    EmptyPath,
+    /// The filesystem refused, for a reason worth showing.
+    #[error("{path}: {detail}")]
+    Io {
+        /// The path involved.
+        path: String,
+        /// The underlying message.
+        detail: String,
+    },
+}
+
+/// Resolve a model-supplied path against the workspace, refusing an escape.
+///
+/// Three layers, because each catches what the one before it misses:
+///
+/// 1. Lexical normalization, so `a/../../etc/passwd` cannot walk out with `..`.
+/// 2. A lexical containment test against the workspace.
+/// 3. A canonicalized containment test on the deepest existing ancestor, so a
+///    symlink inside the workspace pointing outside it is still refused.
+///
+/// A path that does not exist yet is allowed - writing a new file is the point -
+/// so layer 3 checks the deepest ancestor that does exist rather than the leaf.
+pub fn resolve(workspace: &Path, requested: &str) -> Result<PathBuf, ToolError> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return Err(ToolError::EmptyPath);
+    }
+
+    let canonical_workspace = workspace.canonicalize().map_err(|error| ToolError::Io {
+        path: workspace.display().to_string(),
+        detail: error.to_string(),
+    })?;
+
+    let asked = Path::new(requested);
+    let joined = if asked.is_absolute() {
+        asked.to_path_buf()
+    } else {
+        workspace.join(asked)
+    };
+    let normalized = normalize(&joined);
+
+    let escape = || ToolError::Escape {
+        requested: requested.to_owned(),
+    };
+
+    // Layer 2: the normalized path must sit under the workspace, either as given
+    // or as canonicalized (they differ when the workspace itself is a symlink).
+    if !normalized.starts_with(workspace) && !normalized.starts_with(&canonical_workspace) {
+        return Err(escape());
+    }
+
+    // Layer 3: nothing that already exists on the way there may lead outside.
+    let existing = deepest_existing(&normalized).ok_or_else(escape)?;
+    let canonical_existing = existing.canonicalize().map_err(|error| ToolError::Io {
+        path: existing.display().to_string(),
+        detail: error.to_string(),
+    })?;
+    if !canonical_existing.starts_with(&canonical_workspace) {
+        return Err(escape());
+    }
+
+    Ok(normalized)
+}
+
+/// Collapse `.` and `..` without touching the filesystem.
+///
+/// `..` pops one component and stops at the root, which is what the kernel does
+/// with a path it has not resolved yet.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The deepest ancestor of `path` that exists, or `None` at the root of nothing.
+fn deepest_existing(path: &Path) -> Option<PathBuf> {
+    let mut current = path.to_path_buf();
+    loop {
+        if current.exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+/// `settings` row: whether a turn may call tools at all.
+///
+/// Default on. Off means the model is offered nothing, so it answers from the
+/// prompt alone rather than spending a round trip discovering a refusal.
+pub const SETTING_TOOLS_ENABLED: &str = "tools.enabled";
+
+/// `settings` row: how many tool rounds one turn may take.
+pub const SETTING_TOOL_ROUNDS: &str = "tools.max_rounds";
+
+/// The default tool-round budget.
+pub const DEFAULT_TOOL_ROUNDS: usize = 12;
+
+/// The most rounds an operator may configure.
+///
+/// Operationally unbounded: the ceiling exists only to reject a number that is
+/// not a number of rounds at all, so it is set far past any turn a human would
+/// wait for rather than at a value that silently truncates real infra work. The
+/// budget is per turn and the turn is cancellable, so the guard against a
+/// runaway is the stop button and the bill, not this constant. The default of
+/// [`DEFAULT_TOOL_ROUNDS`] is what keeps an ordinary question cheap.
+pub const MAX_TOOL_ROUNDS_CEILING: u32 = 99_999;
+
+/// `settings` row: the most a long-job turn may be raised to.
+///
+/// Separate from [`SETTING_TOOL_ROUNDS`] because the two answer different
+/// questions. `tools.max_rounds` is what an ordinary turn gets; this is the
+/// largest budget a turn that asked for a long job may be lifted to.
+pub const SETTING_GOAL_ROUNDS_CEILING: &str = "tools.goal_rounds_ceiling";
+
+/// The default goal raise ceiling.
+///
+/// Equal to [`crate::goal::ROUNDS`] on purpose: shipping this setting changes no
+/// turn until an operator dials it down.
+pub const DEFAULT_GOAL_ROUNDS_CEILING: usize = crate::goal::ROUNDS;
+
+/// The most an operator may set the goal raise ceiling to.
+///
+/// Well past [`DEFAULT_GOAL_ROUNDS_CEILING`], because the ceiling is what bounds
+/// a long job the operator explicitly asked for, and a number that silently
+/// truncates a real migration is worse than one they chose. The ordinary budget
+/// stays the default for every other turn.
+pub const MAX_GOAL_ROUNDS_CEILING: u32 = 120;
+
+/// Whether tools are enabled, from a stored value.
+///
+/// Anything but an explicit `false` leaves them on: a corrupt row must not
+/// silently remove a capability the operator relies on.
+#[must_use]
+pub fn enabled(stored: Option<&str>) -> bool {
+    !matches!(stored.map(str::trim), Some("false"))
+}
+
+/// The tool-round budget, clamped to something a turn can actually finish.
+#[must_use]
+pub fn max_rounds(stored: Option<&str>) -> usize {
+    stored
+        .map(str::trim)
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .filter(|rounds| *rounds >= 1 && *rounds <= MAX_TOOL_ROUNDS_CEILING)
+        .map_or(DEFAULT_TOOL_ROUNDS, |rounds| rounds as usize)
+}
+
+/// The goal raise ceiling, clamped to the range the form accepts.
+///
+/// An absent or unreadable row is [`DEFAULT_GOAL_ROUNDS_CEILING`], so a corrupt
+/// value leaves long jobs on the number the daemon shipped with rather than
+/// silently lifting them to the maximum.
+#[must_use]
+pub fn goal_rounds_ceiling(stored: Option<&str>) -> usize {
+    stored
+        .map(str::trim)
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .filter(|ceiling| *ceiling >= 1 && *ceiling <= MAX_GOAL_ROUNDS_CEILING)
+        .map_or(DEFAULT_GOAL_ROUNDS_CEILING, |ceiling| ceiling as usize)
+}
+
+/// Where a turn may work, and how much it may do there.
+///
+/// The desk is deliberately outside the identity of a sandbox: two sandboxes over
+/// the same workspace in the same mode are the same boundary whether or not one of
+/// them can start background work. So `Debug`, `PartialEq` and `Eq` are written by
+/// hand over the two fields that describe the boundary.
+#[derive(Clone)]
+pub struct Sandbox {
+    workspace: PathBuf,
+    mode: SandboxMode,
+    /// The background desks this turn may use, when the caller wired one up.
+    ///
+    /// Absent in a test and in a turn with no database, which is why every use
+    /// site answers a refusal instead of assuming it is there.
+    processes: Option<std::sync::Arc<crate::process::Desk>>,
+    /// The assistant's own bounded notes, when the caller wired them up.
+    memory: Option<std::sync::Arc<crate::selfmemory::Access>>,
+}
+
+impl std::fmt::Debug for Sandbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sandbox")
+            .field("workspace", &self.workspace)
+            .field("mode", &self.mode)
+            .field("processes", &self.processes.is_some())
+            .field("memory", &self.memory.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for Sandbox {
+    fn eq(&self, other: &Self) -> bool {
+        self.workspace == other.workspace && self.mode == other.mode
+    }
+}
+
+impl Eq for Sandbox {}
+
+impl Sandbox {
+    /// Build a sandbox over a workspace.
+    #[must_use]
+    pub fn new(workspace: PathBuf, mode: SandboxMode) -> Self {
+        Self {
+            workspace,
+            mode,
+            processes: None,
+            memory: None,
+        }
+    }
+
+    /// Give this sandbox a background desk.
+    ///
+    /// Separate from [`Sandbox::new`] because a desk needs a database, and the
+    /// sandbox is constructed in places that have not got one.
+    #[must_use]
+    pub fn with_processes(mut self, desk: std::sync::Arc<crate::process::Desk>) -> Self {
+        self.processes = Some(desk);
+        self
+    }
+
+    /// The background desk, when this turn was given one.
+    #[must_use]
+    pub fn processes(&self) -> Option<&std::sync::Arc<crate::process::Desk>> {
+        self.processes.as_ref()
+    }
+
+    /// Give this sandbox the assistant's own notes.
+    #[must_use]
+    pub fn with_memory(mut self, access: std::sync::Arc<crate::selfmemory::Access>) -> Self {
+        self.memory = Some(access);
+        self
+    }
+
+    /// The memory files, when this turn was given them.
+    #[must_use]
+    pub fn memory(&self) -> Option<&std::sync::Arc<crate::selfmemory::Access>> {
+        self.memory.as_ref()
+    }
+
+    /// The directory every path resolves against.
+    #[must_use]
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
+    /// The configured mode.
+    #[must_use]
+    pub fn mode(&self) -> SandboxMode {
+        self.mode
+    }
+
+    /// Whether a write is permitted at all.
+    ///
+    /// `Full` still writes only inside the workspace: this layer confines paths,
+    /// and full-host reach is a different gate that 1.0 does not open.
+    #[must_use]
+    pub fn allows_write(&self) -> bool {
+        matches!(self.mode, SandboxMode::WorkspaceWrite | SandboxMode::Full)
+    }
+}
+
+/// What a call produced. Always something to hand back to the model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolResult {
+    /// JSON, so the model reads structure rather than prose.
+    pub content: String,
+    /// Whether this call failed. A failed call is reported, never hidden.
+    pub is_error: bool,
+}
+
+impl ToolResult {
+    /// A successful result carrying a JSON payload.
+    pub fn ok(payload: serde_json::Value) -> Self {
+        Self {
+            content: payload.to_string(),
+            is_error: false,
+        }
+    }
+
+    /// A result that reports a failure.
+    ///
+    /// Public because the layers above the sandbox answer some calls themselves
+    /// — the transcript search and the skill library among them — and a refusal
+    /// or an error raised there has to reach the run log in the same shape this
+    /// module uses, or the turn reports a failure that looks like a success.
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            content: serde_json::json!({ "error": message.into() }).to_string(),
+            is_error: true,
+        }
+    }
+
+    /// A result returned by an MCP server.
+    ///
+    /// Wrapped rather than passed through raw so the run log can tell which
+    /// server produced it, and so a server that reports a failure still renders
+    /// as a failure.
+    #[must_use]
+    pub fn from_mcp(tool: &str, outcome: &crate::mcp::protocol::CallOutcome) -> Self {
+        Self {
+            content: serde_json::json!({
+                "tool": tool,
+                "output": outcome.text,
+            })
+            .to_string(),
+            is_error: outcome.is_error,
+        }
+    }
+
+    /// A call the gate refused before it ran.
+    ///
+    /// Used when the call could not even be parked. Doing nothing is the safe
+    /// answer; a policy that could not be recorded is not permission to proceed.
+    #[must_use]
+    pub fn refused(reason: &str) -> Self {
+        Self {
+            content: serde_json::json!({
+                "status": "refused",
+                "error": reason,
+            })
+            .to_string(),
+            is_error: true,
+        }
+    }
+
+    /// A call that was parked for approval instead of run.
+    ///
+    /// Not an error: nothing went wrong, and the model should tell the operator
+    /// that the write is waiting rather than retry it or claim it succeeded.
+    #[must_use]
+    pub fn parked(approval_id: &str, tool: &str) -> Self {
+        Self {
+            content: serde_json::json!({
+                "status": "pending_approval",
+                "approval_id": approval_id,
+                "tool": tool,
+                "message": "This call is waiting for the operator to approve it. \
+                            Nothing has run yet.",
+            })
+            .to_string(),
+            is_error: false,
+        }
+    }
+}
+
+/// The `settings` row that turns the compressed tool list on.
+pub const SETTING_TOOL_INDEX_ENABLED: &str = "tools.index_enabled";
+
+/// How many tools a turn must offer before the index compresses the list.
+///
+/// Below this the payload is small enough that a catalogue costs more than it
+/// saves, which is why the feature arrives late rather than with the first tool.
+pub const TOOL_INDEX_MIN: usize = 20;
+
+/// The tools a compressed turn keeps in full.
+///
+/// These are the ones a turn reaches for without knowing it needs them: the file
+/// pair, the command and its handle, the notes, the transcript, and the index
+/// itself. Everything else is a name and a line until it is called.
+pub const TOOL_SHORTLIST: [&str; 8] = [
+    "list_dir",
+    "read_file",
+    "write_file",
+    "run_command",
+    "process",
+    "memory_manage",
+    "search_sessions",
+    "tool_index",
+];
+
+/// The index tool: the catalogue of everything the shortlist left out.
+fn index_spec(hidden: &[(String, String)]) -> ToolSpec {
+    let mut lines = String::new();
+    for (name, description) in hidden {
+        lines.push_str(&format!("- `{name}`: {description}\n"));
+    }
+    ToolSpec {
+        name: "tool_index".to_owned(),
+        description: format!(
+            "Every other tool this turn can call, by name with one line on what it does. \
+             Call this tool to read the list, then call the tool you want directly: the \
+             name is the call, and nothing has to be enabled first.\n\n{lines}"
+        ),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        }),
+    }
+}
+
+/// The tool list, compressed when the index is on and the list is long enough.
+///
+/// Compression never removes a name from dispatch: [`execute`] is unchanged, so
+/// every tool in the catalogue still runs when it is called. What shrinks is the
+/// schema payload, and what the model loses is the argument detail it would have
+/// read anyway before calling something it already decided to call.
+#[must_use]
+pub fn specs_shaped(mode: SandboxMode, agents: bool, index: bool) -> Vec<ToolSpec> {
+    shape(specs_offering(mode, agents), index)
+}
+
+/// [`specs_shaped`] over a list the caller already holds, so a test can hand in a
+/// longer one than this build actually offers.
+#[must_use]
+pub fn shape(full: Vec<ToolSpec>, index: bool) -> Vec<ToolSpec> {
+    if !index || full.len() < TOOL_INDEX_MIN {
+        return full;
+    }
+    let mut kept: Vec<ToolSpec> = Vec::new();
+    let mut hidden: Vec<(String, String)> = Vec::new();
+    for spec in full {
+        if TOOL_SHORTLIST.contains(&spec.name.as_str()) {
+            kept.push(spec);
+        } else {
+            hidden.push((spec.name, first_sentence(&spec.description)));
+        }
+    }
+    kept.push(index_spec(&hidden));
+    kept
+}
+
+/// The first sentence of a description, for a one-line catalogue entry.
+fn first_sentence(description: &str) -> String {
+    let cut = description
+        .split_once(". ")
+        .map_or(description, |(first, _)| first);
+    cut.trim_end_matches('.').trim().to_owned()
+}
+
+/// The tools offered to the model this build.
+///
+/// Four, deliberately. A file tool that works beats a catalogue of half-built
+/// ones, and every name here is dispatchable by [`execute`] - a spec the model
+/// can call but the daemon cannot run is the bug this module exists to prevent.
+///
+/// `dispatch_agent` is the one that needs more than a sandbox to run: it writes a
+/// row and spawns a child turn, which means a database and a parent turn, neither
+/// of which the sandbox holds. [`execute`] therefore answers it with an explicit
+/// refusal rather than "unknown tool", and the turn itself intercepts it before
+/// this layer, exactly like `generate_image`. It is listed here because "which
+/// tools may this turn call" is the question this function answers, and the answer
+/// in `Full` mode is: these.
+#[must_use]
+pub fn specs(mode: SandboxMode) -> Vec<ToolSpec> {
+    specs_offering(mode, true)
+}
+
+/// The same list, with the operator's dispatch switch applied.
+///
+/// `agents` off means the dispatching tool is not offered, for the same reason
+/// `run_command` is not offered outside `Full`: a tool the daemon will not run
+/// must never reach the model's list.
+#[must_use]
+pub fn specs_offering(mode: SandboxMode, agents: bool) -> Vec<ToolSpec> {
+    let mut offered = vec![
+        ToolSpec {
+            name: "list_dir".to_owned(),
+            description: "List the entries in a directory inside the workspace.".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory relative to the workspace. Defaults to the workspace root."
+                    }
+                },
+                "required": []
+            }),
+        },
+        ToolSpec {
+            name: "read_file".to_owned(),
+            description: "Read a UTF-8 text file inside the workspace.".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to the workspace."
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolSpec {
+            name: "write_file".to_owned(),
+            description: "Create or replace a file inside the workspace.".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to the workspace."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The full new contents of the file."
+                    }
+                },
+                "required": ["path", "content"]
+            }),
+        },
+        ToolSpec {
+            name: "fetch_url".to_owned(),
+            description: "Fetch a web page and return its readable text.".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "An http or https URL. Private and loopback addresses are refused."
+                    }
+                },
+                "required": ["url"]
+            }),
+        },
+    ];
+
+    // The transcript is a read, so it is offered in every mode. It is
+    // also the one tool that makes the whole history cheap to consult, which is
+    // why it sits here rather than behind the `Full` switch that guards the tools
+    // which spend the host's resources.
+    offered.push(crate::search::spec());
+
+    // Reaching the web when a plain fetch is not enough. Offered wherever
+    // `fetch_url` is, which is every mode: both are network reads, so a confined
+    // turn gets the same reach it already had and no more.
+    offered.push(crate::reach::browse_spec());
+    offered.push(crate::reach::search_spec());
+
+    // The assistant's own notes. Offered in every mode: the files are the daemon's
+    // own bounded state, not the workspace, and a confined turn writing a note to
+    // itself reaches nothing the sandbox is protecting.
+    offered.push(crate::selfmemory::spec());
+
+    // What this turn has already spent, in every mode. Reading a number costs
+    // nothing and changes nothing, and the tool exists precisely so a confined
+    // turn can decide to stop rather than find out by failing.
+    offered.push(crate::budget::spec());
+
+    // Command execution is offered only where the sandbox will honour it. A tool
+    // the daemon refuses must never reach the model's list, or every turn spends
+    // a round trip discovering a refusal the prompt could have prevented.
+    if mode == SandboxMode::Full {
+        offered.push(ToolSpec {
+            name: "run_command".to_owned(),
+            description: "Run a shell command on this host and return its output. \
+                          Runs in the workspace with the daemon's own privileges. \
+                          A foreground command is capped at 30s and 64KB; for \
+                          anything longer set background and use the `process` \
+                          tool. Nothing is backgrounded automatically."
+                .to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The command line, run with sh -c."
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "Start it with no cap and return a process id immediately. \
+                                        Use this for builds, test suites and refreshes; then poll \
+                                        it with the `process` tool."
+                    }
+                },
+                "required": ["command"]
+            }),
+        });
+        // The handle that makes the background flag useful. Offered beside
+        // run_command because it answers the same capability, and only where a
+        // command may be started at all.
+        offered.push(crate::process::spec());
+        // Dispatching is a Full-mode capability for the same reason command
+        // execution is: it spends the host's resources on the model's say-so. Off
+        // by setting, and off outside Full always, because a confined turn that
+        // could spawn children could reach past its own confinement through them.
+        if agents {
+            offered.push(crate::subagents::spec());
+        }
+    }
+
+    offered
+}
+
+/// Run one call. Never panics and never returns success for a failure.
+pub fn execute(name: &str, arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
+    execute_streaming(name, arguments, sandbox, &mut |_chunk| {})
+}
+
+/// Run one call, handing output to `sink` while it is still being produced.
+///
+/// Only `run_command` produces anything before it returns; every other tool is a
+/// single filesystem or network read and reports once. The sink exists because a
+/// command that takes twenty seconds should look like a command that takes twenty
+/// seconds, not like a turn that is thinking hard about nothing.
+pub fn execute_streaming(
+    name: &str,
+    arguments: &serde_json::Value,
+    sandbox: &Sandbox,
+    sink: &mut dyn FnMut(&str),
+) -> ToolResult {
+    match name {
+        "list_dir" => list_dir(arguments, sandbox),
+        "read_file" => read_file(arguments, sandbox),
+        "write_file" => write_file(arguments, sandbox),
+        "run_command" => run_command(arguments, sandbox, sink),
+        "fetch_url" => fetch_url(arguments, sandbox),
+        "memory_manage" => match sandbox.memory() {
+            Some(access) => access.call(arguments),
+            None => ToolResult::refused(
+                "the memory files are not available to this turn, so nothing was written",
+            ),
+        },
+        "browse" => crate::reach::browse(arguments),
+        "web_search" => crate::reach::search(arguments),
+        // The handle for work that outlives the foreground cap. It lives on the
+        // sandbox because it needs a database, and a turn without one refuses
+        // rather than pretending the tool is absent.
+        "process" => match sandbox.processes() {
+            Some(desk) => desk.call(arguments),
+            None => ToolResult::refused(
+                "the process desk is not available to this turn, so nothing was checked",
+            ),
+        },
+        // Named rather than unknown: this layer cannot dispatch, because a
+        // dispatch needs a database and a parent turn. The turn that offered the
+        // spec intercepts the call before it reaches here, so this is the answer a
+        // direct caller gets, and it says why instead of pretending the tool does
+        // not exist.
+        // Named rather than unknown, for the same reason `dispatch_agent` is: the
+        // search needs the database, which this layer does not hold. The turn that
+        // offered the spec answers the call before it reaches here.
+        // The catalogue itself. It is answered here rather than by the turn: the
+        // list is the same table `execute` dispatches through, so the index cannot
+        // name a tool the daemon will not run.
+        "tool_index" => ToolResult::ok(serde_json::json!({
+            "tools": index_entries(),
+            "note": "Call any of these by name directly; nothing has to be enabled first.",
+        })),
+        "search_sessions" => ToolResult::refused(
+            "the transcript search needs the turn that offered it, so this call did \
+             nothing; it runs inside a conversation turn and not in the sandbox layer",
+        ),
+        "dispatch_agent" => ToolResult::refused(
+            "dispatching needs the turn that offered it, so this call did nothing; \
+             it runs inside a conversation turn and not in the sandbox layer",
+        ),
+        "budget" => crate::budget::sandbox_refusal(),
+        other => ToolResult::error(format!("unknown tool: {other}")),
+    }
+}
+
+/// Every tool with a one-line summary, for the index tool's answer.
+fn index_entries() -> Vec<serde_json::Value> {
+    super::tools::specs(super::tools::SandboxMode::Full)
+        .into_iter()
+        .map(|spec| {
+            serde_json::json!({
+                "name": spec.name,
+                "summary": first_sentence(&spec.description),
+            })
+        })
+        .collect()
+}
+
+/// Pull a required string argument.
+fn string_arg<'a>(arguments: &'a serde_json::Value, key: &str) -> Result<&'a str, ToolResult> {
+    arguments
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ToolResult::error(format!("missing required string argument: {key}")))
+}
+
+fn list_dir(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
+    let requested = arguments
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(".");
+
+    let path = match resolve(sandbox.workspace(), requested) {
+        Ok(path) => path,
+        Err(error) => return ToolResult::error(error.to_string()),
+    };
+
+    let entries = match std::fs::read_dir(&path) {
+        Ok(entries) => entries,
+        Err(error) => return ToolResult::error(format!("{}: {error}", path.display())),
+    };
+
+    let mut names: Vec<String> = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+        names.push(if is_dir { format!("{name}/") } else { name });
+    }
+    names.sort();
+
+    ToolResult::ok(serde_json::json!({
+        "path": requested,
+        "entries": names,
+    }))
+}
+
+fn read_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
+    let requested = match string_arg(arguments, "path") {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+
+    let path = match resolve(sandbox.workspace(), requested) {
+        Ok(path) => path,
+        Err(error) => return ToolResult::error(error.to_string()),
+    };
+
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) => return ToolResult::error(format!("{}: {error}", path.display())),
+    };
+    if metadata.is_dir() {
+        return ToolResult::error(format!("{requested} is a directory, not a file"));
+    }
+    if metadata.len() > MAX_READ_BYTES {
+        return ToolResult::error(format!(
+            "{requested} is {} bytes, over the {MAX_READ_BYTES} byte read limit",
+            metadata.len()
+        ));
+    }
+
+    // Bytes first, then decode: a file from a Windows host is UTF-16, and refusing
+    // it as "not a text file" is a wrong answer to a normal question. The result
+    // says which encoding it read, so a caller can tell a transcode from a plain
+    // UTF-8 read rather than having to guess.
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => return ToolResult::error(format!("{requested}: {error}")),
+    };
+    match decode_text(&bytes) {
+        Ok((content, encoding)) => ToolResult::ok(serde_json::json!({
+            "path": requested,
+            "bytes": metadata.len(),
+            "encoding": encoding,
+            "content": content,
+        })),
+        Err(message) => ToolResult::error(format!("{requested}: {message}")),
+    }
+}
+
+/// Decode file bytes as UTF-8, or as UTF-16 when a byte-order mark says so.
+///
+/// The mark is what makes this safe. Guessing UTF-16 from a run of zero bytes
+/// would misread a binary file as text with every other character missing, so a
+/// file without a mark that is not valid UTF-8 is still an error.
+fn decode_text(bytes: &[u8]) -> Result<(String, &'static str), String> {
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return utf16(rest, true).map(|text| (text, "utf-16le"));
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return utf16(rest, false).map(|text| (text, "utf-16be"));
+    }
+    std::str::from_utf8(bytes)
+        .map(|text| (text.to_owned(), "utf-8"))
+        .map_err(|error| format!("it is not UTF-8 and carries no UTF-16 byte-order mark: {error}"))
+}
+
+fn utf16(bytes: &[u8], little_endian: bool) -> Result<String, String> {
+    if !bytes.len().is_multiple_of(2) {
+        return Err("it is not a whole number of UTF-16 code units".to_owned());
+    }
+    let units: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            if little_endian {
+                u16::from_le_bytes(*pair)
+            } else {
+                u16::from_be_bytes(*pair)
+            }
+        })
+        .collect();
+    String::from_utf16(&units).map_err(|error| format!("the UTF-16 text is invalid: {error}"))
+}
+
+fn write_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
+    if !sandbox.allows_write() {
+        return ToolResult::error(format!(
+            "write_file is refused: the sandbox mode is {} and writing needs workspace-write",
+            sandbox.mode().as_str()
+        ));
+    }
+
+    let requested = match string_arg(arguments, "path") {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let content = match string_arg(arguments, "content") {
+        Ok(content) => content,
+        Err(error) => return error,
+    };
+
+    let path = match resolve(sandbox.workspace(), requested) {
+        Ok(path) => path,
+        Err(error) => return ToolResult::error(error.to_string()),
+    };
+
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        return ToolResult::error(format!("{}: {error}", parent.display()));
+    }
+
+    // What the file looked like before, so the turn can report a change rather
+    // than a write. Absent means "this file is new", which is a different fact
+    // from "it changed by zero lines".
+    let before = std::fs::read_to_string(&path).ok();
+    match std::fs::write(&path, content) {
+        Ok(()) => ToolResult::ok(serde_json::json!({
+            "path": requested,
+            "bytes": content.len(),
+            "added": before.as_deref().map(|old| count_added(old, content)).unwrap_or_else(|| content.lines().count()),
+            "removed": before.as_deref().map(|old| count_removed(old, content)).unwrap_or(0),
+            "created": before.is_none(),
+            // The change itself, in the shape a phone draws. A file that did not
+            // exist yet diffs against empty, which reads as all additions rather
+            // than as "no previous version".
+            // A file of bytes is not a file of lines: diffing it would render the
+            // contents as coloured noise. The frame says binary and the card shows
+            // an availability note instead.
+            "diff": if is_binary_path(&requested) {
+                serde_json::Value::Null
+            } else {
+                crate::diff::file(&requested, before.as_deref().unwrap_or(""), content)
+            },
+            "binary": is_binary_path(&requested),
+            // A written page is a page the phone can draw. The content rides in
+            // the result rather than being re-read from disk, so the frame the
+            // turn publishes is exactly what was written, and only for a file
+            // that is HTML and small enough to render.
+            "page": page_payload(&requested, content),
+        })),
+        Err(error) => ToolResult::error(format!("{requested}: {error}")),
+    }
+}
+
+/// How many lines the new text has that the old text did not, and how many the
+/// old text had that the new one dropped.
+///
+/// Set arithmetic over the line multiset rather than a full hunt: the count is
+/// what a step summary states, and a hunk-level diff is a separate, larger job.
+/// A line moved inside the file counts as one added and one removed, which is
+/// what any line-oriented diff says too.
+fn count_added(old: &str, new: &str) -> usize {
+    let mut old_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for line in old.lines() {
+        *old_counts.entry(line).or_default() += 1;
+    }
+    let mut added = 0;
+    for line in new.lines() {
+        match old_counts.get_mut(line) {
+            Some(count) if *count > 0 => *count -= 1,
+            _ => added += 1,
+        }
+    }
+    added
+}
+
+/// The other half of [`count_added`], computed from the same pairing so the two
+/// numbers cannot disagree about a line that stayed.
+fn count_removed(old: &str, new: &str) -> usize {
+    let mut new_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for line in new.lines() {
+        *new_counts.entry(line).or_default() += 1;
+    }
+    let mut removed = 0;
+    for line in old.lines() {
+        match new_counts.get_mut(line) {
+            Some(count) if *count > 0 => *count -= 1,
+            _ => removed += 1,
+        }
+    }
+    removed
+}
+
+/// Extensions whose contents are not lines, so a diff of them would be noise.
+const BINARY_EXTENSIONS: [&str; 12] = [
+    "png", "jpg", "jpeg", "gif", "webp", "heic", "pdf", "zip", "gz", "mp3", "mp4", "mov",
+];
+
+/// Whether a path names a file whose content is not lines of text.
+#[must_use]
+pub fn is_binary_path(path: &str) -> bool {
+    path.rsplit('.')
+        .next()
+        .is_some_and(|ext| BINARY_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+/// What a written HTML file publishes as a page artifact, or `None`.
+///
+/// `height_cap` is the phone's rendering ceiling: a page taller than this is
+/// scrolled inside the card instead of growing the transcript without bound.
+#[must_use]
+pub fn page_payload(path: &str, content: &str) -> serde_json::Value {
+    let is_html = path
+        .rsplit('.')
+        .next()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"));
+    if !is_html || content.len() > MAX_FETCH_BYTES {
+        return serde_json::Value::Null;
+    }
+    serde_json::json!({
+        "html": content,
+        "height_cap": PAGE_HEIGHT_CAP,
+    })
+}
+
+/// The tallest a card renders before the phone scrolls inside it.
+pub const PAGE_HEIGHT_CAP: i64 = 2000;
+
+/// The most of a page that is fetched or handed back.
+pub const MAX_FETCH_BYTES: usize = 512 * 1024;
+
+/// How long a fetch may take.
+pub const FETCH_TIMEOUT_SECS: u64 = 15;
+
+/// The most redirects a fetch will follow.
+pub const MAX_FETCH_REDIRECTS: usize = 5;
+
+/// Whether a host may be fetched at all.
+///
+/// A model can be talked into fetching anything, so the guard is here rather than
+/// in the prompt: loopback, link-local and private ranges are refused by name.
+/// This does not stop a public hostname that resolves to a private address - a
+/// full answer needs resolution-time checking - and that limitation is stated
+/// rather than papered over.
+pub fn fetch_allowed(url: &str) -> Result<(), String> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .ok_or_else(|| format!("`{url}` is not an http or https URL"))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_creds, host)| host);
+    let host = host.split(':').next().unwrap_or("").to_ascii_lowercase();
+    if host.is_empty() {
+        return Err("the URL has no host".to_owned());
+    }
+    let forbidden = host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host == "[::1]"
+        || host.starts_with("127.")
+        || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || host.starts_with("169.254.")
+        || (host.starts_with("172.") && {
+            let second = host
+                .split('.')
+                .nth(1)
+                .and_then(|part| part.parse::<u8>().ok())
+                .unwrap_or(0);
+            (16..=31).contains(&second)
+        });
+    if forbidden {
+        return Err(format!(
+            "`{host}` is a private or loopback address, and fetching it is refused"
+        ));
+    }
+    Ok(())
+}
+
+/// Turn an HTML document into readable text.
+///
+/// Not a parser: script and style bodies are dropped, tags are removed, a few
+/// entities are decoded and whitespace is collapsed. Enough to read an article,
+/// and deliberately not enough to pretend it understands a page.
+#[must_use]
+pub fn html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        let lower = after.to_ascii_lowercase();
+
+        // A script or style body is not content: skip to its closing tag in one
+        // move. Falling through to the generic tag branch would drop only the
+        // opening tag and leave the code behind, which is worse than nothing.
+        let mut skipped = false;
+        for tag in ["script", "style"] {
+            if lower.starts_with(&format!("<{tag}")) {
+                if let Some(end) = lower.find(&format!("</{tag}>")) {
+                    rest = &after[end + tag.len() + 3..];
+                    out.push(' ');
+                    skipped = true;
+                }
+                break;
+            }
+        }
+        if skipped {
+            continue;
+        }
+
+        match after.find('>') {
+            Some(end) => rest = &after[end + 1..],
+            None => break,
+        }
+    }
+    out.push_str(rest);
+
+    let decoded = out
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn fetch_url(arguments: &serde_json::Value, _sandbox: &Sandbox) -> ToolResult {
+    let url = match string_arg(arguments, "url") {
+        Ok(url) => url.trim().to_owned(),
+        Err(error) => return error,
+    };
+    if let Err(refusal) = fetch_allowed(&url) {
+        return ToolResult::refused(&refusal);
+    }
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return ToolResult::error(format!("cannot start a fetch: {error}")),
+    };
+
+    let response = runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::limited(MAX_FETCH_REDIRECTS))
+            .build()?;
+        client
+            .get(&url)
+            .header(reqwest::header::USER_AGENT, "kallisti-mcp/1.4")
+            .send()
+            .await
+    });
+
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => return ToolResult::error(format!("cannot fetch {url}: {error}")),
+    };
+    if !response.status().is_success() {
+        return ToolResult::error(format!("{url} answered {}", response.status()));
+    }
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown")
+        .to_owned();
+
+    let body = match runtime.block_on(response.text()) {
+        Ok(body) => body,
+        Err(error) => return ToolResult::error(format!("cannot read {url}: {error}")),
+    };
+    let truncated = body.len() > MAX_FETCH_BYTES;
+    let body = if truncated {
+        body.chars().take(MAX_FETCH_BYTES).collect::<String>()
+    } else {
+        body
+    };
+
+    let text = if content_type.contains("html") {
+        html_to_text(&body)
+    } else {
+        body.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+
+    ToolResult::ok(serde_json::json!({
+        "url": url,
+        "status": status,
+        "content_type": content_type,
+        "truncated": truncated,
+        "text": text,
+    }))
+}
+
+/// Run one command, streaming what it writes while it writes it.
+///
+/// One pipe, not two. The shell merges its stderr into its stdout before the
+/// command starts (`exec 2>&1`), so what arrives is the order the command wrote
+/// it in, which is the whole point of a terminal view. Two pipes would need two
+/// readers and produce two streams whose relative order the daemon cannot know.
+///
+/// A reader thread drains the pipe into a channel and the caller's own thread
+/// hands chunks to the sink, so the sink never has to be `Send`. Nothing here
+/// blocks on the child while the pipe is full: the reader runs from the moment
+/// the process starts until it closes its output.
+fn run_command(
+    arguments: &serde_json::Value,
+    sandbox: &Sandbox,
+    sink: &mut dyn FnMut(&str),
+) -> ToolResult {
+    if sandbox.mode() != SandboxMode::Full {
+        return ToolResult::error(format!(
+            "run_command is refused: the sandbox mode is {} and running commands needs full host",
+            sandbox.mode().as_str()
+        ));
+    }
+
+    let command = match string_arg(arguments, "command") {
+        Ok(command) => command,
+        Err(error) => return error,
+    };
+    if command.trim().is_empty() {
+        return ToolResult::error("a command cannot be empty");
+    }
+
+    // Background work is opt-in, and only when the turn was given a desk. The
+    // trailing-`&` auto-detection another agent ships is a footgun: a command that
+    // merely mentions an ampersand would vanish into the background, and a command
+    // that hangs would silently become unkillable history. The flag is explicit and
+    // the description says so.
+    if arguments
+        .get("background")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        let Some(desk) = sandbox.processes() else {
+            return ToolResult::error(
+                "background work needs the daemon's process desk, and this turn has none",
+            );
+        };
+        return match desk.start(command, sandbox.workspace()) {
+            Ok(body) => ToolResult::ok(body),
+            Err(error) => ToolResult::error(error),
+        };
+    }
+
+    // `timeout` rather than a Rust timer: the child is killed by the kernel and
+    // exit 124 says so, which is a failure the model can see instead of a hang
+    // that looks like the daemon dying.
+    let mut child = match std::process::Command::new("timeout")
+        .arg(format!("{COMMAND_TIMEOUT_SECS}s"))
+        .arg("sh")
+        .arg("-c")
+        .arg(format!("exec 2>&1\n{command}"))
+        .current_dir(sandbox.workspace())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => return ToolResult::error(format!("cannot run the command: {error}")),
+    };
+
+    let pipe = child.stdout.take();
+    let (sender, receiver) = std::sync::mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || read_pipe(pipe, &sender));
+
+    let mut captured: Vec<u8> = Vec::new();
+    let mut streamed = 0usize;
+    while let Ok(chunk) = receiver.recv() {
+        captured.extend_from_slice(chunk.as_bytes());
+        // The live view is bounded too: a command that prints all day must not
+        // turn into all-day traffic to one browser.
+        if streamed < MAX_LIVE_OUTPUT_BYTES {
+            streamed += chunk.len();
+            sink(&chunk);
+        }
+    }
+    // Kept, not merely counted: the head of the output is the part worth
+    // reading, and the omission is stated rather than silently dropped.
+    let omitted = captured.len().saturating_sub(MAX_COMMAND_OUTPUT_BYTES);
+    captured.truncate(MAX_COMMAND_OUTPUT_BYTES);
+    // The reader ends at end of file, which the kernel delivers when the last
+    // writer closes: the process is finished, so waiting cannot block.
+    let _ = reader.join();
+    let status = child.wait();
+
+    let text = truncate_bytes(&captured, omitted);
+    let exit_code = status
+        .as_ref()
+        .ok()
+        .and_then(std::process::ExitStatus::code);
+    // The key is `stdout` even though the pipe was merged, because that is the
+    // name the model has been reading and the name the transcript renderer
+    // knows. `stderr` is empty rather than absent, so a shape with two streams
+    // still has two, and `streams` states plainly that the two were interleaved
+    // to keep the order a terminal would have shown.
+    let body = {
+        let mut body = serde_json::json!({
+            "command": command,
+            "exit_code": exit_code,
+            "streams": "merged",
+            "stdout": text,
+            "stderr": "",
+        });
+        // A signalled death and a cap that fired are both failure facts the model
+        // cannot act on until they are named. 122 calls on this host read
+        // `timed out` and were re-run unchanged, because nothing said why.
+        if exit_code == Some(124) {
+            body["signal_note"] = serde_json::Value::String(format!(
+                "exit 124: the {}s foreground cap ended it. This is the work the cap exists \
+                 to refuse: run it again with `background: true` and poll it with the \
+                 `process` tool instead of shortening it.",
+                COMMAND_TIMEOUT_SECS
+            ));
+        } else if let Ok(status) = &status
+            && let Some(note) = crate::process::explain(*status)
+        {
+            body["signal_note"] = serde_json::Value::String(note);
+        }
+        body
+    };
+
+    match status {
+        // A command that could not be reaped is a failure with evidence
+        // attached, never a success the model has to notice on its own.
+        Err(error) => ToolResult::error(format!("cannot collect the command: {error}")),
+        Ok(status) if status.success() => ToolResult::ok(body),
+        Ok(_) => ToolResult {
+            content: body.to_string(),
+            is_error: true,
+        },
+    }
+}
+
+/// Drain one pipe into the channel, emitting text only on character boundaries.
+///
+/// A read lands wherever the kernel says it does, which can be the middle of a
+/// multi-byte character. Decoding each read on its own would put replacement
+/// characters in the middle of an operator's output, so the incomplete tail is
+/// carried into the next read.
+fn read_pipe(pipe: Option<std::process::ChildStdout>, sender: &std::sync::mpsc::Sender<String>) {
+    use std::io::Read as _;
+
+    let Some(mut pipe) = pipe else { return };
+    let mut buffer = [0u8; 8192];
+    let mut carry: Vec<u8> = Vec::new();
+    loop {
+        match pipe.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                carry.extend_from_slice(&buffer[..count]);
+                let valid = match std::str::from_utf8(&carry) {
+                    Ok(_) => carry.len(),
+                    Err(error) => error.valid_up_to(),
+                };
+                if valid == 0 {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&carry[..valid]).into_owned();
+                carry.drain(..valid);
+                if sender.send(text).is_err() {
+                    return;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if !carry.is_empty() {
+        let _ = sender.send(String::from_utf8_lossy(&carry).into_owned());
+    }
+}
+
+/// The captured bytes as text, with the omission stated when there was one.
+fn truncate_bytes(bytes: &[u8], omitted: usize) -> String {
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    if omitted == 0 {
+        text
+    } else {
+        format!("{text}\n[truncated: {omitted} bytes omitted]")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// A scratch workspace that owns its own directory.
+    struct Scratch {
+        root: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let root =
+                std::env::temp_dir().join(format!("kallisti-tools-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).expect("scratch workspace");
+            Self { root }
+        }
+
+        fn workspace(&self) -> &Path {
+            &self.root
+        }
+
+        fn file(&self, relative: &str, content: &str) -> PathBuf {
+            let path = self.root.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("parent");
+            }
+            fs::write(&path, content).expect("write");
+            path
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn a_relative_path_inside_the_workspace_resolves() {
+        let scratch = Scratch::new("inside");
+        scratch.file("notes/todo.txt", "hello");
+
+        let resolved = super::resolve(scratch.workspace(), "notes/todo.txt").expect("resolves");
+        assert_eq!(resolved, scratch.workspace().join("notes/todo.txt"));
+    }
+
+    #[test]
+    fn a_parent_traversal_out_of_the_workspace_is_refused() {
+        let scratch = Scratch::new("traversal");
+
+        let refused = super::resolve(scratch.workspace(), "../../etc/passwd");
+        assert!(
+            matches!(refused, Err(super::ToolError::Escape { .. })),
+            "expected a refusal, got {refused:?}"
+        );
+    }
+
+    #[test]
+    fn an_absolute_path_outside_the_workspace_is_refused() {
+        let scratch = Scratch::new("absolute");
+
+        let refused = super::resolve(scratch.workspace(), "/etc/passwd");
+        assert!(
+            matches!(refused, Err(super::ToolError::Escape { .. })),
+            "expected a refusal, got {refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_symlink_pointing_out_of_the_workspace_is_refused() {
+        let scratch = Scratch::new("symlink");
+        let outside = scratch
+            .workspace()
+            .parent()
+            .expect("parent")
+            .join("kallisti-outside.txt");
+        fs::write(&outside, "secret").expect("outside file");
+        std::os::unix::fs::symlink(&outside, scratch.workspace().join("link")).expect("symlink");
+
+        let refused = super::resolve(scratch.workspace(), "link");
+        assert!(
+            matches!(refused, Err(super::ToolError::Escape { .. })),
+            "expected a refusal, got {refused:?}"
+        );
+        let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn a_path_that_does_not_exist_yet_resolves_inside_the_workspace() {
+        let scratch = Scratch::new("newfile");
+
+        let resolved =
+            super::resolve(scratch.workspace(), "drafts/new.md").expect("a new file resolves");
+        assert_eq!(resolved, scratch.workspace().join("drafts/new.md"));
+    }
+
+    fn sandbox(scratch: &Scratch, mode: super::SandboxMode) -> super::Sandbox {
+        super::Sandbox::new(scratch.workspace().to_path_buf(), mode)
+    }
+
+    #[test]
+    fn a_write_is_refused_in_read_only_mode_and_nothing_is_created() {
+        let scratch = Scratch::new("readonly");
+        let sandbox = sandbox(&scratch, super::SandboxMode::ReadOnly);
+
+        let result = super::execute(
+            "write_file",
+            &serde_json::json!({"path": "x.txt", "content": "hi"}),
+            &sandbox,
+        );
+
+        assert!(result.is_error, "{result:?}");
+        assert!(
+            !scratch.workspace().join("x.txt").exists(),
+            "a refused write must not create the file"
+        );
+    }
+
+    #[test]
+    fn a_write_lands_in_workspace_write_mode() {
+        let scratch = Scratch::new("write");
+        let sandbox = sandbox(&scratch, super::SandboxMode::WorkspaceWrite);
+
+        let result = super::execute(
+            "write_file",
+            &serde_json::json!({"path": "notes/x.txt", "content": "hi"}),
+            &sandbox,
+        );
+
+        assert!(!result.is_error, "{result:?}");
+        let written = fs::read_to_string(scratch.workspace().join("notes/x.txt")).expect("written");
+        assert_eq!(written, "hi");
+    }
+
+    #[test]
+    fn a_write_outside_the_workspace_is_refused_even_in_workspace_write_mode() {
+        let scratch = Scratch::new("writeescape");
+        let sandbox = sandbox(&scratch, super::SandboxMode::WorkspaceWrite);
+
+        let result = super::execute(
+            "write_file",
+            &serde_json::json!({"path": "../escaped.txt", "content": "hi"}),
+            &sandbox,
+        );
+
+        assert!(result.is_error, "{result:?}");
+        assert!(
+            !scratch
+                .workspace()
+                .parent()
+                .expect("parent")
+                .join("escaped.txt")
+                .exists(),
+            "nothing may be written outside the workspace"
+        );
+    }
+
+    #[test]
+    fn read_file_returns_the_content() {
+        let scratch = Scratch::new("read");
+        scratch.file("a.txt", "hello there");
+        let sandbox = sandbox(&scratch, super::SandboxMode::ReadOnly);
+
+        let result = super::execute("read_file", &serde_json::json!({"path": "a.txt"}), &sandbox);
+
+        assert!(!result.is_error, "{result:?}");
+        assert!(
+            result.content.contains("hello there"),
+            "the content must come back: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn list_dir_names_the_entries() {
+        let scratch = Scratch::new("list");
+        scratch.file("notes/one.txt", "1");
+        scratch.file("notes/two.txt", "2");
+        let sandbox = sandbox(&scratch, super::SandboxMode::ReadOnly);
+
+        let result = super::execute("list_dir", &serde_json::json!({"path": "notes"}), &sandbox);
+
+        assert!(!result.is_error, "{result:?}");
+        assert!(result.content.contains("one.txt"), "{}", result.content);
+        assert!(result.content.contains("two.txt"), "{}", result.content);
+    }
+
+    #[test]
+    fn an_unknown_tool_is_an_error_rather_than_a_silent_success() {
+        let scratch = Scratch::new("unknown");
+        let sandbox = sandbox(&scratch, super::SandboxMode::ReadOnly);
+
+        let result = super::execute("delete_everything", &serde_json::json!({}), &sandbox);
+
+        assert!(result.is_error, "{result:?}");
+        assert!(
+            result.content.contains("delete_everything"),
+            "the refusal names what was asked for: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn every_offered_spec_is_executable_by_name() {
+        let scratch = Scratch::new("specs");
+        scratch.file("probe.txt", "x");
+        let sandbox = sandbox(&scratch, super::SandboxMode::WorkspaceWrite);
+
+        for spec in super::specs(super::SandboxMode::WorkspaceWrite) {
+            let result = super::execute(&spec.name, &serde_json::json!({}), &sandbox);
+            assert!(
+                !result.content.contains("unknown tool"),
+                "a spec offered to the model must be dispatchable, but {} was not: {}",
+                spec.name,
+                result.content
+            );
+        }
+
+        // The same claim in the widest mode, where dispatching is offered. That
+        // tool needs a database and a parent turn, so this layer refuses it by
+        // name rather than by pretending it does not exist: the turn that offered
+        // the spec answers it before it reaches here.
+        let wide = super::Sandbox::new(scratch.workspace().to_path_buf(), super::SandboxMode::Full);
+        for spec in super::specs(super::SandboxMode::Full) {
+            let result = super::execute(&spec.name, &serde_json::json!({}), &wide);
+            assert!(
+                !result.content.contains("unknown tool"),
+                "{} is named but the layer calls it unknown: {}",
+                spec.name,
+                result.content
+            );
+        }
+    }
+
+    /// Dispatching is a Full-mode capability, and its absence elsewhere is the
+    /// mode gate rather than a settings value.
+    #[test]
+    fn dispatching_is_offered_in_full_mode_and_nowhere_else() {
+        let names = |mode: super::SandboxMode| -> Vec<String> {
+            super::specs(mode)
+                .into_iter()
+                .map(|spec| spec.name)
+                .collect()
+        };
+        assert!(
+            names(super::SandboxMode::Full).contains(&crate::subagents::TOOL.to_owned()),
+            "a Full turn may dispatch"
+        );
+        for mode in [
+            super::SandboxMode::ReadOnly,
+            super::SandboxMode::WorkspaceWrite,
+        ] {
+            assert!(
+                !names(mode).contains(&crate::subagents::TOOL.to_owned()),
+                "{mode:?} is offered no dispatching"
+            );
+        }
+        // And the operator's switch removes it from the one list it appears in.
+        let off: Vec<String> = super::specs_offering(super::SandboxMode::Full, false)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(!off.contains(&crate::subagents::TOOL.to_owned()), "{off:?}");
+    }
+
+    #[test]
+    fn a_fetch_reaches_the_public_web_and_refuses_the_local_one() {
+        assert!(super::fetch_allowed("https://example.com/page").is_ok());
+        assert!(super::fetch_allowed("http://example.com:8080/x?y=1").is_ok());
+
+        for blocked in [
+            "http://localhost:7340/healthz",
+            "http://127.0.0.1/",
+            "http://10.1.2.3/",
+            "http://192.168.1.10/",
+            "http://169.254.169.254/latest/meta-data",
+            "http://172.16.0.1/",
+            "http://printer.local/",
+        ] {
+            assert!(
+                super::fetch_allowed(blocked).is_err(),
+                "{blocked} should be refused"
+            );
+        }
+        assert!(
+            super::fetch_allowed("ftp://example.com/x").is_err(),
+            "only http and https"
+        );
+        assert!(
+            super::fetch_allowed("http://172.32.0.1/").is_ok(),
+            "172.32 is public, only 172.16-31 is private"
+        );
+    }
+
+    #[test]
+    fn a_page_becomes_readable_text_without_its_scripts() {
+        let html = "<html><head><style>body{color:red}</style>\
+                    <script>var secret = 1;</script></head>\
+                    <body><h1>Title</h1><p>First &amp; second</p>\
+                    <p>third</p></body></html>";
+        let text = super::html_to_text(html);
+        assert!(text.contains("Title"), "{text}");
+        assert!(text.contains("First & second"), "{text}");
+        assert!(text.contains("third"), "{text}");
+        assert!(!text.contains("var secret"), "scripts are dropped: {text}");
+        assert!(!text.contains("color:red"), "styles are dropped: {text}");
+        assert!(!text.contains('<'), "no tags survive: {text}");
+    }
+
+    #[test]
+    fn a_fetch_of_the_local_admin_port_is_refused_before_it_runs() {
+        let scratch = Scratch::new("fetchguard");
+        let sandbox = sandbox(&scratch, super::SandboxMode::ReadOnly);
+        let result = super::execute(
+            "fetch_url",
+            &serde_json::json!({"url": "http://127.0.0.1:7340/healthz"}),
+            &sandbox,
+        );
+        assert!(result.is_error, "{result:?}");
+        assert!(
+            result.content.contains("refused"),
+            "the refusal says so: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn an_mcp_result_keeps_its_server_and_its_failure_flag() {
+        let ok = super::ToolResult::from_mcp(
+            "echo__ping",
+            &crate::mcp::protocol::CallOutcome {
+                text: "pong".to_owned(),
+                is_error: false,
+            },
+        );
+        assert!(!ok.is_error);
+        assert!(ok.content.contains("echo__ping"), "{}", ok.content);
+        assert!(ok.content.contains("pong"), "{}", ok.content);
+
+        let failed = super::ToolResult::from_mcp(
+            "vault__read",
+            &crate::mcp::protocol::CallOutcome {
+                text: "permission denied".to_owned(),
+                is_error: true,
+            },
+        );
+        assert!(
+            failed.is_error,
+            "a server-marked failure must not read as success"
+        );
+    }
+
+    #[test]
+    fn run_command_is_refused_outside_full_host_mode() {
+        let scratch = Scratch::new("execgate");
+        let sandbox = sandbox(&scratch, super::SandboxMode::WorkspaceWrite);
+
+        let result = super::execute(
+            "run_command",
+            &serde_json::json!({"command": "echo hi"}),
+            &sandbox,
+        );
+
+        assert!(result.is_error, "{result:?}");
+        assert!(
+            result.content.to_lowercase().contains("full"),
+            "the refusal names the mode it needs: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn run_command_runs_in_the_workspace_and_captures_output() {
+        let scratch = Scratch::new("exec");
+        let sandbox = sandbox(&scratch, super::SandboxMode::Full);
+
+        let result = super::execute(
+            "run_command",
+            &serde_json::json!({"command": "echo hello && pwd"}),
+            &sandbox,
+        );
+
+        assert!(!result.is_error, "{result:?}");
+        assert!(result.content.contains("hello"), "{}", result.content);
+        assert!(
+            result
+                .content
+                .contains(scratch.workspace().to_string_lossy().as_ref()),
+            "the command runs in the workspace: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn run_command_reports_a_nonzero_exit_instead_of_claiming_success() {
+        let scratch = Scratch::new("execfail");
+        let sandbox = sandbox(&scratch, super::SandboxMode::Full);
+
+        let result = super::execute(
+            "run_command",
+            &serde_json::json!({"command": "exit 3"}),
+            &sandbox,
+        );
+
+        assert!(
+            result.is_error,
+            "a failed command is not a success: {result:?}"
+        );
+        assert!(result.content.contains('3'), "{}", result.content);
+    }
+
+    #[test]
+    fn fetching_is_offered_even_when_the_sandbox_is_narrow() {
+        // Reading a public page is a network read, not a filesystem write, so a
+        // read-only workspace does not remove it.
+        let offered: Vec<String> = super::specs(super::SandboxMode::ReadOnly)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(
+            offered.contains(&"fetch_url".to_owned()),
+            "a read-only turn may still read the web: {offered:?}"
+        );
+    }
+
+    #[test]
+    fn command_execution_is_offered_only_in_full_host_mode() {
+        let full: Vec<String> = super::specs(super::SandboxMode::Full)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        let confined: Vec<String> = super::specs(super::SandboxMode::WorkspaceWrite)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+
+        assert!(full.contains(&"run_command".to_owned()));
+        assert!(
+            !confined.contains(&"run_command".to_owned()),
+            "a tool the sandbox refuses must not be offered: {confined:?}"
+        );
+    }
+
+    /// An absent row is the shipped default, which is the goal budget itself.
+    #[test]
+    fn the_goal_ceiling_defaults_to_the_goal_budget() {
+        assert_eq!(super::goal_rounds_ceiling(None), 60);
+        assert_eq!(
+            super::goal_rounds_ceiling(None),
+            crate::goal::ROUNDS,
+            "shipping the setting changes no turn until it is dialled down"
+        );
+        assert_eq!(super::goal_rounds_ceiling(Some("  ")), 60);
+        assert_eq!(super::goal_rounds_ceiling(Some("sixty")), 60);
+    }
+
+    /// A value inside the range is read as written, padding and all.
+    #[test]
+    fn a_goal_ceiling_inside_the_range_is_parsed() {
+        assert_eq!(super::goal_rounds_ceiling(Some("25")), 25);
+        assert_eq!(super::goal_rounds_ceiling(Some(" 90 ")), 90);
+        assert_eq!(super::goal_rounds_ceiling(Some("1")), 1);
+        assert_eq!(
+            super::goal_rounds_ceiling(Some(&super::MAX_GOAL_ROUNDS_CEILING.to_string())),
+            super::MAX_GOAL_ROUNDS_CEILING as usize
+        );
+    }
+
+    /// Outside the range is the default, not the nearest edge: a zero or a huge
+    /// number is a typing mistake, not an instruction to lift every long job.
+    #[test]
+    fn a_goal_ceiling_outside_the_range_falls_back_to_the_default() {
+        assert_eq!(super::goal_rounds_ceiling(Some("0")), 60);
+        assert_eq!(super::goal_rounds_ceiling(Some("121")), 60);
+        assert_eq!(super::goal_rounds_ceiling(Some("99999")), 60);
+    }
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    fn sandbox(dir: &std::path::Path) -> Sandbox {
+        Sandbox::new(dir.to_path_buf(), SandboxMode::ReadOnly)
+    }
+
+    fn utf16le(text: &str) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_utf16_file_from_a_windows_host_is_transcoded_and_says_so() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            dir.path().join("notes.txt"),
+            utf16le("deploy notes\r\nsecond line\r\n"),
+        )
+        .expect("write");
+        let result = execute(
+            "read_file",
+            &serde_json::json!({"path": "notes.txt"}),
+            &sandbox(dir.path()),
+        );
+        assert!(!result.is_error, "{}", result.content);
+        let body: serde_json::Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(body["encoding"], "utf-16le");
+        assert_eq!(
+            body["content"], "deploy notes\r\nsecond line\r\n",
+            "the text survives the transcode"
+        );
+    }
+
+    #[test]
+    fn a_utf16_big_endian_file_is_read_the_same_way() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut bytes = vec![0xFE, 0xFF];
+        for unit in "hello".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_be_bytes());
+        }
+        std::fs::write(dir.path().join("be.txt"), bytes).expect("write");
+        let result = execute(
+            "read_file",
+            &serde_json::json!({"path": "be.txt"}),
+            &sandbox(dir.path()),
+        );
+        let body: serde_json::Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(body["encoding"], "utf-16be");
+        assert_eq!(body["content"], "hello");
+    }
+
+    #[test]
+    fn plain_utf8_is_unchanged_and_labelled() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("plain.txt"), "just text").expect("write");
+        let result = execute(
+            "read_file",
+            &serde_json::json!({"path": "plain.txt"}),
+            &sandbox(dir.path()),
+        );
+        let body: serde_json::Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(body["encoding"], "utf-8");
+        assert_eq!(body["content"], "just text");
+    }
+
+    #[test]
+    fn bytes_that_are_neither_are_still_refused_rather_than_mangled() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            dir.path().join("binary.bin"),
+            [0x00, 0x9F, 0xFF, 0xFE, 0x00],
+        )
+        .expect("write");
+        let result = execute(
+            "read_file",
+            &serde_json::json!({"path": "binary.bin"}),
+            &sandbox(dir.path()),
+        );
+        assert!(
+            result.is_error,
+            "a binary file is not text: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("byte-order mark"),
+            "the refusal says what it looked for: {}",
+            result.content
+        );
+    }
+}
+
+/// The tool index, pinned: off is byte-identical, on only engages past the
+/// threshold, and every name the index hides is still dispatchable.
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    fn names(specs: &[ToolSpec]) -> Vec<String> {
+        specs.iter().map(|spec| spec.name.clone()).collect()
+    }
+
+    #[test]
+    fn off_is_the_uncompressed_list_byte_for_byte() {
+        let plain = specs_offering(SandboxMode::Full, true);
+        let shaped = specs_shaped(SandboxMode::Full, true, false);
+        assert_eq!(
+            format!("{plain:?}"),
+            format!("{shaped:?}"),
+            "an off switch has to be the old payload exactly"
+        );
+    }
+
+    #[test]
+    fn on_below_the_threshold_also_changes_nothing() {
+        let full = specs_offering(SandboxMode::Full, true);
+        assert!(
+            full.len() < TOOL_INDEX_MIN,
+            "fixture is under the threshold"
+        );
+        assert_eq!(
+            names(&specs_shaped(SandboxMode::Full, true, true)),
+            names(&full)
+        );
+    }
+
+    #[test]
+    fn engaged_the_payload_shrinks_and_every_hidden_name_is_still_callable() {
+        // A synthetic list past the threshold, plus one real tool to dispatch.
+        let mut full = specs_offering(SandboxMode::Full, true);
+        while full.len() < TOOL_INDEX_MIN {
+            let index = full.len();
+            full.push(ToolSpec {
+                name: format!("filler_{index}"),
+                description: "A filler tool. It does nothing at all, and that is the point."
+                    .to_owned(),
+                parameters: serde_json::json!({"type": "object", "properties": {}, "required": []}),
+            });
+        }
+        let before = format!("{full:?}").len();
+        let shaped = shape(full.clone(), true);
+        let after = format!("{shaped:?}").len();
+        assert!(after < before, "the payload shrinks: {before} -> {after}");
+        assert!(
+            names(&shaped).contains(&"tool_index".to_owned()),
+            "the index tool is offered"
+        );
+        // The shortlist keeps its schema; everything else is in the catalogue.
+        for kept in ["read_file", "run_command", "process"] {
+            assert!(names(&shaped).contains(&kept.to_owned()), "{kept} kept");
+        }
+        let hidden: Vec<String> = names(&full)
+            .into_iter()
+            .filter(|name| !TOOL_SHORTLIST.contains(&name.as_str()))
+            .collect();
+        assert!(!hidden.is_empty());
+        let catalogue = names(&shaped);
+        let index = shaped
+            .iter()
+            .find(|spec| spec.name == "tool_index")
+            .expect("index spec");
+        for name in &hidden {
+            assert!(
+                !catalogue.contains(name),
+                "{name} is not carrying its schema"
+            );
+            assert!(
+                index.description.contains(name),
+                "the catalogue names {name}: {}",
+                index.description
+            );
+        }
+        // And dispatch does not consult the list at all.
+        let dir = tempfile::tempdir().expect("dir");
+        let sandbox = Sandbox::new(dir.path().to_path_buf(), SandboxMode::Full);
+        let result = execute("list_dir", &serde_json::json!({}), &sandbox);
+        assert!(!result.is_error, "{}", result.content);
+        let indexed = execute("tool_index", &serde_json::json!({}), &sandbox);
+        assert!(!indexed.is_error, "{}", indexed.content);
+        assert!(indexed.content.contains("read_file"), "{}", indexed.content);
+    }
+}
+
+#[cfg(test)]
+mod binary_path_tests {
+    use super::is_binary_path;
+
+    /// A png is not a file of lines, a markdown file is, and the check is not
+    /// fooled by case or by a path with dots in it.
+    #[test]
+    fn a_binary_extension_is_recognised() {
+        assert!(is_binary_path("shot.png"));
+        assert!(is_binary_path("dir/a.PNG"));
+        assert!(is_binary_path("archive.tar.gz"));
+        assert!(!is_binary_path("notes.md"));
+        assert!(!is_binary_path("report.html"));
+        assert!(!is_binary_path("Makefile"));
+    }
+}
+
+#[cfg(test)]
+mod change_count_tests {
+    use super::{count_added, count_removed};
+
+    /// The pair has to agree about what stayed, or a summary reads as "3 added,
+    /// 3 removed" for a file that changed one line.
+    #[test]
+    fn a_change_is_counted_once_from_each_side() {
+        let old = "a\nb\nc\n";
+        let new = "a\nB\nc\n";
+        assert_eq!(count_added(old, new), 1);
+        assert_eq!(count_removed(old, new), 1);
+
+        // An append is additions only.
+        assert_eq!(count_added("a\n", "a\nb\n"), 1);
+        assert_eq!(count_removed("a\n", "a\nb\n"), 0);
+
+        // An unchanged file is neither, and a repeated line is not double-counted.
+        assert_eq!(count_added("x\nx\n", "x\nx\n"), 0);
+        assert_eq!(count_removed("x\nx\n", "x\nx\n"), 0);
+        assert_eq!(count_added("x\n", "x\nx\n"), 1);
+    }
+}
+
+#[cfg(test)]
+mod page_payload_tests {
+    use super::page_payload;
+
+    /// Only an HTML file publishes a page, and it carries the cap with it.
+    #[test]
+    fn an_html_write_publishes_a_page_and_anything_else_does_not() {
+        let page = page_payload("report.html", "<h1>hi</h1>");
+        assert_eq!(page["html"], "<h1>hi</h1>");
+        assert_eq!(page["height_cap"], 2000);
+        assert!(page_payload("notes.txt", "text").is_null());
+        assert!(page_payload("page.HTM", "<p>x</p>").is_null() == false);
+    }
+}

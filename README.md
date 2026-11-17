@@ -4,6 +4,22 @@
   <img src="docs/assets/rebrand/github/readme-banner-1600x480.png" alt="Kallisti - To the Most Beautiful." width="100%"/>
 </p>
 
+---
+
+## The daemon
+
+This repository holds both halves of Kallisti.
+
+- **The app** is `Herald/`, `Herald.xcodeproj` and `KallistiControls/` - Swift 6, SwiftUI,
+  iOS. It talks to an Eris daemon over the device API and has no relay in the path.
+- **The daemon** is `crates/`, `contract/` and `install.sh` - Rust, service
+  `kallisti-eris`, listeners on `:7340` (administration) and `:7341` (devices).
+
+The daemon's own install, operating and architecture notes live in DAEMON.md.
+Its version and build numbers are separate from the app's: both are recorded in the
+changelog, under their own headings.
+
+
 <p align="center">
   <img src="https://img.shields.io/badge/version-0.2.3-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
