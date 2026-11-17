@@ -16,6 +16,13 @@ observe; commit history carries the detail.
   picture, and the old `text_required` refusal threw the uploaded rows away for a
   caption nobody wrote. `build 189`.
 
+- **An update is a newer build, not any leftover.** `/v1/gw/update/check` answered
+  `update_available: true, can_install: true` and named `1.8.0 build 187` on a host
+  running `1.9.0 build 188`: two stale `eris.new-*` files from earlier deploys were
+  parsed and offered purely because they existed, so the phone's Install button would
+  have installed a downgrade. A staged build now has to be newer than the running one
+  to count, and the card names only a newer staged build. `build 190`.
+
 - **A transcript can be read backwards.** `GET /v1/conversations/{id}` reads from the
   newest end instead of the oldest, and an `x-before` cursor names the oldest message
   the caller already holds. The cursor is the row id, not the timestamp, because two
