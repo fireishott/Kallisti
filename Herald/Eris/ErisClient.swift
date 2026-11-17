@@ -383,17 +383,46 @@ actor ErisClient {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
         }
+        // `capabilities` is the daemon's whole published record: every field with its
+        // label, group, type and current value. Falling back to the top-level scalars
+        // would show a fraction of it.
         var fields: [String: String] = [:]
-        for (key, value) in object {
-            switch value {
-            case let text as String: fields[key] = text
-            case let number as NSNumber: fields[key] = number.stringValue
-            case let flag as Bool: fields[key] = flag ? "true" : "false"
-            default: break
+        if let capabilities = object["capabilities"] as? [[String: Any]] {
+            for capability in capabilities {
+                guard let key = capability["key"] as? String else { continue }
+                guard let raw = capability["value"] else { continue }
+                if let text = raw as? String { fields[key] = text }
+                else if let number = raw as? NSNumber { fields[key] = number.stringValue }
+                else if raw is NSNull { fields[key] = "" }
+            }
+        }
+        if fields.isEmpty {
+            for (key, value) in object {
+                switch value {
+                case let text as String: fields[key] = text
+                case let number as NSNumber: fields[key] = number.stringValue
+                default: break
+                }
             }
         }
         fields.removeValue(forKey: "ok")
         return fields
+    }
+
+    /// The labels and groups behind each field, so the editor can annotate lines.
+    func settingsLabels() async throws -> [String: String] {
+        let data = try await send(route: .settings, form: nil)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let capabilities = object["capabilities"] as? [[String: Any]]
+        else { return [:] }
+        var labels: [String: String] = [:]
+        for capability in capabilities {
+            guard let key = capability["key"] as? String else { continue }
+            let label = capability["label"] as? String ?? key
+            let group = capability["group"] as? String ?? ""
+            labels[key] = group.isEmpty ? label : "\(group) - \(label)"
+        }
+        return labels
     }
 
     /// Write settings. The daemon ignores keys it does not own and names what it

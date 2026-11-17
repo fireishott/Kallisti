@@ -274,8 +274,12 @@ struct ConfigEditorScreen: View {
                 // models: the editor is the operator's way to change them.
                 let fields = try await eris.settingsFields()
                 loadedSettings = fields
+                let labels = (try? await eris.settingsLabels()) ?? [:]
                 let lines = fields.keys.sorted()
-                    .map { "\($0): \(fields[$0] ?? "")" }
+                    .map { key -> String in
+                        let note = labels[key].map { "  # \($0)" } ?? ""
+                        return "\(key): \(fields[key] ?? "")\(note)"
+                    }
                     .joined(separator: "\n")
                 content = """
                 # Daemon settings. Edit a value and Save; unchanged lines are not sent.

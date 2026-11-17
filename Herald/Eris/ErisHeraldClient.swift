@@ -414,6 +414,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
         return try await client.updateProgress()
     }
 
+    /// The label and group behind each setting key.
+    func settingsLabels() async throws -> [String: String] {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.settingsLabels()
+    }
+
     /// Every setting the daemon holds, flat.
     func settingsFields() async throws -> [String: String] {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
