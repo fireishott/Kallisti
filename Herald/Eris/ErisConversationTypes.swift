@@ -450,6 +450,18 @@ struct ErisCronJob: Decodable, Identifiable, Equatable, Sendable {
         case lastRun = "last_run"
         case lastStatus = "last_status"
     }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Untitled schedule"
+        schedule = try c.decodeIfPresent(String.self, forKey: .schedule) ?? ""
+        prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        nextRun = try c.decodeIfPresent(String.self, forKey: .nextRun)
+        lastRun = try c.decodeIfPresent(String.self, forKey: .lastRun)
+        lastStatus = try c.decodeIfPresent(String.self, forKey: .lastStatus)
+    }
 }
 
 /// One skill as the daemon states it.
@@ -462,6 +474,20 @@ struct ErisSkill: Decodable, Identifiable, Equatable, Sendable {
     let path: String?
 
     var id: String { key }
+
+    private enum CodingKeys: String, CodingKey {
+        case key, name, description, enabled, state, path
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Untitled skill"
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        state = try c.decodeIfPresent(String.self, forKey: .state)
+        path = try c.decodeIfPresent(String.self, forKey: .path)
+    }
 }
 
 
