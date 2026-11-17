@@ -137,7 +137,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Media serving is limited to configured Hermes image/media roots.
+- Media serving is limited to the daemon's configured media roots.
 - Unsupported file types, traversal attempts, missing files, and files larger than 10 MB are rejected.
 - Gateway cookie and bearer validation is delegated to the gateway's authenticated identity endpoint.
 - Public source and documentation were scrubbed of personal names, user-specific paths, private host addresses, device identifiers, captured production logs, and signing credentials.
@@ -167,7 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Attribution
 
-- Built from the earlier Herald mobile client foundation under the repository's MIT license history.
+- Built on the earlier mobile client foundation under the repository's MIT license history.
 
 ## Eris daemon
 
@@ -376,7 +376,7 @@ observe; commit history carries the detail.
   operator's own host. `skills/kallisti-ios/SKILL.md` is compiled into the daemon
   and written into the owned library on first run, and `install.sh` seeds the same
   file for a source checkout. The skill is `kallisti-ios` v3.1.0, it carries no
-  `herald` name, and the old `herald-ios` key is gone. `build 181`.
+  app name, and the old skill key is gone. `build 181`.
 
 - **A wrapped turn answers in short bullets instead of a wall of prose.** The
   three closing instructions (the wrap-up, the spent notice and the last-resort

@@ -1,188 +1,80 @@
 # Kallisti
 
-<p align="center">
-  <img src="docs/assets/rebrand/github/readme-banner-1600x480.png" alt="Kallisti - To the Most Beautiful." width="100%"/>
-</p>
+Kallisti is a self-hosted AI companion for iPhone, iPad and Mac, plus the Rust daemon
+that answers it. There is no vendor backend: the app talks to your own host over the
+device API, and conversations, credentials and files stay on hardware you control.
 
----
+## What is in here
 
-## The daemon
+- **The app** - `Kallisti/`, `Kallisti.xcodeproj`, `KallistiControls/`, `KallistiWatch/`,
+  `KallistiWidgets/`. Swift 6, SwiftUI, iOS. Chats with a paired daemon over
+  `/v1/turns` and a server-sent event stream, with attachments, approvals, cron jobs,
+  skills, notes and settings.
+- **The daemon** - `crates/`, `contract/`, `install.sh`. Rust, service
+  `kallisti-eris`, administration listener on `:7340` and device listener on `:7341`.
+  It runs the model turns, the tool loop, the scheduler, the skill library, memory and
+  the transcript.
 
-This repository holds both halves of Kallisti.
+The daemon's install, operating and architecture notes are in [DAEMON.md](DAEMON.md).
 
-- **The app** is `Herald/`, `Herald.xcodeproj` and `KallistiControls/` - Swift 6, SwiftUI,
-  iOS. It talks to an Eris daemon over the device API and has no relay in the path.
-- **The daemon** is `crates/`, `contract/` and `install.sh` - Rust, service
-  `kallisti-eris`, listeners on `:7340` (administration) and `:7341` (devices).
+## Pairing
 
-The daemon's own install, operating and architecture notes live in DAEMON.md.
-Its version and build numbers are separate from the app's: both are recorded in the
-changelog, under their own headings.
+1. Install the daemon on a host you control - see [DAEMON.md](DAEMON.md).
+2. Mint a pairing code on the host. Tick **administration** if the phone should read
+   cron jobs, skills, settings and logs; a code minted without it pairs a phone that can
+   chat and nothing else.
+3. Open the app, enter the host address and the code.
 
+The address is whatever reaches your host: a Tailscale name, a LAN name, or your own
+TLS endpoint. The app holds a device token in the keychain and never a password.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.3-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
-  <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
-  <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
-  <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
-</p>
+## What the phone can do
 
-Kallisti is a self-hosted iPhone and iPad client for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It connects to a Hermes gateway over a native WebSocket for chat, sessions, models, and profiles, and uses the optional Kallisti connector for mobile services: push notifications, Live Activities, authenticated media, and optional sensor synchronization.
+- Chat with streaming answers, live tool activity and reattachable streams.
+- Attach files and images; they upload to the daemon and appear in the transcript.
+- Approvals: a turn that wants to write a file can park and ask.
+- Notes, cron jobs, skills, memory and the daemon's own settings.
+- Push notifications, with the banner silenced for the chat on screen.
+- Latency and gateway health, read from the daemon rather than guessed.
 
-There is no hosted vendor backend. You bring your own Hermes gateway, connector, TLS endpoint, and Apple signing configuration. Conversations, credentials, and media stay on infrastructure you control.
+## Building the app
 
-## Highlights
-
-- Native WebSocket chat with durable session and outbox recovery
-- Streaming Markdown, code blocks, tool activity, and reasoning status
-- One-time pairing-code sign-in with native gateway mode
-- Authenticated inline rendering for agent-generated images
-- Push notifications with per-device routing and an in-app inbox
-- Live Activities on the lockscreen with elapsed-time heartbeat
-- Widgets, watch, and notification-service extensions
-- Voice mode with configurable ASR/TTS providers and Apple speech fallback
-- Optional HealthKit, CoreLocation, and CoreMotion synchronization
-- Gateway status, logs, restart, software update checks, and truthful connection stages
-- Connection latency monitoring and searchable auxiliary model switching
-
-## Features
-
-### Chat
-
-- Streaming Markdown chat with syntax-highlighted code blocks
-- Real-time tool activity and reasoning status
-- Session history, model selection, and profile selection
-- Durable outbox with deadline-aware recovery
-- Draft text persists across reconnect and view recreation
-- One live thinking placeholder per active turn
-- Opens to your last active conversation, or a fresh session on first launch
-
-### Media
-
-- Agent responses with local `MEDIA:` paths render inline as authenticated images
-- Native image uploads stage through the gateway before prompt submission
-- Historical images stay accessible after gateway restarts
-- Media serving is restricted to configured Hermes media roots
-- Aspect-fit thumbnails for consistent chat layout
-
-### Mobile
-
-- Push notifications for background turns, scoped per device via installation ID
-- Live Activities on the lockscreen with elapsed-time heartbeat
-- In-app notification inbox with dismiss and snooze actions
-- Widgets, watch, and notification-service extensions
-- Voice mode with configurable ASR/TTS and Apple speech fallback
-- Optional HealthKit, CoreLocation, and CoreMotion sync
-- Handwriting note recognition (when configured)
-
-### Gateway control
-
-- Connection status with real, truthful stages
-- Manual reset connection
-- Gateway logs, restart, and software update checks
-- Realtime connector latency readout in Settings
-
-## Architecture
-
-```text
-Kallisti iOS
-  -> Hermes gateway WebSocket (chat, sessions, models, profiles)
-  -> Kallisti connector (push, sensors, authenticated media)
-  -> optional public reverse proxy for remote access
+```sh
+xcodegen generate
+open Kallisti.xcodeproj
 ```
 
-The gateway WebSocket carries chat and session traffic. The connector adds mobile services: APNs push registration, Live Activities, sensor synchronization, and authenticated media delivery. For remote access, operators place a TLS reverse proxy (for example Caddy) in front of the gateway and connector.
-
-Connection modes are documented in [docs/CONNECTION_MODES.md](docs/CONNECTION_MODES.md), production architecture in [docs/PRODUCTION_ARCHITECTURE.md](docs/PRODUCTION_ARCHITECTURE.md), and the threat model in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
-
-## Requirements
-
-- iOS 18 or newer
-- Xcode 16 or newer
-- A running [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateway
-- Python 3.11 or newer for the optional connector
-- An Apple Developer account for device builds and push capabilities
-
-## Quick start
-
-### Build the app
-
-```bash
-git clone https://github.com/fireishott/Kallisti.git
-cd Kallisti
-open Herald.xcodeproj
-```
-
-Select the `Kallisti` scheme, choose your Apple Developer team, configure your gateway URL, and build to a simulator or registered device. Detailed build notes are in [docs/BUILDING.md](docs/BUILDING.md) and configuration options in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-### Run the connector
-
-```bash
-cd connector
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e .
-kallisti run
-```
-
-Configure secrets and environment-specific URLs outside the repository. Do not commit credentials, private keys, device identifiers, internal hostnames, or production logs. The connector serves the HTTP facade for push registration, Live Activities, and authenticated media on the port you configure.
-
-### Sign in on device
-
-1. Launch Kallisti and choose the native gateway mode.
-2. Generate a one-time pairing code from your Hermes host.
-3. Enter the code in the app. The code is never persisted on the device.
-
-## Push notifications
-
-Push delivery uses APNs through the connector. The app registers an APNs token keyed by its installation ID, so multi-device setups route notifications to the right device. Live Activity registration uses a separate token kind.
-
-See [docs/PUSH_RELAY.md](docs/PUSH_RELAY.md) for the relay and push broker architecture, and [docs/IOS_CAPABILITIES.md](docs/IOS_CAPABILITIES.md) for capability setup (background modes, push entitlements, Live Activities).
-
-## Native media delivery
-
-Agent responses can include local `MEDIA:` paths. In native mode, Kallisti converts supported paths to the authenticated `/v1/native/media` route. The connector:
-
-- validates gateway cookie sessions, native bearer tokens, or persisted paired-device tokens;
-- serves only supported image files under configured Hermes media roots;
-- rejects traversal, unsupported types, missing files, and files over 10 MB;
-- returns private cache headers and never exposes arbitrary filesystem paths.
+`project.yml` is the source of truth for the project; the `.xcodeproj` is generated.
+Adding a source file means running `xcodegen generate` again.
 
 ## Testing
 
-```bash
-# iOS
-xcodebuild test \
-  -project Herald.xcodeproj \
-  -scheme Kallisti \
-  -destination 'platform=iOS Simulator,name=iPhone 16 Pro'
+```sh
+# daemon
+cargo test --workspace
 
-# Connector
-cd connector
-pytest
+# app
+xcodebuild test -project Kallisti.xcodeproj -scheme Kallisti \
+  -destination "platform=iOS Simulator,name=iPhone 17 Pro" \
+  -only-testing:KallistiTests
 ```
 
-Use a simulator destination installed on your Xcode host.
+## Layout
 
-## Security and privacy
-
-- Credentials are stored in the iOS Keychain.
-- Gateway passwords are not embedded in the app or repository.
-- Media and control endpoints require authentication.
-- Pairing codes are single-use and never persisted.
-- Sensor synchronization is optional and self-hosted.
-- Public bug reports must not include tokens, private URLs, device IDs, personal data, or raw production logs.
-
-See [SECURITY.md](SECURITY.md) for supported versions and responsible disclosure guidance, and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the full threat model.
-
-## Release history
-
-See [CHANGELOG.md](CHANGELOG.md). GitHub releases contain source notes only; signed IPAs are distributed through authorized Apple channels or built by operators with their own signing identity.
+```
+Kallisti/                the iOS app
+Kallisti.xcodeproj         generated project
+KallistiControls/        Control Center and widget intents
+KallistiWatch/           watchOS companion
+KallistiWidgets/         widgets
+KallistiNotificationService/  notification service extension
+KallistiSupport/         shared host-side support code
+crates/                  the Eris daemon (eris-host, core runtime, tools, memory)
+contract/                the wire contract
+docs/                    daemon and client documentation
+scripts/                 build, release and deploy scripts
+```
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
-
-## Acknowledgments
-
-Kallisti is built to work with [Hermes Agent](https://github.com/NousResearch/hermes-agent) and incorporates earlier work from the Herald mobile client under the repository's MIT license history.
+MIT - see [LICENSE](LICENSE).

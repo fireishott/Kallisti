@@ -1,68 +1,60 @@
-# Contributing to Herald
+# Contributing to Kallisti
 
-Thanks for your interest in contributing! This project is an independent iOS companion app for the [Herald Agent](https://github.com/NousResearch/hermes-agent) framework, with a self-hosted relay and connector architecture.
+Kallisti is a self-hosted AI companion for iPhone, iPad and Mac, and the Rust daemon
+that answers it. There is no vendor backend: the app speaks to the daemon's device API
+on the machine you run.
 
-## Getting Started
+## Layout
 
-1. Read the [README](README.md) for architecture overview
-2. Read [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for env var reference
-3. Set up local development:
-   - **Relay:** `cd relay && pip install -e . && uvicorn app.main:app`
-   - **Connector:** `cd connector && pip install -e . && herald-connector setup`
-   - **iOS App:** Open `Herald.xcodeproj` in Xcode 26+
+- **App:** `Kallisti/` (Swift 6, SwiftUI), `KallistiControls/`, `KallistiWatch/`,
+  `KallistiWidgets/`, `KallistiNotificationService/`, `KallistiSupport/`.
+- **Daemon:** `crates/` (Rust), `contract/` (the wire contract), `install.sh`.
+- **Docs:** `docs/` for both halves; the daemon's own notes are in `DAEMON.md`.
 
-## Development Requirements
+## Building
 
-- **iOS App:** Xcode 26+, iOS 26 SDK, Swift 6.2
-- **Relay:** Python 3.12+
-- **Connector:** Python 3.11+
-- **Herald Agent:** Installed locally with MCP support
+```sh
+# daemon
+cargo build --release
+cargo test --workspace
 
-## Running Tests
-
-```bash
-# Connector (78 tests)
-cd connector && pip install -e ".[dev]" && pytest tests/
-
-# Relay (44 tests)
-cd relay && pip install -e ".[dev]" && pytest tests/
-
-# iOS (Xcode)
-xcodebuild test -project Herald.xcodeproj -scheme Herald \
-  -destination 'platform=iOS Simulator,name=iPhone 17'
+# app - project.yml is the source of truth
+xcodegen generate
+open Kallisti.xcodeproj
 ```
 
-## Pull Request Guidelines
+Adding a Swift file means running `xcodegen generate` again; the `.xcodeproj` is
+generated, not edited.
 
-- Keep PRs focused — one feature or fix per PR
-- Include tests for new functionality
-- Run the full test suite before submitting
-- Update docs if you change env vars, APIs, or MCP tools
-- Don't commit secrets, personal paths, or hardcoded URLs
+## Testing before a pull request
 
-## Code Style
-
-- **Swift:** Follow existing patterns (protocol-oriented services, `@MainActor` isolation, strict concurrency)
-- **Python:** Standard formatting, type hints on public APIs, docstrings on MCP tools
-
-## Architecture Notes
-
-The codebase has three independent pieces that communicate over the network:
-
-```
-iOS App ──HTTP/SSE──▶ Relay ◀──WebSocket──▶ Connector ──▶ Herald Agent
+```sh
+cargo test --workspace
+xcodebuild test -project Kallisti.xcodeproj -scheme Kallisti \
+  -destination "platform=iOS Simulator,name=iPhone 17 Pro" \
+  -only-testing:KallistiTests
 ```
 
-- **Relay** is stateless and deployable anywhere (Fly.io, Railway, your own server)
-- **Connector** runs alongside the Herald Agent on the user's machine
-- **iOS App** connects to the relay via the URL configured during onboarding
+A daemon change ships with a test that fails without it. The suite is the contract: it
+ran green on the commit you are building on.
 
-Changes to wire protocols (WebSocket messages, SSE events, REST endpoints) require coordination across all three. Changes within a single component (UI, MCP tools, sensor storage) can be developed independently.
+## Style
 
-## Reporting Issues
+- Rust: `cargo fmt`, `cargo clippy --workspace --all-targets`.
+- Swift: the project builds with no warnings that name a file, and the app's design
+  tokens live in `Design`.
+- Comments explain *why* a thing is the way it is, especially where the obvious
+  alternative is wrong. A comment that restates the code is noise.
 
-Please use GitHub Issues. Include:
-- Which component (iOS app, relay, connector)
-- Steps to reproduce
-- Relevant logs (strip personal info)
-- Your deployment setup (self-hosted relay URL, Herald version)
+## Commits
+
+- One change per commit, with a message that says what was wrong and why the fix is
+  right. The changelog is assembled from these.
+- Bump the daemon's `BUILD` when a daemon change ships; the app's
+  `CURRENT_PROJECT_VERSION` moves with every TestFlight build.
+
+## Reporting a bug
+
+Include the daemon build (`eris version`), the app build (TestFlight number), and what
+you saw. `GET /v1/diagnostics` on the device API holds the daemon's recent events, and
+`GET /v1/gw/health` says whether the daemon thinks it is well.

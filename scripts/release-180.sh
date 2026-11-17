@@ -45,9 +45,9 @@ say() { printf '%s | %s\n' "$(date '+%H:%M:%S')" "$*"; }
 cd "$REPO"
 
 say "=== preflight ==="
-VERSION=$(xcodebuild -project Herald.xcodeproj -scheme Kallisti -configuration Release \
+VERSION=$(xcodebuild -project Kallisti.xcodeproj -scheme Kallisti -configuration Release \
   -showBuildSettings 2>/dev/null | awk '/MARKETING_VERSION/ {print $3; exit}')
-BUILD=$(xcodebuild -project Herald.xcodeproj -scheme Kallisti -configuration Release \
+BUILD=$(xcodebuild -project Kallisti.xcodeproj -scheme Kallisti -configuration Release \
   -showBuildSettings 2>/dev/null | awk '/CURRENT_PROJECT_VERSION/ {print $3; exit}')
 say "project reports $VERSION / $BUILD"
 [ "$VERSION" = "$EXPECTED_VERSION" ] || { say "ABORT: expected $EXPECTED_VERSION, got $VERSION"; exit 2; }
@@ -62,7 +62,7 @@ say "preflight ok"
 ARCHIVE="$OUT/Kallisti-$EXPECTED_BUILD.xcarchive"
 say "=== archive (signed by Xcode, in this same unlocked session) ==="
 rm -rf "$ARCHIVE"
-xcodebuild -project Herald.xcodeproj -scheme Kallisti -configuration Release \
+xcodebuild -project Kallisti.xcodeproj -scheme Kallisti -configuration Release \
   -destination generic/platform=iOS -archivePath "$ARCHIVE" \
   DEVELOPMENT_TEAM=58U7UPFS53 CODE_SIGN_STYLE=Automatic archive
 
