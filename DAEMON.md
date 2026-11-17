@@ -56,7 +56,7 @@ two toolchains:
 | Branch | Holds |
 |---|---|
 | `main` | the Rust workspace (daemon + web UI), `install.sh`, the release workflow |
-| `restore/kallisti-identity-on-eris` | `Herald.xcodeproj` and the Swift sources for the iOS app |
+| `main` | `Kallisti.xcodeproj` and the Swift sources for the iOS app |
 | `nightly`, `release/*`, `backup/*` | historical and retained lines; not current |
 
 Releases are tagged on `main` (`v<daemon version>-build.<n>`). App builds are
@@ -68,8 +68,8 @@ a TestFlight build rather than a downloadable binary.
 Native surfaces, all first-class rather than wrapped in a web view:
 
 - **The 0.4.0 UI, on Eris.** The app is the Kallisti 0.4.0 frontend unchanged -
-  `AppRootView` -> the full `AdaptiveRootView` sidebar. Its `HeraldClientProtocol`
-  ships as `ErisHeraldClient`, so those screens run over Eris as they are.
+  `AppRootView` -> the full `AdaptiveRootView` sidebar. Its client protocol is
+  implemented by `ErisHeraldClient`, so those screens run over the device API as they are.
 - **Rich chat** - streaming over Eris `/v1/turns` and SSE, markdown,
   syntax-highlighted code, and the model's reasoning beside the answer.
 - **Health and sensors** - HealthKit, CoreLocation and CoreMotion, uploaded to the
@@ -205,7 +205,7 @@ A turn is created once per message. `POST /v1/turns` reads an `Idempotency-Key`
 header, so a retry after a dropped connection is handed the job it already created
 rather than queueing the same question twice.
 
-**The legacy-parity surface.** A shipped client build still calls the retired relay's
+**The compatibility surface.** A shipped client build still calls the retired routes'
 paths. Each one is either answered from state the daemon genuinely holds, or refused
 by name - never faked:
 
@@ -231,7 +231,7 @@ messages inside 512 KB, each tool output cut to an 8 KB preview that says how mu
 left out, and `omitted` / `elided_outputs` on the wire. A conversation that ran a
 hundred shell commands is not allowed to make a phone time out.
 
-A few `HeraldClientProtocol` members are still typed-stubbed pending their device
+A few client protocol members are still typed-stubbed pending their device
 routes (session delete/archive/pin/rename, title generation, job status, voice
 transcript), and attachments are text-only. Cancel and interrupt are no longer on
 that list: Stop reaches `/v1/turns/{id}/cancel`. That remainder is the current

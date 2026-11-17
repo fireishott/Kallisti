@@ -1,79 +1,187 @@
 # Kallisti
 
-Kallisti is a self-hosted AI companion for iPhone, iPad and Mac, plus the Rust daemon
-that answers it. There is no vendor backend: the app talks to your own host over the
-device API, and conversations, credentials and files stay on hardware you control.
+<div align="center">
 
-## What is in here
+**A self-hosted AI companion for iPhone and iPad.**
+Yours. On your hardware. Under your rules.
 
-- **The app** - `Kallisti/`, `Kallisti.xcodeproj`, `KallistiControls/`, `KallistiWatch/`,
-  `KallistiWidgets/`. Swift 6, SwiftUI, iOS. Chats with a paired daemon over
-  `/v1/turns` and a server-sent event stream, with attachments, approvals, cron jobs,
-  skills, notes and settings.
-- **The daemon** - `crates/`, `contract/`, `install.sh`. Rust, service
-  `kallisti-eris`, administration listener on `:7340` and device listener on `:7341`.
-  It runs the model turns, the tool loop, the scheduler, the skill library, memory and
+[Private beta on TestFlight](#private-beta) · [Install the daemon](#install-the-daemon) · [Pair your phone](#pair-your-phone) · [Guides](#guides)
+
+</div>
+
+---
+
+## What it is
+
+Kallisti is a native iOS app and a Rust daemon. The app talks straight to the daemon on
+a machine you own. There is no vendor backend in the middle, no usage meter, and no
+account to create.
+
+Your conversations, files, memory and credentials stay on hardware you control. The
+daemon can run on a Mac mini in a closet, a VPS, or a box under the desk. The phone
+reaches it over Tailscale, your LAN, or your own TLS endpoint.
+
+## The app
+
+- **Streaming answers, built for long work.** Text and reasoning arrive as they are
+  produced. A live tool panel shows what the daemon is running, with the step it is on
+  and what the command printed. Leave the chat and come back: the stream reattaches to
+  the turn that is still running.
+- **Thinking that tells the truth.** A turn that is slow says so, with the round it is
+  on and the time it has spent, instead of an empty bubble.
+- **Files, not just text.** Attach photos and PDFs. Uploads show per-file progress and
+  a result, and land on the daemon with the turn that names them. Open them again from
   the transcript.
+- **PDFs you can actually use.** Tap a PDF in a chat to open it, fill its form fields,
+  and share or save the filled document from the same screen.
+- **Approvals.** A turn that wants to write a file or touch the system can park and
+  ask. You approve or refuse from the phone, with the detail that matters.
+- **Cron jobs.** See every schedule on the host, what it will run, when it fires next,
+  and whether the last run worked. Thirty jobs or none, it is the daemon's own list.
+- **Skills.** Browse the daemon's skill library, search it, and install a skill from
+  the phone.
+- **Notes.** Each note can carry its own chat session, so a thought and the work around
+  it stay together. Sync is opt-in and iPad-first.
+- **Continuity across devices.** Start on the iPad, continue on the iPhone. The chat
+  binds to the daemon's conversation, not to the device that created it.
+- **Notifications that know where you are.** Push arrives for the chats you are not
+  looking at. The chat on screen stays quiet.
+- **The daemon's own console.** Health, latency, logs, settings and the update check,
+  read from the daemon rather than guessed. Edit the daemon's configuration from the
+  phone, and install an update from the phone, with a confirmation before it restarts.
+- **Model choice.** Point the daemon at the model you want, including local and
+  OpenAI-compatible providers, and change it per conversation.
+- **Everywhere else.** Widgets, Control Center controls, Live Activities, and a watchOS
+  companion.
 
-The daemon's install, operating and architecture notes are in [DAEMON.md](DAEMON.md).
+## Privacy by design
 
-## Pairing
+- **No vendor backend.** The app has no server of ours to sign into. There is nothing
+  to subscribe to and no third party in the request path.
+- **Your host holds the data.** Transcripts, attachments, memory and settings live in
+  the daemon's own SQLite database on your machine.
+- **Opaque device tokens.** Pairing exchanges a one-time code for an access and refresh
+  pair. Tokens are stored as salted verifiers, never in the clear, and live in the iOS
+  keychain.
+- **Scoped access.** A phone paired without the administration box can chat and nothing
+  else. Reading settings, logs, cron jobs or skills needs a code minted with it.
+- **Writes are gated.** Sandbox modes run from read-only to full, and approvals stop a
+  write before it happens.
+- **No telemetry to us.** The app reports to your daemon and nowhere else.
 
-1. Install the daemon on a host you control - see [DAEMON.md](DAEMON.md).
-2. Mint a pairing code on the host. Tick **administration** if the phone should read
-   cron jobs, skills, settings and logs; a code minted without it pairs a phone that can
-   chat and nothing else.
-3. Open the app, enter the host address and the code.
+## Private beta
 
-The address is whatever reaches your host: a Tailscale name, a LAN name, or your own
-TLS endpoint. The app holds a device token in the keychain and never a password.
+Kallisti for iOS is in **private beta on TestFlight**. Invites are sent by link, one
+test cohort at a time.
 
-## What the phone can do
+Want in? Open an issue titled `TestFlight` with your Apple ID email and the platform
+you will run it on. You will get a TestFlight invitation and the daemon notes to pair
+against.
 
-- Chat with streaming answers, live tool activity and reattachable streams.
-- Attach files and images; they upload to the daemon and appear in the transcript.
-- Approvals: a turn that wants to write a file can park and ask.
-- Notes, cron jobs, skills, memory and the daemon's own settings.
-- Push notifications, with the banner silenced for the chat on screen.
-- Latency and gateway health, read from the daemon rather than guessed.
+What the beta means in practice: builds ship most nights, the daemon and the app move
+together, and things you find go straight into the next build. Expect the app to change
+under you, and expect it to get better every time.
 
-## Building the app
+Requirements: iOS 18 or later, and a host you can install a small Rust service on.
+
+## Install the daemon
+
+One line on a Linux host with systemd:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/fireishott/Kallisti/main/install.sh | sh
+```
+
+It picks the right architecture, installs a prebuilt binary when the release has one,
+falls back to building from source with a pinned toolchain when it does not, writes a
+`systemd --user` unit, and starts it. No root, nothing outside `$HOME`.
+
+Or build and install from a checkout:
+
+```sh
+git clone https://github.com/fireishott/Kallisti
+cd Kallisti
+cargo build --release
+scripts/deploy.sh            # waits for idle so a running turn is not killed
+```
+
+The daemon listens on two ports:
+
+| Port | Surface |
+|---|---|
+| `:7340` | administration: dashboard, settings, logs, updates |
+| `:7341` | the device API: turns, streams, attachments, cron, skills |
+
+Then open `http://127.0.0.1:7340` on the host to finish setup. The dashboard is where
+you mint pairing codes. For the same steps from the terminal, see
+[DAEMON.md](DAEMON.md).
+
+## Pair your phone
+
+1. **Mint a pairing code** on the host's dashboard at `:7340`, under Devices. Tick
+   **administration** if the phone should read settings, logs, cron jobs, skills, and
+   manage updates. Without it the phone can chat and nothing more.
+2. **Enter the address** of the daemon in the app, plus the code. The address is
+   whatever reaches the host: a Tailscale name, `http://192.168.1.x:7341`, or your own
+   TLS endpoint.
+3. **Send a message.** The first turn creates the conversation, and the transcript is
+   stored on the daemon from that point on.
+
+## Build the app
 
 ```sh
 xcodegen generate
 open Kallisti.xcodeproj
 ```
 
-`project.yml` is the source of truth for the project; the `.xcodeproj` is generated.
-Adding a source file means running `xcodegen generate` again.
+`project.yml` is the source of truth; the `.xcodeproj` is generated, so add a source
+file and regenerate. Set your own team and bundle identifiers in `project.yml` for a
+local build. A TestFlight build needs an App Store Connect key, which is what
+`scripts/release-<build>.sh` and `scripts/tf-<build>-oneshot.sh` drive.
 
-## Testing
+## Verify it
 
 ```sh
-# daemon
 cargo test --workspace
 
-# app
 xcodebuild test -project Kallisti.xcodeproj -scheme Kallisti \
   -destination "platform=iOS Simulator,name=iPhone 17 Pro" \
   -only-testing:KallistiTests
 ```
 
-## Layout
+## Architecture
 
 ```
-Kallisti/                the iOS app
-Kallisti.xcodeproj         generated project
-KallistiControls/        Control Center and widget intents
-KallistiWatch/           watchOS companion
-KallistiWidgets/         widgets
-KallistiNotificationService/  notification service extension
-KallistiSupport/         shared host-side support code
-crates/                  the Eris daemon (eris-host, core runtime, tools, memory)
-contract/                the wire contract
-docs/                    daemon and client documentation
-scripts/                 build, release and deploy scripts
+iPhone / iPad  ──HTTPS + SSE──▶  Kallisti-Eris daemon  ──▶  model provider
+                                   :7341 device API            (yours, local or hosted)
+                                   :7340 administration
+                                   SQLite: transcripts, memory, cron, skills
 ```
+
+- **Turns** are `POST /v1/turns`, answered by a frame stream at
+  `GET /v1/turns/{id}/events` that resumes from the last event id the client holds.
+- **Files** are `POST /v1/attachments` with the bytes and a filename; the turn names
+  the ids it carries.
+- **Everything else** the phone can do is a route on the same device API: conversations,
+  approvals, cron, skills, notes, memory, settings, diagnostics.
+- The wire is documented in [docs/wire-contracts.md](docs/wire-contracts.md) and
+  [docs/STREAM_CONTRACT_V2.md](docs/STREAM_CONTRACT_V2.md).
+
+## Guides
+
+- [DAEMON.md](DAEMON.md) - installing, pairing, operating, updating and troubleshooting
+  the daemon.
+- [docs/wire-contracts.md](docs/wire-contracts.md) - every device route and its shape.
+- [docs/STREAM_CONTRACT_V2.md](docs/STREAM_CONTRACT_V2.md) - the turn frame stream,
+  including resume.
+- [CONTRIBUTING.md](CONTRIBUTING.md) - layout, build, tests and house style.
+- [CHANGELOG.md](CHANGELOG.md) - what changed, app and daemon, per build.
+
+## Support
+
+Open an issue. For anything that happens in chat, the daemon's own record answers it
+first: `GET /v1/diagnostics` holds the recent events, and `GET /v1/gw/health` says
+whether the daemon thinks it is well.
 
 ## License
 
