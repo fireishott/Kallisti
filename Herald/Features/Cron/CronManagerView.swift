@@ -6,6 +6,25 @@ struct CronManagerView: View {
 
     var body: some View {
         List {
+            // A refusal is not an empty list. The daemon says why - most often
+            // that this phone was paired without administration - and that sentence
+            // is the only actionable thing on this screen.
+            if let error = cronStore.errorMessage, cronStore.jobs.isEmpty {
+                Section {
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        Label("The daemon refused this", systemImage: "lock.slash")
+                            .font(Design.Typography.caption.weight(.semibold))
+                            .foregroundStyle(Design.Colors.warning)
+                        Text(error)
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    Button("Try again") {
+                        Task { await cronStore.loadJobs() }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
             if cronStore.isLoading && cronStore.jobs.isEmpty {
                 ProgressView("Loading cron jobs...")
             } else if cronStore.jobs.isEmpty {

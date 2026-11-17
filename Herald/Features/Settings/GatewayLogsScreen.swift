@@ -538,14 +538,21 @@ struct GatewayLogsScreen: View {
             Text("No Log Entries")
                 .font(Design.Typography.headline)
                 .foregroundStyle(Design.Colors.secondaryForeground)
-            Text("The relay returned no log entries for level \"\(selectedLevel)\". Try a different level or toggle Live mode to wait for new entries.")
-                .font(Design.Typography.caption)
-                .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.7))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, Design.Spacing.lg)
+            Group {
+            if let errorMessage, !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("The daemon returned no events for level \"\(selectedLevel)\". Its ring keeps the newest few hundred, so an idle host reads empty; try Live or another level.")
+                    .font(.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+            }
+            .padding(.horizontal, Design.Spacing.lg)
             if let error = streamConnectionError {
                 Text("Stream error: \(error)")
-                    .font(Design.Typography.caption)
                     .foregroundStyle(Design.Colors.warning)
             }
             Spacer()

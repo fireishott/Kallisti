@@ -5,6 +5,22 @@ struct SkillsBrowserView: View {
 
     var body: some View {
         List {
+            if let error = skillsStore.errorMessage, skillsStore.skills.isEmpty {
+                Section {
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        Label("The daemon refused this", systemImage: "lock.slash")
+                            .font(Design.Typography.caption.weight(.semibold))
+                            .foregroundStyle(Design.Colors.warning)
+                        Text(error)
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    Button("Try again") {
+                        Task { await skillsStore.loadSkills(force: true) }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
             if skillsStore.isLoading && skillsStore.skills.isEmpty {
                 ProgressView("Loading skills...")
             } else if skillsStore.filteredSkills.isEmpty {
