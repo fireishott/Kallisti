@@ -14,6 +14,11 @@ struct GatewayStatusScreen: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var snapshot: NativeGatewayFeatureClient.GatewayStatusSnapshot?
+    /// The daemon's own health, when this phone is paired with Eris rather than the
+    /// old connector. There is no connector in this architecture, so without this
+    /// the screen has nothing to show.
+    @State private var daemonHealth: ErisGatewayHealth?
+    @State private var daemonError: String?
     @State private var errorMessage: String?
     @State private var isLoading = true
     @State private var refreshTask: Task<Void, Never>?
@@ -38,6 +43,8 @@ struct GatewayStatusScreen: View {
                     .padding(.vertical, Design.Spacing.sm)
                 }
                 .refreshable { await fetchTelemetry() }
+            } else if let health = daemonHealth {
+                daemonStatus(health)
             } else if let error = errorMessage {
                 VStack(spacing: Design.Spacing.md) {
                     Image(systemName: "exclamationmark.triangle")
@@ -71,6 +78,68 @@ struct GatewayStatusScreen: View {
 
     // MARK: - Connection Cards
 
+    /// What the daemon says about itself: ready or not, what it is running, how
+    /// long it has been up, and how much work is in flight. This is the screen an
+    /// operator opens when something feels wrong, so it reports the daemon's own
+    /// answers rather than a connector's.
+    @ViewBuilder
+    private func daemonStatus(_ health: ErisGatewayHealth) -> some View {
+        ScrollView {
+            VStack(spacing: Design.Spacing.lg) {
+                HStack(spacing: Design.Spacing.sm) {
+                    statusCard(
+                        label: "Daemon",
+                        isOnline: health.ready == true,
+                        detail: health.ready == true ? "Ready" : "Not ready"
+                    )
+                    statusCard(
+                        label: "Device API",
+                        isOnline: health.deviceListener == true,
+                        detail: health.deviceListener == true ? "Listening" : "Closed"
+                    )
+                    statusCard(
+                        label: "Pairing",
+                        isOnline: health.deviceBound == true,
+                        detail: health.deviceBound == true ? "Bound" : "Unbound"
+                    )
+                }
+                if let daemonError, !daemonError.isEmpty {
+                    Text(daemonError)
+                        .font(.caption)
+                        .foregroundStyle(Design.Colors.danger)
+                }
+                VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                    row("Version", health.connectorVersion ?? "unknown")
+                    row("Unit", health.unit ?? "unknown")
+                    row("PID", health.mainPid.map(String.init) ?? "unknown")
+                    row("Uptime", health.uptimeSeconds.map { "\($0 / 3600)h \(($0 % 3600) / 60)m" } ?? "unknown")
+                    row("Running", health.activeWork?.running.map(String.init) ?? "0")
+                    row("Queued", health.activeWork?.queued.map(String.init) ?? "0")
+                    row("Model catalogue", health.modelCatalogAvailable == true ? "known" : "empty")
+                }
+                .padding(Design.Spacing.md)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Design.Colors.surface)
+                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+            }
+            .padding(.horizontal, Design.Spacing.md)
+            .padding(.vertical, Design.Spacing.sm)
+        }
+        .refreshable { await fetchTelemetry() }
+    }
+
+    private func row(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+            Spacer()
+            Text(value)
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.foreground)
+        }
+    }
+
     private func connectionCards(_ s: NativeGatewayFeatureClient.GatewayStatusSnapshot) -> some View {
         HStack(spacing: Design.Spacing.sm) {
             statusCard(
@@ -79,7 +148,7 @@ struct GatewayStatusScreen: View {
                 detail: connectionDetail()
             )
             statusCard(
-                label: "Hermes",
+                label: "Daemon",
                 isOnline: s.model != nil,
                 detail: s.model ?? "No model"
             )
@@ -218,6 +287,20 @@ struct GatewayStatusScreen: View {
     }
 
     private func fetchTelemetryInner() async {
+        // A paired daemon answers this itself. Asked first, so an Eris phone never
+        // reads "native gateway unavailable" - there is no gateway to be unavailable.
+        if let eris = container.chatStore.heraldClient as? ErisHeraldClient {
+            do {
+                daemonHealth = try await eris.gatewayHealth()
+                daemonError = nil
+                errorMessage = nil
+                return
+            } catch {
+                daemonError = (error as? ErisError)?.message ?? error.localizedDescription
+                errorMessage = daemonError
+                return
+            }
+        }
         guard let nativeClient = container.nativeGatewayClient else {
             errorMessage = "Native gateway unavailable. Check that Kallisti is connected."
             return

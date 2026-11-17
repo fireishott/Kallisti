@@ -42,6 +42,10 @@ enum ErisRoute: Equatable, Sendable {
     case skills
     /// `GET /v1/gw/update/check` - is there a newer build. Admin scope.
     case updateCheck
+    /// `GET /v1/gw/health` - the daemon's own health. Admin scope.
+    case gatewayHealth
+    /// `GET /v1/diagnostics` - the recent-events ring. Admin scope.
+    case diagnostics
     /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
     case clearConversation(conversationID: String)
     /// `GET /v1/settings` - the operator-facing settings snapshot.
@@ -117,6 +121,10 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/skills"
         case .updateCheck:
             return "/v1/gw/update/check"
+        case .gatewayHealth:
+            return "/v1/gw/health"
+        case .diagnostics:
+            return "/v1/diagnostics"
         case .clearConversation(let conversationID):
             return "/v1/conversations/\(Self.segment(conversationID))/clear"
         case .settings, .updateSettings:
@@ -160,7 +168,7 @@ enum ErisRoute: Equatable, Sendable {
     var method: String {
         switch self {
         case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
-             .cron, .skills, .updateCheck, .attachment,
+             .cron, .skills, .updateCheck, .gatewayHealth, .diagnostics, .attachment,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .aux:
             return "GET"
@@ -294,6 +302,18 @@ actor ErisClient {
     /// transcript row pair instead of a session of its own. A conversation id the
     /// daemon does not hold is refused here, before anything is written, so a
     /// refused turn never leaves half a conversation behind.
+    /// The daemon's own health: ready, version, unit, uptime, work in flight.
+    func gatewayHealth() async throws -> ErisGatewayHealth {
+        let data = try await send(route: .gatewayHealth, form: nil)
+        return try decode(ErisGatewayHealth.self, from: data)
+    }
+
+    /// The recent-events ring behind the Logs screen.
+    func diagnosticsBundle() async throws -> ErisDiagnostics {
+        let data = try await send(route: .diagnostics, form: nil)
+        return try decode(ErisDiagnostics.self, from: data)
+    }
+
     /// Whether the daemon has a newer build, and what it says about it.
     func updateCheck() async throws -> ErisUpdateCheck {
         let data = try await send(route: .updateCheck, form: nil)

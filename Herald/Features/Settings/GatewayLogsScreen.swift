@@ -16,6 +16,14 @@ struct GatewayLogsScreen: View {
     @State private var logLines: [LogLine] = []
     @State private var errorMessage: String?
     @State private var isLoading = true
+    /// The daemon's own events when there is no connector to stream from.
+    struct DaemonLogEntry: Identifiable {
+        let at: String
+        let kind: String
+        let detail: String
+        var id: String { at + kind + detail }
+    }
+    @State private var daemonEntries: [DaemonLogEntry] = []
     @State private var selectedLevel: String = "all"
     @State private var selectedSource: String = "hermes-gateway"
     @State private var isLiveStreaming = false
@@ -30,7 +38,7 @@ struct GatewayLogsScreen: View {
 
     private let levels = ["all", "debug", "info", "warning", "error"]
     // Build 107: source picker for selecting which logs to view
-    private let sources = [("connector", "Connector"), ("hermes-gateway", "Hermes Gateway"), ("hermes-agent", "Hermes Agent")]
+    private let sources = [("daemon", "Daemon"), ("hermes-gateway", "Daemon"), ("hermes-agent", "Agent")]
 
     private var filteredLogs: [LogLine] {
         if searchText.isEmpty { return logLines }
@@ -169,6 +177,25 @@ struct GatewayLogsScreen: View {
 
     private var logList: some View {
         List {
+            // The daemon's ring, when there is no connector stream to show.
+            ForEach(daemonEntries) { entry in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(entry.kind)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                        Spacer()
+                        Text(entry.at)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    Text(entry.detail)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(Design.Colors.foreground)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, 2)
+            }
             ForEach(filteredLogs.indices, id: \.self) { i in
                 logRow(filteredLogs[i])
                     .listRowBackground(Design.Colors.background)
@@ -219,6 +246,24 @@ struct GatewayLogsScreen: View {
         // truncates output at 48K chars (cutting the NEWEST lines) and
         // stamps every line with the selected level. Fall back to cli.exec
         // if the facade is unreachable.
+        // A paired daemon answers with its own ring: no connector, no journald
+        // stream, but the recent events that matter are here.
+        if let eris = container.chatStore.heraldClient as? ErisHeraldClient {
+            do {
+                let bundle = try await eris.diagnosticsBundle()
+                daemonEntries = (bundle.entries ?? []).map { entry in
+                    DaemonLogEntry(
+                        at: entry.at ?? "",
+                        kind: entry.kind ?? "",
+                        detail: entry.detail ?? ""
+                    )
+                }
+                errorMessage = nil
+            } catch {
+                errorMessage = (error as? ErisError)?.message ?? error.localizedDescription
+            }
+            return
+        }
         if container.nativeGatewayClient != nil,
            let nativeClient = container.nativeGatewayClient {
             do {
@@ -295,7 +340,7 @@ struct GatewayLogsScreen: View {
             let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
                 ?? pairingStore.pairedRelayConfiguration?.baseURLString
             guard let relayBase else {
-                errorMessage = "No relay configured. Add your relay URL in Settings."
+                errorMessage = "No daemon configured. Add its address in Settings."
                 return
             }
             let token = await sessionStore.currentAccessToken()
@@ -317,7 +362,7 @@ struct GatewayLogsScreen: View {
             switch error {
             case .serverError(let code, _, _, let status):
                 if status == 404 {
-                    errorMessage = "The relay does not expose gateway logs. Update your connector to a version that supports the /gw/logs endpoint."
+                    errorMessage = "The daemon does not expose gateway logs on this route."
                 } else {
                     errorMessage = "[\(code)] \(error.localizedDescription)"
                 }
@@ -419,7 +464,7 @@ struct GatewayLogsScreen: View {
                 ?? pairingStore.pairedRelayConfiguration?.baseURLString
             guard let relayBase else {
                 await MainActor.run {
-                    errorMessage = "No relay configured. Add your relay URL in Settings."
+                    errorMessage = "No daemon configured. Add its address in Settings."
                     isLiveStreaming = false
                 }
                 return

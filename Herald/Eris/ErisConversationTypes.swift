@@ -486,3 +486,48 @@ struct ErisUpdateCheck: Decodable, Equatable, Sendable {
         case canInstall = "can_install"
     }
 }
+
+
+/// The daemon's answer to "are you well".
+struct ErisGatewayHealth: Decodable, Equatable, Sendable {
+    struct Work: Decodable, Equatable, Sendable {
+        let running: Int?
+        let queued: Int?
+    }
+
+    let ready: Bool?
+    let profile: String?
+    let unit: String?
+    let mainPid: Int?
+    let uptimeSeconds: Int?
+    let connectorVersion: String?
+    let modelCatalogAvailable: Bool?
+    let deviceListener: Bool?
+    let deviceBound: Bool?
+    let activeWork: Work?
+
+    private enum CodingKeys: String, CodingKey {
+        case ready, profile, unit, mainPid, uptimeSeconds, connectorVersion
+        case modelCatalogAvailable, deviceListener, deviceBound, activeWork
+    }
+}
+
+/// The diagnostics ring the Logs screen shows.
+struct ErisDiagnostics: Decodable, Equatable, Sendable {
+    struct Entry: Decodable, Equatable, Sendable, Identifiable {
+        let at: String?
+        let kind: String?
+        let detail: String?
+        let durationMs: Int?
+        var id: String { (at ?? "") + (kind ?? "") + (detail ?? "") }
+
+        private enum CodingKeys: String, CodingKey {
+            case at, kind, detail
+            case durationMs = "duration_ms"
+        }
+    }
+
+    let version: String?
+    let capacity: Int?
+    let entries: [Entry]?
+}

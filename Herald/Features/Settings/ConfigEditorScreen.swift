@@ -16,6 +16,9 @@ struct ConfigEditorScreen: View {
     @State private var content = ""
     @State private var path = "~/.hermes/config.yaml"
     @State private var isLoading = true
+    /// True when the text on screen is the daemon's settings record, which this
+    /// screen shows but does not write.
+    @State private var isDaemonSettings = false
     @State private var isSaving = false
     @State private var isValidationRunning = false
     @State private var errorMessage: String?
@@ -240,8 +243,34 @@ struct ConfigEditorScreen: View {
         validationError = nil
         defer { isLoading = false }
 
+        // A paired daemon has a settings record, not a config.yaml. Show it rather
+        // than claiming a gateway is unavailable that does not exist.
+        if let eris = container.chatStore.heraldClient as? ErisHeraldClient {
+            do {
+                let snapshot = try await eris.settings()
+                // The daemon publishes typed settings, not a YAML document. This is
+                // the same record printed in the shape the editor already shows.
+                content = """
+                # Daemon settings (read-only here)
+                model: \(snapshot.model)
+                sandbox: \(snapshot.sandbox)
+                memory: \(snapshot.memory)
+                tools_enabled: \(snapshot.toolsEnabled)
+                tool_rounds: \(snapshot.toolRounds)
+                approval: \(snapshot.approval)
+                timezone: \(snapshot.timezone)
+                """
+                path = "daemon settings"
+                isDaemonSettings = true
+                errorMessage = content.isEmpty ? "The daemon returned no settings." : nil
+                return
+            } catch {
+                errorMessage = (error as? ErisError)?.message ?? error.localizedDescription
+                return
+            }
+        }
         guard let nativeClient = container.nativeGatewayClient else {
-            errorMessage = "Native gateway unavailable. Check that Kallisti is connected."
+            errorMessage = "This phone is not paired with a daemon."
             return
         }
         let doc = await nativeClient.featureClient.configDocument()

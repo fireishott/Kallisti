@@ -396,6 +396,24 @@ final class ErisHeraldClient: HeraldClientProtocol {
     /// unknown conversation or a daemon without the cursor answers nothing rather
     /// than throwing into the view: a transcript that cannot page is a transcript
     /// that shows what it has.
+    /// The daemon's settings record.
+    func settings() async throws -> ErisSettingsSnapshot {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.settings()
+    }
+
+    /// The daemon's own health. Admin scope on the daemon side.
+    func gatewayHealth() async throws -> ErisGatewayHealth {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.gatewayHealth()
+    }
+
+    /// The diagnostics ring behind the Logs screen.
+    func diagnosticsBundle() async throws -> ErisDiagnostics {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.diagnosticsBundle()
+    }
+
     /// Whether the daemon has a newer build. Admin scope on the daemon side.
     func updateCheck() async throws -> ErisUpdateCheck {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
