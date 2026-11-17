@@ -508,7 +508,8 @@ actor ErisClient {
     func createTurn(
         text: String,
         conversation: String? = nil,
-        attachments: [String] = []
+        attachments: [String] = [],
+        idempotencyKey: String? = nil
     ) async throws -> ErisTurn {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -524,7 +525,13 @@ actor ErisClient {
         if !attachments.isEmpty {
             form["attachments"] = attachments.joined(separator: ",")
         }
-        let data = try await send(route: .turns, form: form)
+        // The daemon answers a repeated key with the job it already made, so a
+        // retried send resumes the same turn instead of asking the model again.
+        var headers: [String: String] = [:]
+        if let idempotencyKey, !idempotencyKey.isEmpty {
+            headers["Idempotency-Key"] = idempotencyKey
+        }
+        let data = try await send(route: .turns, form: form, headers: headers.isEmpty ? nil : headers)
         return try decode(ErisTurn.self, from: data)
     }
 

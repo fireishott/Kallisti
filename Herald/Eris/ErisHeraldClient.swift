@@ -293,7 +293,11 @@ final class ErisHeraldClient: HeraldClientProtocol {
             let turn = try await client.createTurn(
                 text: message,
                 conversation: boundConversation,
-                attachments: uploaded
+                attachments: uploaded,
+                // Stable for the life of this message, across every retry: a resend
+                // after a dropped stream must resume the turn it started, not ask
+                // the model the same question twice.
+                idempotencyKey: clientMessageID.uuidString
             )
             let jobID = Self.stableUUID(from: turn.jobID)
             continuation.yield(.messageSent(jobID: jobID))
@@ -631,7 +635,13 @@ final class ErisHeraldClient: HeraldClientProtocol {
             }
         }
         let erisConversationID = conversationIDByLocalID[conversationID]
-        let turn = try await client.createTurn(text: text, conversation: erisConversationID)
+        // Same rule as the streaming path: one message, one turn, however many
+        // times this call is retried.
+        let turn = try await client.createTurn(
+            text: text,
+            conversation: erisConversationID,
+            idempotencyKey: clientMessageID.uuidString
+        )
         // Drain the stream to completion to collect the final text.
         var text = ""
         let stream = await client.events(turnID: turn.jobID)
