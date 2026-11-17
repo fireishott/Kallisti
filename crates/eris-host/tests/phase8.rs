@@ -7792,3 +7792,99 @@ async fn the_update_routes_require_an_admin_bearer() {
 
     harness.stop();
 }
+
+/// A turn names the transcript it lands on, and the job records it.
+///
+/// Every device turn in this database carried a null `jobs.conversation_id` even
+/// when the phone had named one: the handler wrote the question row into the
+/// conversation and then created the job with `None`, so nothing related a turn to
+/// its chat. The transcript was reachable only by reading `chat_messages`.
+#[tokio::test]
+async fn a_turn_stores_the_conversation_it_names() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+    let conversation = a_conversation(&harness);
+
+    let response = harness
+        .request(
+            "POST",
+            "/v1/turns",
+            &auth,
+            Some(&format!(r#"{{"text":"hello","conversation":"{conversation}"}}"#)),
+        )
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"].as_str().expect("job id").to_owned();
+
+    let db = harness.engine.db().clone();
+    let stored: Option<String> = db
+        .with_conn(|conn| {
+            match conn.query_row(
+                "SELECT conversation_id FROM jobs WHERE id = ?1",
+                [&job_id],
+                |row| row.get(0),
+            ) {
+                Ok(value) => Ok(Some(value)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(error),
+            }
+        })
+        .expect("the job row");
+    assert_eq!(
+        stored.as_deref(),
+        Some(conversation.as_str()),
+        "the job records the conversation it was sent to"
+    );
+}
+
+/// A device turn that names no conversation still lands on one.
+///
+/// This used to be a "legitimate mode": stream an answer, store nothing. From the
+/// phone it is indistinguishable from a broken bind - the reply appears and then
+/// exists nowhere - so the daemon opens a conversation instead of answering into
+/// the void.
+#[tokio::test]
+async fn a_turn_without_a_conversation_gets_one() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, token) = harness.device_with_token("iPhone");
+    let auth = [("authorization", format!("Bearer {token}"))];
+
+    let response = harness
+        .request("POST", "/v1/turns", &auth, Some(r#"{"text":"hello"}"#))
+        .await;
+    assert_eq!(response.status, 202, "{}", response.body);
+    let job_id = response.json()["job_id"].as_str().expect("job id").to_owned();
+
+    let db = harness.engine.db().clone();
+    let stored: Option<String> = db
+        .with_conn(|conn| {
+            match conn.query_row(
+                "SELECT conversation_id FROM jobs WHERE id = ?1",
+                [&job_id],
+                |row| row.get(0),
+            ) {
+                Ok(value) => Ok(Some(value)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(error),
+            }
+        })
+        .expect("the job row");
+    let conversation = stored.expect("a conversation was created for the turn");
+    assert!(!conversation.is_empty());
+
+    // The question is on that transcript, which is what makes the answer findable
+    // afterwards.
+    let question: String = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT body FROM chat_messages WHERE conversation_id = ?1 AND role = 'user'",
+                [&conversation],
+                |row| row.get(0),
+            )
+        })
+        .expect("the question row");
+    assert_eq!(question, "hello");
+}

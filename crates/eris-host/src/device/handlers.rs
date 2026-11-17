@@ -8947,17 +8947,30 @@ pub(crate) async fn create_turn_with(
     };
 
     // A turn with no conversation is streamed but never stored, so the answer
-    // exists only until the socket closes. That is a legitimate mode - a client
-    // that wants a stream and no transcript - but it is also exactly what a
-    // client with a broken conversation bind does by accident, and the difference
-    // is invisible from the phone. Say it in the log so the next report can be
-    // answered from evidence instead of from the code.
-    if conversation.is_none() {
-        tracing::warn!(
-            device = %token.device_id(),
-            "turn created without a conversation: it will stream but not be stored"
-        );
-    }
+    // exists only until the socket closes. That is what a phone with a broken bind
+    // does by accident, and the difference is invisible from the phone - it reads
+    // as a reply that appeared and then vanished. A device turn therefore always
+    // lands on a transcript: when the caller names none, this creates one rather
+    // than answering into nowhere.
+    let conversation = match conversation {
+        Some(conversation) => Some(conversation),
+        None => match chat::create_conversation(service.engine().db()) {
+            Ok(created) => {
+                tracing::info!(
+                    device = %token.device_id(),
+                    conversation = %created,
+                    "turn had no conversation: one was created so the answer is stored"
+                );
+                Some(created)
+            }
+            Err(error) => {
+                return DeviceError::db_unavailable(format!(
+                    "cannot open a conversation for the turn: {error}"
+                ))
+                .into_response();
+            }
+        },
+    };
 
     if conversation.is_none() && !attachment_ids.is_empty() {
         return DeviceError::bad_request(
@@ -9206,7 +9219,18 @@ pub(crate) async fn create_turn_with(
     // and a `202` that waits on it is a `202` the phone gives up on.
     let model_text = goal_prompt.clone().unwrap_or_else(|| text.clone());
     let prompt = attachments::prompt_with_attachments(&model_text, &attachment_files);
-    let job_id = match store.create_job(token.device_id(), &session_id, idempotency_key, &prompt) {
+    // The job records the transcript it lands on. `create_job` passes `None` for
+    // the conversation, which is why every device turn in this database carried a
+    // null there even when the phone had named one: the transcript row was written
+    // and the job was not told, so nothing could relate a turn to its chat.
+    let job_id = match store.create_job_in(
+        token.device_id(),
+        &session_id,
+        idempotency_key,
+        &prompt,
+        conversation.as_deref(),
+        0,
+    ) {
         Ok(job_id) => job_id,
         Err(error) => {
             return DeviceError::db_unavailable(format!("cannot queue the turn: {error}"))

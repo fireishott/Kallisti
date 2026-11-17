@@ -16,6 +16,14 @@ observe; commit history carries the detail.
   picture, and the old `text_required` refusal threw the uploaded rows away for a
   caption nobody wrote. `build 189`.
 
+- **Every turn lands on a transcript.** `POST /v1/turns` wrote the question into
+  the conversation and then created the job with `None` for the conversation, so every
+  device turn in this database carried a null `jobs.conversation_id` even when the
+  phone had named one - nothing related a turn to its chat. The job records it now. A
+  turn that names no conversation at all used to be a "stream and store nothing" mode,
+  which from the phone is indistinguishable from a broken bind: the reply appears and
+  then exists nowhere. The daemon opens a conversation for it instead. `build 191`.
+
 - **An update is a newer build, not any leftover.** `/v1/gw/update/check` answered
   `update_available: true, can_install: true` and named `1.8.0 build 187` on a host
   running `1.9.0 build 188`: two stale `eris.new-*` files from earlier deploys were
