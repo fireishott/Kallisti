@@ -112,6 +112,13 @@ protocol HeraldClientProtocol {
 
     /// Get the authoritative status of a job.
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse?
+    /// One job's state, asked with the daemon's own id.
+    ///
+    /// `getJobStatus` takes the UUID the UI keys its rows by, which is a hash of the
+    /// daemon's id and therefore useless to the daemon. A transport that can ask must
+    /// implement this or an accepted send can never be settled, and an unsettled send
+    /// is resent on every reload.
+    func jobState(daemonJobID: String) async -> LiveHeraldClient.JobStatusResponse?
 
     /// Reattach to a gateway session that is still running a job after the
     /// app was suspended (desktop parity: Electron calls session.resume on
@@ -281,4 +288,9 @@ extension HeraldClientProtocol {
 extension HeraldClientProtocol {
     func cronJobs() async throws -> [ErisCronJob] { [] }
     func skillCatalog() async throws -> [ErisSkill] { [] }
+}
+
+extension HeraldClientProtocol {
+    /// Transports without a job-state route cannot settle a send.
+    func jobState(daemonJobID: String) async -> LiveHeraldClient.JobStatusResponse? { nil }
 }

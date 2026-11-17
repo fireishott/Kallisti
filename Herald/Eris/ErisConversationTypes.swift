@@ -564,3 +564,17 @@ struct ErisRPCAnswer: Decodable, Equatable, Sendable {
     let ok: Bool?
     let method: String?
 }
+
+
+/// One job's state, as `turn.state` answers it.
+struct ErisTurnState: Decodable, Equatable, Sendable {
+    let jobID: String?
+    let state: String?
+    let conversationID: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case jobID = "job_id"
+        case state
+        case conversationID = "conversation_id"
+    }
+}

@@ -10,7 +10,7 @@ struct ContextInfo: Codable, Hashable, Sendable {
 }
 
 enum StreamingUpdate: Sendable {
-    case messageSent(jobID: UUID)
+    case messageSent(jobID: UUID, daemonJobID: String?)
     case textDelta(String)
     case reasoningDelta(String)
     case toolActivity(String)

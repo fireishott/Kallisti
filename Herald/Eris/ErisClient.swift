@@ -444,6 +444,34 @@ actor ErisClient {
         }
     }
 
+    /// One job's state, over the RPC envelope.
+    func jobState(_ daemonJobID: String) async throws -> ErisTurnState {
+        guard let base = try? await authorizedRequest(
+            route: .rpc,
+            form: nil,
+            accept: "application/json"
+        ) else {
+            throw ErisError.server(status: 0, code: "not_connected", message: "no daemon paired")
+        }
+        var request = base
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "method": "turn.state",
+            "params": ["job_id": daemonJobID],
+        ])
+        let (data, response) = try await perform(request)
+        let status = Self.status(of: response)
+        guard (200..<300).contains(status) else {
+            throw Self.serverError(status: status, data: data)
+        }
+        struct Envelope: Decodable { let result: ErisTurnState? }
+        guard let envelope = try? decode(Envelope.self, from: data), let result = envelope.result else {
+            throw ErisError.server(status: status, code: "no_result", message: "the daemon returned no result")
+        }
+        return result
+    }
+
     /// Whether the daemon has a newer build, and what it says about it.
     func updateCheck() async throws -> ErisUpdateCheck {
         let data = try await send(route: .updateCheck, form: nil)

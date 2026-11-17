@@ -35,7 +35,7 @@ final class TalkTurnClient {
                         return
                     }
                     switch update {
-                    case .messageSent(let jobID):
+                    case .messageSent(let jobID, _):
                         continuation.yield(.jobAccepted(jobID: jobID))
                     case .textDelta(let delta):
                         canonicalText += delta

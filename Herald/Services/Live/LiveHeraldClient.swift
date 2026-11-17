@@ -413,7 +413,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         // needs to track it — but Live Activity / haptic come from
         // messageSent.)
         let syntheticJobID = response.jobId ?? UUID()
-        continuation.yield(.messageSent(jobID: syntheticJobID))
+        continuation.yield(.messageSent(jobID: syntheticJobID, daemonJobID: syntheticJobID.uuidString))
 
         // Sanitize any residual reasoning blocks (defense in depth).
         let fullText = mappedMsg.content
@@ -493,7 +493,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         // a message" control row.
                         if let jobId = response.jobId {
                             Self.logger.info("Reattaching to duplicate job \(jobId.uuidString.prefix(8)) (existingState=\(response.existingState?.rawValue ?? "nil"))")
-                            continuation.yield(.messageSent(jobID: jobId))
+                            continuation.yield(.messageSent(jobID: jobId, daemonJobID: jobId.uuidString))
                             // If the existing job is already terminal, the
                             // reply already exists in the transcript.  Finish
                             // the stream immediately so the outbox FIFO can
@@ -541,7 +541,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         }
 
                         let syntheticJobID = UUID()
-                        continuation.yield(.messageSent(jobID: syntheticJobID))
+                        continuation.yield(.messageSent(jobID: syntheticJobID, daemonJobID: syntheticJobID.uuidString))
 
                         // Defense-in-depth reasoning strip (connector already sanitized)
                         let fullText = mappedMsg.content
@@ -558,7 +558,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         return
                     }
 
-                    continuation.yield(.messageSent(jobID: jobId))
+                    continuation.yield(.messageSent(jobID: jobId, daemonJobID: jobId.uuidString))
 
                     // Bind this stream to the conversation captured by the
                     // request body, never whatever another device/load changed

@@ -1051,6 +1051,23 @@ final class ChatStore {
                     continue
                 }
             }
+            // A send the daemon already accepted is never sent again. It is
+            // either finished - in which case the transcript already holds the
+            // answer - or still running, in which case resending only makes the
+            // daemon hand back the same job and the screen show it twice.
+            if let daemonJobID = outboxItems[idx].daemonJobID,
+               let state = await heraldClient.jobState(daemonJobID: daemonJobID) {
+                if state.status == "terminal" {
+                    terminalizeOutboxItem(
+                        outboxItems[idx],
+                        canonicalUserMessageID: outboxItems[idx].clientMessageID,
+                        terminalMessageID: state.message?.id
+                    )
+                    continue
+                }
+                // Still working: leave it in flight and check again next drain.
+                continue
+            }
             outboxItems[idx].state = .queued
             promoted = true
         }
@@ -1490,7 +1507,12 @@ final class ChatStore {
               let jobID = outboxItems[idx].jobID
         else { return }
         let item = outboxItems[idx]
-        guard let status = await heraldClient.getJobStatus(jobID) else {
+        let lookedUp: LiveHeraldClient.JobStatusResponse? = if let daemonJobID = item.daemonJobID {
+            await heraldClient.jobState(daemonJobID: daemonJobID)
+        } else {
+            await heraldClient.getJobStatus(jobID)
+        }
+        guard let status = lookedUp else {
             // Cannot confirm job status — move to retryableFailure so the
             // item leaves in-flight and the FIFO can drain. The relay
             // dedupes by clientMessageID on the eventual resubmit.
@@ -2007,7 +2029,7 @@ final class ChatStore {
             for await update in stream {
                 if Task.isCancelled { break }
                 switch update {
-                case .messageSent(let jobID):
+                case .messageSent(let jobID, let daemonJobID):
                     // Build N+: guard against stale .messageSent from a
                     // previous attempt.  cancelStreaming() bumps
                     // activeAttemptID, so a late arrival from the old stream
@@ -2030,6 +2052,9 @@ final class ChatStore {
                     if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
                         self.outboxItems[idx].state = .accepted
                         self.outboxItems[idx].jobID = jobID
+                        // The daemon's own id: `jobID` is a hash and cannot be
+                        // asked about, so a settled send could never be confirmed.
+                        self.outboxItems[idx].daemonJobID = daemonJobID
                         self.persistOutbox()
                     }
                     self.activeStreams[jobID] = placeholderID

@@ -300,7 +300,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 idempotencyKey: clientMessageID.uuidString
             )
             let jobID = Self.stableUUID(from: turn.jobID)
-            continuation.yield(.messageSent(jobID: jobID))
+            continuation.yield(.messageSent(jobID: jobID, daemonJobID: turn.jobID))
 
             var text = ""
             let stream = await client.events(turnID: turn.jobID)
@@ -620,8 +620,32 @@ final class ErisHeraldClient: HeraldClientProtocol {
 
     // MARK: - Jobs
 
+    /// The relay's status call, which the Eris client cannot answer from a hash.
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
         nil
+    }
+
+    /// Ask the daemon about one job, by the id it gave back.
+    func jobState(daemonJobID: String) async -> LiveHeraldClient.JobStatusResponse? {
+        guard let client = await pairedClient() else { return nil }
+        guard let state = try? await client.jobState(daemonJobID) else { return nil }
+        // The outbox speaks in the relay's vocabulary: a job that reached any
+        // terminal state reads "terminal" whatever word the daemon used.
+        let raw = (state.state ?? "").lowercased()
+        let terminal = ["succeeded", "failed", "cancelled", "canceled", "interrupted", "expired"]
+        return LiveHeraldClient.JobStatusResponse(
+            status: terminal.contains(raw) ? "terminal" : raw,
+            conversationId: nil,
+            message: nil,
+            error: nil,
+            usage: nil,
+            context: nil,
+            diff: nil,
+            attempt: nil,
+            lastSeq: nil,
+            errorCategory: nil,
+            errorAction: nil
+        )
     }
 
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {

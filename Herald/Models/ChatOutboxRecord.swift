@@ -26,6 +26,9 @@ struct ChatOutboxRecord: Codable, Identifiable, Sendable {
     var state: OutboxItemState
     /// Relay-assigned job ID once the message is accepted.
     var jobID: UUID?
+    /// The daemon's own job id, as it was handed back. `jobID` above is a hash of
+    /// this, which cannot be sent back to the daemon to ask about the job.
+    var daemonJobID: String?
     /// The canonical user message row id. Set at enqueue (the optimistic row
     /// IS the canonical row, addressed by clientMessageID) and preserved
     /// through terminal.

@@ -61,7 +61,7 @@ final class MockHeraldClient: HeraldClientProtocol {
                 )
                 self.currentConversation?.messages.append(userMessage)
 
-                continuation.yield(.messageSent(jobID: UUID()))
+                continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
 
                 // Simulate tool activity
                 try? await Task.sleep(for: .seconds(0.5))
