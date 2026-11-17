@@ -62,7 +62,7 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
         case .health:
             "Access your health data to offer personalized wellness insights, activity tracking, and sleep recommendations."
         case .notifications:
-            "Receive timely reminders, task updates, and important alerts from Herald."
+            "Receive timely reminders, task updates, and important alerts from Kallisti."
         case .microphone:
             "Voice conversations with Kallisti in Talk Mode."
         case .camera:

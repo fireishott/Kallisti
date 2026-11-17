@@ -102,7 +102,7 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
         case .tailscale:
             return "Tailscale"
         case .selfHostedRelay:
-            return "Self-Hosted Relay"
+            return "Your daemon"
         }
     }
 
@@ -111,16 +111,16 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
         case .tailscale:
             return "Tailscale"
         case .selfHostedRelay:
-            return "Relay URL"
+            return "Daemon address"
         }
     }
 
     var shortDescription: String {
         switch self {
         case .tailscale:
-            return "Private tailnet reachability for a local Hermes relay."
+            return "Private tailnet reachability for a local daemon."
         case .selfHostedRelay:
-            return "Bring your own public Hermes relay URL."
+            return "Bring your own public daemon URL."
         }
     }
 
@@ -135,27 +135,27 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
     var defaultOfflineMessage: String {
         switch self {
         case .tailscale:
-            return "Open Tailscale or reconnect to your tailnet to reach Herald."
+            return "Open Tailscale or reconnect to your tailnet to reach Kallisti."
         case .selfHostedRelay:
-            return "Your self-hosted relay URL is not reachable."
+            return "Your daemon address is not reachable."
         }
     }
 
     var hostOfflineMessage: String {
         switch self {
         case .tailscale:
-            return "The relay is reachable, but the connector is offline. Keep the Mac relay running to queue messages."
+            return "The daemon is reachable but not ready. Keep it running to queue messages."
         case .selfHostedRelay:
-            return "Your relay is reachable, but the connector is offline. Messages can queue while it stays online."
+            return "The daemon is reachable but not ready. Messages can queue while it comes up."
         }
     }
 
     var notConnectedMessage: String {
         switch self {
         case .tailscale:
-            return "Pair a Hermes host on your tailnet before sending messages."
+            return "Pair a daemon on your tailnet before sending messages."
         case .selfHostedRelay:
-            return "Pair a Hermes host with this self-hosted relay before sending messages."
+            return "Pair a daemon before sending messages."
         }
     }
 
@@ -164,7 +164,7 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
         case .tailscale:
             return "Can't reach your tailnet relay. Open Tailscale to reconnect, then send again."
         case .selfHostedRelay:
-            return "Your self-hosted relay URL is not reachable. Check the URL in Settings and try again."
+            return "Your daemon address is not reachable. Check the address in Settings and try again."
         }
     }
 
@@ -189,9 +189,9 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
     var relayURLHint: String? {
         switch self {
         case .tailscale:
-            return "Use your tailnet URL — e.g. https://my-mac.tail-scale.ts.net/v1 — or run `tailscale serve` to proxy a local relay."
+            return "Use your daemon URL — e.g. https://host.tailnet.ts.net — served by Tailscale."
         case .selfHostedRelay:
-            return "Point this at your public Hermes relay — e.g. https://relay.example.com/v1."
+            return "Point this at your daemon URL — e.g. https://host.tailnet.ts.net."
         }
     }
 
@@ -200,7 +200,7 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
         case .tailscale:
             return "Tailscale mode stays honest: messages arrive while the app is in the foreground or reconnected on your tailnet. No official background push."
         case .selfHostedRelay:
-            return "Your connector sends push notifications directly to Apple when your host is online."
+            return "Your daemon sends push notifications directly to Apple when it is online."
         }
     }
 }
@@ -344,7 +344,7 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
         let trimmed = customRelayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "Enter your relay URL." }
         guard RelayConfiguration.normalizeBaseURL(trimmed) != nil else {
-            return "Relay URL must be an absolute https:// URL ending with /v1 (plain http:// is only allowed for localhost and LAN addresses)."
+            return "The daemon address must be an absolute https:// URL (plain http:// is only allowed for localhost and LAN addresses)."
         }
         return nil
     }

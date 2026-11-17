@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>APP_HOSTED_RELAY_ENABLED</key>
-	<false/>
+	<true/>
 	<key>APP_HOSTED_RELAY_URL</key>
-	<string></string>
+	<string>https://your-relay.example.com/v1</string>
 	<key>APP_PRIVACY_URL</key>
 	<string>https://kallisti.fihonline.net/privacy.html</string>
 	<key>APP_TERMS_URL</key>
@@ -13,7 +13,7 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>net.fihonline.kallisti.refresh</string>
-		<string>net.fihonline.KallistiBGProcessing</string>
+		<string>net.fihnews.HeraldBGProcessing</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
@@ -30,9 +30,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.6.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>162</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>INIntentsSupported</key>
 	<array>
 		<string>INSendMessageIntent</string>
@@ -55,8 +55,6 @@
 	<string>Kallisti uses the microphone for voice conversations in Talk Mode.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Kallisti uses motion data to understand your current activity for contextual awareness.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Kallisti saves photos you ask it to keep to your photo library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Kallisti accesses your photo library to help organize and search your photos.</string>
 	<key>NSSiriUsageDescription</key>

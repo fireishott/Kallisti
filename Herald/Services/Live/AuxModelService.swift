@@ -35,6 +35,14 @@ final class AuxModelService {
     private let accessTokenProvider: @MainActor () async -> String?
     /// Native gateway feature client provider (nil when running legacy mode).
     private let nativeFeatureClientProvider: @MainActor () -> NativeGatewayFeatureClient?
+    /// The paired Kallisti-Eris daemon's role table, when one is paired.
+    ///
+    /// `/v1/aux` on the device listener answers every role with the model it
+    /// would actually run, whether it follows the primary, and the ids a picker
+    /// may choose from - one read, no inference.
+    var erisProvider: (@MainActor () async throws -> [AuxTask])?
+    /// `POST /v1/aux` on the paired daemon. `"primary"` means "follow the primary".
+    var erisSetter: (@MainActor (_ role: String, _ provider: String, _ model: String) async throws -> Void)?
 
     private(set) var tasks: [AuxTask] = []
     private(set) var lastError: String?
@@ -50,6 +58,19 @@ final class AuxModelService {
     }
 
     func load() async {
+        // ERIS path: the daemon's own role table.
+        if let erisProvider {
+            do {
+                tasks = try await erisProvider()
+                lastError = nil
+                return
+            } catch {
+                lastError = error.localizedDescription
+                Self.logger.error("eris aux load failed: \(error.localizedDescription)")
+                return
+            }
+        }
+
         // NATIVE path: config.get(key:"full") -> config.auxiliary section.
         if let featureClient = nativeFeatureClientProvider() {
             do {
@@ -84,6 +105,21 @@ final class AuxModelService {
     }
 
     func set(task: String, provider: String, model: String) async {
+        if let erisSetter {
+            do {
+                // Eris keys every role by its own canonical key, so the label
+                // normalization below is not needed on this path: the row that
+                // was tapped carries the key the daemon minted it with.
+                try await erisSetter(task, provider, model)
+                await load()
+                return
+            } catch {
+                lastError = error.localizedDescription
+                Self.logger.error("eris aux set failed for \(task, privacy: .public): \(error.localizedDescription)")
+                return
+            }
+        }
+
         // Normalize every dashboard task label to its canonical config key
         // (auxiliary.<key>.<field>). The dashboard menu exposes the eleven
         // canonical aux slots via the connector AUX_TASKS list (mirroring

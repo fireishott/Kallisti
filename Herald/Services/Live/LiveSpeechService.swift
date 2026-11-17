@@ -274,6 +274,18 @@ private actor DictationController {
         let inputNode = audioEngine.inputNode
         inputNode.removeTap(onBus: 0)
         let inputFormat = inputNode.outputFormat(forBus: 0)
+        // `installTap` raises an Objective-C exception, not a Swift error, when
+        // the node has no usable input format yet - no route, permission granted
+        // a moment ago, a headset that just disconnected - and an uncaught
+        // exception is SIGABRT. Talk's own capture guards this and this path did
+        // not, which is the crash logged from build 166: the tap was installed
+        // with a zero-rate format and AVFAudio aborted the process.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            Self.logger.error(
+                "Refusing to install a tap with no input format rate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public)"
+            )
+            throw LiveSpeechService.SpeechError.unavailable
+        }
         let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
             compatibleWith: [transcriber],
             considering: inputFormat

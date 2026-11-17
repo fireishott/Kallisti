@@ -1019,6 +1019,10 @@ final class AppContainer {
             while !Task.isCancelled {
                 if let nativeClient = nativeGatewayClient {
                     connectorLatencyMs = await nativeClient.measureLatency()
+                } else if let eris = chatStore.heraldClient as? ErisHeraldClient {
+                    // No connector, but the daemon answers a ping: without this the
+                    // row read "—" on every Eris phone.
+                    connectorLatencyMs = await eris.pingLatencyMs()
                 } else {
                     connectorLatencyMs = nil
                 }

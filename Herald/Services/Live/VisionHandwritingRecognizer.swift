@@ -50,7 +50,7 @@ struct VisionHandwritingRecognizer: HandwritingRecognizing {
     /// Static so it is shared across instances and Sendable-safe.
     static let customWords: [String] = [
         // Products / apps
-        "Kallisti", "Hermes", "Herald", "MiniMe", "Breakthru",
+        "Kallisti", "MiniMe", "Breakthru",
         // People
         "Curtis", "Kristie", "Hailey", "Cam",
         // Models / LLMs

@@ -69,6 +69,15 @@ final class ModelStore {
     private let accessTokenProvider: () async -> String?
     /// Native gateway feature client provider (nil when running legacy mode).
     private let nativeFeatureClientProvider: @MainActor () -> NativeGatewayFeatureClient?
+    /// The paired Kallisti-Eris daemon's own catalogue, when one is paired.
+    ///
+    /// Eris is the backend this build talks to, so this is the primary path:
+    /// `/v1/models` on the device listener answers the pin, the probed catalogue
+    /// and the providers in one read. The relay path below it is the pre-Eris
+    /// fallback and is never reached while a daemon is paired.
+    var erisCatalogProvider: (@MainActor () async throws -> (models: [HeraldModel], active: ActiveModel?))?
+    /// `POST /v1/models` on the paired daemon.
+    var erisSwitchProvider: (@MainActor (_ name: String, _ provider: String) async throws -> Void)?
 
     init(
         apiClient: RelayAPIClient?,
@@ -115,6 +124,22 @@ final class ModelStore {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+
+        if let erisCatalogProvider {
+            let genAtEntry = switchGeneration
+            do {
+                let result = try await erisCatalogProvider()
+                models = result.models
+                if genAtEntry == switchGeneration, let active = result.active {
+                    activeModel = active
+                }
+                lastLoadedAt = .now
+                nativeRetryCount = 0
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            return
+        }
 
         // NATIVE path: model.options over the gateway socket.
         if let featureClient = nativeFeatureClientProvider() {
@@ -254,6 +279,12 @@ final class ModelStore {
     /// LEGACY path: `POST /v1/model` via relay, falling back to
     /// `POST /gw/model/switch`.
     func switchModel(to name: String, provider: String, global: Bool = false) async throws {
+        if let erisSwitchProvider {
+            switchGeneration &+= 1
+            try await erisSwitchProvider(name, provider)
+            activeModel = ActiveModel(name: name, provider: provider, contextWindow: nil)
+            return
+        }
         if let featureClient = nativeFeatureClientProvider() {
             do {
                 // Build 60: bump generation BEFORE slash.exec so any in-flight

@@ -3,7 +3,7 @@ import os
 
 @MainActor
 final class HermesTalkCoordinator {
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "HermesTalk")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "TalkCoordinator")
 
     enum State: Sendable, Equatable, Hashable {
         case idle
@@ -318,8 +318,8 @@ final class HermesTalkCoordinator {
             }
         } catch {
             flushTask?.cancel()
-            logger.error("Hermes turn failed: \(error.localizedDescription, privacy: .public)")
-            state = .failed("Hermes unavailable")
+            logger.error("Agent turn failed: \(error.localizedDescription, privacy: .public)")
+            state = .failed("Daemon unavailable")
             notifyState()
             return
         }

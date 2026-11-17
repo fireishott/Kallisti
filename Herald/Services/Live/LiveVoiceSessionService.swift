@@ -9,10 +9,10 @@ import os
 /// Legacy WebRTC-based voice session using OpenAI Realtime API.
 /// Superseded by Hermes-native Talk via `HermesTalkCoordinator`.
 /// Retained for one release behind `USE_LEGACY_REALTIME_TALK` compatibility flag.
-@available(*, deprecated, message: "Use Hermes-native Talk instead. See HermesTalkCoordinator.")
+@available(*, deprecated, message: "Use native Talk instead.")
 @MainActor
 final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
-    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "LiveVoiceSessionService")
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "LiveVoiceSessionService")
     private struct EmptyBody: Encodable {}
 
     private struct EmptyRelayResponse: Decodable {}

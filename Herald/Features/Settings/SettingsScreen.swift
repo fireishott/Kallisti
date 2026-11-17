@@ -281,6 +281,12 @@ struct SettingsScreen: View {
     private var latencyMs: Int? { container.connectorLatencyMs }
     @State private var updateAgentResult: String?
     @State private var isCheckingForUpdate = false
+    /// What the daemon said about updates, so the row can name the version and offer
+    /// to install it rather than only reporting that something exists.
+    @State private var daemonUpdate: ErisUpdateCheck?
+    @State private var isInstallingUpdate = false
+    @State private var installProgress: String?
+    @State private var confirmInstall = false
     @State private var isUpdatingAgent = false
     // Build 69 (r7): structured update info + changelog window state.
     @State private var updateInfo: NativeKallistiClient.HermesUpdateInfo?
@@ -549,6 +555,40 @@ struct SettingsScreen: View {
                 action: { await checkForUpdates() }
             )
 
+            if let update = daemonUpdate, update.updateAvailable == true,
+               update.canInstall == true {
+                VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                    Button {
+                        confirmInstall = true
+                    } label: {
+                        HStack(spacing: Design.Spacing.xs) {
+                            Image(systemName: "arrow.down.circle")
+                            Text(isInstallingUpdate ? "Installing…" : "Install \(update.latest?.version ?? "update")")
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isInstallingUpdate)
+                    if let installProgress {
+                        Text(installProgress)
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                }
+                .confirmationDialog(
+                    "Install \(update.latest?.version ?? "this update") now?",
+                    isPresented: $confirmInstall,
+                    titleVisibility: .visible
+                ) {
+                    Button("Install now") {
+                        Task { await installDaemonUpdate() }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("The daemon restarts to finish. Running turns are interrupted.")
+                }
+            }
+
             if let info = updateInfo, info.updateAvailable == true,
                let latest = info.latestVersion, latest != skippedVersionCurrent {
                 sectionDivider
@@ -665,6 +705,28 @@ struct SettingsScreen: View {
         .buttonStyle(.plain)
     }
 
+    /// Ask the daemon to install, then report what it says while it does.
+    private func installDaemonUpdate() async {
+        guard let eris = container.chatStore.heraldClient as? ErisHeraldClient else { return }
+        isInstallingUpdate = true
+        installProgress = "starting"
+        defer { isInstallingUpdate = false }
+        do {
+            try await eris.updateApply()
+            for _ in 0..<120 {
+                try? await Task.sleep(for: .seconds(2))
+                if let state = try? await eris.updateProgress() {
+                    installProgress = state
+                    if state.lowercased().contains("complete") || state.lowercased().contains("done") {
+                        break
+                    }
+                }
+            }
+        } catch {
+            installProgress = (error as? ErisError)?.message ?? error.localizedDescription
+        }
+    }
+
     private func checkForUpdates() async {
         isCheckingForUpdate = true
         updateCheckResult = nil
@@ -681,9 +743,11 @@ struct SettingsScreen: View {
             if let note = answer.note, !note.isEmpty {
                 updateCheckResult = "Check failed: \(note)"
             } else if answer.updateAvailable == true {
+                daemonUpdate = answer
+                let version = answer.latest?.version ?? answer.latest?.tag ?? "a newer build"
                 updateCheckResult = answer.canInstall == true
-                    ? "Update available"
-                    : "Update available (blocked by policy)"
+                    ? "Update available: \(version)"
+                    : "Update available: \(version) (blocked by policy)"
             } else if answer.updateAvailable == false {
                 updateCheckResult = "Up to date"
             } else {

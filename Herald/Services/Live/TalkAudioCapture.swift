@@ -41,7 +41,7 @@ final class TalkAudioCapture {
         }
     }
 
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "TalkAudioCapture")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "TalkAudioCapture")
 
     private var audioEngine: AVAudioEngine?
     private var bargeInEngine: AVAudioEngine?

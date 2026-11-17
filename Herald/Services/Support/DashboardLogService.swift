@@ -9,7 +9,7 @@ import os
 @MainActor
 @Observable
 final class DashboardLogService {
-    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "DashboardLogService")
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "DashboardLogService")
 
     struct LogLine: Identifiable, Sendable {
         let id = UUID()

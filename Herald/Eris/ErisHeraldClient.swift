@@ -402,6 +402,49 @@ final class ErisHeraldClient: HeraldClientProtocol {
         return try await client.settings()
     }
 
+    /// Start the update the check offered.
+    func updateApply() async throws {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        try await client.updateApply()
+    }
+
+    /// How the install is going.
+    func updateProgress() async throws -> String {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.updateProgress()
+    }
+
+    /// Every setting the daemon holds, flat.
+    func settingsFields() async throws -> [String: String] {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.settingsFields()
+    }
+
+    /// Write settings back.
+    func updateSettings(_ fields: [String: String]) async throws {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        try await client.updateSettings(fields)
+    }
+
+    /// The daemon's schedules. Without this the protocol default returns an empty
+    /// list and the screen reads "No Cron Jobs" while the daemon has plenty.
+    func cronJobs() async throws -> [ErisCronJob] {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.cronJobs()
+    }
+
+    /// The daemon's skill catalogue, same rule.
+    func skillCatalog() async throws -> [ErisSkill] {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.skillCatalog()
+    }
+
+    /// Round trip to the daemon, for the Connection row.
+    func pingLatencyMs() async -> Int? {
+        guard let client = await pairedClient() else { return nil }
+        return await client.pingLatencyMs()
+    }
+
     /// The daemon's own health. Admin scope on the daemon side.
     func gatewayHealth() async throws -> ErisGatewayHealth {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }

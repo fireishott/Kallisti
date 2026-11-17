@@ -19,7 +19,7 @@ enum LiveActivityPhase: String, Sendable {
         case .usingTools:   return nil
         case .responding:   return nil
         case .waitingForHost: return nil
-        case .needsAttention: return "Tap to open Herald"
+        case .needsAttention: return "Tap to open Kallisti"
         case .done:         return nil
         }
     }

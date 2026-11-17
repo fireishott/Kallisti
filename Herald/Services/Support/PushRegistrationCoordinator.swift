@@ -3,7 +3,7 @@ import os
 
 @MainActor
 final class PushRegistrationCoordinator {
-    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "PushRegistration")
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "PushRegistration")
 
     private struct RelayIdentityEnvelope: Decodable {
         let identity: PushBrokerRelayIdentity
@@ -71,7 +71,7 @@ final class PushRegistrationCoordinator {
                     connectorBaseURL: connectorURL,
                     accessToken: accessToken
                 )
-                Self.logger.info("Push token registered with connector directly")
+                Self.logger.info("Push token registered with the daemon")
                 return true
             } catch {
                 Self.logger.warning("Connector push registration failed, falling back to relay: \(error)")
@@ -113,7 +113,7 @@ final class PushRegistrationCoordinator {
             struct Response: Decodable { let registered: Bool }
             let response: Response = try await relayAPIClient.post(path: "push/register", body: body, accessToken: accessToken)
             guard response.registered else {
-                throw RelayAPIClient.ClientError.requestFailed("Push registration was rejected by the connector.")
+                throw RelayAPIClient.ClientError.requestFailed("Push registration was rejected by the daemon.")
             }
             return true
         }
@@ -127,7 +127,7 @@ final class PushRegistrationCoordinator {
         struct Response: Decodable { let registered: Bool }
         let response: Response = try await relayAPIClient.post(path: "push/register", body: body, accessToken: accessToken)
         guard response.registered else {
-            throw RelayAPIClient.ClientError.requestFailed("Push registration was rejected by the connector.")
+            throw RelayAPIClient.ClientError.requestFailed("Push registration was rejected by the daemon.")
         }
         return true
     }

@@ -24,7 +24,7 @@ enum OnboardingStep: Int, CaseIterable {
     var stepKicker: String? {
         switch self {
         case .welcome: nil
-        case .relay: "001 · RELAY"
+        case .relay: "001 · DAEMON"
         case .pairing: "002 · HANDSHAKE"
         case .permissions: "003 · PERMISSIONS"
         case .ready: "004 · PAIRED"
@@ -229,7 +229,7 @@ struct OnboardingFlowView: View {
 
         guard let baseURL = relayConfiguration.activeBaseURLString,
               let url = URL(string: baseURL.hasSuffix("/v1") ? baseURL : "\(baseURL)/health") else {
-            localErrorMessage = "Invalid relay URL."
+            localErrorMessage = "Invalid daemon address."
             return
         }
 
@@ -255,7 +255,7 @@ struct OnboardingFlowView: View {
                 // proceeds to pairing.
                 advance(to: .pairing)
             } else {
-                localErrorMessage = "Server returned status \(statusCode). Check your relay URL."
+                localErrorMessage = "Server returned status \(statusCode). Check the daemon address."
             }
         } catch let error as URLError where error.code == .timedOut {
             localErrorMessage = "Could not reach relay server — connection timed out."
@@ -415,7 +415,7 @@ private struct WelcomeStepView: View {
 
             // Brand mark + serif display. Herald 2.1 leads with the seal and an
             // editorial serif wordmark; the old 64pt uppercase mono lockup read
-            // as a terminal banner and still said "Hermes on iOS".
+            // as a terminal banner and still said "Kallisti on iOS".
             VStack(alignment: .leading, spacing: Design.Spacing.md) {
                 KallistiSealMark(size: 88)
                     .padding(.bottom, Design.Spacing.xxs)
@@ -431,7 +431,7 @@ private struct WelcomeStepView: View {
                     .foregroundStyle(Design.Colors.foreground.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("A native iOS client for the Hermes Agent framework.")
+                Text("A native iOS client for your own agent.")
                     .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.secondaryForeground)
                     .fixedSize(horizontal: false, vertical: true)
@@ -483,13 +483,13 @@ private struct RelayStepView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Title block
             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
-                Text("Endpoint.")
+                Text("Daemon.")
                     .font(.system(size: 42, weight: .regular, design: .serif))
                     .tracking(-1.9)
                     .textCase(.uppercase)
                     .foregroundStyle(Design.Colors.foreground)
 
-                Text("where your Hermes is reachable.")
+                Text("where the daemon is reachable.")
                     .font(Design.Typography.editorialItalicSmall)
                     .foregroundStyle(Design.Colors.foreground.opacity(0.85))
             }
@@ -505,7 +505,7 @@ private struct RelayStepView: View {
                     )
 
                     VStack(alignment: .leading, spacing: Design.Spacing.xs) {
-                        Text("RELAY URL").brandEyebrow()
+                        Text("DAEMON ADDRESS").brandEyebrow()
 
                         if relayConfiguration.connectionMode.usesCustomRelayURL {
                             TextField(urlPlaceholder(for: relayConfiguration.connectionMode), text: customRelayURLBinding)
@@ -521,7 +521,7 @@ private struct RelayStepView: View {
                                         .stroke(Design.Colors.foreground.opacity(0.5), lineWidth: 1)
                                 )
                                 .focused(isRelayURLFocused)
-                                .accessibilityLabel("Relay URL")
+                                .accessibilityLabel("Daemon address")
 
                             if let hint = relayConfiguration.connectionMode.relayURLHint {
                                 Text(hint)

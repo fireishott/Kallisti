@@ -34,7 +34,7 @@ actor JobStreamCoordinator {
         case cancelled
         case error(String)
     }
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "JobStreamCoordinator")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "JobStreamCoordinator")
 
     let jobId: UUID
     let conversationId: UUID

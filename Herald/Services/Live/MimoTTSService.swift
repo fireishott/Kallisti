@@ -11,7 +11,7 @@ import OSLog
 @MainActor
 final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "io.hermesmobile.HermesMobile",
+        subsystem: Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti",
         category: "MimoTTS"
     )
 

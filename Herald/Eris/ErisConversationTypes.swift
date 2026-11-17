@@ -531,3 +531,10 @@ struct ErisDiagnostics: Decodable, Equatable, Sendable {
     let capacity: Int?
     let entries: [Entry]?
 }
+
+
+/// The RPC envelope, reduced to what a ping needs to see.
+struct ErisRPCAnswer: Decodable, Equatable, Sendable {
+    let ok: Bool?
+    let method: String?
+}

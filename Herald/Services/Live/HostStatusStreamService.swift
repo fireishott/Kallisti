@@ -2,7 +2,7 @@ import Foundation
 import os
 
 actor HostStatusStreamService {
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "HostStatusStream")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "HostStatusStream")
     private let apiClient: RelayAPIClient
     private let accessTokenProvider: @Sendable () async -> String?
     private let healthCheckProvider: @Sendable () async -> Bool

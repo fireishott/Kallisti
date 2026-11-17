@@ -3,7 +3,7 @@ import os
 
 @MainActor
 final class LiveHeraldClient: HeraldClientProtocol {
-    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "LiveHeraldClient")
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "LiveClient")
     private static let maxRequestBodyBytes = 1_000_000
     private struct ConversationResponse: Decodable {
         let conversation: RelayConversation
@@ -1020,7 +1020,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             let rawError = donePayload?.error ?? ""
             let text: String
             if rawError.contains("413") || rawError.lowercased().contains("too large") {
-                text = "The attachment was too large for Herald to process. Try a smaller image."
+                text = "The attachment was too large for Kallisti to process. Try a smaller image."
             } else if rawError.isEmpty {
                 text = "Kallisti could not process this message."
             } else {
@@ -1046,7 +1046,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let encoded = try RelayCoders.makeEncoder().encode(body)
         guard encoded.count <= Self.maxRequestBodyBytes else {
             throw RelayAPIClient.ClientError.requestFailed(
-                "The attachment was too large for Herald to process. Try a smaller image."
+                "The attachment was too large for Kallisti to process. Try a smaller image."
             )
         }
     }
@@ -1056,7 +1056,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         // The raw JSON dict must never appear in the transcript.
         if let clientError = error as? RelayAPIClient.ClientError,
            let mismatch = clientError.protocolMismatchInfo {
-            return "Connector update required — this build needs protocol \(mismatch.required) but the host is running protocol \(mismatch.client). Update the Herald connector on your host to continue."
+            return "Connector update required — this build needs protocol \(mismatch.required) but the host is running protocol \(mismatch.client). Update the daemon on your host to continue."
         }
 
         let rawError: String
@@ -1067,7 +1067,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         }
 
         if rawError.contains("413") || rawError.lowercased().contains("too large") {
-            return "The attachment was too large for Herald to process. Try a smaller image."
+            return "The attachment was too large for Kallisti to process. Try a smaller image."
         }
         if rawError.isEmpty {
             return "Kallisti relay is unavailable right now."

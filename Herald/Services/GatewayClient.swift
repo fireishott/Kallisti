@@ -11,7 +11,7 @@ import os
 ///
 /// Protocol reference: `apps/shared/src/json-rpc-gateway.ts` in hermes-agent.
 actor GatewayClient {
-    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "GatewayClient")
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "GatewayClient")
 
     // MARK: - Connection state
 

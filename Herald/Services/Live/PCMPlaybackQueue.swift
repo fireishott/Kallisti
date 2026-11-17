@@ -7,7 +7,7 @@ enum PlaybackError: Error {
 
 @MainActor
 final class PCMPlaybackQueue {
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "PCMPlayback")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "PCMPlayback")
 
     private var audioEngine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?

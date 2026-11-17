@@ -19,6 +19,29 @@ struct ConfigEditorScreen: View {
     /// True when the text on screen is the daemon's settings record, which this
     /// screen shows but does not write.
     @State private var isDaemonSettings = false
+
+    /// The values as the daemon last reported them, so a save sends only a diff.
+    @State private var loadedSettings: [String: String] = [:]
+
+    /// `key: value` lines, ignoring comments and blanks.
+    static func parseSettingsText(_ text: String) -> [String: String] {
+        var fields: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#"),
+                  let colon = trimmed.firstIndex(of: ":")
+            else { continue }
+            let key = String(trimmed[trimmed.startIndex..<colon])
+                .trimmingCharacters(in: .whitespaces)
+            var value = String(trimmed[trimmed.index(after: colon)...])
+                .trimmingCharacters(in: .whitespaces)
+            if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
+                value = String(value.dropFirst().dropLast())
+            }
+            if !key.isEmpty { fields[key] = value }
+        }
+        return fields
+    }
     @State private var isSaving = false
     @State private var isValidationRunning = false
     @State private var errorMessage: String?
@@ -247,18 +270,16 @@ struct ConfigEditorScreen: View {
         // than claiming a gateway is unavailable that does not exist.
         if let eris = container.chatStore.heraldClient as? ErisHeraldClient {
             do {
-                let snapshot = try await eris.settings()
-                // The daemon publishes typed settings, not a YAML document. This is
-                // the same record printed in the shape the editor already shows.
+                // Every setting the daemon holds, not the handful this client
+                // models: the editor is the operator's way to change them.
+                let fields = try await eris.settingsFields()
+                loadedSettings = fields
+                let lines = fields.keys.sorted()
+                    .map { "\($0): \(fields[$0] ?? "")" }
+                    .joined(separator: "\n")
                 content = """
-                # Daemon settings (read-only here)
-                model: \(snapshot.model)
-                sandbox: \(snapshot.sandbox)
-                memory: \(snapshot.memory)
-                tools_enabled: \(snapshot.toolsEnabled)
-                tool_rounds: \(snapshot.toolRounds)
-                approval: \(snapshot.approval)
-                timezone: \(snapshot.timezone)
+                # Daemon settings. Edit a value and Save; unchanged lines are not sent.
+                \(lines)
                 """
                 path = "daemon settings"
                 isDaemonSettings = true
@@ -309,8 +330,28 @@ struct ConfigEditorScreen: View {
         validationError = nil
         defer { isSaving = false }
 
+        // A daemon edit: send only the keys whose value changed.
+        if let eris = container.chatStore.heraldClient as? ErisHeraldClient {
+            let edited = Self.parseSettingsText(content)
+            var changed: [String: String] = [:]
+            for (key, value) in edited where loadedSettings[key] != value {
+                changed[key] = value
+            }
+            guard !changed.isEmpty else {
+                savedMessage = "Nothing changed."
+                return
+            }
+            do {
+                try await eris.updateSettings(changed)
+                loadedSettings = edited
+                savedMessage = "Saved \(changed.count) setting(s): \(changed.keys.sorted().joined(separator: ", "))"
+            } catch {
+                errorMessage = (error as? ErisError)?.message ?? error.localizedDescription
+            }
+            return
+        }
         guard let nativeClient = container.nativeGatewayClient else {
-            errorMessage = "Native gateway unavailable. Check that Kallisti is connected."
+            errorMessage = "This phone is not paired with a daemon."
             return
         }
         do {

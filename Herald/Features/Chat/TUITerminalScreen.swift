@@ -178,7 +178,7 @@ struct TUITerminalScreen: View {
         guard let base = settingsStore.settings.relayConfiguration.activeBaseURLString,
               let baseURL = URL(string: base)
         else {
-            loadError = "no relay host configured"
+            loadError = "no daemon configured"
             return
         }
         let token: String? = await {
@@ -226,7 +226,7 @@ struct TUITerminalScreen: View {
         guard let base = settingsStore.settings.relayConfiguration.activeBaseURLString,
               let baseURL = URL(string: base)
         else {
-            loadError = "no relay host configured"
+            loadError = "no daemon configured"
             return
         }
         let token: String? = await {

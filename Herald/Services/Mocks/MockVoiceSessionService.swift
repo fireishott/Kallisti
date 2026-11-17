@@ -1,6 +1,6 @@
 import Foundation
 
-@available(*, deprecated, message: "Use Hermes-native Talk instead. See HermesTalkCoordinator.")
+@available(*, deprecated, message: "Use native Talk instead.")
 @MainActor
 @Observable
 final class MockVoiceSessionService: VoiceSessionServiceProtocol {

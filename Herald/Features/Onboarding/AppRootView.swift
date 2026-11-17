@@ -47,6 +47,11 @@ struct AppRootView: View {
     /// (authFailure, networkFailure) - those need visible error UI with
     /// recovery actions, not an opaque spinner.
     private var showLoadingSurface: Bool {
+        // Eris is the only backend. A pair is one request and the chat owns
+        // its own reconnect banner, so an opaque launch surface has nothing
+        // truthful to cover. Keeping it here deadlocked the app after pairing
+        // because the legacy `isLaunchReady` never flips on the Eris path.
+        return false
         let terminalLegacyFailure: Bool
         switch container.sessionStore.launchState {
         case .authFailure, .networkFailure:
@@ -205,7 +210,11 @@ struct AppRootView: View {
             return hasStoredLogin
                 && (isRecovering || (isConversationRefreshing && !hasUsableConversation))
         }
-        return !hasTerminalLegacyFailure && (!isLaunchReady || isBootstrapping)
+        // Eris is the only backend now: a device with no daemon address has
+        // nothing to wait for, so the launch surface must never cover a fresh
+        // install. Without this the legacy branch held the spinner forever
+        // because the connector bootstrap had no relay to talk to.
+        return !hasTerminalLegacyFailure && hasConfiguredRelay && (!isLaunchReady || isBootstrapping)
     }
 
     /// The stage label for the loading surface.

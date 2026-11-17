@@ -25,7 +25,7 @@ import os
 /// sign-out.  Encapsulates the migration + persistence rules so the
 /// call sites in `AppContainer` and `AppSessionStore` stay trivial.
 enum SharedTokenBridge {
-    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "SharedTokenBridge")
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "SharedTokenBridge")
     private static let legacyAppGroupTokenDefaultsKey = "herald.accessToken"
 
     /// Run the migration once per launch.  Idempotent; safe to call on

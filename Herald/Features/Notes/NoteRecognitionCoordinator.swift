@@ -8,7 +8,7 @@ import os
 actor NoteRecognitionCoordinator {
     private let recognizer: HandwritingRecognizing
     private let repository: NotesRepository
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "note-recognition")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "note-recognition")
 
     /// The current recognition task (cancelled when a new one starts).
     private var currentTask: Task<NoteRecognition?, Never>?

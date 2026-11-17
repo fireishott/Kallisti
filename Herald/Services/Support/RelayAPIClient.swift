@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let sseLogger = Logger(subsystem: "net.fihonline.herald", category: "SSE")
+private let sseLogger = Logger(subsystem: "net.fihonline.kallisti", category: "SSE")
 
 // MARK: - Backend error fallback
 
@@ -265,6 +265,23 @@ final class RelayAPIClient {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
+    /// The bearer every call presents when its caller named none.
+    ///
+    /// Before this existed a call site that did not pass a token sent no
+    /// `Authorization` header at all, and a paired daemon answered the only thing
+    /// it can answer to an anonymous request: `401 token_invalid`. Every layer
+    /// above reads that as "not paired", so the app re-registered, re-fetched and
+    /// re-streamed in a loop - which is how one turn ended up drawn twice.
+    var defaultAccessToken: (@MainActor () async -> String?)?
+
+    /// The process-wide fallback bearer, set once at launch.
+    ///
+    /// Screens build their own client for their own base URL (Settings' gateway
+    /// panel does exactly this), so a per-instance provider would leave those
+    /// anonymous. One assignment at launch covers every instance, including the
+    /// ones created later.
+    nonisolated(unsafe) static var processAccessToken: (@MainActor () async -> String?)?
+
     init(
         baseURLProvider: @escaping @MainActor () -> String,
         session: URLSession = .shared
@@ -273,6 +290,19 @@ final class RelayAPIClient {
         self.session = session
         self.encoder = RelayCoders.makeEncoder()
         self.decoder = RelayCoders.makeDecoder()
+    }
+
+    /// Add the paired daemon's bearer to a request whose caller named none.
+    ///
+    /// A caller that passed a token keeps it: the explicit argument is still the
+    /// authority, and this only fills the gap the old code left empty.
+    private func authorized(_ request: URLRequest) async -> URLRequest {
+        guard request.value(forHTTPHeaderField: "Authorization") == nil else { return request }
+        let provider = defaultAccessToken ?? Self.processAccessToken
+        guard let token = await provider?(), !token.isEmpty else { return request }
+        var copy = request
+        copy.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return copy
     }
 
     func get<T: Decodable>(
@@ -425,6 +455,7 @@ final class RelayAPIClient {
                             body: nil
                         )
                     }
+                    request = await authorized(request)
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     if let lastEventID, !lastEventID.isEmpty {
                         request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
@@ -530,7 +561,7 @@ final class RelayAPIClient {
     }
 
     func sendRequest<T: Decodable>(_ request: URLRequest) async throws -> T {
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: await authorized(request))
         let httpResponse = response as? HTTPURLResponse
 
         guard let httpResponse else {
@@ -565,13 +596,13 @@ final class RelayAPIClient {
                 return .protocolMismatch(
                     requiredProtocol: mismatch.detail.requiredProtocol,
                     clientProtocol: mismatch.detail.clientProtocol ?? 0,
-                    message: mismatch.detail.message ?? "This Herald build requires a connector update."
+                    message: mismatch.detail.message ?? "This Kallisti build needs a daemon update."
                 )
             }
             // Fallback: still show a clean message, not raw JSON
             return .protocolMismatch(
                 requiredProtocol: 0, clientProtocol: 0,
-                message: "This Herald build requires a connector update. Please update the Herald connector to continue."
+                message: "This Kallisti build needs a daemon update. Please update the daemon to continue."
             )
         }
 
@@ -591,11 +622,11 @@ final class RelayAPIClient {
         let hint: String
         switch status {
         case 502:
-            hint = "Relay gateway error (502) — the relay cannot reach the connector backend. Check that the connector is running on the host."
+            hint = "The daemon answered 502."
         case 503:
             hint = "Relay temporarily unavailable (503) — the service may be restarting. Retry in a moment."
         case 504:
-            hint = "Relay gateway timeout (504) — the connector did not respond in time. The host may be overloaded."
+            hint = "The daemon timed out (504). It may be overloaded."
         default:
             hint = "Relay request failed with status \(status)."
         }
@@ -694,7 +725,7 @@ final class RelayAPIClient {
     /// Sends a gateway-control request and decodes the body with
     /// `decodeGatewayPayload` (envelope-aware; see `getGatewayControl`).
     private func sendGatewayControl<T: Decodable>(_ request: URLRequest) async throws -> T {
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: await authorized(request))
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ClientError.requestFailed("Relay returned an invalid response.")
         }
@@ -787,6 +818,7 @@ extension RelayAPIClient {
     ) async throws -> (data: Data, mimeType: String?) {
         var request = try makeRequest(path: path, method: "GET", accessToken: accessToken, body: nil)
         request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request = await authorized(request)
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ClientError.requestFailed("Relay returned an invalid response.")

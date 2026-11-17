@@ -3,7 +3,7 @@ import os
 
 @MainActor
 final class TalkTurnClient {
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "TalkTurn")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "TalkTurn")
     private let heraldClient: any HeraldClientProtocol
 
     init(heraldClient: any HeraldClientProtocol) {
@@ -85,7 +85,7 @@ enum TalkTurnError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .hermesError(let msg):
-            "Hermes error: \(msg)"
+            "Daemon error: \(msg)"
         }
     }
 }

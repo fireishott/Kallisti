@@ -9,7 +9,7 @@ import os
 /// Serves as a fallback when the MiMo TTS API is unreachable.
 @MainActor
 final class AppleTTSService: NSObject, TTSServiceProtocol, AVSpeechSynthesizerDelegate, @unchecked Sendable {
-    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "AppleTTS")
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "AppleTTS")
 
     private let synthesizer = AVSpeechSynthesizer()
     private var rate: Float = AVSpeechUtteranceDefaultSpeechRate

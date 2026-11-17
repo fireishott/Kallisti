@@ -3,7 +3,7 @@ import os
 
 @MainActor
 final class MimoASRService: SpeechRecognizing {
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "MimoASR")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "MimoASR")
     private let apiKeyProvider: @MainActor () -> String?
     private let relayBaseURLProvider: @MainActor () -> URL?
     private let accessTokenProvider: @MainActor () async -> String?

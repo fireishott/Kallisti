@@ -84,7 +84,7 @@ final class KallistiHostStore {
                 currentHost = HeraldHostStatus(
                     id: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
                     displayName: info.model.map { "\(info.provider ?? "hermes")/\($0)" }
-                        ?? (info.provider ?? "Hermes Host"),
+                        ?? (info.provider ?? "Agent Host"),
                     hostname: nil,
                     platform: "native",
                     connectorVersion: connectorVersion,
@@ -177,7 +177,7 @@ final class KallistiHostStore {
     }
 
     /// Pull the version line out of `hermes version` output.
-    /// Typical output: "Hermes Agent v0.20.0 (2026.8.3) · upstream 3d7dda4c"
+    /// Typical output: "Agent v1.8.0 (2026.11.14) · build 187"
     private static func extractAgentVersion(_ raw: String) -> String? {
         let firstLine = raw.split(separator: "\n").first.map(String.init) ?? raw
         let trimmed = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)

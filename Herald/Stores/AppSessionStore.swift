@@ -9,7 +9,7 @@ final class AppSessionStore {
         static let refreshToken = "session.refreshToken"
     }
 
-    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "session")
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "session")
 
     var state: AppSessionState {
         didSet { persistence.saveSessionState(state) }
@@ -115,7 +115,20 @@ final class AppSessionStore {
     }
 
     func currentAccessToken() async -> String? {
-        await secureStore.retrieve(key: SecureKeys.accessToken)
+        // The Eris pair is the LIVE credential. `ErisClient` rotates it in its
+        // own store when it expires, and nothing rotates the pre-Eris key, so
+        // reading that key first is how every control-plane call ended up
+        // presenting an hour-old bearer and collecting 401 token_invalid from a
+        // daemon that had just paired the device.
+        if let stored = try? await KeychainErisTokenStore(secureStore: secureStore).load(),
+           !stored.accessToken.isEmpty {
+            return stored.accessToken
+        }
+        // Pre-Eris installs, and the window before pairing finishes.
+        if let token = await secureStore.retrieve(key: SecureKeys.accessToken), !token.isEmpty {
+            return token
+        }
+        return nil
     }
 
     func currentRefreshToken() async -> String? {

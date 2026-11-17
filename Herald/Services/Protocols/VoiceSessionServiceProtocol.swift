@@ -26,7 +26,7 @@ final class TalkSessionEventHub {
 
 /// Legacy voice session protocol for OpenAI Realtime WebRTC transport.
 /// Superseded by Hermes-native Talk via `HermesTalkCoordinator`.
-@available(*, deprecated, message: "Use Hermes-native Talk instead. See HermesTalkCoordinator.")
+@available(*, deprecated, message: "Use native Talk instead.")
 @MainActor
 protocol VoiceSessionServiceProtocol {
     var snapshot: TalkSessionSnapshot { get }

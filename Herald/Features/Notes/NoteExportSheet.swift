@@ -86,7 +86,7 @@ struct NoteExportSheet: View {
                     Text("Select layers to export")
                 } footer: {
                     if result != nil {
-                        Text("Enriched content is a static copy. Edits in the destination will not sync back to Herald.")
+                        Text("Enriched content is a static copy. Edits in the destination will not sync back to Kallisti.")
                     }
                 }
             }
@@ -202,7 +202,7 @@ struct ShareToNotesSheet: View {
                     Image(systemName: "info.circle")
                         .foregroundStyle(Design.Colors.secondaryForeground)
 
-                    Text("This is a static export. Edits in Apple Notes will not sync back to Herald.")
+                    Text("This is a static export. Edits in Apple Notes will not sync back to Kallisti.")
                         .font(Design.Typography.caption)
                         .foregroundStyle(Design.Colors.secondaryForeground)
                 }

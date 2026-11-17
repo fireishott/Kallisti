@@ -30,7 +30,7 @@ final class NotesStore {
     var errorMessage: String?
 
     private let repository: NotesRepositoryProtocol
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "notes-store")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "notes-store")
     private let foldersKey = "com.kallisti.notes.folders"
 
     init(repository: NotesRepositoryProtocol = NotesRepository()) {

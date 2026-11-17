@@ -7,7 +7,7 @@ import os
 actor LiveNotesClient {
     private let apiClient: RelayAPIClient
     private let accessTokenProvider: () async -> String?
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "notes-client")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "notes-client")
 
     init(
         apiClient: RelayAPIClient,

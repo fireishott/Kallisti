@@ -42,6 +42,12 @@ enum ErisRoute: Equatable, Sendable {
     case skills
     /// `GET /v1/gw/update/check` - is there a newer build. Admin scope.
     case updateCheck
+    /// `POST /v1/rpc` - the envelope every method speaks.
+    case rpc
+    /// `POST /v1/gw/update/apply` - install the available build.
+    case updateApply
+    /// `GET /v1/gw/update/progress` - how that install is going.
+    case updateProgress
     /// `GET /v1/gw/health` - the daemon's own health. Admin scope.
     case gatewayHealth
     /// `GET /v1/diagnostics` - the recent-events ring. Admin scope.
@@ -121,6 +127,12 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/skills"
         case .updateCheck:
             return "/v1/gw/update/check"
+        case .rpc:
+            return "/v1/rpc"
+        case .updateApply:
+            return "/v1/gw/update/apply"
+        case .updateProgress:
+            return "/v1/gw/update/progress"
         case .gatewayHealth:
             return "/v1/gw/health"
         case .diagnostics:
@@ -168,11 +180,11 @@ enum ErisRoute: Equatable, Sendable {
     var method: String {
         switch self {
         case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
-             .cron, .skills, .updateCheck, .gatewayHealth, .diagnostics, .attachment,
+             .cron, .skills, .updateCheck, .gatewayHealth, .diagnostics, .updateProgress, .attachment,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .aux:
             return "GET"
-        case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings,
+        case .pair, .tokenRefresh, .turns, .cancel, .createConversation, .clearConversation, .updateSettings, .rpc, .updateApply,
              .uploadAttachment,
              .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote,
              .setModel, .setAux:
@@ -312,6 +324,95 @@ actor ErisClient {
     func diagnosticsBundle() async throws -> ErisDiagnostics {
         let data = try await send(route: .diagnostics, form: nil)
         return try decode(ErisDiagnostics.self, from: data)
+    }
+
+    /// Round trip to the daemon, in milliseconds.
+    ///
+    /// Measured with the RPC `ping`, which does nothing but answer, so the number is
+    /// transport and not work.
+    func pingLatencyMs() async -> Int? {
+        guard let base = try? await authorizedRequest(
+            route: .rpc,
+            form: nil,
+            accept: "application/json"
+        ) else { return nil }
+        var request = base
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(
+            withJSONObject: ["method": "ping", "params": [:]]
+        )
+        let started = DispatchTime.now()
+        guard let (data, response) = try? await perform(request),
+              (200..<300).contains(Self.status(of: response)),
+              (try? decode(ErisRPCAnswer.self, from: data)) != nil
+        else { return nil }
+        let elapsed = DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds
+        return Int(elapsed / 1_000_000)
+    }
+
+    /// Start the update the check offered.
+    func updateApply() async throws {
+        _ = try await send(route: .updateApply, form: ["target": "eris"])
+    }
+
+    /// How the install is going, as the daemon words it.
+    func updateProgress() async throws -> String {
+        let data = try await send(route: .updateProgress, form: nil)
+        struct Body: Decodable {
+            struct Data: Decodable {
+                let state: String?
+                let percent: Int?
+                let message: String?
+            }
+            let data: Data?
+        }
+        let body = try decode(Body.self, from: data)
+        if let message = body.data?.message, !message.isEmpty { return message }
+        if let state = body.data?.state {
+            if let percent = body.data?.percent { return "\(state) (\(percent)%)" }
+            return state
+        }
+        return "working"
+    }
+
+    /// The settings record as flat key/value pairs, so an editor can show every
+    /// field the daemon has rather than the handful this client models.
+    func settingsFields() async throws -> [String: String] {
+        let data = try await send(route: .settings, form: nil)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        var fields: [String: String] = [:]
+        for (key, value) in object {
+            switch value {
+            case let text as String: fields[key] = text
+            case let number as NSNumber: fields[key] = number.stringValue
+            case let flag as Bool: fields[key] = flag ? "true" : "false"
+            default: break
+            }
+        }
+        fields.removeValue(forKey: "ok")
+        return fields
+    }
+
+    /// Write settings. The daemon ignores keys it does not own and names what it
+    /// accepted, so a stale editor cannot corrupt the record.
+    func updateSettings(_ fields: [String: String]) async throws {
+        guard !fields.isEmpty else { return }
+        var request = try await authorizedRequest(
+            route: .updateSettings,
+            form: nil,
+            accept: "application/json"
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: fields)
+        let (data, response) = try await perform(request)
+        let status = Self.status(of: response)
+        guard (200..<300).contains(status) else {
+            throw Self.serverError(status: status, data: data)
+        }
     }
 
     /// Whether the daemon has a newer build, and what it says about it.

@@ -9,7 +9,7 @@ actor NotesRepository: NotesRepositoryProtocol {
     private let fileManager = FileManager.default
     private let notesDirectoryName = "Notes"
     private let metadataFileName = "notes-index.json"
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "notes-repository")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "notes-repository")
     private let customBaseDirectory: URL?
 
     private var baseDirectory: URL {
