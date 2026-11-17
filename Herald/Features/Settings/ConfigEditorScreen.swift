@@ -35,6 +35,13 @@ struct ConfigEditorScreen: View {
                 .trimmingCharacters(in: .whitespaces)
             var value = String(trimmed[trimmed.index(after: colon)...])
                 .trimmingCharacters(in: .whitespaces)
+            // The editor annotates each line with the daemon's own label after two
+            // spaces ("model: deepseek-flash  # models - Model"). That note is not
+            // part of the value and must never be written back.
+            if let note = value.range(of: "  #") {
+                value = String(value[value.startIndex..<note.lowerBound])
+                    .trimmingCharacters(in: .whitespaces)
+            }
             if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
                 value = String(value.dropFirst().dropLast())
             }

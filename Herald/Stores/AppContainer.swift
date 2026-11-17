@@ -1039,6 +1039,11 @@ final class AppContainer {
 
     func initialize() async {
         notesSyncEngine.start()
+        // The connector's status callback used to be the only thing that started
+        // latency monitoring, and it is nil without a connector - so on an Eris
+        // phone the Connection row stayed "—" forever. The monitor tolerates being
+        // unpaired: it reports nil until there is a daemon to ping.
+        startLatencyMonitoring()
         // Build 108 §15A.4: run the legacy → shared-Keychain token migration
         // once per launch.  Idempotent and best-effort; if the shared
         // Keychain entry is unreachable (no entitlement yet) we log and
