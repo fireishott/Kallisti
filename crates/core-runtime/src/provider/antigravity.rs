@@ -287,41 +287,259 @@ fn declaration(tool: &ToolSpec) -> serde_json::Value {
     serde_json::json!({
         "name": tool.name,
         "description": tool.description,
-        "parameters": without_unsupported_keys(&tool.parameters),
+        "parameters": google_schema(&tool.parameters),
     })
 }
 
-/// The same schema with the keys this provider's Schema message has no field for.
+/// The same schema, reduced to the fields Google's Schema proto accepts.
 ///
 /// An MCP server builds its `inputSchema` from its own JSON-Schema library, and
-/// those libraries emit `$schema`, `$id`, `$comment` and `additionalProperties`.
-/// Google's function-declaration Schema is a proto with a fixed field list, so
-/// every one of those is rejected outright with `Unknown name "$schema"` and the
-/// whole turn fails before the model is called - which is what a device turn on
-/// an Antigravity model was doing at round one.
+/// those libraries emit the full vocabulary: `$defs` and `$ref` for reuse,
+/// `type: ["string", "null"]` for a nullable value, `anyOf`/`oneOf` for a union,
+/// and meta keys like `$schema` and `additionalProperties`. Google's
+/// function-declaration Schema is a proto with one `type` string per node and a
+/// fixed field list, so every one of those is rejected outright - the 400 a
+/// device turn on an Antigravity model was getting at round one:
 ///
-/// Only keys that are *not* part of the call's shape are removed. `properties`,
-/// `required`, `items`, `enum`, `type` and the numeric bounds are the request,
-/// so they stay exactly as the server wrote them: repairing those would change
-/// what the tool is told to accept.
-fn without_unsupported_keys(schema: &serde_json::Value) -> serde_json::Value {
-    const DROPPED: [&str; 4] = ["$schema", "$id", "$comment", "additionalProperties"];
+/// ```text
+/// Unknown name "type" at ...parameters.properties[0].value:
+/// Proto field is not repeating, cannot start list.
+/// Unknown name "$defs" at ...
+/// ```
+///
+/// So this walks the tree and:
+///
+/// - resolves every local `$ref` against the schema root and inlines it, then
+///   drops `$defs`/`definitions`;
+/// - turns a `type` array into the one non-null type plus `nullable: true`;
+/// - picks the first non-null branch of `anyOf`/`oneOf` and merges its keys;
+/// - keeps property names verbatim, so a parameter literally called `type` is
+///   not mistaken for the keyword;
+/// - drops the remaining keywords the proto has no field for.
+///
+/// The shape a tool is told to accept can therefore get narrower (a string or
+/// number union becomes its first branch) but never wider: `required`,
+/// `properties`, `enum` and the numeric bounds are preserved.
+fn google_schema(schema: &serde_json::Value) -> serde_json::Value {
+    google_schema_at(schema, schema, 0)
+}
+
+/// One node of [`google_schema`]. `root` is the unresolved original, so a
+/// `$ref` anywhere in the tree can still find its target. A depth bound stops a
+/// recursive schema from expanding forever.
+fn google_schema_at(
+    schema: &serde_json::Value,
+    root: &serde_json::Value,
+    depth: usize,
+) -> serde_json::Value {
+    const MAX_DEPTH: usize = 12;
+    if depth > MAX_DEPTH {
+        return serde_json::json!({ "type": "object" });
+    }
     match schema {
         serde_json::Value::Object(map) => {
-            let mut out = serde_json::Map::with_capacity(map.len());
+            // A reference is replaced by what it names before anything else is
+            // read: the proto has no `$ref`, and dropping it would leave an
+            // empty property that the model cannot fill.
+            if let Some(reference) = map.get("$ref").and_then(serde_json::Value::as_str) {
+                return resolve_pointer(root, reference)
+                    .map(|target| google_schema_at(target, root, depth + 1))
+                    .unwrap_or_else(|| serde_json::json!({}));
+            }
+            let mut out = serde_json::Map::new();
             for (key, value) in map {
-                if DROPPED.contains(&key.as_str()) {
-                    continue;
+                match key.as_str() {
+                    "$schema" | "$id" | "$comment" | "additionalProperties" | "$defs"
+                    | "definitions" | "$ref" | "patternProperties" | "dependencies"
+                    | "dependentRequired" | "dependentSchemas" | "propertyNames"
+                    | "unevaluatedProperties" | "unevaluatedItems" | "contains"
+                    | "minContains" | "maxContains" | "if" | "then" | "else" | "not"
+                    | "examples" => continue,
+                    "type" => {
+                        let (kind, nullable) = normalize_type(value);
+                        if let Some(kind) = kind {
+                            out.insert("type".to_owned(), serde_json::json!(kind));
+                        }
+                        if nullable {
+                            out.entry("nullable").or_insert(serde_json::json!(true));
+                        }
+                    }
+                    "anyOf" | "oneOf" => {
+                        if let Some(branch) = preferred_branch(value)
+                            && let serde_json::Value::Object(branch_map) =
+                                google_schema_at(branch, root, depth + 1)
+                        {
+                            for (key, value) in branch_map {
+                                out.insert(key, value);
+                            }
+                        }
+                    }
+                    "allOf" => {
+                        // No `allOf` field, so every object branch is folded into
+                        // this one: the properties and required lists all apply.
+                        if let Some(branches) = value.as_array() {
+                            for branch in branches {
+                                if let serde_json::Value::Object(branch_map) =
+                                    google_schema_at(branch, root, depth + 1)
+                                {
+                                    merge_branch(&mut out, branch_map);
+                                }
+                            }
+                        }
+                    }
+                    "properties" => {
+                        if let Some(properties) = value.as_object() {
+                            let mut cleaned = serde_json::Map::with_capacity(properties.len());
+                            for (name, subschema) in properties {
+                                cleaned.insert(
+                                    name.clone(),
+                                    google_schema_at(subschema, root, depth + 1),
+                                );
+                            }
+                            out.insert(
+                                "properties".to_owned(),
+                                serde_json::Value::Object(cleaned),
+                            );
+                        }
+                    }
+                    "items" => {
+                        // A tuple's list of schemas has no proto form; its first
+                        // entry is the closest single schema.
+                        let item = match value {
+                            serde_json::Value::Array(items) => items.first(),
+                            other => Some(other),
+                        };
+                        if let Some(item) = item {
+                            out.insert(
+                                "items".to_owned(),
+                                google_schema_at(item, root, depth + 1),
+                            );
+                        }
+                    }
+                    "const" => {
+                        out.insert("enum".to_owned(), serde_json::json!([value]));
+                    }
+                    "enum" | "default" | "example" | "required" | "description" | "title"
+                    | "format" | "pattern" | "minimum" | "maximum" | "minLength"
+                    | "maxLength" | "minItems" | "maxItems" | "minProperties"
+                    | "maxProperties" | "propertyOrdering" | "nullable" => {
+                        out.insert(key.clone(), value.clone());
+                    }
+                    _ => {
+                        out.insert(key.clone(), google_schema_at(value, root, depth + 1));
+                    }
                 }
-                out.insert(key.clone(), without_unsupported_keys(value));
             }
             serde_json::Value::Object(out)
         }
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(without_unsupported_keys).collect())
-        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|item| google_schema_at(item, root, depth + 1))
+                .collect(),
+        ),
         other => other.clone(),
     }
+}
+
+/// The one type string the proto can hold, plus whether null was one of the
+/// alternatives. A union of two real types keeps the first and drops the rest:
+/// the proto cannot express the choice, and a required field must still name a
+/// type.
+fn normalize_type(value: &serde_json::Value) -> (Option<&str>, bool) {
+    match value {
+        serde_json::Value::String(text) => (Some(text.as_str()), false),
+        serde_json::Value::Array(items) => {
+            let mut nullable = false;
+            let mut first = None;
+            for item in items {
+                if let Some(text) = item.as_str() {
+                    if text == "null" {
+                        nullable = true;
+                    } else if first.is_none() {
+                        first = Some(text);
+                    }
+                }
+            }
+            (first, nullable)
+        }
+        _ => (None, false),
+    }
+}
+
+/// The first branch that is not the null alternative.
+fn preferred_branch(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    let branches = value.as_array()?;
+    branches
+        .iter()
+        .find(|branch| branch.get("type").and_then(serde_json::Value::as_str) != Some("null"))
+        .or_else(|| branches.first())
+}
+
+/// Fold one `allOf` branch into the node being built: properties merge by name,
+/// required lists concatenate and de-duplicate, and every other key yields to
+/// the first branch that named it.
+fn merge_branch(
+    out: &mut serde_json::Map<String, serde_json::Value>,
+    branch: serde_json::Map<String, serde_json::Value>,
+) {
+    for (key, value) in branch {
+        match key.as_str() {
+            "properties" => {
+                if let (Some(existing), Some(incoming)) = (
+                    out.get_mut("properties").and_then(serde_json::Value::as_object_mut),
+                    value.as_object(),
+                ) {
+                    for (name, schema) in incoming {
+                        existing.insert(name.clone(), schema.clone());
+                    }
+                } else {
+                    out.insert(key, value);
+                }
+            }
+            "required" => {
+                let mut required: Vec<serde_json::Value> = out
+                    .get("required")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(incoming) = value.as_array() {
+                    for name in incoming {
+                        if !required.contains(name) {
+                            required.push(name.clone());
+                        }
+                    }
+                }
+                out.insert("required".to_owned(), serde_json::Value::Array(required));
+            }
+            _ => {
+                out.entry(key).or_insert(value);
+            }
+        }
+    }
+}
+
+/// Resolve a local JSON pointer (`#/$defs/Filter`, `#/definitions/filter`). A
+/// remote reference is not something this daemon can fetch, so it resolves to
+/// nothing and the caller emits an empty schema.
+fn resolve_pointer<'a>(
+    root: &'a serde_json::Value,
+    reference: &str,
+) -> Option<&'a serde_json::Value> {
+    if reference == "#" {
+        return Some(root);
+    }
+    let pointer = reference.strip_prefix("#/")?;
+    let mut current = root;
+    for raw in pointer.split('/') {
+        let token = raw.replace("~1", "/").replace("~0", "~");
+        current = match current {
+            serde_json::Value::Object(map) => map.get(&token)?,
+            serde_json::Value::Array(items) => items.get(token.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(current)
 }
 
 /// Split a `data:` URL into its media type and its base64 payload.
@@ -602,6 +820,59 @@ mod tests {
         assert_eq!(parameters["properties"]["q"]["type"], "string");
         assert!(parameters["properties"]["q"].get("$comment").is_none());
         assert_eq!(parameters["required"][0], "q");
+    }
+
+    /// The exact 400 a device turn on Gemini 3 Flash hit: an MCP schema's
+    /// `$defs` is not a field of the Schema proto, and a nullable property's
+    /// `type` list is a repeated field the proto cannot start.
+    #[test]
+    fn tool_parameters_resolve_refs_and_flatten_type_unions_for_the_proto() {
+        let mut request = ChatRequest::user_text("hello");
+        request.tools = vec![ToolSpec {
+            name: "search".to_owned(),
+            description: "Find things".to_owned(),
+            parameters: serde_json::json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$defs": {
+                    "Filter": {
+                        "type": ["string", "null"],
+                        "description": "a word or nothing",
+                    }
+                },
+                "type": "object",
+                "properties": {
+                    "value": { "$ref": "#/$defs/Filter" },
+                    "type": { "type": "string" },
+                    "count": { "anyOf": [{ "type": "integer" }, { "type": "null" }] }
+                },
+                "required": ["value"],
+            }),
+        }];
+        let body = build_body(
+            &profile(Some("aicode-123")),
+            "gemini-3-flash",
+            &request,
+            RequestType::Agent,
+            "agent/c/t/s/1",
+            "s",
+        )
+        .expect("builds");
+        let parameters = &body["request"]["tools"][0]["functionDeclarations"][0]["parameters"];
+
+        assert!(parameters.get("$defs").is_none(), "no $defs: {parameters}");
+        assert!(
+            !parameters.to_string().contains("$ref"),
+            "no $ref survives: {parameters}"
+        );
+        // The nullable union is one string type plus the proto's nullable flag.
+        assert_eq!(parameters["properties"]["value"]["type"], "string");
+        assert_eq!(parameters["properties"]["value"]["nullable"], true);
+        assert_eq!(parameters["properties"]["value"]["description"], "a word or nothing");
+        // A parameter literally named `type` keeps its name.
+        assert_eq!(parameters["properties"]["type"]["type"], "string");
+        // anyOf picks the non-null branch.
+        assert_eq!(parameters["properties"]["count"]["type"], "integer");
+        assert!(parameters["properties"]["count"].get("anyOf").is_none());
     }
 
     #[test]

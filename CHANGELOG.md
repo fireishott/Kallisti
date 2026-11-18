@@ -177,6 +177,18 @@ observe; commit history carries the detail.
 
 ## 1.9.1
 
+- **An Antigravity turn no longer dies on its own tool schemas.** Google's
+  function-declaration `Schema` is a proto with one `type` string per node and a
+  fixed field list. An MCP server's `inputSchema` is full JSON Schema, so a
+  nullable property's `type: ["string", "null"]` arrived as a repeated field
+  (`Proto field is not repeating, cannot start list`) and a reusable definition's
+  `$defs` was an unknown name. The schema is now reduced to what the proto can
+  hold: local `$ref`s are resolved and inlined, `$defs`/`definitions` are dropped,
+  a type union becomes its one non-null type plus `nullable: true`, `anyOf`/`oneOf`
+  take their first non-null branch, `allOf` branches merge, and property names are
+  preserved verbatim. `required`, `properties`, `enum` and the numeric bounds are
+  untouched. `build 192`.
+
 - **A turn can name its model, and its conversation.** `POST /v1/turns` accepts
   `model` and `title`. The model is checked against that provider's own probe and
   recorded on the conversation, so the note sync can run enrichment on a model of
