@@ -1351,6 +1351,10 @@ final class AppContainer {
         if chatStore.isStreaming {
             await chatStore.recoverStalledStream()
         }
+        // A turn that finished while the app was suspended never ran the
+        // completion handler, so its Live Activity was left on "Thinking".
+        // Re-run the reconcile now that the phase is settled.
+        reconcileLiveActivities()
         // Build 117: a turn can be running SERVER-side with no local `.sending`
         // row and no active stream (started from desktop / another device). The
         // normal poll path bails on hasPendingMessages == false, so the thread
@@ -1402,6 +1406,9 @@ final class AppContainer {
             chatStore.settleStreamFromCompletionPush()
         }
         chatStore.reconcileStreamingPhase()  // D3: Same gap as handleAppDidBecomeActive
+        // The reconcile above ran while the stream was still latched, so it
+        // kept the Lock Screen activity. Now that the phase is idle, end it.
+        reconcileLiveActivities()
         await chatStore.loadConversation()
         await inboxStore.loadInbox(force: true)
     }

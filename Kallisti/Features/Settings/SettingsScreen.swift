@@ -1433,16 +1433,6 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
-                // Hermes Agent Version
-                settingsRow(
-                    icon: "brain.head.profile",
-                    iconColor: Design.Colors.accent,
-                    title: "Agent",
-                    value: hostStore.currentHost?.heraldVersion ?? "—"
-                )
-
-                sectionDivider
-
                 // Active Model
                 settingsRow(
                     icon: "cpu",

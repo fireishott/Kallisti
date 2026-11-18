@@ -47,7 +47,11 @@ final class CronStore {
 
     /// The daemon, found through the container when the store was built before it.
     private var resolvedHerald: (any HeraldClientProtocol)? {
-        if let herald = resolvedHerald { return herald }
+        // `if let herald` reads the stored property. The earlier spelling
+        // (`if let herald = resolvedHerald`) called this getter from inside
+        // itself, which is a stack overflow the first time anything asked for
+        // it - exactly what build 204 did on Skills and Cron.
+        if let herald { return herald }
         return AppContainer.shared?.chatStore.heraldClient
     }
 

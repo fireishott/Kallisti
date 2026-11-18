@@ -45,6 +45,19 @@ struct GatewayLogsScreen: View {
         return logLines.filter { $0.message.localizedCaseInsensitiveContains(searchText) }
     }
 
+    /// Eris has one event ring, not the legacy connector/gateway/agent logs.
+    private var isEris: Bool {
+        container.chatStore.heraldClient is ErisHeraldClient
+    }
+
+    /// The list draws the daemon ring and the stream tail; either being
+    /// non-empty means there is something to show. The body used to test only
+    /// `logLines`, which is always empty on Eris, so a full diagnostics ring
+    /// rendered as "No logs".
+    private var hasRows: Bool {
+        !logLines.isEmpty || !daemonEntries.isEmpty
+    }
+
     var body: some View {
         ZStack {
             Design.Colors.background.ignoresSafeArea()
@@ -53,15 +66,19 @@ struct GatewayLogsScreen: View {
                 // Level filter
                 levelPicker
 
-                // Build 107: Source filter for selecting which logs to view
-                sourcePicker
+                // Build 107: Source filter for selecting which logs to view.
+                // Eris answers one ring, so three source chips would be three
+                // names for the same rows.
+                if !isEris {
+                    sourcePicker
+                }
 
-                if isLoading && logLines.isEmpty {
+                if isLoading && !hasRows {
                     Spacer()
                     ProgressView("Loading logs…")
                         .foregroundStyle(Design.Colors.secondaryForeground)
                     Spacer()
-                } else if let error = errorMessage, logLines.isEmpty {
+                } else if let error = errorMessage, !hasRows {
                     Spacer()
                     VStack(spacing: Design.Spacing.md) {
                         Image(systemName: "exclamationmark.triangle")
@@ -76,7 +93,7 @@ struct GatewayLogsScreen: View {
                         .buttonStyle(.borderedProminent)
                     }
                     Spacer()
-                } else if logLines.isEmpty && !isLoading {
+                } else if !hasRows && !isLoading {
                     emptyStateView
                 } else {
                     logList
@@ -393,11 +410,24 @@ struct GatewayLogsScreen: View {
             // (count stayed 200 forever, so nothing ever appended) - "Live"
             // looked frozen. The facade's SSE stream is real-time and
             // returns real per-line levels.
-            if container.nativeGatewayClient != nil,
+            if isEris {
+                startErisPoll()
+            } else if container.nativeGatewayClient != nil,
                let nativeClient = container.nativeGatewayClient {
                 startNativeFacadeStream(nativeClient)
             } else {
                 startLiveStream()
+            }
+        }
+    }
+
+    /// Eris live: the daemon's diagnostics ring has no SSE route, so a live
+    /// view is a short poll of the same read the first load used.
+    private func startErisPoll() {
+        streamTask = Task {
+            while !Task.isCancelled {
+                await fetchLogs()
+                try? await Task.sleep(for: .seconds(3))
             }
         }
     }

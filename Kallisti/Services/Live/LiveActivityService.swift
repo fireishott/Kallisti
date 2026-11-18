@@ -70,7 +70,7 @@ final class LiveActivityService {
         do {
             currentActivity = try Activity.request(
                 attributes: attributes,
-                content: .init(state: state, staleDate: nil),
+                content: .init(state: state, staleDate: Date.now.addingTimeInterval(120)),
                 pushType: .token
             )
             startedAt = now
@@ -110,7 +110,7 @@ final class LiveActivityService {
         do {
             currentActivity = try Activity.request(
                 attributes: attributes,
-                content: .init(state: state, staleDate: nil),
+                content: .init(state: state, staleDate: Date.now.addingTimeInterval(120)),
                 pushType: .token
             )
             startedAt = now
@@ -156,7 +156,7 @@ final class LiveActivityService {
         do {
             currentActivity = try Activity.request(
                 attributes: attributes,
-                content: .init(state: state, staleDate: nil),
+                content: .init(state: state, staleDate: Date.now.addingTimeInterval(120)),
                 pushType: .token
             )
             startedAt = now
@@ -242,7 +242,7 @@ final class LiveActivityService {
 
     private func updateActivity(with state: KallistiActivityAttributes.ContentState) {
         guard let activity = currentActivity, activity.activityState == .active else { return }
-        let content = ActivityContent(state: state, staleDate: nil)
+        let content = ActivityContent(state: state, staleDate: Date.now.addingTimeInterval(120))
         let activityID = activity.id
         Task.detached {
             for activity in Activity<KallistiActivityAttributes>.activities where activity.id == activityID {
