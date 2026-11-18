@@ -5716,11 +5716,17 @@ fn audit_failure(request_id: &str, action: &str, error: crate::auth::AuthError) 
     .into_response()
 }
 
-/// `POST /dashboard/settings/provider` - endpoint, key reference, model.
+/// `POST /dashboard/settings/provider` - the default model every new chat starts on.
 ///
-/// What is stored is three strings, one of which is the *name* of an environment
-/// variable. No key value is accepted, stored, echoed, or logged: the reference
-/// is validated against `env:NAME` and nothing resolves it here.
+/// One choice, not three fields. The endpoint and the key reference are the
+/// providers registry's rows, edited on the same tab under Providers, and this
+/// form no longer asks for them: a second copy of the endpoint was the copy that
+/// could disagree with the registry the turn actually resolved through.
+///
+/// What is stored is the picker's `provider/model` value, the primary provider
+/// that owns it, and the legacy endpoint and reference rows kept in step so the
+/// dashboard's provider card and the wizard's view cannot describe a different
+/// endpoint. No key value is accepted, stored, echoed, or logged.
 async fn save_provider(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -5735,50 +5741,56 @@ async fn save_provider(
         Ok(fields) => fields,
         Err(error) => return fail_settings(&state, as_html, error),
     };
-    // The picker offers `provider/model`; the text field below it takes a bare
-    // id. A picker choice wins when it sent one. The text field is the authority
-    // when the picker is empty, which is how a hand-typed id that no catalogue
-    // has published yet still gets stored.
+    // The picker is the only control this form renders, so an empty value is a
+    // missing choice rather than an instruction to fall back to a typed id.
     let picked = field(&fields, "model_selection").trim().to_owned();
-    let typed = field(&fields, "model").trim().to_owned();
-    let submitted = if picked.is_empty() {
-        typed.clone()
-    } else {
-        picked.clone()
-    };
-    let (base_url, key_ref, model) = match validate_provider(
-        field(&fields, "base_url"),
-        field(&fields, "api_key_ref"),
-        &submitted,
-    ) {
-        Ok(parts) => parts,
+    let model = match check_model_choice(&state, &picked) {
+        Ok(model) => model,
         Err(error) => return fail_settings(&state, as_html, error),
     };
-    // The picker is a closed set, checked against the provider's own probe. The
-    // typed field is the escape hatch for a model a gateway serves but does not
-    // list: it is stored as given, because the endpoint is the authority until
-    // it has published a catalogue of its own.
-    let model = if picked.is_empty() {
-        model
-    } else {
-        match check_model_choice(&state, &model) {
-            Ok(model) => model,
-            Err(error) => return fail_settings(&state, as_html, error),
-        }
+    // The provider half of the choice is the endpoint every new chat starts on.
+    let registry = chat::provider_registry(&state.engine).unwrap_or_default();
+    let primary = state
+        .engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let choice = chat::split_model_value(&model, &registry, &primary);
+    let Some(provider) = registry
+        .iter()
+        .find(|provider| provider.id == choice.provider_id)
+        .or_else(|| crate::providers::resolve(&registry, &primary))
+        .cloned()
+    else {
+        let error = FormError::new(
+            Some("model_selection"),
+            "provider_not_configured",
+            "no provider is configured: add one under Providers below, then pick its model here",
+        );
+        return fail_settings(&state, as_html, error);
     };
 
     let db = state.engine.db();
     for (key, value) in [
-        (SETTING_PROVIDER_BASE_URL, base_url.as_str()),
-        (SETTING_PROVIDER_KEY_REF, key_ref.as_str()),
         (SETTING_MODEL, model.as_str()),
+        (crate::providers::SETTING_PRIMARY, provider.id.as_str()),
+        (SETTING_PROVIDER_BASE_URL, provider.base_url.as_str()),
+        (SETTING_PROVIDER_KEY_REF, provider.key_ref.as_str()),
     ] {
         if let Err(error) = store::settings_put(db, key, value) {
             return store_failure(&request_id.0, key, error);
         }
     }
+    // A model the phone picked for one chat is a pin for that chat. It must not
+    // outlive a change to the default, or the next brand-new chat would answer on
+    // the model the previous session happened to pick.
+    clear_pending_model(&state);
 
-    let detail = format!("base_url={base_url}; api_key_ref={key_ref}; model={model}");
+    let detail = format!(
+        "model={model}; provider={}; base_url={}; api_key_ref={}",
+        provider.id, provider.base_url, provider.key_ref
+    );
     if let Err(error) = state
         .engine
         .auth()
@@ -5793,6 +5805,19 @@ async fn save_provider(
     // still answers an API client in JSON, because a script needs the field and
     // the code.
     see_other(SAVED_PROVIDER)
+}
+
+/// Forget the model a phone pinned for its next turn.
+///
+/// The pin exists so a picker press applies to the chat the operator is in
+/// rather than moving every conversation. It has no conversation on it, though,
+/// so a pin left behind is the one way a brand-new chat can open on a model
+/// nobody chose for it. Anything that changes what a new chat should start on
+/// clears it.
+fn clear_pending_model(state: &AppState) {
+    let _ = state
+        .engine
+        .clear_setting(crate::device::turns::SETTING_PENDING_MODEL);
 }
 
 /// `POST /dashboard/settings/workspace` - the one directory a turn may write to.
@@ -8659,68 +8684,6 @@ fn permission_error(error: &PermissionError) -> FormError {
     }
 }
 
-/// The rules for a provider save, in one place so the three fields are checked
-/// before anything is written.
-///
-/// The endpoint goes through [`core_domain::ProviderProfile::new`], the same
-/// constructor the runtime uses to build a request, so a URL this page accepts is
-/// a URL a turn can send to. The reference is checked twice: the shared parser
-/// proves the `env:` prefix, and the capitalisation rule proves the name is a
-/// variable name rather than a pasted value.
-fn validate_provider(
-    base_url: &str,
-    key_ref: &str,
-    model: &str,
-) -> Result<(String, String, String), FormError> {
-    let reference = core_domain::SecretRef::try_from(key_ref).map_err(|source| {
-        FormError::new(
-            Some("api_key_ref"),
-            "provider_key_ref_invalid",
-            format!(
-                "the key reference must be env:NAME in capitals, or token:NAME naming a connected account: {source}"
-            ),
-        )
-    })?;
-    // Two schemes, two rules. `env:` names a variable in capitals; `token:` names
-    // a stored grant by its provider id, and the character set was already
-    // enforced by the parse above, so there is nothing further to check.
-    if let Some(name) = reference.env_name()
-        && !is_env_var_name(name)
-    {
-        return Err(FormError::new(
-            Some("api_key_ref"),
-            "provider_key_ref_invalid",
-            "env:NAME needs a variable name in capitals: letters, digits and underscores, starting with a letter or an underscore",
-        ));
-    }
-
-    let profile = core_domain::ProviderProfile::new("settings", base_url, reference.clone())
-        .map_err(|source| {
-            FormError::new(
-                Some("base_url"),
-                "provider_endpoint_invalid",
-                format!("{source}"),
-            )
-        })?;
-    let base_url = profile.base_url;
-    if !endpoint_has_host(&base_url) {
-        return Err(FormError::new(
-            Some("base_url"),
-            "provider_endpoint_invalid",
-            format!("{base_url} needs a host after the scheme, as in http://127.0.0.1:20128/v1"),
-        ));
-    }
-    let model = model.trim();
-    if model.is_empty() {
-        return Err(FormError::new(
-            Some("model"),
-            "provider_model_required",
-            "a model id is required: it is the model every turn starts with",
-        ));
-    }
-    Ok((base_url, reference.wire(), model.to_owned()))
-}
-
 /// Refuse a default model that no configured provider publishes.
 ///
 /// The check is per provider rather than global, because that is now the shape
@@ -8738,7 +8701,7 @@ fn check_model_choice(state: &AppState, value: &str) -> Result<String, FormError
         return Err(FormError::new(
             Some("model_selection"),
             "provider_model_required",
-            "pick a model, or type a model id this endpoint serves",
+            "pick the model every new chat should start on",
         ));
     }
     let registry = chat::provider_registry(&state.engine).unwrap_or_default();
@@ -8764,30 +8727,6 @@ fn check_model_choice(state: &AppState, value: &str) -> Result<String, FormError
         ));
     }
     Ok(value.trim().to_owned())
-}
-
-/// Whether a string is a shell-style environment variable name in capitals.
-fn is_env_var_name(name: &str) -> bool {
-    let mut characters = name.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    if !(first.is_ascii_uppercase() || first == '_') {
-        return false;
-    }
-    characters.all(|character| {
-        character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
-    })
-}
-
-/// Whether an `http(s)` URL carries a host, so `http://` alone is refused.
-fn endpoint_has_host(url: &str) -> bool {
-    let rest = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-        .unwrap_or("");
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    !authority.is_empty() && !authority.starts_with(':') && !authority.ends_with(':')
 }
 
 // ---------------------------------------------------------------------------
@@ -9696,6 +9635,11 @@ async fn chat_new(
             // A new conversation is a new empty page, so the line under the
             // salutation is written again rather than carried over.
             let _ = crate::greeting::forget(state.engine.db());
+            // And it starts on the default model. A model the phone pinned while
+            // working in another chat belongs to that chat; letting it survive
+            // into this one is how a new session used to open on the model the
+            // old one happened to be running.
+            clear_pending_model(&state);
             see_other_owned(conversation_path(&id))
         }
         Err(error) => refusal(FormError::new(None, "chat_write_failed", error.to_string())),

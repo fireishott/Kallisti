@@ -2048,7 +2048,11 @@ impl SettingsGroup {
             return false;
         };
         match self {
-            Self::Provider => matches!(field, "base_url" | "api_key_ref" | "model"),
+            // The default provider card has one field now. The endpoint and the
+            // key reference left it for the Providers registry, whose form owns
+            // `provider_*` names, so a legacy name here would file a refusal in
+            // a card that no longer renders the control.
+            Self::Provider => field == "model_selection",
             Self::Workspace => field == "workspace_path",
             Self::Permissions => matches!(
                 field,
@@ -2795,7 +2799,8 @@ impl SettingsTab {
             return Self::Models;
         };
         match field {
-            "base_url"
+            "model_selection"
+            | "base_url"
             | "api_key_ref"
             | "model"
             | "providers_registry"
@@ -2908,42 +2913,25 @@ fn group_region(view: &SettingsView, group: SettingsGroup) -> Markup {
     }
 }
 
-/// The provider group: endpoint, key reference, model.
+/// The default provider group: the one model every new chat starts on.
+///
+/// One control, because the endpoint and the key reference are the Providers
+/// registry's job and this card's job is the choice: a model id is meaningless
+/// without the provider that published it, so the picker's value is
+/// `provider/model` and saving it also moves the primary to that provider.
 fn provider_group(view: &SettingsView) -> Markup {
     let error = view.error.as_ref();
     let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
-    // The first failing field of this form takes the focus, and only the first.
-    let first = ["base_url", "api_key_ref", "model"]
-        .into_iter()
-        .find(|name| focuses(name));
     html! {
         form method="post" action="/dashboard/settings/provider" novalidate {
             (group_region(view, SettingsGroup::Provider))
-            (text_field(
-                "base_url",
-                "Endpoint",
-                &view.provider_base_url,
-                Some("An OpenAI-compatible base URL. Must start with http:// or https://."),
-                error,
-                first == Some("base_url"),
-                false,
-            ))
-            (text_field(
-                "api_key_ref",
-                "API key",
-                &view.provider_key_ref,
-                Some("Paste the provider's key, or write env:NAME to read one the daemon already has. A pasted key is sealed into eris.env at mode 0600 and is never stored in the database."),
-                error,
-                first == Some("api_key_ref"),
-                false,
-            ))
             div .field {
                 label for="model_selection" { "Default model" }
-                select id="model_selection" name="model_selection"
+                select id="model_selection" name="model_selection" required
                     autofocus[focuses("model_selection")] {
                     @if view.model_options.is_empty() {
                         option value="" selected[view.model_selection.is_empty()] {
-                            "no probe has published a model list yet"
+                            "no provider has published a model list yet"
                         }
                     }
                     // The stored value may name a model no catalogue holds - a
@@ -2964,25 +2952,17 @@ fn provider_group(view: &SettingsView) -> Markup {
                 }
                 span .hint {
                     "Every model every configured provider has published, named "
-                    "`provider/model`. Choosing one points turns at that provider, so the model "
-                    "and the endpoint move together."
+                    "`provider/model`. The choice is what a new chat starts on, and saving it also "
+                    "makes that model's provider the primary, so the endpoint moves with the model. "
+                    "A conversation already running keeps the model it answered on."
                 }
             }
-            (text_field(
-                "model",
-                "Model id, typed",
-                &view.model,
-                Some("A model id as the endpoint spells it, used when the picker above is left on its empty option. Worth preferring when a gateway serves a model it does not list."),
-                error,
-                first == Some("model"),
-                false,
-            ))
             div .actions {
-                button type="submit" { "Save provider" }
+                button type="submit" { "Save default" }
             }
             p .small {
-                "Saving here writes the rows and nothing else. It does not call the endpoint: "
-                "the rotate button on the dashboard is the probe."
+                "Saving here writes the choice and nothing else. It does not call the endpoint: "
+                "the probe button under Providers is what asks an endpoint what it serves."
             }
         }
     }
@@ -3650,8 +3630,8 @@ fn greeting_group(view: &SettingsView) -> Markup {
                     span .error { (error.message) }
                 }
                 span .hint {
-                    "primary follows whatever the provider section uses. A model pinned here keeps "
-                    "that choice when the primary moves."
+                    "primary follows whatever the Default provider card uses. A model pinned here "
+                    "keeps that choice when the default moves."
                 }
             }
             div .field {
@@ -3826,8 +3806,9 @@ fn providers_group(view: &SettingsView) -> Markup {
         @if view.providers.is_empty() {
             p .empty {
                 strong { "No provider is configured yet." }
-                " A turn needs one endpoint and one model before it can answer. Add one below, "
-                "or fill in the three Provider fields above."
+                " A turn needs one endpoint before the Default provider card above can offer a "
+                "model. Add the endpoint below; saving it probes it and publishes its models "
+                "into that picker."
             }
         } @else {
             /* One row per endpoint, read-only except for the two actions. The
@@ -4050,8 +4031,8 @@ fn providers_group(view: &SettingsView) -> Markup {
                         span .error { (error.message) }
                     }
                     span .hint {
-                        "The endpoint a turn uses unless a role says otherwise. When the registry is "
-                        "empty the three Provider fields above still seed a default entry."
+                        "The endpoint a turn uses unless a role says otherwise. Picking a model in "
+                        "the Default provider card above moves this to that model's provider."
                     }
                 }
                 div .actions {
@@ -4565,10 +4546,11 @@ pub fn settings_page(view: &SettingsView) -> Markup {
 fn tab_models(view: &SettingsView) -> Markup {
     html! {
         section .card aria-labelledby="provider-heading" {
-            h2 id="provider-heading" { "Provider" }
+            h2 id="provider-heading" { "Default provider" }
             p .small {
-                "The endpoint every turn is sent to, and the name of the environment variable that "
-                "holds its key. A reference travels; a key value never does."
+                "The model every new chat starts on, and the provider that serves it. Endpoints and "
+                "key references live under Providers below; this is the one choice a turn makes "
+                "before the operator picks anything."
             }
             (provider_group(view))
         }
@@ -4604,9 +4586,9 @@ fn tab_models(view: &SettingsView) -> Markup {
         section .card aria-labelledby="aux-heading" {
             h2 id="aux-heading" { "Auxiliary models" }
             p .small {
-                "A turn answers with the primary model. These are the jobs beside it. A role set to "
-                "primary follows whatever the provider section uses; a role pinned to a model keeps "
-                "that model when the primary moves."
+                "A turn answers with the default model. These are the jobs beside it. A role set to "
+                "primary follows the Default provider card; a role pinned to a model keeps that "
+                "model when the default moves."
             }
             p .small {
                 "Pinning a model to a role is what turns that role on: left on primary, the role does "

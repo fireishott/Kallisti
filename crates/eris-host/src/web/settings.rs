@@ -21,7 +21,7 @@
 
 use axum::http::StatusCode;
 
-use crate::admin::{AppState, ROUTE_SETTINGS, router_with};
+use crate::admin::{AppState, ROUTE_CHAT_NEW, ROUTE_SETTINGS, router_with};
 use crate::auth::PairingService;
 use crate::onboarding::SETTING_WORKSPACE;
 
@@ -44,17 +44,9 @@ fn settings_tab_path(tab: &str) -> String {
     format!("{ROUTE_SETTINGS}?tab={tab}")
 }
 
-/// A provider form body, with the reference spelled the way the rule requires.
-fn provider_body(base_url: &str, key_ref: &str, model: &str) -> String {
-    // `model_selection` is sent empty so the typed-model fallback path is what
-    // the test exercises: a hand-typed id is stored as given, exactly as the
-    // settings page does when the picker is left on its empty option.
-    format!(
-        "base_url={}&api_key_ref={}&model_selection=&model={}",
-        encode(base_url),
-        encode(key_ref),
-        encode(model)
-    )
+/// A default-provider form body. The card has one control: the model picker.
+fn provider_body(model_selection: &str) -> String {
+    format!("model_selection={}", encode(model_selection))
 }
 
 /// A permission form body.
@@ -98,19 +90,28 @@ fn the_settings_page_renders_current_values() {
         );
     }
 
-    // The provider group is pre-filled from the database.
+    // The Default provider card renders the one choice it owns. The three
+    // fields the old Provider card carried are gone: the endpoint and the key
+    // reference are the registry's rows on the same tab, and a second copy of
+    // the endpoint was the copy that could disagree with what a turn resolved.
     assert!(
-        page.contains(r#"value="http://127.0.0.1:20128/v1""#),
-        "the stored endpoint is pre-filled: {page}"
+        page.contains("Default provider"),
+        "the card is named for what it decides: {page}"
     );
     assert!(
-        page.contains(r#"value="env:NINEROUTER_API_KEY""#),
-        "the stored reference is pre-filled: {page}"
+        page.contains(r#"id="model_selection""#),
+        "the default model picker is missing: {page}"
     );
     assert!(
-        page.contains(r#"value="ds/deepseek-v4-flash""#),
-        "the stored model is pre-filled: {page}"
+        page.contains(r#"value="default/ds/deepseek-v4-flash""#),
+        "the stored default model is the selected option: {page}"
     );
+    for gone in ["base_url", "api_key_ref", "model"] {
+        assert!(
+            !page.contains(&format!(r#"id="{gone}""#)),
+            "the removed `{gone}` field still renders: {page}"
+        );
+    }
 
     // The workspace group renders the path the engine resolved.
     assert!(
@@ -127,7 +128,7 @@ fn the_settings_page_renders_current_values() {
     );
 
     // Every input is labelled, and every form has its own live region.
-    for name in ["base_url", "api_key_ref", "model", "workspace_path"] {
+    for name in ["model_selection", "workspace_path"] {
         assert!(
             page.contains(&format!(r#"<label for="{name}">"#)),
             "the {name} control has no label: {page}"
@@ -220,21 +221,31 @@ fn the_settings_page_renders_current_values() {
 }
 
 #[test]
-fn saving_the_provider_persists_and_audits() {
+fn saving_the_default_provider_persists_and_audits() {
     let (_dir, engine, app, cookie) = ready_app();
+    // A catalogue with a second model, so the save is a real choice rather than
+    // the only option the page could have posted.
+    engine
+        .set_provider_catalog(
+            "default",
+            &["ds/deepseek-v4-flash".to_owned(), "model-c".to_owned()],
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("catalogue");
+    // A pin the phone left behind for its next turn. Changing the default must
+    // consume it, or a new chat answers on the previous session's pick.
+    engine
+        .set_setting(
+            crate::device::turns::SETTING_PENDING_MODEL,
+            "default/ds/deepseek-v4-flash",
+        )
+        .expect("pending pin");
 
     let reply = block_on(send(
         &app,
-        Call::post(
-            PROVIDER_POST,
-            &provider_body(
-                "http://127.0.0.1:20128/v1",
-                "env:KALLISTI_TEST_KEY",
-                "model-b",
-            ),
-        )
-        .html()
-        .cookie(Some(&cookie)),
+        Call::post(PROVIDER_POST, &provider_body("default/model-c"))
+            .html()
+            .cookie(Some(&cookie)),
     ));
     assert_eq!(
         reply.status,
@@ -252,18 +263,38 @@ fn saving_the_provider_persists_and_audits() {
         "the notice names the group that was saved: {location}"
     );
 
-    // The rows are the source of truth, and they changed.
-    assert_eq!(
-        engine.provider_key_ref().expect("read").as_deref(),
-        Some("env:KALLISTI_TEST_KEY")
-    );
-    // The typed field is the authority when the picker is empty, so the bare id
-    // is stored as given rather than qualified into the default provider's
-    // catalogue. The stored row is exactly what was typed.
+    // The rows are the source of truth: the model, and the provider that serves
+    // it. The endpoint moves with the model rather than being a second field
+    // that can disagree with it.
     assert_eq!(
         engine.model().expect("read").as_deref(),
-        Some("model-b"),
-        "a hand-typed model is stored as given"
+        Some("default/model-c"),
+        "the picker's provider/model value is the stored default"
+    );
+    assert_eq!(
+        engine
+            .setting(crate::providers::SETTING_PRIMARY)
+            .expect("read")
+            .as_deref(),
+        Some("default"),
+        "the chosen model's provider becomes the primary"
+    );
+    assert_eq!(
+        engine.provider_base_url().expect("read").as_deref(),
+        Some("http://127.0.0.1:20128/v1"),
+        "the legacy endpoint row follows the chosen provider"
+    );
+    assert_eq!(
+        engine.provider_key_ref().expect("read").as_deref(),
+        Some("env:NINEROUTER_API_KEY"),
+        "the legacy reference row follows the chosen provider"
+    );
+    assert_eq!(
+        engine
+            .setting(crate::device::turns::SETTING_PENDING_MODEL)
+            .expect("read"),
+        None,
+        "a pending model pin cannot outlive a change to the default"
     );
 
     let rows = super::harness::audit_rows(engine.db());
@@ -272,11 +303,11 @@ fn saving_the_provider_persists_and_audits() {
         .find(|row| row.action == "settings.provider")
         .unwrap_or_else(|| panic!("no settings.provider audit row: {rows:?}"));
     let detail = row.detail.clone().unwrap_or_default();
-    assert!(detail.contains("env:KALLISTI_TEST_KEY"), "{detail}");
-    assert!(detail.contains("model-b"), "{detail}");
+    assert!(detail.contains("model=default/model-c"), "{detail}");
+    assert!(detail.contains("provider=default"), "{detail}");
     assert_eq!(row.actor, "loopback");
 
-    // And the page shows the saved values back, with a notice.
+    // And the page shows the saved choice back, with a notice.
     let page = block_on(send(
         &app,
         Call::get("/dashboard/settings?saved=provider")
@@ -285,7 +316,7 @@ fn saving_the_provider_persists_and_audits() {
     ));
     assert_eq!(page.status, StatusCode::OK);
     assert!(
-        page.body.contains(r#"value="env:KALLISTI_TEST_KEY""#),
+        page.body.contains(r#"value="default/model-c" selected"#),
         "the page reads back what was stored: {}",
         page.body
     );
@@ -301,11 +332,7 @@ fn saving_the_provider_persists_and_audits() {
         &app,
         Call::post(
             PROVIDER_POST,
-            &provider_body(
-                "http://127.0.0.1:20128/v1",
-                "env:KALLISTI_TEST_KEY",
-                "model-c",
-            ),
+            &provider_body("default/ds/deepseek-v4-flash"),
         )
         .cookie(Some(&cookie)),
     ));
@@ -318,113 +345,164 @@ fn saving_the_provider_persists_and_audits() {
     );
     assert_eq!(
         engine.model().expect("read").as_deref(),
-        Some("model-c"),
+        Some("default/ds/deepseek-v4-flash"),
         "the scripted save wrote the row"
     );
 }
 
 #[test]
-fn a_bad_key_reference_is_rejected() {
+fn a_new_chat_starts_on_the_default_model_not_the_last_one() {
     let (_dir, engine, app, cookie) = ready_app();
-    let before = engine.provider_key_ref().expect("read");
+    engine
+        .set_provider_catalog(
+            "default",
+            &["ds/deepseek-v4-flash".to_owned(), "model-c".to_owned()],
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("catalogue");
 
-    // A pasted key value is not a reference, and a lower-case variable name is
-    // not the documented shape either.
-    for bad in [
-        "sk-a-pasted-key-value",
-        "env:ninerouter",
-        "NINEROUTER_API_KEY",
-    ] {
-        let reply = block_on(send(
-            &app,
-            Call::post(
-                PROVIDER_POST,
-                &provider_body("http://127.0.0.1:20128/v1", bad, "ds/deepseek-v4-flash"),
-            )
+    // A conversation already running on the other model.
+    let previous = crate::web::chat::create_conversation(engine.db()).expect("conversation");
+    crate::web::chat::set_conversation_model(
+        engine.db(),
+        &previous,
+        "default/ds/deepseek-v4-flash",
+    )
+    .expect("model");
+
+    // The operator moves the default.
+    let saved = block_on(send(
+        &app,
+        Call::post(PROVIDER_POST, &provider_body("default/model-c"))
             .html()
             .cookie(Some(&cookie)),
-        ));
-        assert_eq!(
-            reply.status,
-            StatusCode::BAD_REQUEST,
-            "{bad} should be refused: {}",
-            reply.body
-        );
-        assert!(
-            reply.body.contains("provider_key_ref_invalid"),
-            "the field error is named: {}",
-            reply.body
-        );
-        assert!(
-            reply.body.contains(r#"aria-live="polite""#),
-            "the refusal is announced: {}",
-            reply.body
-        );
-        assert!(
-            reply.body.contains(r#"id="api_key_ref""#),
-            "the page comes back with the form: {}",
-            reply.body
-        );
-        assert_eq!(
-            engine.provider_key_ref().expect("read"),
-            before,
-            "{bad} must not be stored"
-        );
-    }
+    ));
+    assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
+
+    // The running conversation keeps what it answered on: moving the default is
+    // not a quiet rewrite of a transcript's model, which would re-read its whole
+    // history on a cache that does not have it.
+    assert_eq!(
+        crate::web::chat::conversation_model(engine.db(), &previous)
+            .expect("read")
+            .as_deref(),
+        Some("default/ds/deepseek-v4-flash"),
+        "an existing conversation keeps its model"
+    );
+
+    // A pin the phone left for its next turn belongs to the chat it was picked
+    // in. A brand-new chat must not inherit it.
+    engine
+        .set_setting(
+            crate::device::turns::SETTING_PENDING_MODEL,
+            "default/ds/deepseek-v4-flash",
+        )
+        .expect("pending pin");
+
+    let created = block_on(send(
+        &app,
+        Call::post(ROUTE_CHAT_NEW, "").html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(created.status, StatusCode::SEE_OTHER, "{}", created.body);
+    let location = created.location().unwrap_or_default();
+    let id = location
+        .rsplit('/')
+        .next()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("the redirect names the new conversation: {location}"));
+    assert_eq!(
+        crate::web::chat::conversation_model(engine.db(), id).expect("read"),
+        None,
+        "a new conversation records no model, which is what the page reads as the default"
+    );
+    assert_eq!(
+        engine
+            .setting(crate::device::turns::SETTING_PENDING_MODEL)
+            .expect("read"),
+        None,
+        "New chat consumes the previous chat's pin"
+    );
+
+    // And the page it lands on offers the new default, selected.
+    assert_eq!(crate::web::chat::model_value(&engine), "default/model-c");
+    let page = block_on(send(
+        &app,
+        Call::get_owned(location).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(r#"value="default/model-c" selected"#),
+        "the composer starts on the default: {}",
+        page.body
+    );
+}
+
+#[test]
+fn a_bad_default_model_is_rejected() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let before = engine.model().expect("read");
+
+    // A model the provider's own probe did not publish is refused by the field
+    // the picker owns, and nothing is written.
+    let reply = block_on(send(
+        &app,
+        Call::post(PROVIDER_POST, &provider_body("default/model-not-published"))
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(
+        reply.status,
+        StatusCode::BAD_REQUEST,
+        "an unpublished model is refused: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains("model_not_in_probe"),
+        "the field error is named: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains(r#"aria-live="polite""#),
+        "the refusal is announced: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains(r#"id="model_selection""#),
+        "the page comes back with the picker: {}",
+        reply.body
+    );
+    assert_eq!(engine.model().expect("read"), before, "nothing is stored");
 
     // The API client gets the documented body, not a page.
     let api = block_on(send(
         &app,
-        Call::post(
-            PROVIDER_POST,
-            &provider_body(
-                "http://127.0.0.1:20128/v1",
-                "not-a-ref",
-                "ds/deepseek-v4-flash",
-            ),
-        )
-        .cookie(Some(&cookie)),
+        Call::post(PROVIDER_POST, &provider_body("default/model-not-published"))
+            .cookie(Some(&cookie)),
     ));
     assert_eq!(api.status, StatusCode::BAD_REQUEST);
     let body = api.json();
     assert_eq!(body["ok"], false);
-    assert_eq!(body["field"], "api_key_ref");
-    assert_eq!(body["code"], "provider_key_ref_invalid");
+    assert_eq!(body["field"], "model_selection");
+    assert_eq!(body["code"], "model_not_in_probe");
     assert!(
         body["message"]
             .as_str()
-            .is_some_and(|text| text.contains("env:")),
-        "the refusal says what the shape is: {body}"
+            .is_some_and(|text| text.contains("not in the list")),
+        "the refusal says which list: {body}"
     );
 
-    // A base URL that is not http(s) is the endpoint field's refusal.
-    let endpoint = block_on(send(
+    // An empty pick is a missing choice rather than a request to fall back to
+    // a model id typed somewhere else.
+    let empty = block_on(send(
         &app,
-        Call::post(
-            PROVIDER_POST,
-            &provider_body("ftp://127.0.0.1/v1", "env:KEY", "ds/deepseek-v4-flash"),
-        )
-        .cookie(Some(&cookie)),
+        Call::post(PROVIDER_POST, &provider_body("")).cookie(Some(&cookie)),
     ));
-    assert_eq!(endpoint.status, StatusCode::BAD_REQUEST);
-    assert_eq!(endpoint.json()["field"], "base_url");
-    assert_eq!(endpoint.json()["code"], "provider_endpoint_invalid");
-
-    // And an empty model is the model field's refusal.
-    let model = block_on(send(
-        &app,
-        Call::post(
-            PROVIDER_POST,
-            &provider_body("http://127.0.0.1:20128/v1", "env:KEY", ""),
-        )
-        .cookie(Some(&cookie)),
-    ));
-    assert_eq!(model.status, StatusCode::BAD_REQUEST);
-    assert_eq!(model.json()["field"], "model");
-    assert_eq!(model.json()["code"], "provider_model_required");
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST);
+    assert_eq!(empty.json()["field"], "model_selection");
+    assert_eq!(empty.json()["code"], "provider_model_required");
 
     // Nothing was written by any of the refusals.
-    assert_eq!(engine.provider_key_ref().expect("read"), before);
+    assert_eq!(engine.model().expect("read"), before);
 }
 
 #[test]
