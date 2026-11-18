@@ -280,6 +280,13 @@ enum ErisFrame: Equatable, Sendable {
     case artifactDiff(ErisDiff)
     /// A page a step wrote, with the height cap the daemon set.
     case artifactPage(html: String, heightCap: Int?)
+    /// A file the turn attached to its reply:
+    /// `{"id":"...","name":"...","size":123,"media_type":"..."}`.
+    ///
+    /// The daemon journals this frame and replays it on reconnect. The
+    /// transcript rows carry the same four fields, but the bubble a phone is
+    /// watching arrived over the stream and had no rows to read.
+    case attachment(ErisAttachmentRef)
     /// The turn is waiting on the operator: turn.ask.
     case ask(question: String, choices: [String]?, requestID: String, multi: Bool)
     /// A command is parked until a person allows or denies it: turn.approval.
@@ -288,7 +295,7 @@ enum ErisFrame: Equatable, Sendable {
     /// Whether this frame ends the stream. Matches `FrameKind::is_terminal`.
     var isTerminal: Bool {
         switch self {
-        case .delta, .reasoning, .step, .artifactDiff, .artifactPage, .ask, .approval: return false
+        case .delta, .reasoning, .step, .artifactDiff, .artifactPage, .attachment, .ask, .approval: return false
         case .done, .error, .cancelled: return true
         }
     }
@@ -298,7 +305,7 @@ enum ErisFrame: Equatable, Sendable {
         switch self {
         case .delta(let text): return text
         case .done(let text, _): return text
-        case .reasoning, .step, .artifactDiff, .artifactPage, .ask, .approval, .error, .cancelled: return nil
+        case .reasoning, .step, .artifactDiff, .artifactPage, .attachment, .ask, .approval, .error, .cancelled: return nil
         }
     }
 
@@ -322,6 +329,14 @@ enum ErisFrame: Equatable, Sendable {
                 text: object["text"] as? String ?? "",
                 usage: ErisUsage(json: object["usage"])
             )
+        case "attachment":
+            let object = (try? ErisJSON.object(data)) ?? [:]
+            return .attachment(ErisAttachmentRef(
+                id: object["id"] as? String ?? "",
+                name: object["name"] as? String ?? "",
+                size: object["size"] as? Int ?? 0,
+                mediaType: object["media_type"] as? String
+            ))
         case "error":
             let object = (try? ErisJSON.object(data)) ?? [:]
             return .error(

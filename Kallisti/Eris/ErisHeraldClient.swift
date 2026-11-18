@@ -317,6 +317,8 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     continuation.yield(.artifactDiff(diff.codeDiff))
                 case .artifactPage(let html, let cap):
                     continuation.yield(.artifactPage(html: html, heightCap: cap))
+                case .attachment(let file):
+                    continuation.yield(.attachment(Self.messageAttachment(from: file)))
                 case .approval(let approval):
                     // Visible now; the decide card is its own commit.
                     continuation.yield(.toolActivity(
@@ -972,6 +974,21 @@ final class ErisHeraldClient: HeraldClientProtocol {
         return UUID(uuid: uuid)
     }
 
+    /// One attachment as the app draws it. A scheme of our own, so the view
+    /// fetches the bytes from the paired daemon instead of a relay that never
+    /// had them; the id is the daemon's row, not a local UUID.
+    static func messageAttachment(from file: ErisAttachmentRef) -> MessageAttachment {
+        MessageAttachment(
+            id: Self.stableUUID(from: file.id),
+            kind: (file.mediaType ?? "").hasPrefix("image/") ? "image" : "file",
+            fileName: file.name,
+            mimeType: file.mediaType ?? "application/octet-stream",
+            thumbnailBase64: nil,
+            localStoragePath: nil,
+            mediaURL: URL(string: "eris-attachment://" + file.id)
+        )
+    }
+
     static func message(from m: ErisConversationMessage) -> Message {
         Message(
             id: stableUUID(from: m.id),
@@ -994,19 +1011,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     isError: $0.isError
                 )
             },
-            attachments: m.attachments.map { file in
-                MessageAttachment(
-                    id: Self.stableUUID(from: file.id),
-                    kind: (file.mediaType ?? "").hasPrefix("image/") ? "image" : "file",
-                    fileName: file.name,
-                    mimeType: file.mediaType ?? "application/octet-stream",
-                    thumbnailBase64: nil,
-                    localStoragePath: nil,
-                    // A scheme of our own, so the view fetches the bytes from the
-                    // paired daemon instead of a relay that never had them.
-                    mediaURL: URL(string: "eris-attachment://" + file.id)
-                )
-            },
+            attachments: m.attachments.map(Self.messageAttachment(from:)),
             reasoning: m.displayReasoning ?? "",
             erisID: m.id
         )

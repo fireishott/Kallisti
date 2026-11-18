@@ -2211,6 +2211,20 @@ final class ChatStore {
                         self.conversation = conv
                     }
 
+                case .attachment(let file):
+                    // `attach_file` already wrote the row on the daemon. Draw the
+                    // chip on the bubble being watched instead of waiting for a
+                    // conversation reload, which is why the reply could say
+                    // "attached" with nothing under it.
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        if !conv.messages[idx].attachments.contains(where: { $0.id == file.id }) {
+                            conv.messages[idx].attachments.append(file)
+                            self.conversation = conv
+                            self.cacheModifiedConversation()
+                        }
+                    }
+
                 case .artifactDiff(let diff):
                     // The card lands on the message as it arrives, so it is
                     // visible during the turn rather than only at the end.
@@ -2381,6 +2395,15 @@ final class ChatStore {
                             resolved.timestamp = startedAt
                         }
                         resolved.toolActivities = activities
+                        // The terminal frame has no file list; the chips arrived
+                        // on their own Attachment frames and live on the
+                        // placeholder. Replacing the row without carrying them
+                        // would make the chip vanish at the exact moment the
+                        // answer settles.
+                        if let streamedAttachments = placeholder?.attachments,
+                           !streamedAttachments.isEmpty {
+                            resolved.attachments = streamedAttachments
+                        }
                         resolved.codeDiff = diff
                         // Priority for reasoning:
                         // 1) finalMessage.reasoning — set by LiveHeraldClient (SSE terminal

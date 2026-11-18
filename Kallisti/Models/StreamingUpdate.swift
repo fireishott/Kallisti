@@ -24,6 +24,10 @@ enum StreamingUpdate: Sendable {
     case toolStarted(ToolActivity)
     case toolCompleted(toolCallID: String, resultPreview: String?, isError: Bool, durationMs: Int?)
     case toolOutput(toolCallID: String, chunk: String)
+    /// A file the turn attached to its own reply, streamed when `attach_file`
+    /// succeeds. Without this the bubble being watched had no chip until the
+    /// conversation was reloaded.
+    case attachment(MessageAttachment)
     /// Build 104: out-of-band Hermes system notice (self-improvement review
     /// summaries, memory updates). Rendered as a faint in-transcript line.
     case systemNotice(String)
