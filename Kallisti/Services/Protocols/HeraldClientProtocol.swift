@@ -17,6 +17,12 @@ protocol HeraldClientProtocol {
     func loadOlder(conversationID: UUID, before: String) async -> (messages: [Message], hasMore: Bool)
     /// The daemon's schedules. A transport without the concept throws.
     func cronJobs() async throws -> [ErisCronJob]
+    /// Create one schedule and return the row the daemon read back.
+    func createCronJob(name: String, schedule: String, prompt: String) async throws -> ErisCronJob
+    /// Turn one schedule on or off.
+    func setCronJobEnabled(id: String, enabled: Bool) async throws -> ErisCronJob
+    /// Delete one schedule and its run history.
+    func deleteCronJob(id: String) async throws
     /// The daemon's skill catalogue. A transport without the concept throws.
     func skillCatalog() async throws -> [ErisSkill]
     /// Whether this transport has only a streaming form.
@@ -45,7 +51,10 @@ protocol HeraldClientProtocol {
     /// UI can render the agent's ACTUAL reasoning bubble (same component chat
     /// uses) while a note syncs. Default implementation reports the capability
     /// is unavailable; the native gateway client overrides it.
-    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) -> AsyncStream<StreamingUpdate>
+    ///
+    /// `enrichmentModelName` and `enrichmentProvider` are the per-note model
+    /// from Settings; nil means follow the chat model.
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?) -> AsyncStream<StreamingUpdate>
     func loadConversation() async -> Conversation
     func clearConversation() async throws -> Conversation
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation
@@ -251,7 +260,7 @@ extension HeraldClientProtocol {
         )
     }
 
-    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) -> AsyncStream<StreamingUpdate> {
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String? = nil, enrichmentProvider: String? = nil) -> AsyncStream<StreamingUpdate> {
         AsyncStream { continuation in
             continuation.yield(.failed("Note sync requires the native gateway client."))
             continuation.finish()
@@ -288,6 +297,29 @@ extension HeraldClientProtocol {
 extension HeraldClientProtocol {
     func cronJobs() async throws -> [ErisCronJob] { [] }
     func skillCatalog() async throws -> [ErisSkill] { [] }
+    /// A transport with no schedule write answers a refusal, not silence: a
+    /// create button that does nothing is indistinguishable from a network drop.
+    func createCronJob(name: String, schedule: String, prompt: String) async throws -> ErisCronJob {
+        throw ErisError.server(
+            status: 501,
+            code: "schedule_unsupported",
+            message: "this transport cannot write schedules"
+        )
+    }
+    func setCronJobEnabled(id: String, enabled: Bool) async throws -> ErisCronJob {
+        throw ErisError.server(
+            status: 501,
+            code: "schedule_unsupported",
+            message: "this transport cannot write schedules"
+        )
+    }
+    func deleteCronJob(id: String) async throws {
+        throw ErisError.server(
+            status: 501,
+            code: "schedule_unsupported",
+            message: "this transport cannot write schedules"
+        )
+    }
 }
 
 extension HeraldClientProtocol {

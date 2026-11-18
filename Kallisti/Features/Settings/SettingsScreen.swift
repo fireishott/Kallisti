@@ -24,6 +24,9 @@ struct SettingsScreen: View {
     // Build 70: searchable aux model picker state.
     @State private var auxPickerTask: AuxTask?
     @State private var auxPickerSearchText = ""
+    /// The note enrichment model picker, a sheet so its list keeps its scroll
+    /// position while the page underneath re-renders.
+    @State private var isNotesModelPickerPresented = false
     private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.kallisti.session")
     @Environment(ThemeManager.self) private var themeManager
     @Environment(GatewayControlService.self) private var gatewayControl
@@ -52,9 +55,11 @@ struct SettingsScreen: View {
                         preferencesSection
                         agentToolsSection
                         voiceSection
-                        // Notes Sync is an iPad feature: on the phone every control in it
-                        // points at a host-side sync that has no phone counterpart.
+                        // Notes is an iPad feature: the tab, the sync and the
+                        // editing defaults all point at a workspace the phone
+                        // does not have.
                         if DeviceClass.isPad {
+                            notesDefaultsSection
                             notesSection
                         }
                         locationSection
@@ -100,6 +105,19 @@ struct SettingsScreen: View {
                 onSelect: { provider, model in
                     Task { await auxService?.set(task: task.task, provider: provider, model: model) }
                     auxPickerTask = nil
+                }
+            )
+        }
+        // The note enrichment model, chosen from the daemon's catalogue. A sheet
+        // rather than a Menu so a parent re-render cannot reset its scroll.
+        .sheet(isPresented: $isNotesModelPickerPresented) {
+            NotesModelPickerSheet(
+                models: modelStore.models,
+                selectedModelName: settingsStore.settings.notesEnrichmentModelName,
+                selectedProvider: settingsStore.settings.notesEnrichmentProvider,
+                onSelect: { provider, model in
+                    settingsStore.settings.notesEnrichmentModelName = model
+                    settingsStore.settings.notesEnrichmentProvider = provider
                 }
             )
         }
@@ -2313,6 +2331,73 @@ struct SettingsScreen: View {
         }
     }
 
+    // MARK: - Notes
+
+    /// Editing defaults for the Notes workspace. Separate from Notes Sync so
+    /// how a new page is set up is not buried under a sync cadence.
+    private var notesDefaultsSection: some View {
+        SettingsSectionView(title: "Notes") {
+            VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                Toggle(isOn: Binding(
+                    get: { settingsStore.settings.notesDefaultLinesEnabled },
+                    set: { settingsStore.settings.notesDefaultLinesEnabled = $0 }
+                )) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "ruler")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Default lines")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("New notes start with ruled lines. Off starts them blank.")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .tint(Design.Brand.accent)
+
+                sectionDivider
+
+                VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "arrow.left.and.right")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        Text("Note width")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Spacer()
+                        Text("\(Int(settingsStore.settings.notesCanvasWidthScale * 100))%")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .monospacedDigit()
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+
+                    Slider(
+                        value: Binding(
+                            get: { settingsStore.settings.notesCanvasWidthScale },
+                            set: { settingsStore.settings.notesCanvasWidthScale = $0 }
+                        ),
+                        in: 0.5...1.5,
+                        step: 0.05
+                    )
+                    .tint(Design.Brand.accent)
+                    .accessibilityLabel("Note width scale")
+                }
+
+                Text("The writing column as a percentage of the available width.")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+        }
+    }
+
     // MARK: - Notes Sync
 
     private var notesSection: some View {
@@ -2350,6 +2435,61 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
+                Toggle(isOn: Binding(
+                    get: { settingsStore.settings.notesEnrichmentEnabled },
+                    set: { settingsStore.settings.notesEnrichmentEnabled = $0 }
+                )) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Enrich with AI")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("Ask the agent to read, summarize, and enrich the note as it syncs.")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .tint(Design.Brand.accent)
+
+                if settingsStore.settings.notesEnrichmentEnabled {
+                    Button {
+                        isNotesModelPickerPresented = true
+                    } label: {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "cpu")
+                                .font(.system(size: 14))
+                                .foregroundStyle(Design.Brand.primary)
+                                .frame(width: 20, alignment: .center)
+                            Text("Enrichment model")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Spacer()
+                            Text(enrichmentModelLabel)
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                        .frame(minHeight: Design.Size.minTapTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .task {
+                        if modelStore.models.isEmpty {
+                            await modelStore.loadModels()
+                        }
+                    }
+                }
+
+                sectionDivider
+
                 HStack(spacing: Design.Spacing.sm) {
                     Image(systemName: "doc.text.fill")
                         .font(.system(size: 14))
@@ -2370,6 +2510,16 @@ struct SettingsScreen: View {
                     .foregroundStyle(Design.Colors.secondaryForeground)
             }
         }
+    }
+
+    private var enrichmentModelLabel: String {
+        guard let name = settingsStore.settings.notesEnrichmentModelName, !name.isEmpty else {
+            return "Default (chat model)"
+        }
+        if let provider = settingsStore.settings.notesEnrichmentProvider, !provider.isEmpty {
+            return "\(provider)/\(name)"
+        }
+        return name
     }
 
     private var lastSyncLabel: String {
@@ -3181,3 +3331,98 @@ private struct AuxModelPickerSheet: View {
     }
 }
 
+
+/// The model a note enrichment turn runs on, chosen from the daemon's own
+/// catalogue. A sheet with its own search field so the list keeps its scroll
+/// position while the settings page underneath re-renders.
+private struct NotesModelPickerSheet: View {
+    let models: [ModelStore.HeraldModel]
+    let selectedModelName: String?
+    let selectedProvider: String?
+    /// `nil, nil` means follow the chat model.
+    let onSelect: (String?, String?) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+
+    private var filteredModels: [ModelStore.HeraldModel] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return models }
+        return models.filter {
+            $0.name.lowercased().contains(q)
+                || $0.provider.lowercased().contains(q)
+                || $0.displayProviderName.lowercased().contains(q)
+        }
+    }
+
+    private var isDefaultSelected: Bool {
+        selectedModelName == nil || selectedModelName?.isEmpty == true
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        onSelect(nil, nil)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Text("Default (chat model)")
+                                .foregroundStyle(Design.Colors.foreground)
+                            Spacer()
+                            if isDefaultSelected {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Design.Brand.accent)
+                            }
+                        }
+                    }
+                }
+
+                Section("Models") {
+                    if filteredModels.isEmpty {
+                        Text("No models match \"\(searchText)\"")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    } else {
+                        ForEach(filteredModels) { model in
+                            Button {
+                                onSelect(model.provider, model.name)
+                                dismiss()
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(model.name)
+                                            .font(Design.Typography.callout)
+                                            .foregroundStyle(Design.Colors.foreground)
+                                        Text(model.displayProviderName)
+                                            .font(Design.Typography.caption)
+                                            .foregroundStyle(Design.Colors.secondaryForeground)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    if selectedModelName == model.name
+                                        && selectedProvider == model.provider {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundStyle(Design.Brand.accent)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Enrichment model")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Filter models")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(Design.Brand.accent)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}

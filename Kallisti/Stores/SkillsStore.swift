@@ -72,7 +72,7 @@ final class SkillsStore {
         // still carries one; an Eris phone must never read "no skills installed"
         // when the truth is that its token was minted without administration - the
         // daemon says exactly that and it belongs on screen.
-        if let herald {
+        if let herald = resolvedHerald {
             if !force, let lastLoadedAt, Date().timeIntervalSince(lastLoadedAt) < Self.refreshInterval {
                 return
             }

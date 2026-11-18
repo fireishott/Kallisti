@@ -71,24 +71,13 @@ final class CronStore {
         // A paired daemon is the source of truth. The relay path below stays for a
         // build that still carries one, but an Eris phone must never be told it is
         // "not connected to a relay" - there is no relay.
-        if let herald {
+        if let herald = resolvedHerald {
             isLoading = true
             errorMessage = nil
             defer { isLoading = false }
             do {
                 let rows = try await herald.cronJobs()
-                jobs = rows.map { row in
-                    CronJob(
-                        id: row.id,
-                        name: row.name,
-                        schedule: row.schedule,
-                        prompt: row.prompt,
-                        enabled: row.enabled,
-                        lastRun: row.lastRun.flatMap { ErisTimestamp.date(from: $0) },
-                        nextRun: row.nextRun.flatMap { ErisTimestamp.date(from: $0) },
-                        lastResult: row.lastStatus
-                    )
-                }
+                jobs = rows.map { local($0) }
             } catch {
                 // The daemon's own sentence: a phone paired without administration
                 // is refused with an explanation, and that explanation is the
@@ -115,7 +104,36 @@ final class CronStore {
         }
     }
 
+    /// The list row for one daemon row. One mapping, so a create, a toggle and a
+    /// reload cannot disagree about what a job looks like.
+    private func local(_ row: ErisCronJob) -> CronJob {
+        CronJob(
+            id: row.id,
+            name: row.name,
+            schedule: row.schedule,
+            prompt: row.prompt,
+            enabled: row.enabled,
+            lastRun: row.lastRun.flatMap { ErisTimestamp.date(from: $0) },
+            nextRun: row.nextRun.flatMap { ErisTimestamp.date(from: $0) },
+            lastResult: row.lastStatus
+        )
+    }
+
     func createJob(name: String, schedule: String, prompt: String) async throws {
+        if let herald = resolvedHerald {
+            do {
+                let row = try await herald.createCronJob(
+                    name: name,
+                    schedule: schedule,
+                    prompt: prompt
+                )
+                jobs.append(local(row))
+            } catch {
+                errorMessage = (error as? ErisError)?.message ?? error.localizedDescription
+                throw error
+            }
+            return
+        }
         guard let apiClient, let token = await accessTokenProvider() else {
             errorMessage = "Not connected to a relay."
             return
@@ -128,6 +146,18 @@ final class CronStore {
     }
 
     func toggleJob(_ job: CronJob) async throws {
+        if let herald = resolvedHerald {
+            do {
+                let row = try await herald.setCronJobEnabled(id: job.id, enabled: !job.enabled)
+                if let index = jobs.firstIndex(where: { $0.id == job.id }) {
+                    jobs[index] = local(row)
+                }
+            } catch {
+                errorMessage = (error as? ErisError)?.message ?? error.localizedDescription
+                throw error
+            }
+            return
+        }
         guard let apiClient, let token = await accessTokenProvider() else {
             errorMessage = "Not connected to a relay."
             return
@@ -142,6 +172,16 @@ final class CronStore {
     }
 
     func deleteJob(_ job: CronJob) async throws {
+        if let herald = resolvedHerald {
+            do {
+                try await herald.deleteCronJob(id: job.id)
+                jobs.removeAll { $0.id == job.id }
+            } catch {
+                errorMessage = (error as? ErisError)?.message ?? error.localizedDescription
+                throw error
+            }
+            return
+        }
         guard let apiClient, let token = await accessTokenProvider() else {
             errorMessage = "Not connected to a relay."
             return

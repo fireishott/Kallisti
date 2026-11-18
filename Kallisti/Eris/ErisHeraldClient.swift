@@ -443,6 +443,21 @@ final class ErisHeraldClient: HeraldClientProtocol {
         return try await client.cronJobs()
     }
 
+    func createCronJob(name: String, schedule: String, prompt: String) async throws -> ErisCronJob {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.createCronJob(name: name, schedule: schedule, prompt: prompt)
+    }
+
+    func setCronJobEnabled(id: String, enabled: Bool) async throws -> ErisCronJob {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        return try await client.setCronJobEnabled(id: id, enabled: enabled)
+    }
+
+    func deleteCronJob(id: String) async throws {
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        try await client.deleteCronJob(id: id)
+    }
+
     /// The daemon's skill catalogue, same rule.
     func skillCatalog() async throws -> [ErisSkill] {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
@@ -701,6 +716,19 @@ final class ErisHeraldClient: HeraldClientProtocol {
             sender: .herald,
             content: "Note sync is not backed by Eris yet.",
             status: .failed
+        )
+    }
+
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?) -> AsyncStream<StreamingUpdate> {
+        sendNoteMessageStreaming(
+            text: text,
+            attachments: attachments,
+            clientMessageID: clientMessageID,
+            conversationID: conversationID,
+            title: title,
+            enrichmentModelName: enrichmentModelName,
+            enrichmentProvider: enrichmentProvider,
+            thinkingAsReasoning: false
         )
     }
 

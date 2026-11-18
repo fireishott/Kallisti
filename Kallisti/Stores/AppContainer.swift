@@ -222,7 +222,9 @@ final class AppContainer {
             tokenProvider: { await sessionStore.currentAccessToken() }
         )
         self.canvasStore = canvasStore ?? HeraldCanvasStore()
-        self.notesStore = notesStore ?? NotesStore()
+        self.notesStore = notesStore ?? NotesStore(
+            settingsProvider: { [settingsStore] in settingsStore.settings }
+        )
         let chatStoreRef = self.chatStore
         self.notesSyncEngine = NotesSyncEngine(
             notesStore: self.notesStore,
@@ -712,6 +714,15 @@ final class AppContainer {
             secureStore: secureStore
         )
         AppContainer.shared = container
+
+        // Skills and Cron read the paired daemon's own control plane. The stores
+        // were constructed before this client existed and were never handed it,
+        // so both kept their relay-era path: Skills fell into a loader that is a
+        // stub (empty screen, no error) and Cron decoded the old connector's
+        // body (a decoding error on a daemon that answers a different shape).
+        // The attach is the whole fix for the list on both screens.
+        container.skillsStore.attach(herald: erisHeraldClient)
+        container.cronStore.attach(herald: erisHeraldClient)
 
         // Build 70: hoist the aux model service so Infrastructure loads at
         // connection time (Settings previously created it lazily on appear).

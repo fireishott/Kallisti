@@ -289,12 +289,24 @@ final class NotesSyncEngine {
             var finalContent = ""
             var message: Message?
             var streamError: String?
-            for await update in client.sendNoteMessageStreaming(
+            // The per-note model, when the operator pinned one; nil follows the
+        // chat model. Read here rather than at init so a change in Settings
+        // applies to the next sync without restarting the engine.
+        let settings = settingsStore.settings
+        let enrichmentModel = settings.notesEnrichmentEnabled
+            ? settings.notesEnrichmentModelName
+            : nil
+        let enrichmentProvider = settings.notesEnrichmentEnabled
+            ? settings.notesEnrichmentProvider
+            : nil
+        for await update in client.sendNoteMessageStreaming(
                 text: messageText,
                 attachments: attachments,
                 clientMessageID: UUID(),
                 conversationID: note.id,
-                title: sessionTitle
+                title: sessionTitle,
+                enrichmentModelName: enrichmentModel,
+                enrichmentProvider: enrichmentProvider
             ) {
                 if Task.isCancelled { streamError = "Sync cancelled."; break }
                 switch update {

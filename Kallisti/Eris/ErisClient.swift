@@ -38,6 +38,10 @@ enum ErisRoute: Equatable, Sendable {
     case uploadAttachment
     /// `GET /v1/cron` - the daemon's schedules. Admin scope.
     case cron
+    /// `PATCH /v1/cron/{id}` - turn one schedule on or off. Admin scope.
+    case updateCron(id: String)
+    /// `DELETE /v1/cron/{id}` - delete one schedule. Admin scope.
+    case deleteCron(id: String)
     /// `GET /v1/skills` - the daemon's skill catalogue. Admin scope.
     case skills
     /// `GET /v1/gw/update/check` - is there a newer build. Admin scope.
@@ -123,6 +127,8 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/attachments"
         case .cron:
             return "/v1/cron"
+        case .updateCron(let id), .deleteCron(let id):
+            return "/v1/cron/\(Self.segment(id))"
         case .skills:
             return "/v1/skills"
         case .updateCheck:
@@ -189,9 +195,9 @@ enum ErisRoute: Equatable, Sendable {
              .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote,
              .setModel, .setAux:
             return "POST"
-        case .updateNote:
+        case .updateNote, .updateCron:
             return "PATCH"
-        case .deleteNote:
+        case .deleteNote, .deleteCron:
             return "DELETE"
         }
     }
@@ -486,6 +492,35 @@ actor ErisClient {
         let data = try await send(route: .cron, form: nil)
         struct Body: Decodable { let jobs: [ErisCronJob] }
         return try decode(Body.self, from: data).jobs
+    }
+
+    /// Create one schedule. The daemon parses the expression before it stores
+    /// anything, so a schedule that would never fire is refused here.
+    func createCronJob(name: String, schedule: String, prompt: String) async throws -> ErisCronJob {
+        let data = try await send(
+            route: .cron,
+            form: ["name": name, "schedule": schedule, "prompt": prompt]
+        )
+        struct Body: Decodable { let job: ErisCronJob }
+        return try decode(Body.self, from: data).job
+    }
+
+    /// Turn one schedule on or off, and return the row as stored.
+    func setCronJobEnabled(id: String, enabled: Bool) async throws -> ErisCronJob {
+        struct Patch: Encodable { let enabled: Bool }
+        struct Body: Decodable { let job: ErisCronJob }
+        let body: Body = try await sendJSON(
+            route: .updateCron(id: id),
+            body: Patch(enabled: enabled)
+        )
+        return body.job
+    }
+
+    /// Delete one schedule and its run history.
+    func deleteCronJob(id: String) async throws {
+        struct Empty: Encodable {}
+        struct Reply: Decodable { let ok: Bool }
+        let _: Reply = try await sendJSON(route: .deleteCron(id: id), body: Empty())
     }
 
     /// The daemon's skill catalogue. Admin scope, same rule.

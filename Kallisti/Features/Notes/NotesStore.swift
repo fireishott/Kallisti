@@ -32,9 +32,17 @@ final class NotesStore {
     private let repository: NotesRepositoryProtocol
     private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "notes-store")
     private let foldersKey = "com.kallisti.notes.folders"
+    /// Reads the live settings so a new note can honor the "default lines"
+    /// switch. Injected rather than read from disk here, so the store and the
+    /// Settings page cannot disagree about the value.
+    private let settingsProvider: @MainActor () -> UserSettings
 
-    init(repository: NotesRepositoryProtocol = NotesRepository()) {
+    init(
+        repository: NotesRepositoryProtocol = NotesRepository(),
+        settingsProvider: @escaping @MainActor () -> UserSettings = { UserSettings() }
+    ) {
         self.repository = repository
+        self.settingsProvider = settingsProvider
         loadFolders()
     }
     
@@ -121,9 +129,17 @@ final class NotesStore {
     func createNote(title: String = "") async -> KallistiNote? {
         do {
             let note = try await repository.createNote(title: title, folderId: nil)
-            notes.append(note)
-            selectedNoteId = note.id
-            return note
+            // A new page follows the "Default lines" switch: ruled when on,
+            // blank when off. Written back before the note is published to the
+            // list so the first render already shows the chosen paper.
+            var created = note
+            if !settingsProvider().notesDefaultLinesEnabled, created.pageStyle != .blank {
+                created.pageStyle = .blank
+                try await repository.updateNote(created)
+            }
+            notes.append(created)
+            selectedNoteId = created.id
+            return created
         } catch {
             logger.error("Failed to create note: \(error.localizedDescription)")
             errorMessage = error.localizedDescription

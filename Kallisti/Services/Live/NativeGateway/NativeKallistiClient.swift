@@ -2760,7 +2760,11 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// Streaming variant of sendNoteMessage. Yields the gateway's live
     /// reasoning deltas so the notes UI can render the agent's actual reasoning
     /// stream (same component chat uses), not a local OCR readout.
-    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) -> AsyncStream<StreamingUpdate> {
+    ///
+    /// The enrichment model is a daemon-side pin this transport cannot set, so
+    /// the two parameters are accepted and ignored here rather than silently
+    /// dropping the caller's request at the protocol boundary.
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?) -> AsyncStream<StreamingUpdate> {
         sendStreamingToConversation(
             message: text,
             attachments: attachments,

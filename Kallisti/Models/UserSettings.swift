@@ -607,6 +607,19 @@ struct UserSettings: Codable, Hashable, Sendable {
     var dashboardUsername: String?
     var dashboardPassword: String?
     var notesSyncInterval: NotesSyncInterval
+    /// Whether a sync asks the agent to enrich the note as well as record it.
+    ///
+    /// The note is already a session; this decides whether that turn is a plain
+    /// mirror of the page or a prompt that asks for a summary or a document.
+    var notesEnrichmentEnabled: Bool
+    /// The model the enrichment turn runs on. `nil` follows the chat model.
+    var notesEnrichmentModelName: String?
+    var notesEnrichmentProvider: String?
+    /// Whether a new note starts ruled. Off starts it blank.
+    var notesDefaultLinesEnabled: Bool
+    /// The editor's writing column, as a multiple of the available width.
+    /// 1.0 is full width; the slider is bounded 0.5 to 1.5.
+    var notesCanvasWidthScale: Double
 
     init(
         userName: String = "User",
@@ -642,7 +655,12 @@ struct UserSettings: Codable, Hashable, Sendable {
         dashboardURL: String? = nil,
         dashboardUsername: String? = nil,
         dashboardPassword: String? = nil,
-        notesSyncInterval: NotesSyncInterval = .manual
+        notesSyncInterval: NotesSyncInterval = .manual,
+        notesEnrichmentEnabled: Bool = true,
+        notesEnrichmentModelName: String? = nil,
+        notesEnrichmentProvider: String? = nil,
+        notesDefaultLinesEnabled: Bool = true,
+        notesCanvasWidthScale: Double = 1.0
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -678,6 +696,11 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.dashboardUsername = dashboardUsername
         self.dashboardPassword = dashboardPassword
         self.notesSyncInterval = notesSyncInterval
+        self.notesEnrichmentEnabled = notesEnrichmentEnabled
+        self.notesEnrichmentModelName = notesEnrichmentModelName
+        self.notesEnrichmentProvider = notesEnrichmentProvider
+        self.notesDefaultLinesEnabled = notesDefaultLinesEnabled
+        self.notesCanvasWidthScale = notesCanvasWidthScale
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -715,6 +738,11 @@ struct UserSettings: Codable, Hashable, Sendable {
         case dashboardUsername
         case dashboardPassword
         case notesSyncInterval
+        case notesEnrichmentEnabled
+        case notesEnrichmentModelName
+        case notesEnrichmentProvider
+        case notesDefaultLinesEnabled
+        case notesCanvasWidthScale
     }
 
     init(from decoder: Decoder) throws {
@@ -761,6 +789,11 @@ struct UserSettings: Codable, Hashable, Sendable {
         dashboardUsername = try container.decodeIfPresent(String.self, forKey: .dashboardUsername)
         dashboardPassword = try container.decodeIfPresent(String.self, forKey: .dashboardPassword)
         notesSyncInterval = try container.decodeIfPresent(NotesSyncInterval.self, forKey: .notesSyncInterval) ?? .manual
+        notesEnrichmentEnabled = try container.decodeIfPresent(Bool.self, forKey: .notesEnrichmentEnabled) ?? true
+        notesEnrichmentModelName = try container.decodeIfPresent(String.self, forKey: .notesEnrichmentModelName)
+        notesEnrichmentProvider = try container.decodeIfPresent(String.self, forKey: .notesEnrichmentProvider)
+        notesDefaultLinesEnabled = try container.decodeIfPresent(Bool.self, forKey: .notesDefaultLinesEnabled) ?? true
+        notesCanvasWidthScale = try container.decodeIfPresent(Double.self, forKey: .notesCanvasWidthScale) ?? 1.0
     }
 
     func encode(to encoder: Encoder) throws {
@@ -799,6 +832,11 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encodeIfPresent(dashboardUsername, forKey: .dashboardUsername)
         try container.encodeIfPresent(dashboardPassword, forKey: .dashboardPassword)
         try container.encode(notesSyncInterval, forKey: .notesSyncInterval)
+        try container.encode(notesEnrichmentEnabled, forKey: .notesEnrichmentEnabled)
+        try container.encodeIfPresent(notesEnrichmentModelName, forKey: .notesEnrichmentModelName)
+        try container.encodeIfPresent(notesEnrichmentProvider, forKey: .notesEnrichmentProvider)
+        try container.encode(notesDefaultLinesEnabled, forKey: .notesDefaultLinesEnabled)
+        try container.encode(notesCanvasWidthScale, forKey: .notesCanvasWidthScale)
     }
 
     func applyingEnvironmentPolicy(
