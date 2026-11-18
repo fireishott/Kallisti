@@ -570,9 +570,16 @@ fn run_command(
             "new" => {
                 let db = service.engine().db();
                 match crate::web::chat::create_conversation(db) {
-                    Ok(id) => format!(
-                        "Started a new conversation. Send into `{id}` and it files there."
-                    ),
+                    Ok(id) => {
+                        // The new conversation starts on the default, not on the
+                        // pin the picker left for the chat before it.
+                        let _ = service
+                            .engine()
+                            .clear_setting(crate::device::turns::SETTING_PENDING_MODEL);
+                        format!(
+                            "Started a new conversation. Send into `{id}` and it files there."
+                        )
+                    }
                     Err(error) => {
                         return DeviceError::db_unavailable(format!(
                             "cannot start a conversation: {error}"

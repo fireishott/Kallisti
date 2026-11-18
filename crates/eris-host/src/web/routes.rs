@@ -10041,6 +10041,10 @@ fn command_effect(
         "new" => match chat::create_conversation(state.engine.db()) {
             Ok(id) => {
                 let _ = crate::greeting::forget(state.engine.db());
+                // The same rule as the rail's New chat button: a new
+                // conversation starts on the default, not on a pin the phone
+                // left behind for the chat it was in.
+                clear_pending_model(state);
                 Ok((
                     id,
                     "Started a new conversation, and this is it. The last one is untouched and \
