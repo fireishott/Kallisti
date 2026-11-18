@@ -1077,6 +1077,35 @@ pub fn title_from(text: &str) -> String {
     cut
 }
 
+/// Whether the stored title is still one this daemon wrote as a placeholder.
+///
+/// A real title - the operator's rename or a model's earlier suggestion - is
+/// never replaced. Checking here, before the model call, is also what stops a
+/// title request on every turn of a long conversation: once a name exists,
+/// nothing needs naming again.
+///
+/// # Errors
+///
+/// A settings or transcript read failure.
+pub fn title_is_provisional(db: &Db, id: &str, question: &str) -> Result<bool, DbError> {
+    let current: Option<String> = db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT title FROM chat_conversations WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+    })?;
+    let Some(current) = current else {
+        return Ok(false);
+    };
+    if current == NEW_CONVERSATION_TITLE || current == title_from(question) {
+        return Ok(true);
+    }
+    Ok(first_question(db, id)?
+        .is_some_and(|text| title_from(&text) == current))
+}
+
 /// Ask the resolved role for a title.
 ///
 /// Best effort by design: a title is a nicety, so a provider that is down or a

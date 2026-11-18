@@ -11555,7 +11555,7 @@ fn spawn_turn(
     // The raise is conditional: an ordinary question keeps the operator's budget,
     // and only a message that names a long job is lifted, as far as the ceiling
     // setting allows. The goal block in the prompt is unchanged by this.
-    let raise = goal.is_some() && crate::goal::wants_long_job(&question);
+    let raise = crate::goal::wants_long_job(&question);
     let tool_rounds = crate::goal::rounds(tool_rounds, raise, goal_rounds_ceiling);
     let stored_enabled = state
         .engine
@@ -11915,6 +11915,7 @@ fn spawn_turn(
         // `goal` is already `None` for a greeting, so this is where "Sup" stops
         // meaning "sweep the warehouse".
         let system = crate::goal::with_objective(system, goal.as_deref());
+        let system = crate::goal::with_long_job_note(system, &question);
 
         // The dispatch surface, when this turn may dispatch at all. Both gates
         // are checked here and again in the turn: the operator's switch, and the

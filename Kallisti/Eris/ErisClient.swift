@@ -577,7 +577,11 @@ actor ErisClient {
         title: String? = nil
     ) async throws -> ErisTurn {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        // A picture is a message. The daemon already accepts a turn whose text
+        // is empty when it carries files; this guard used to refuse it before
+        // the request left the phone, so an image with no caption died as
+        // "text_required" and nothing was sent.
+        guard !trimmed.isEmpty || !attachments.isEmpty else {
             throw ErisError.server(status: 400, code: "text_required", message: "the turn text must not be empty")
         }
         var form = ["text": trimmed]

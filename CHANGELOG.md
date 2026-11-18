@@ -175,6 +175,25 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.9.2
+
+- **Phone chats get a real name, not their first sentence.** The title role
+  defaults to `primary`, and that used to mean no title call at all, so a chat
+  started from the app kept the truncated first question forever while the
+  browser's got a model-written name. A role left on primary now generates the
+  title with the turn's own provider. A title is requested only while the stored
+  one is still a placeholder or a daemon truncation, so a named conversation is
+  not renamed on every turn and is never renamed after the operator renames it.
+  `build 194`.
+- **A long job is not interrupted for lack of rounds when it has no `/goal`.**
+  The larger budget was gated on both a stored goal and a long-job message, so
+  "fix all of it" without `/goal` got the ordinary budget and ended in a status
+  report. The long-job signal alone now raises the budget to the operator's
+  ceiling, and the turn carries one instruction: finish and verify the work;
+  do not hand back a plan or a "still open" list unless the budget is spent or a
+  decision is genuinely needed; check an old note against the live system before
+  repeating it. `build 194`.
+
 ## 1.9.1
 
 - **An Antigravity turn no longer dies on its own tool schemas.** Google's

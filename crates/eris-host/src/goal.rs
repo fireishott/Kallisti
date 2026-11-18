@@ -89,6 +89,27 @@ pub fn block(objective: &str) -> String {
     )
 }
 
+/// The instruction a long-job turn carries, whether or not a `/goal` is set.
+///
+/// A long job used to be raised past the ordinary budget only when it also had
+/// a goal, so "fix all of it" without `/goal` got fifteen rounds and ended in a
+/// status report. It also tells the model what the operator keeps asking for:
+/// finish the work, do not hand back the same "still open" list from an old
+/// note without checking it against the live system.
+pub const LONG_JOB: &str = "Treat this as a long job: carry it through to a verified result in this turn. Do not end with a plan, a status report, or a list of what is still open unless the round budget is exhausted or you need a decision only the operator can make. If an earlier note says something is still open, check the live system before repeating it.";
+
+/// Append [`LONG_JOB`] to a long-job turn's system prompt.
+#[must_use]
+pub fn with_long_job_note(system: Option<String>, message: &str) -> Option<String> {
+    if !wants_long_job(message) {
+        return system;
+    }
+    Some(match system {
+        Some(system) if !system.trim().is_empty() => format!("{system}\n\n{LONG_JOB}"),
+        _ => LONG_JOB.to_owned(),
+    })
+}
+
 /// `system` with the objective appended, or `system` unchanged for a turn that
 /// carries no goal.
 #[must_use]

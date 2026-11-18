@@ -2716,7 +2716,14 @@ impl TurnHub {
                                         // forever while the browser's got a real
                                         // name - and that reading is exactly the
                                         // one the rail shows.
-                                        if let Some(config) = &write.title {
+                                        if let Some(config) = &write.title
+                                            && crate::web::chat::title_is_provisional(
+                                                store.db(),
+                                                &write.conversation,
+                                                &write.question,
+                                            )
+                                            .unwrap_or(false)
+                                        {
                                             let suggested = crate::web::chat::suggest_title(
                                                 config,
                                                 &write.question,
@@ -3007,7 +3014,7 @@ impl TurnHub {
             // The cap exists so a goal that will never finish cannot spend a night
             // of tokens, not to interrupt a job halfway. A greeting carries no goal
             // and asks for nothing, so it is handed neither.
-            let raise = goal.is_some() && crate::goal::wants_long_job(&prompt);
+            let raise = crate::goal::wants_long_job(&prompt);
             let max_rounds = crate::goal::rounds(max_rounds, raise, goal_rounds_ceiling);
             // The budget is stated before the first round. The loop's own notices
             // arrive at the last two, which is too late to plan a job that needs
@@ -3021,6 +3028,7 @@ impl TurnHub {
                 None => Some(crate::web::chat::budget_notice(max_rounds)),
             };
             let system = crate::goal::with_objective(system, goal.as_deref());
+            let system = crate::goal::with_long_job_note(system, &prompt);
             let index_enabled = !matches!(
                 crate::web::store::settings_get(
                     &budget_db,

@@ -9297,7 +9297,23 @@ pub(crate) async fn create_turn_with(
             // naming model.
             let title = chat::aux_pinned_config(service.engine(), "title_generation")
                 .ok()
-                .flatten();
+                .flatten()
+                // The role is "primary" by default, and that used to mean no
+                // title call at all: every phone chat kept its truncated first
+                // sentence while the browser's got a real name. The turn's own
+                // provider is the primary config, so a role left on it now
+                // generates a name too.
+                .or_else(|| {
+                    turn_provider.as_ref().map(|config| chat::TurnConfig {
+                        base_url: config.base_url.clone(),
+                        key_ref: config.key_ref.clone(),
+                        model: config.model.clone(),
+                        dialect: config.dialect,
+                        reasoning_split: config.reasoning_split,
+                        direct: config.direct,
+                        project: config.project.clone(),
+                    })
+                });
             Some(ConversationTurn {
                 conversation: conversation_id.clone(),
                 question_id,
