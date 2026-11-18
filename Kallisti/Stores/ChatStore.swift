@@ -713,6 +713,7 @@ final class ChatStore {
             from: cachedConversation,
             into: refreshed
         )
+        restoreInFlightRows()
         if sendPhase == .idle {
             streamingPhase = .idle
         }
@@ -744,6 +745,7 @@ final class ChatStore {
         do {
             let refreshed = try await heraldClient.loadConversation(id: id)
             conversation = mergeConversationMetadata(from: conversation, into: refreshed)
+            restoreInFlightRows()
             if sendPhase == .idle {
                 streamingPhase = .idle
             }
@@ -3251,6 +3253,45 @@ final class ChatStore {
         return captured
     }
 
+    /// Put the rows of a still-in-flight send back if a server refresh
+    /// returned a snapshot that predates them. The merge is supposed to keep
+    /// local-only rows, but this is the visible guarantee: a turn in progress
+    /// always has its question and its thinking bubble on screen. Called after
+    /// every conversation merge; a no-op once the outbox item is terminal and
+    /// the placeholder has settled.
+    private func restoreInFlightRows() {
+        guard var conv = conversation else { return }
+        let conversationID = conv.id
+        for item in outboxItems where item.conversationID == conversationID && item.isInFlight {
+            if !conv.messages.contains(where: {
+                $0.clientMessageID == item.clientMessageID && $0.sender == .user
+            }) {
+                let display = item.cleanText.isEmpty ? "[attachment]" : item.cleanText
+                conv.messages.append(Message(
+                    id: item.clientMessageID,
+                    clientMessageID: item.clientMessageID,
+                    sender: .user,
+                    content: display,
+                    status: .sending
+                ))
+            }
+        }
+        // `pendingStreamPlaceholders` covers the pre-ack window; once the job
+        // is acknowledged the id moves into `activeStreams`. Both are live
+        // rows the bubble needs.
+        let liveRows = Set(activeStreams.values).union(pendingStreamPlaceholders)
+        for id in liveRows where !conv.messages.contains(where: { $0.id == id }) {
+            conv.messages.append(Message(
+                id: id,
+                sender: .herald,
+                content: "",
+                status: .sending,
+                isStreaming: true
+            ))
+        }
+        conversation = conv
+    }
+
     /// Build 77: background the `ensureConversation` + `loadConversation` work
     /// for a freshly installed local conversation. Returns when the
     /// authoritative payload has been merged (or discarded by an identity /
@@ -3313,6 +3354,7 @@ final class ChatStore {
         }
 
         conversation = mergeConversationMetadata(from: conversation, into: refreshed)
+        restoreInFlightRows()
         if sendPhase == .idle {
             streamingPhase = .idle
         }
@@ -4750,6 +4792,32 @@ final class ChatStore {
             guard let local else { continue }
 
             localToRefreshedIndex[local.id] = index
+
+            // A refresh can land while this turn is still streaming: the
+            // daemon writes the answer row at turn start, so the fetched
+            // conversation already carries it under the server's id. If the
+            // merge adopted that id, every later stream frame - aimed at the
+            // placeholder id - would miss, leaving the bubble blank and the
+            // thinking indicator gone until a push. Keep the placeholder's
+            // identity and liveness, and merge in whatever the server knows.
+            if local.isStreaming {
+                refreshedConversation.messages[index].id = local.id
+                refreshedConversation.messages[index].isStreaming = true
+                refreshedConversation.messages[index].status = local.status
+                if local.content.count > refreshedConversation.messages[index].content.count {
+                    refreshedConversation.messages[index].content = local.content
+                }
+                if !local.attachments.isEmpty {
+                    refreshedConversation.messages[index].attachments = local.attachments
+                }
+                if !local.toolActivities.isEmpty {
+                    refreshedConversation.messages[index].toolActivities = local.toolActivities
+                }
+                if !local.reasoning.isEmpty {
+                    refreshedConversation.messages[index].reasoning = local.reasoning
+                    refreshedConversation.messages[index].reasoningDuration = local.reasoningDuration
+                }
+            }
 
             // B39 T5: defence in depth — if the local (streamed) message has
             // non-empty content and the server's version is empty or a strict

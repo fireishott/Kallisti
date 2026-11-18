@@ -64,7 +64,11 @@ struct MessageAttachment: Codable, Identifiable, Hashable, Sendable {
 }
 
 struct Message: Codable, Identifiable, Hashable, Sendable {
-    let id: UUID
+    /// Mutable so a transcript refresh can keep the id of the live streaming
+    /// placeholder it matched by jobID. The stream targets that id on every
+    /// frame; adopting the server's row id mid-turn silently dropped every
+    /// delta after the first load.
+    var id: UUID
     let clientMessageID: UUID?
     let sender: MessageSender
     var content: String

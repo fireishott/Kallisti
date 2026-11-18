@@ -198,4 +198,27 @@ struct B21FollowUpOrderTests {
             "herald:<streaming>",
         ], "got \(order(merged))")
     }
+
+    @Test("A server row that arrives mid-turn keeps the placeholder's id")
+    func refreshKeepsTheStreamingPlaceholdersIdentity() {
+        // The daemon writes the answer row at turn start, so a refresh during
+        // the turn can return the same reply under the server's id. The stream
+        // still targets the placeholder id; adopting the server id made every
+        // later delta miss and the bubble freeze on its first words.
+        let placeholder = UUID(), serverAnswer = UUID(), job = UUID()
+        let local: [Message] = [
+            makeMsg(placeholder, .herald, "I'll dig", jobID: job, isStreaming: true,
+                    reasoning: "Searching…"),
+        ]
+        let refreshed: [Message] = [
+            makeMsg(serverAnswer, .herald, "I'll dig", jobID: job),
+        ]
+
+        let merged = merge(local: local, refreshed: refreshed)
+
+        #expect(merged.count == 1, "got \(order(merged))")
+        #expect(merged.first?.id == placeholder, "the stream's target id was replaced")
+        #expect(merged.first?.isStreaming == true, "the row lost its thinking state")
+        #expect(merged.first?.reasoning == "Searching…")
+    }
 }
