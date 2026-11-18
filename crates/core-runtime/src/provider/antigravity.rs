@@ -38,8 +38,10 @@ pub const DEFAULT_ANTIGRAVITY_MAX_OUTPUT: u32 = 8_192;
 ///
 /// Not decoration: the endpoint's own framing depends on it, which is why the
 /// client that serves Antigravity sends a fixed one rather than its real
-/// identity.
-pub const ANTIGRAVITY_USER_AGENT: &str = "antigravity/ide/2.1.1 darwin/arm64";
+/// identity. The version is checked too: 2.1.1 was answered with "This version
+/// of Antigravity is no longer supported" on 2026-11-18, while the current
+/// published IDE release is 2.7.0, so the header names that release.
+pub const ANTIGRAVITY_USER_AGENT: &str = "antigravity/ide/2.7.0 darwin/arm64";
 
 /// What kind of turn this is, as Antigravity spells it.
 ///

@@ -189,6 +189,11 @@ observe; commit history carries the detail.
   preserved verbatim. `required`, `properties`, `enum` and the numeric bounds are
   untouched. `build 192`.
 
+- **The Antigravity client version is current.** The surface began answering
+  `antigravity/ide/2.1.1` with "This version of Antigravity is no longer
+  supported", after the schema error above was cleared. The header now names the
+  published IDE release, 2.7.0. `build 193`.
+
 - **A turn can name its model, and its conversation.** `POST /v1/turns` accepts
   `model` and `title`. The model is checked against that provider's own probe and
   recorded on the conversation, so the note sync can run enrichment on a model of
