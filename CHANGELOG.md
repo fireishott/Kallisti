@@ -175,6 +175,18 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.9.1
+
+- **A turn can name its model, and its conversation.** `POST /v1/turns` accepts
+  `model` and `title`. The model is checked against that provider's own probe and
+  recorded on the conversation, so the note sync can run enrichment on a model of
+  its own without moving the daemon default or the chat picker; a model no probe
+  published is refused by name rather than answered on the default in silence. The
+  title names a background turn's conversation from the caller's own words instead
+  of a header in its instruction block. A pending model pin from the phone's picker
+  is cleared when a turn names a model explicitly, because the pin belongs to
+  whichever chat was open, not to a turn that already said what it wants.
+
 ## 1.9.0
 
 - **The phone can see the files a turn made, and send its own.** A turn's attachments

@@ -8794,6 +8794,38 @@ mod tests {
         );
     }
 
+    /// A turn may name its model. The note sync uses that to run enrichment on
+    /// its own model without moving the daemon default. The name is checked
+    /// against that provider's probe, so a typo is refused by field-like code
+    /// rather than answered on the default in silence.
+    #[test]
+    fn a_turn_model_is_qualified_and_checked_against_the_probe() {
+        let fx = fixture();
+        let engine = fx.service.engine();
+        let registry = r#"[
+            {"id":"cmc","name":"CommandCode","base_url":"https://cc.test/v1","key_ref":"env:CC"}
+        ]"#;
+        engine
+            .set_setting(crate::providers::SETTING_REGISTRY, registry)
+            .expect("registry");
+        engine
+            .set_setting(crate::providers::SETTING_PRIMARY, "cmc")
+            .expect("primary");
+        engine
+            .set_setting(
+                &crate::onboarding::SetupEngine::provider_catalog_key("cmc"),
+                r#"["MiniMaxAI/MiniMax-M3"]"#,
+            )
+            .expect("catalogue");
+
+        assert_eq!(
+            resolve_turn_model(engine, "MiniMaxAI/MiniMax-M3").expect("published"),
+            "cmc/MiniMaxAI/MiniMax-M3"
+        );
+        let refusal = resolve_turn_model(engine, "MiniMaxAI/not-a-model").expect_err("unpublished");
+        assert_eq!(refusal.code(), "model_not_in_probe");
+    }
+
     /// A gateway that resells models names them `publisher/model`, and two of
     /// those heads (`deepseek`, `minimax`) are provider ids on this daemon. A
     /// picker row carrying one of those ids was refused as though the publisher
@@ -8897,6 +8929,35 @@ mod tests {
             "cmc/minimax/minimax-m3.1-flash"
         );
     }
+}
+
+/// The `provider/model` a turn asked for, checked against that provider's own
+/// probe. A caller that names a model it cannot have is refused by name rather
+/// than silently run on the default.
+fn resolve_turn_model(engine: &SetupEngine, requested: &str) -> Result<String, DeviceError> {
+    let registry = chat::provider_registry(engine).map_err(|error| {
+        DeviceError::db_unavailable(format!("cannot read the providers: {error}"))
+    })?;
+    let primary = engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .map_err(|error| {
+            DeviceError::db_unavailable(format!("cannot read the primary provider: {error}"))
+        })?
+        .unwrap_or_default();
+    let choice = chat::split_model_value(requested, &registry, &primary);
+    let known = engine.provider_catalog(&choice.provider_id).map_err(|error| {
+        DeviceError::db_unavailable(format!("cannot read that provider's catalogue: {error}"))
+    })?;
+    if !known.is_empty() && !known.iter().any(|model| model == &choice.model) {
+        return Err(DeviceError::bad_request(
+            "model_not_in_probe",
+            format!(
+                "`{}` is not in the list {} returned, so no turn would answer",
+                choice.model, choice.provider_id
+            ),
+        ));
+    }
+    Ok(format!("{}/{}", choice.provider_id, choice.model))
 }
 
 /// Everything a turn needs after the client has been authenticated, in one place
@@ -9092,6 +9153,42 @@ pub(crate) async fn create_turn_with(
     let vision = chat::aux_pinned_config(service.engine(), "vision")
         .ok()
         .flatten();
+    // A caller that names a model pins this conversation to it for the turn and
+    // every turn after it. The note sync uses this to run enrichment on its own
+    // model without moving the daemon default or the chat picker.
+    if let (Some(conversation_id), requested) = (&conversation, field(&fields, "model")) {
+        let requested = requested.trim();
+        if !requested.is_empty() {
+            let qualified = match resolve_turn_model(service.engine(), requested) {
+                Ok(value) => value,
+                Err(error) => return error.into_response(),
+            };
+            // The pin belongs to whichever chat the picker was in. This turn
+            // named its model explicitly, so the pin loses.
+            let _ = service
+                .engine()
+                .clear_setting(crate::device::turns::SETTING_PENDING_MODEL);
+            if let Err(error) =
+                chat::set_conversation_model(service.engine().db(), conversation_id, &qualified)
+            {
+                return DeviceError::db_unavailable(format!(
+                    "cannot store the model for this conversation: {error}"
+                ))
+                .into_response();
+            }
+        }
+    }
+
+    // A background turn can name its conversation. Without this the note sync
+    // would be named from the first line of its instruction block, which is a
+    // header, not a title.
+    if let Some(conversation_id) = &conversation {
+        let requested = field(&fields, "title").trim();
+        if !requested.is_empty() {
+            let _ = chat::set_title(service.engine().db(), conversation_id, &text, requested);
+        }
+    }
+
     let mut attachment_files: Vec<chat::Attachment> = Vec::new();
     let conversation_turn = match &conversation {
         None => None,
