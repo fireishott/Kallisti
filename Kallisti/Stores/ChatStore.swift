@@ -3263,8 +3263,14 @@ final class ChatStore {
         guard var conv = conversation else { return }
         let conversationID = conv.id
         for item in outboxItems where item.conversationID == conversationID && item.isInFlight {
-            if !conv.messages.contains(where: {
-                $0.clientMessageID == item.clientMessageID && $0.sender == .user
+            // Match by id first, then by content: a server row written before
+            // the daemon stored client_message_id has no id to match, and
+            // re-adding the question created a second bubble for one send.
+            let wanted = Self.normalizedMessageContent(item.cleanText)
+            if !conv.messages.contains(where: { row in
+                guard row.sender == .user else { return false }
+                if row.clientMessageID == item.clientMessageID { return true }
+                return !wanted.isEmpty && Self.normalizedMessageContent(row.content) == wanted
             }) {
                 let display = item.cleanText.isEmpty ? "[attachment]" : item.cleanText
                 conv.messages.append(Message(
@@ -3997,9 +4003,22 @@ final class ChatStore {
                 continuationContext: continuationContext
             )
         } else {
-            // Failed user message or empty assistant response — remove and resend.
-            conversation?.messages.removeAll { $0.id == message.id }
-            await sendMessage(content, attachments: attachments, clientMessageID: UUID())
+            // Failed user message — retry under the SAME client id. A fresh id
+            // asked the daemon for a second turn and produced a second bubble
+            // for one question. With the original id the daemon answers with
+            // the job it already made, so the retry resumes instead of
+            // duplicating. Drop the old outbox record and any local copy of
+            // the question first; the server row is canonical and the merge
+            // will put it back.
+            let retryID = sourceMessage.clientMessageID ?? UUID()
+            if let index = outboxItems.firstIndex(where: { $0.clientMessageID == retryID }) {
+                outboxItems.remove(at: index)
+                persistOutbox()
+            }
+            conversation?.messages.removeAll {
+                $0.clientMessageID == retryID && $0.sender == .user
+            }
+            await sendMessage(content, attachments: attachments, clientMessageID: retryID)
         }
     }
 

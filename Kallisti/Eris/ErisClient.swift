@@ -607,6 +607,11 @@ actor ErisClient {
         var headers: [String: String] = [:]
         if let idempotencyKey, !idempotencyKey.isEmpty {
             headers["Idempotency-Key"] = idempotencyKey
+            // The daemon stores the id the sender minted on the user row, and
+            // a refresh can only collapse the optimistic copy onto that row
+            // when both carry the same value. The header alone keys the job;
+            // this field is what makes the transcript agree on identity.
+            form["client_message_id"] = idempotencyKey
         }
         let data = try await send(route: .turns, form: form, headers: headers.isEmpty ? nil : headers)
         return try decode(ErisTurn.self, from: data)
