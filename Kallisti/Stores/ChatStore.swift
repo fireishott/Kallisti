@@ -2371,6 +2371,15 @@ final class ChatStore {
                             resolved: finalMessage,
                             streamedContent: streamedContent
                         )
+                        // The terminal frame carries the moment it landed, not
+                        // the moment the turn began, and the placeholder is
+                        // where the turn's place in the thread lives. Keep the
+                        // start stamp so a reply that finishes after a newer
+                        // message cannot claim to be newer than the message
+                        // below it (7:09 answer above a 7:05 question).
+                        if let startedAt = placeholder?.timestamp {
+                            resolved.timestamp = startedAt
+                        }
                         resolved.toolActivities = activities
                         resolved.codeDiff = diff
                         // Priority for reasoning:
@@ -2453,17 +2462,14 @@ final class ChatStore {
                         // delivered check.
                         isCredibleCompletion = !resolvedText.isEmpty
                             || !resolved.attachments.isEmpty
-                        // Build 128.54: the settled row shows COMPLETION time,
-                        // not stream-start time. The placeholder's timestamp is
-                        // frozen at creation (e.g. 7:59 PM) while a deep turn
-                        // can run 30+ minutes; leaving it made long turns read
-                        // as old messages sitting below newer ones (Curtis
-                        // "look at time stamps" screenshots 2026-08-16). The
-                        // stamp is stamped when the terminal write lands so the
-                        // bubble reads the time it actually finished.
-                        if resolved.timestamp < Date().addingTimeInterval(-2) {
-                            resolved.timestamp = Date()
-                        }
+                        // The row keeps the time the turn STARTED, not the
+                        // time it finished. Stamping completion time made a
+                        // reply that landed after a newer message read as
+                        // newer than the message below it: the 7:09 answer sat
+                        // above the 7:05 question it could not have answered
+                        // (Curtis, 2026-11-18). Position and stamp now agree:
+                        // a long answer stays with its question and says when
+                        // the question was sent.
                         self.conversation?.messages[idx] = resolved
                         // Build 117 fix: do NOT mark the user message as
                         // .delivered here.  The user message's delivery status
