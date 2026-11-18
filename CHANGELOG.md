@@ -185,7 +185,9 @@ observe; commit history carries the detail.
   title names a background turn's conversation from the caller's own words instead
   of a header in its instruction block. A pending model pin from the phone's picker
   is cleared when a turn names a model explicitly, because the pin belongs to
-  whichever chat was open, not to a turn that already said what it wants.
+  whichever chat was open, not to a turn that already said what it wants. A
+  titled background turn clears it too, so a note sync cannot spend the model
+  the operator picked for the chat they are in.
 
 ## 1.9.0
 

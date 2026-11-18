@@ -9185,6 +9185,11 @@ pub(crate) async fn create_turn_with(
     if let Some(conversation_id) = &conversation {
         let requested = field(&fields, "title").trim();
         if !requested.is_empty() {
+            // A titled turn is a background turn. It must not spend the model
+            // pin the phone's picker left for the chat the operator is in.
+            let _ = service
+                .engine()
+                .clear_setting(crate::device::turns::SETTING_PENDING_MODEL);
             let _ = chat::set_title(service.engine().db(), conversation_id, &text, requested);
         }
     }
