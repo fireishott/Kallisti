@@ -572,7 +572,9 @@ actor ErisClient {
         text: String,
         conversation: String? = nil,
         attachments: [String] = [],
-        idempotencyKey: String? = nil
+        idempotencyKey: String? = nil,
+        model: String? = nil,
+        title: String? = nil
     ) async throws -> ErisTurn {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -583,6 +585,18 @@ actor ErisClient {
             let trimmedID = conversation.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedID.isEmpty {
                 form["conversation"] = trimmedID
+            }
+        }
+        if let model {
+            let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedModel.isEmpty {
+                form["model"] = trimmedModel
+            }
+        }
+        if let title {
+            let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedTitle.isEmpty {
+                form["title"] = trimmedTitle
             }
         }
         if !attachments.isEmpty {

@@ -707,19 +707,57 @@ final class ErisHeraldClient: HeraldClientProtocol {
         false
     }
 
-    // MARK: - Notes (not the chat path; notes are handled by NotesStore)
+    // MARK: - Notes
 
+    /// One note sync, without streaming. Used by any caller that wants the final
+    /// answer only; the engine itself takes the streaming form.
     func sendNoteMessage(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) async -> Message {
-        Message(
+        var final: Message?
+        for await update in sendNoteMessageStreaming(
+            text: text,
+            attachments: attachments,
+            clientMessageID: clientMessageID,
+            conversationID: conversationID,
+            title: title,
+            enrichmentModelName: nil,
+            enrichmentProvider: nil
+        ) {
+            if case .finished(let message, _, _, _) = update { final = message }
+        }
+        return final ?? Message(
             id: clientMessageID,
             clientMessageID: clientMessageID,
             sender: .herald,
-            content: "Note sync is not backed by Eris yet.",
+            content: "No reply received.",
             status: .failed
         )
     }
 
+    /// A note is a conversation: the note's stable local id binds to one daemon
+    /// conversation on first sync, the drawing rides as an attachment, and every
+    /// later edit appends a turn to the same thread.
     func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?) -> AsyncStream<StreamingUpdate> {
+        AsyncStream { continuation in
+            let task = Task { @MainActor [weak self] in
+                await self?.performNoteSyncStreaming(
+                    text: text,
+                    attachments: attachments,
+                    clientMessageID: clientMessageID,
+                    conversationID: conversationID,
+                    title: title,
+                    enrichmentModelName: enrichmentModelName,
+                    enrichmentProvider: enrichmentProvider,
+                    continuation: continuation
+                )
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// The historical form with the reasoning flag. Notes do not render a
+    /// separate thinking stream from the transport, so the flag is accepted and
+    /// ignored rather than made a second code path.
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?, thinkingAsReasoning: Bool) -> AsyncStream<StreamingUpdate> {
         sendNoteMessageStreaming(
             text: text,
             attachments: attachments,
@@ -727,14 +765,138 @@ final class ErisHeraldClient: HeraldClientProtocol {
             conversationID: conversationID,
             title: title,
             enrichmentModelName: enrichmentModelName,
-            enrichmentProvider: enrichmentProvider,
-            thinkingAsReasoning: false
+            enrichmentProvider: enrichmentProvider
         )
     }
 
-    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?, thinkingAsReasoning: Bool) -> AsyncStream<StreamingUpdate> {
-        AsyncStream { continuation in
-            continuation.yield(.failed("Note sync is not backed by Eris yet."))
+    private func performNoteSyncStreaming(
+        text: String,
+        attachments: [PendingAttachment],
+        clientMessageID: UUID,
+        conversationID: UUID,
+        title: String,
+        enrichmentModelName: String?,
+        enrichmentProvider: String?,
+        continuation: AsyncStream<StreamingUpdate>.Continuation
+    ) async {
+        guard let client = await pairedClient() else {
+            continuation.yield(.failed("No Eris daemon is paired."))
+            continuation.finish()
+            return
+        }
+
+        // The note's local id is the key; the daemon id is the row a turn is
+        // written into. A note that has never synced gets its conversation now.
+        if conversationIDByLocalID[conversationID] == nil,
+           !(await ensureConversation(id: conversationID)) {
+            continuation.yield(.failed("Could not open a conversation for this note."))
+            continuation.finish()
+            return
+        }
+        guard let boundConversation = conversationIDByLocalID[conversationID] else {
+            continuation.yield(.failed("Could not open a conversation for this note."))
+            continuation.finish()
+            return
+        }
+
+        var uploaded: [String] = []
+        for attachment in attachments {
+            do {
+                let id = try await client.uploadAttachment(
+                    data: attachment.data,
+                    fileName: attachment.fileName,
+                    mediaType: attachment.mimeType,
+                    conversationID: boundConversation
+                )
+                uploaded.append(id)
+            } catch {
+                let reason = (error as? ErisError)?.message ?? error.localizedDescription
+                continuation.yield(.failed(
+                    "Uploading \(attachment.fileName) failed: \(reason)", category: nil
+                ))
+                continuation.finish()
+                return
+            }
+        }
+
+        // The enrichment model, when one is pinned. A bare id is accepted by the
+        // daemon only when exactly one catalogue carries it, so a provider is
+        // named whenever the picker recorded one.
+        var model: String?
+        if let name = enrichmentModelName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            if let provider = enrichmentProvider?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !provider.isEmpty {
+                // Always name the provider: a model id like
+                // `deepseek/deepseek-v4-flash` has a head that is also a
+                // provider id, and the daemon would read it as that provider.
+                model = "\(provider)/\(name)"
+            } else {
+                model = name
+            }
+        }
+
+        do {
+            let turn = try await client.createTurn(
+                text: text,
+                conversation: boundConversation,
+                attachments: uploaded,
+                idempotencyKey: clientMessageID.uuidString,
+                model: model,
+                title: title
+            )
+            let jobID = Self.stableUUID(from: turn.jobID)
+            continuation.yield(.messageSent(jobID: jobID, daemonJobID: turn.jobID))
+
+            var accumulated = ""
+            let stream = await client.events(turnID: turn.jobID)
+            for try await frame in stream {
+                switch frame {
+                case .delta(let delta):
+                    accumulated += delta
+                    continuation.yield(.textDelta(delta))
+                case .reasoning(let fragment):
+                    continuation.yield(.reasoningDelta(fragment))
+                case .step(let label, _):
+                    continuation.yield(.toolActivity(label))
+                case .done(let full, let usage):
+                    let content = full.isEmpty ? accumulated : full
+                    let final = Message(
+                        id: clientMessageID,
+                        clientMessageID: clientMessageID,
+                        sender: .herald,
+                        content: content,
+                        jobID: jobID,
+                        status: .sent
+                    )
+                    let tokenUsage = usage.map {
+                        TokenUsage(
+                            promptTokens: $0.inputTokens ?? 0,
+                            completionTokens: $0.outputTokens ?? 0,
+                            totalTokens: ($0.inputTokens ?? 0) + ($0.outputTokens ?? 0)
+                        )
+                    }
+                    continuation.yield(.finished(final, tokenUsage, nil, nil))
+                    continuation.finish()
+                    return
+                case .error(let error):
+                    continuation.yield(.failed(
+                        error.errorDescription ?? "turn failed", category: error.code
+                    ))
+                    continuation.finish()
+                    return
+                case .cancelled:
+                    continuation.yield(.cancelled)
+                    continuation.finish()
+                    return
+                default:
+                    break
+                }
+            }
+            continuation.finish()
+        } catch {
+            continuation.yield(.failed(
+                (error as? ErisError)?.errorDescription ?? error.localizedDescription
+            ))
             continuation.finish()
         }
     }
