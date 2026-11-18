@@ -1,5 +1,5 @@
 #!/bin/bash
-# Kallisti 1.6.0 build 165 - sign and upload to TestFlight.
+# Kallisti 1.6.1 build 210 - sign and upload to TestFlight.
 #
 # Run from Terminal.app on the Mac, or through the GUI-session launcher
 # (scripts/tf-160-launchd.sh) when the only shell available is an ssh session.
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 REPO="${REPO:-$HOME/kallisti-180-forward}"
-EXPECTED_VERSION="1.6.0"
+EXPECTED_VERSION="1.6.1"
 EXPECTED_BUILD="210"
 OUT="$HOME/Kallisti-Builds/210"
 PROFILES="$HOME/Library/MobileDevice/Provisioning Profiles"
