@@ -488,6 +488,10 @@ fn alert_payload(
     let mut aps = serde_json::Map::new();
     aps.insert("alert".to_owned(), json!({ "title": title, "body": body }));
     aps.insert("sound".to_owned(), json!("default"));
+    // A visible push is also a background wake. The phone uses it to settle the
+    // turn and end its Live Activity; without it the Lock Screen card stayed on
+    // "Thinking..." after the answer had already been delivered.
+    aps.insert("content-available".to_owned(), json!(1));
     if let Some(category) = category {
         aps.insert("category".to_owned(), json!(category));
     }
@@ -865,6 +869,7 @@ mod tests {
         assert_eq!(payload["aps"]["category"], "CLARIFY");
         assert_eq!(payload["aps"]["thread-id"], "conv-1");
         assert_eq!(payload["aps"]["sound"], "default");
+        assert_eq!(payload["aps"]["content-available"], 1);
         assert_eq!(payload["kind"], "clarify");
         // The caller cannot smuggle a second `aps` in and win: the top-level
         // one is the one Apple reads, and it must be ours.
