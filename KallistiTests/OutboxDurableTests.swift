@@ -133,7 +133,7 @@ struct OutboxDurableTests {
                 order.append(message)
                 return AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: UUID()))
+                        continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                         try? await Task.sleep(for: .milliseconds(100))
                         continuation.yield(.finished(
                             Message(sender: .herald, content: "reply to \(message)", status: .delivered),
@@ -201,7 +201,7 @@ struct OutboxDurableTests {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         try? await Task.sleep(for: .seconds(3))
-                        continuation.yield(.messageSent(jobID: UUID()))
+                        continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                         try? await Task.sleep(for: .milliseconds(100))
                         continuation.yield(.finished(
                             Message(sender: .herald, content: "reply", status: .delivered),
@@ -642,7 +642,7 @@ struct OutboxDurableTests {
             return AsyncStream { continuation in
                 Task { @MainActor in
                     let jobID = UUID()
-                    continuation.yield(.messageSent(jobID: jobID))
+                    continuation.yield(.messageSent(jobID: jobID, daemonJobID: nil))
                     // NO .finished — simulates a terminalless stream.
                     continuation.finish()
                 }
@@ -699,7 +699,7 @@ struct OutboxDurableTests {
             AsyncStream { continuation in
                 Task { @MainActor in
                     let jobID = UUID()
-                    continuation.yield(.messageSent(jobID: jobID))
+                    continuation.yield(.messageSent(jobID: jobID, daemonJobID: nil))
                     // No .finished: simulates a terminalless stream whose job
                     // is still running server-side after a suspension.
                 }

@@ -218,7 +218,7 @@ struct AppStoresTests {
                 Task { @MainActor in
                     sendCallCount += 1
                     lastClientMessageID = clientMessageID
-                    continuation.yield(.messageSent(jobID: UUID()))
+                    continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                     continuation.yield(.finished(nextResponse, nil, nil, nil))
                     continuation.finish()
                 }
@@ -509,7 +509,7 @@ struct AppStoresTests {
 
                 return AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: jobID))
+                        continuation.yield(.messageSent(jobID: jobID, daemonJobID: nil))
                         continuation.yield(.toolActivity("🔍 Searching files"))
                         continuation.yield(.finished(
                             Message(
@@ -661,7 +661,7 @@ struct AppStoresTests {
             func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: UUID()))
+                        continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                         try? await Task.sleep(for: .milliseconds(50))
                         continuation.yield(.finished(Message(sender: .herald, content: "Done", status: .delivered), nil, nil, nil))
                         continuation.finish()
@@ -744,7 +744,7 @@ struct AppStoresTests {
 
                 return AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: jobID))
+                        continuation.yield(.messageSent(jobID: jobID, daemonJobID: nil))
                         continuation.yield(.failed("Stream interrupted"))
                         continuation.finish()
                     }
@@ -1010,7 +1010,7 @@ struct AppStoresTests {
 
         #expect(requestCount.value == 0)
         #expect(response.status == .failed)
-        #expect(response.content == "The attachment was too large for Herald to process. Try a smaller image.")
+        #expect(response.content == "The attachment was too large for Kallisti to process. Try a smaller image.")
     }
 
     @Test @MainActor
@@ -1035,7 +1035,7 @@ struct AppStoresTests {
                 lastAttachments = attachments
                 return AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: UUID()))
+                        continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                         continuation.yield(.finished(Message(sender: .herald, content: "Retried", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
@@ -1135,7 +1135,7 @@ struct AppStoresTests {
 
                 return AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: UUID()))
+                        continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                         continuation.yield(.finished(Message(sender: .herald, content: "I saw the attachment.", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
@@ -1936,8 +1936,8 @@ struct AppStoresTests {
 
     @Test
     func relayConnectionModesExposeModeAwareChatRecoveryCopy() throws {
-        #expect(RelayConnectionMode.tailscale.defaultOfflineMessage == "Open Tailscale or reconnect to your tailnet to reach Herald.")
-        #expect(RelayConnectionMode.selfHostedRelay.notConnectedMessage == "Pair a Hermes host with this self-hosted relay before sending messages.")
+        #expect(RelayConnectionMode.tailscale.defaultOfflineMessage == "Open Tailscale or reconnect to your tailnet to reach Kallisti.")
+        #expect(RelayConnectionMode.selfHostedRelay.notConnectedMessage == "Pair a daemon before sending messages.")
     }
 
     @Test
@@ -1948,7 +1948,7 @@ struct AppStoresTests {
         )
         #expect(
             RelayConnectionMode.selfHostedRelay.unreachableSendBlockedMessage ==
-            "Your self-hosted relay URL is not reachable. Check the URL in Settings and try again."
+            "Your daemon address is not reachable. Check the address in Settings and try again."
         )
     }
 
@@ -1969,10 +1969,10 @@ struct AppStoresTests {
     @Test
     func relayURLHintShownForAllModes() throws {
         let tailscaleHint = try #require(RelayConnectionMode.tailscale.relayURLHint)
-        #expect(tailscaleHint.contains("tail-scale.ts.net"))
-        #expect(tailscaleHint.contains("tailscale serve"))
+        #expect(tailscaleHint.contains("tailnet.ts.net"))
+        #expect(tailscaleHint.contains("Tailscale"))
         let selfHostedHint = try #require(RelayConnectionMode.selfHostedRelay.relayURLHint)
-        #expect(selfHostedHint.contains("public Hermes relay"))
+        #expect(selfHostedHint.contains("daemon URL"))
     }
 
     @Test
@@ -2844,7 +2844,7 @@ struct NotificationReplyTests {
             func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: UUID()))
+                        continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                         continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
@@ -2917,7 +2917,7 @@ struct NotificationReplyTests {
             func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: UUID()))
+                        continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                         continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
@@ -2989,7 +2989,7 @@ struct NotificationReplyTests {
             func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: UUID()))
+                        continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                         continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
@@ -3064,7 +3064,7 @@ struct NotificationReplyTests {
             func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: UUID()))
+                        continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                         continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
@@ -3133,7 +3133,7 @@ struct NotificationReplyTests {
             func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
-                        continuation.yield(.messageSent(jobID: UUID()))
+                        continuation.yield(.messageSent(jobID: UUID(), daemonJobID: nil))
                         continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }

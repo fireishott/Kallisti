@@ -23,7 +23,7 @@ struct MessageBubbleStreamingPlaceholderTests {
     func liveReasoningBypassesPlaceholder() throws {
         let url = try locateSourceFile(
             relativeTo: #filePath,
-            segments: ["Herald", "Features", "Chat", "MessageBubble.swift"]
+            segments: ["Kallisti", "Features", "Chat", "MessageBubble.swift"]
         )
         let source = try String(contentsOf: url, encoding: .utf8)
 
@@ -82,11 +82,11 @@ struct MessageBubbleStreamingPlaceholderTests {
     func tieredStringsArePresent() throws {
         let url = try locateSourceFile(
             relativeTo: #filePath,
-            segments: ["Herald", "Features", "Chat", "MarkdownContentView.swift"]
+            segments: ["Kallisti", "Features", "Chat", "MarkdownContentView.swift"]
         )
         let source = try String(contentsOf: url, encoding: .utf8)
         let tiers = [
-            "Waiting for Hermes",
+            "Waiting for the daemon",
             "Thinking",
             "Model is working on your request",
             "taking longer than usual"
@@ -106,7 +106,7 @@ struct MessageBubbleStreamingPlaceholderTests {
     func blinkingCursorPreserved() throws {
         let url = try locateSourceFile(
             relativeTo: #filePath,
-            segments: ["Herald", "Features", "Chat", "MarkdownContentView.swift"]
+            segments: ["Kallisti", "Features", "Chat", "MarkdownContentView.swift"]
         )
         let source = try String(contentsOf: url, encoding: .utf8)
         #expect(source.contains("struct BlinkingCursor: View"),
@@ -124,8 +124,8 @@ struct MessageBubbleStreamingPlaceholderTests {
     @Test("StreamingPlaceholderText.tierText produces the locked tier strings")
     func tierTextMappingIsLocked() {
         // < 5s
-        #expect(StreamingPlaceholderText.tierText(for: 0) == "Waiting for Hermes...")
-        #expect(StreamingPlaceholderText.tierText(for: 4.99) == "Waiting for Hermes...")
+        #expect(StreamingPlaceholderText.tierText(for: 0) == "Waiting for the daemon...")
+        #expect(StreamingPlaceholderText.tierText(for: 4.99) == "Waiting for the daemon...")
         // 5s ... < 30s
         #expect(StreamingPlaceholderText.tierText(for: 5).hasPrefix("Thinking... "),
                 "5s boundary must roll into the 'Thinking' tier")
@@ -151,7 +151,7 @@ struct MessageBubbleStreamingPlaceholderTests {
     func placeholderRendersCapsulePill() throws {
         let url = try locateSourceFile(
             relativeTo: #filePath,
-            segments: ["Herald", "Features", "Chat", "MarkdownContentView.swift"]
+            segments: ["Kallisti", "Features", "Chat", "MarkdownContentView.swift"]
         )
         let source = try String(contentsOf: url, encoding: .utf8)
         #expect(source.contains("Capsule()"),
@@ -174,7 +174,7 @@ struct MessageBubbleStreamingPlaceholderTests {
     func bubbleUsesSharedPlaceholder() throws {
         let url = try locateSourceFile(
             relativeTo: #filePath,
-            segments: ["Herald", "Features", "Chat", "MessageBubble.swift"]
+            segments: ["Kallisti", "Features", "Chat", "MessageBubble.swift"]
         )
         let source = try String(contentsOf: url, encoding: .utf8)
         #expect(source.contains("StreamingPlaceholderText(startedAt: message.timestamp)"),
@@ -194,7 +194,7 @@ struct MessageBubbleStreamingPlaceholderTests {
     func placeholderRequiresEmptyReasoning() throws {
         let url = try locateSourceFile(
             relativeTo: #filePath,
-            segments: ["Herald", "Features", "Chat", "MessageBubble.swift"]
+            segments: ["Kallisti", "Features", "Chat", "MessageBubble.swift"]
         )
         let source = try String(contentsOf: url, encoding: .utf8)
         #expect(source.contains("message.isStreaming && message.content.isEmpty && message.reasoning.isEmpty"),
@@ -213,10 +213,12 @@ struct MessageBubbleStreamingPlaceholderTests {
     ) throws -> URL {
         var dir = URL(fileURLWithPath: testFilePath).deletingLastPathComponent()
         for _ in 0..<8 {
-            let candidate = dir.appendingPathComponent("Herald")
+            // Anchor on the project file rather than a directory name: the app folder
+            // has been renamed once already, and a same-named folder elsewhere on disk
+            // would make this helper confidently point at the wrong tree.
+            let candidate = dir.appendingPathComponent("Kallisti.xcodeproj")
             var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir),
-               isDir.boolValue {
+            if FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir) {
                 return segments.reduce(into: dir) { acc, seg in
                     acc.appendPathComponent(seg)
                 }
