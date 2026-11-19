@@ -308,6 +308,9 @@ struct ChatScreen: View {
                 if chatStore.queuedCountForCurrentConversation > 0 || chatStore.isQueueHeld {
                     queueStatusBar
                 }
+                if chatStore.activeSubagentCount > 0 {
+                    subagentWaitBar
+                }
                 // Build 128.78: in TUI mode the terminal view owns input - the iOS
                 // composer is hidden entirely.
                 if settingsStore.settings.chatDisplayMode == .rich {
@@ -1662,6 +1665,31 @@ struct ChatScreen: View {
     // Build 128.50: queue status bar (Electron parity). Shows how many
     // messages are queued behind the active turn and whether they're HELD
     // (won't auto-fire) or will drain automatically when the turn ends.
+    /// Live subagent status: the count while they work, and the daemon's
+    /// check-in countdown once the parent turn is parked on them.
+    private var subagentWaitBar: some View {
+        HStack(spacing: Design.Spacing.sm) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(Design.Brand.accent)
+            let count = chatStore.activeSubagentCount
+            Text(count == 1 ? "1 subagent running" : "\(count) subagents running")
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.foreground)
+            Spacer()
+            if let seconds = chatStore.subagentCheckinSeconds {
+                let minutes = seconds / 60
+                let remainder = seconds % 60
+                Text(String(format: "check-in %d:%02d", minutes, remainder))
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+        }
+        .padding(.horizontal, Design.Spacing.md)
+        .padding(.vertical, Design.Spacing.xs)
+        .background(Design.Colors.surface)
+    }
+
     private var queueStatusBar: some View {
         HStack(spacing: Design.Spacing.sm) {
             Button {

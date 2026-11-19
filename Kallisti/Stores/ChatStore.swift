@@ -4626,6 +4626,9 @@ final class ChatStore {
     /// Polled rather than streamed: the daemon's subagent rows are the truth,
     /// and a child can outlive the turn that started it.
     var activeSubagentCount = 0
+    /// Seconds until the daemon's check-in with the children, when a parent
+    /// turn is parked. Nil while the turn is working normally.
+    var subagentCheckinSeconds: Int?
     private var subagentPollTask: Task<Void, Never>?
 
     func startSubagentWatch() {
@@ -4635,9 +4638,14 @@ final class ChatStore {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, !Task.isCancelled else { break }
                 let rows = await self.heraldClient.subagents(for: self.conversation?.id)
-                let active = rows.filter(\.isActive).count
+                let activeRows = rows.filter(\.isActive)
+                let active = activeRows.count
                 if self.activeSubagentCount != active {
                     self.activeSubagentCount = active
+                }
+                let checkin = activeRows.compactMap(\.checkinSecs).min()
+                if self.subagentCheckinSeconds != checkin {
+                    self.subagentCheckinSeconds = checkin
                 }
                 // A parent turn parked on its children emits no stream frames
                 // for minutes. The poll is progress: keep the stall watchdog

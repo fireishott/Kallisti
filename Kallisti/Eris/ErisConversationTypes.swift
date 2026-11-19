@@ -101,6 +101,8 @@ struct ErisSubagent: Identifiable, Decodable, Equatable, Sendable {
     let parentConversation: String?
     let parentTurn: String?
     let elapsedSecs: Int?
+    /// Seconds until the parent turn's check-in, only while it is parked.
+    let checkinSecs: Int?
 
     private enum CodingKeys: String, CodingKey {
         case id, label, status, result
@@ -108,6 +110,7 @@ struct ErisSubagent: Identifiable, Decodable, Equatable, Sendable {
         case parentConversation = "parent_conversation"
         case parentTurn = "parent_turn"
         case elapsedSecs = "elapsed_secs"
+        case checkinSecs = "checkin_secs"
     }
 
     var isActive: Bool { status == "running" || status == "queued" }

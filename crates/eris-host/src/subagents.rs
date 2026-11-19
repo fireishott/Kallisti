@@ -29,7 +29,8 @@
 //! and its result.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use core_runtime::provider::{ChatMessage, ChatRole, ToolSpec};
@@ -37,6 +38,38 @@ use rusqlite::params;
 
 use crate::db::{Db, DbError};
 use crate::web::chat::{self, TurnConfig, TurnSettings};
+
+/// The parent turns currently parked waiting for their children, and when the
+/// wait ends. The phone reads the remaining seconds from the subagents route so
+/// the badge can count down instead of only counting.
+static WAITING: LazyLock<Mutex<HashMap<String, std::time::Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Record that `parent` is waiting until `deadline`.
+pub fn mark_waiting_until(parent: &str, deadline: std::time::Instant) {
+    if let Ok(mut waiting) = WAITING.lock() {
+        waiting.insert(parent.to_owned(), deadline);
+    }
+}
+
+/// The wait is over, or it never started.
+pub fn clear_waiting(parent: &str) {
+    if let Ok(mut waiting) = WAITING.lock() {
+        waiting.remove(parent);
+    }
+}
+
+/// Seconds left before the check-in, when this parent is waiting.
+#[must_use]
+pub fn waiting_seconds(parent: &str) -> Option<u64> {
+    let waiting = WAITING.lock().ok()?;
+    let deadline = waiting.get(parent)?;
+    Some(
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_secs(),
+    )
+}
 
 /// The `settings` row that turns dispatching off.
 ///
@@ -992,6 +1025,20 @@ impl Desk {
                     desk.execute(&id, &label, &prompt, agent);
                 });
             }
+        }
+    }
+
+    /// Mark this desk's parent turn as parked until `deadline`.
+    pub fn set_waiting(&self, deadline: std::time::Instant) {
+        if let Some(turn) = self.parent_turn.as_deref() {
+            mark_waiting_until(turn, deadline);
+        }
+    }
+
+    /// The parent turn is no longer parked.
+    pub fn clear_waiting(&self) {
+        if let Some(turn) = self.parent_turn.as_deref() {
+            clear_waiting(turn);
         }
     }
 

@@ -193,7 +193,9 @@ observe; commit history carries the detail.
   the same turn so it can finish the task. The wait is bounded by the child
   count (60 seconds each, 10 minutes maximum); children still working at the
   deadline are named in the continuation. The phone's subagent poll keeps the
-  stall watchdog alive while the stream is quiet. `build 196`.
+  stall watchdog alive while the stream is quiet. The subagents route now
+  also reports `checkin_secs` for the parked parent, so the phone can show the
+  countdown. `build 197`.
 
 ## 1.9.2
 

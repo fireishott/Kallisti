@@ -4139,6 +4139,12 @@ fn subagent_json(row: &crate::subagents::Subagent) -> serde_json::Value {
         "finished_at": row.finished_at,
         "elapsed_secs": row.elapsed_secs,
         "elapsed": row.elapsed_label(),
+        // Present only while the parent turn is parked waiting for its
+        // children; the phone draws the countdown from it.
+        "checkin_secs": row
+            .parent_turn
+            .as_deref()
+            .and_then(crate::subagents::waiting_seconds),
         "prompt_tokens": row.prompt_tokens,
         "completion_tokens": row.completion_tokens,
     })

@@ -4880,6 +4880,7 @@ pub fn drive_tool_loop(
                         (60 + 60 * pending.len() as u64).min(600),
                     );
                     let deadline = std::time::Instant::now() + budget;
+                    desk.set_waiting(deadline);
                     while std::time::Instant::now() < deadline {
                         std::thread::sleep(std::time::Duration::from_secs(2));
                         match desk.pending_for_turn() {
@@ -4888,6 +4889,7 @@ pub fn drive_tool_loop(
                             Err(_) => break,
                         }
                     }
+                    desk.clear_waiting();
                     let finished = desk.results_for_turn().unwrap_or_default();
                     let still_running = desk.pending_for_turn().unwrap_or_default();
                     let mut report = String::from(
