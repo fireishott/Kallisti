@@ -25,15 +25,14 @@ pub const TOOLS: [&str; 2] = ["search_transcripts", "daemon_status"];
 #[must_use]
 pub fn handle(db: &Db, body: &Value) -> Option<Value> {
     let id = body.get("id").cloned();
-    let method = body.get("method").and_then(Value::as_str).unwrap_or_default();
+    let method = body
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     // A notification has no id and never gets a response, per JSON-RPC.
     let id = id?;
-    let reply = |result: Value| {
-        json!({"jsonrpc": "2.0", "id": id, "result": result})
-    };
-    let error = |code: i64, message: String| {
-        json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
-    };
+    let reply = |result: Value| json!({"jsonrpc": "2.0", "id": id, "result": result});
+    let error = |code: i64, message: String| json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}});
     match method {
         "initialize" => Some(reply(json!({
             "protocolVersion": PROTOCOL_VERSION,
@@ -63,7 +62,10 @@ pub fn handle(db: &Db, body: &Value) -> Option<Value> {
         }))),
         "tools/call" => {
             let params = body.get("params").cloned().unwrap_or(Value::Null);
-            let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+            let name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
             match name {
                 "search_transcripts" => {
@@ -108,7 +110,10 @@ mod tests {
         assert!(reply["result"]["capabilities"]["tools"].is_object());
 
         let note = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
-        assert!(handle(&db(), &note).is_none(), "a notification is not answered");
+        assert!(
+            handle(&db(), &note).is_none(),
+            "a notification is not answered"
+        );
     }
 
     /// Every advertised tool is callable, and an unknown one is a JSON-RPC error
@@ -152,7 +157,12 @@ mod tests {
         )
         .expect("a reply");
         assert_eq!(call["result"]["content"][0]["type"], "text");
-        assert!(call["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("version"));
+        assert!(
+            call["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("version")
+        );
         assert_eq!(call["result"]["isError"], false);
     }
 }

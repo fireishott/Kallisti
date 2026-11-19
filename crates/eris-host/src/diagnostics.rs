@@ -75,11 +75,7 @@ pub fn snapshot(limit: usize) -> Vec<Entry> {
         return Vec::new();
     };
     let take = limit.min(buffer.len());
-    buffer
-        .iter()
-        .skip(buffer.len() - take)
-        .cloned()
-        .collect()
+    buffer.iter().skip(buffer.len() - take).cloned().collect()
 }
 
 /// The bundle a surface fetches in one tap: the entries, the field names, and the
@@ -117,8 +113,15 @@ mod tests {
             record("test.probe", &format!("entry {index}"), None);
         }
         let entries = snapshot(CAPACITY + 50);
-        assert_eq!(entries.len(), CAPACITY, "the buffer never exceeds its capacity");
-        assert!(entries.last().expect("last").detail.ends_with("204"), "newest kept");
+        assert_eq!(
+            entries.len(),
+            CAPACITY,
+            "the buffer never exceeds its capacity"
+        );
+        assert!(
+            entries.last().expect("last").detail.ends_with("204"),
+            "newest kept"
+        );
     }
 
     /// A slow turn is recorded by name with its duration; a fast one is not
@@ -128,7 +131,10 @@ mod tests {
         super::record_turn(super::SLOW_TURN_MS + 1, "turn-slow");
         super::record_turn(10, "turn-fast");
         let entries = snapshot(50);
-        let slow: Vec<_> = entries.iter().filter(|entry| entry.kind == "turn.slow").collect();
+        let slow: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.kind == "turn.slow")
+            .collect();
         assert!(slow.iter().any(|entry| entry.detail.contains("turn-slow")));
         assert!(!slow.iter().any(|entry| entry.detail.contains("turn-fast")));
     }

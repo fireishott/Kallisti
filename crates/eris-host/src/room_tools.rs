@@ -135,7 +135,10 @@ fn bot_list(db: &Db) -> ToolResult {
 
 fn room_create(arguments: &Value, db: &Db) -> ToolResult {
     let name = arguments.get("name").and_then(Value::as_str).unwrap_or("");
-    let purpose = arguments.get("purpose").and_then(Value::as_str).unwrap_or("");
+    let purpose = arguments
+        .get("purpose")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let policy = match arguments.get("policy").and_then(Value::as_str) {
         None => Policy::Mention,
         Some(text) => match Policy::parse(text) {

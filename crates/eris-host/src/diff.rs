@@ -124,7 +124,10 @@ fn hunks(script: &[(Kind, String)]) -> Vec<Value> {
                 .count();
             let slice = &script[start..end];
             let old_lines = slice.iter().filter(|(kind, _)| *kind != Kind::Add).count();
-            let new_lines = slice.iter().filter(|(kind, _)| *kind != Kind::Remove).count();
+            let new_lines = slice
+                .iter()
+                .filter(|(kind, _)| *kind != Kind::Remove)
+                .count();
             let lines: Vec<Value> = slice
                 .iter()
                 .map(|(kind, text)| {

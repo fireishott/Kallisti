@@ -1420,7 +1420,7 @@ pub fn transcript_tool(db: &Db, arguments: &serde_json::Value) -> crate::tools::
 
 #[cfg(test)]
 mod transcript_tool_tests {
-    use super::{transcript_tool, transcript_spec};
+    use super::{transcript_spec, transcript_tool};
 
     /// A call with no words is refused by name rather than returning everything,
     /// which would look like a search that matched the whole archive.

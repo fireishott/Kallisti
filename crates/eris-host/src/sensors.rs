@@ -324,9 +324,15 @@ pub fn parse_batch(value: &serde_json::Value) -> Result<Vec<BatchRow>, String> {
         };
         out.push(BatchRow {
             kind: kind.to_owned(),
-            key: row.get("key").and_then(serde_json::Value::as_str).map(str::to_owned),
+            key: row
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
             value,
-            unit: row.get("unit").and_then(serde_json::Value::as_str).map(str::to_owned),
+            unit: row
+                .get("unit")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
             sensitivity: row
                 .get("sensitivity")
                 .and_then(serde_json::Value::as_str)
@@ -619,18 +625,15 @@ impl SensorStore {
               WHERE kind = ?1 AND (?2 IS NULL OR recorded_at >= ?2) \
               ORDER BY recorded_at DESC LIMIT ?3",
         )?;
-        let rows = statement.query_map(
-            rusqlite::params![kind, since, limit as i64],
-            |row| {
-                Ok(EventRow {
-                    kind: row.get(0)?,
-                    key: row.get(1)?,
-                    value: row.get(2)?,
-                    unit: row.get(3)?,
-                    recorded_at: row.get(4)?,
-                })
-            },
-        )?;
+        let rows = statement.query_map(rusqlite::params![kind, since, limit as i64], |row| {
+            Ok(EventRow {
+                kind: row.get(0)?,
+                key: row.get(1)?,
+                value: row.get(2)?,
+                unit: row.get(3)?,
+                recorded_at: row.get(4)?,
+            })
+        })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -639,7 +642,11 @@ impl SensorStore {
     /// # Errors
     ///
     /// The database's own error.
-    pub fn recent_events(&self, kinds: &[&str], limit: usize) -> Result<Vec<EventRow>, SensorError> {
+    pub fn recent_events(
+        &self,
+        kinds: &[&str],
+        limit: usize,
+    ) -> Result<Vec<EventRow>, SensorError> {
         let mut out = Vec::new();
         for kind in kinds {
             out.extend(self.events_of(kind, None, limit)?);
@@ -848,7 +855,7 @@ mod tests {
 
 #[cfg(test)]
 mod batch_tests {
-    use super::{parse_batch, BatchRow, SensorStore};
+    use super::{BatchRow, SensorStore, parse_batch};
 
     fn row(kind: &str, ts: &str) -> serde_json::Value {
         serde_json::json!({"kind": kind, "key": "steps", "value": 42.0, "ts": ts})

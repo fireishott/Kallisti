@@ -1852,7 +1852,11 @@ mod tests {
         let path = dir.path().join("upgrade.db");
         let first = Db::open(&path).expect("first open");
         let applied = first.applied_migration_count().expect("count");
-        assert_eq!(applied, MIGRATIONS.len() as i64, "one row per migration, on a fresh file");
+        assert_eq!(
+            applied,
+            MIGRATIONS.len() as i64,
+            "one row per migration, on a fresh file"
+        );
         assert_eq!(first.schema_version().expect("version"), SCHEMA_VERSION);
         drop(first);
         let second = Db::open(&path).expect("second open must not fail");

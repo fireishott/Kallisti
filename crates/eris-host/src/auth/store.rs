@@ -519,10 +519,16 @@ impl AuthStore {
 // Tests live at module level (not in a `mod tests`) so the reported name is
 // exactly `auth::store::<name>`.
 
-
 /// The `/etc/machine-id` shape: 32 lower-case hex digits and nothing else.
+///
+/// Used by the plaintext sweep below, which only runs in tests, so the function
+/// exists only there too.
+#[cfg(test)]
 fn is_machine_id(value: &str) -> bool {
-    value.len() == 32 && value.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    value.len() == 32
+        && value
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 #[cfg(test)]
 #[test]

@@ -110,7 +110,10 @@ pub fn parse_mappings(value: &Value) -> Result<Vec<(String, Level)>, String> {
         }
     };
     if entries.len() > 200 {
-        return Err(format!("a mapping upload carries at most 200 entries, got {}", entries.len()));
+        return Err(format!(
+            "a mapping upload carries at most 200 entries, got {}",
+            entries.len()
+        ));
     }
     let mut out = Vec::with_capacity(entries.len());
     for (index, entry) in entries.iter().enumerate() {

@@ -1102,8 +1102,7 @@ pub fn title_is_provisional(db: &Db, id: &str, question: &str) -> Result<bool, D
     if current == NEW_CONVERSATION_TITLE || current == title_from(question) {
         return Ok(true);
     }
-    Ok(first_question(db, id)?
-        .is_some_and(|text| title_from(&text) == current))
+    Ok(first_question(db, id)?.is_some_and(|text| title_from(&text) == current))
 }
 
 /// Ask the resolved role for a title.
@@ -4000,8 +3999,7 @@ pub fn run_turn_with_key(
         {
             return result;
         }
-        if let (Some(sensors), Some(db)) =
-            (crate::sensors::shared(), settings.db.as_ref())
+        if let (Some(sensors), Some(db)) = (crate::sensors::shared(), settings.db.as_ref())
             && let Some(result) = crate::sensor_tools::run(&call.name, &call.arguments, sensors, db)
         {
             return result;
@@ -4874,11 +4872,13 @@ pub fn drive_tool_loop(
                 let pending = desk.pending_for_turn().unwrap_or_default();
                 if !pending.is_empty() {
                     if !completion.text.trim().is_empty() {
-                        messages.push(ChatMessage::text(ChatRole::Assistant, completion.text.clone()));
+                        messages.push(ChatMessage::text(
+                            ChatRole::Assistant,
+                            completion.text.clone(),
+                        ));
                     }
-                    let budget = std::time::Duration::from_secs(
-                        (60 + 60 * pending.len() as u64).min(600),
-                    );
+                    let budget =
+                        std::time::Duration::from_secs((60 + 60 * pending.len() as u64).min(600));
                     let deadline = std::time::Instant::now() + budget;
                     desk.set_waiting(deadline);
                     while std::time::Instant::now() < deadline {

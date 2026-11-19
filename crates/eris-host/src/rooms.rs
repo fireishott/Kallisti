@@ -209,7 +209,11 @@ pub fn create_room(
             .map_err(|error| format!("the members could not be read: {error}"))?;
         match found {
             Some(pair) => resolved.push(pair),
-            None => return Err(format!("no bot is named `{wanted}`, so the room was not created")),
+            None => {
+                return Err(format!(
+                    "no bot is named `{wanted}`, so the room was not created"
+                ));
+            }
         }
     }
     if resolved.is_empty() {
@@ -315,7 +319,12 @@ pub struct PlannedTurn {
 /// cannot loop. A message that routes to nobody plans nothing, which is the
 /// `mention` policy working rather than an error.
 #[must_use]
-pub fn plan(room: &Room, bots: &[BotProfile], message: &str, spent: i64) -> Option<Vec<PlannedTurn>> {
+pub fn plan(
+    room: &Room,
+    bots: &[BotProfile],
+    message: &str,
+    spent: i64,
+) -> Option<Vec<PlannedTurn>> {
     if spent >= room.max_turns {
         return None;
     }
@@ -395,11 +404,11 @@ pub fn turns_spent(db: &Db, room_id: &str, message: &str) -> Result<i64, crate::
     };
     let needle = format!("%{}", message.trim());
     db.with_conn(|conn| {
-        Ok(conn.query_row(
+        conn.query_row(
             "SELECT count(*) FROM jobs WHERE conversation_id = ?1 AND request_text LIKE ?2",
             rusqlite::params![conversation, needle],
             |row| row.get::<_, i64>(0),
-        )?)
+        )
     })
 }
 
@@ -421,18 +430,15 @@ pub fn history(
             "SELECT role, body, created_at, job_id FROM chat_messages \
               WHERE conversation_id = ?1 ORDER BY created_at, id LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            rusqlite::params![conversation, limit as i64],
-            |row| {
-                Ok(RoomMessage {
-                    role: row.get(0)?,
-                    body: row.get(1)?,
-                    created_at: row.get(2)?,
-                    job_id: row.get(3)?,
-                })
-            },
-        )?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let rows = statement.query_map(rusqlite::params![conversation, limit as i64], |row| {
+            Ok(RoomMessage {
+                role: row.get(0)?,
+                body: row.get(1)?,
+                created_at: row.get(2)?,
+                job_id: row.get(3)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     })
 }
 
@@ -458,7 +464,7 @@ pub fn bots(db: &Db) -> Result<Vec<(String, String)>, crate::db::DbError> {
     db.with_conn(|conn| {
         let mut statement = conn.prepare("SELECT id, name FROM bot_profiles ORDER BY name")?;
         let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     })
 }
 
@@ -483,7 +489,7 @@ pub fn rooms(db: &Db) -> Result<Vec<RoomSummary>, crate::db::DbError> {
                 members: row.get(4)?,
             })
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     })
 }
 
@@ -614,7 +620,11 @@ mod tests {
     fn an_unknown_mention_routes_to_nobody() {
         let room = room(Policy::Everyone, None);
         assert!(route(&room, &["@nobody".to_owned()]).is_empty());
-        assert_eq!(route(&room, &["@".to_owned()]).len(), 2, "an empty mention falls back to policy");
+        assert_eq!(
+            route(&room, &["@".to_owned()]).len(),
+            2,
+            "an empty mention falls back to policy"
+        );
     }
 
     /// A room is created with its members, and a lead that is not in it is
@@ -688,11 +698,18 @@ mod tests {
                 instructions: String::new(),
             },
         ];
-        assert!(plan(&room, &bots, "anyone about?", 0).expect("budget").is_empty());
+        assert!(
+            plan(&room, &bots, "anyone about?", 0)
+                .expect("budget")
+                .is_empty()
+        );
         let named = plan(&room, &bots, "@birch take this", 0).expect("budget");
         assert_eq!(named.len(), 1);
         assert_eq!(named[0].bot.name, "Birch");
-        assert!(plan(&room, &bots, "@atlas", 3).is_none(), "the budget is spent");
+        assert!(
+            plan(&room, &bots, "@atlas", 3).is_none(),
+            "the budget is spent"
+        );
     }
 
     /// A room owns a conversation, and its history is that conversation's rows:

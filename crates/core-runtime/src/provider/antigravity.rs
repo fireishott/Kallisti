@@ -351,11 +351,27 @@ fn google_schema_at(
             let mut out = serde_json::Map::new();
             for (key, value) in map {
                 match key.as_str() {
-                    "$schema" | "$id" | "$comment" | "additionalProperties" | "$defs"
-                    | "definitions" | "$ref" | "patternProperties" | "dependencies"
-                    | "dependentRequired" | "dependentSchemas" | "propertyNames"
-                    | "unevaluatedProperties" | "unevaluatedItems" | "contains"
-                    | "minContains" | "maxContains" | "if" | "then" | "else" | "not"
+                    "$schema"
+                    | "$id"
+                    | "$comment"
+                    | "additionalProperties"
+                    | "$defs"
+                    | "definitions"
+                    | "$ref"
+                    | "patternProperties"
+                    | "dependencies"
+                    | "dependentRequired"
+                    | "dependentSchemas"
+                    | "propertyNames"
+                    | "unevaluatedProperties"
+                    | "unevaluatedItems"
+                    | "contains"
+                    | "minContains"
+                    | "maxContains"
+                    | "if"
+                    | "then"
+                    | "else"
+                    | "not"
                     | "examples" => continue,
                     "type" => {
                         let (kind, nullable) = normalize_type(value);
@@ -398,10 +414,7 @@ fn google_schema_at(
                                     google_schema_at(subschema, root, depth + 1),
                                 );
                             }
-                            out.insert(
-                                "properties".to_owned(),
-                                serde_json::Value::Object(cleaned),
-                            );
+                            out.insert("properties".to_owned(), serde_json::Value::Object(cleaned));
                         }
                     }
                     "items" => {
@@ -412,19 +425,16 @@ fn google_schema_at(
                             other => Some(other),
                         };
                         if let Some(item) = item {
-                            out.insert(
-                                "items".to_owned(),
-                                google_schema_at(item, root, depth + 1),
-                            );
+                            out.insert("items".to_owned(), google_schema_at(item, root, depth + 1));
                         }
                     }
                     "const" => {
                         out.insert("enum".to_owned(), serde_json::json!([value]));
                     }
                     "enum" | "default" | "example" | "required" | "description" | "title"
-                    | "format" | "pattern" | "minimum" | "maximum" | "minLength"
-                    | "maxLength" | "minItems" | "maxItems" | "minProperties"
-                    | "maxProperties" | "propertyOrdering" | "nullable" => {
+                    | "format" | "pattern" | "minimum" | "maximum" | "minLength" | "maxLength"
+                    | "minItems" | "maxItems" | "minProperties" | "maxProperties"
+                    | "propertyOrdering" | "nullable" => {
                         out.insert(key.clone(), value.clone());
                     }
                     _ => {
@@ -489,7 +499,8 @@ fn merge_branch(
         match key.as_str() {
             "properties" => {
                 if let (Some(existing), Some(incoming)) = (
-                    out.get_mut("properties").and_then(serde_json::Value::as_object_mut),
+                    out.get_mut("properties")
+                        .and_then(serde_json::Value::as_object_mut),
                     value.as_object(),
                 ) {
                     for (name, schema) in incoming {
@@ -869,7 +880,10 @@ mod tests {
         // The nullable union is one string type plus the proto's nullable flag.
         assert_eq!(parameters["properties"]["value"]["type"], "string");
         assert_eq!(parameters["properties"]["value"]["nullable"], true);
-        assert_eq!(parameters["properties"]["value"]["description"], "a word or nothing");
+        assert_eq!(
+            parameters["properties"]["value"]["description"],
+            "a word or nothing"
+        );
         // A parameter literally named `type` keeps its name.
         assert_eq!(parameters["properties"]["type"]["type"], "string");
         // anyOf picks the non-null branch.

@@ -118,10 +118,7 @@ pub fn parse_envelope(body: &Value) -> Result<(Method, Value), Refusal> {
             ),
         )
     })?;
-    let params = body
-        .get("params")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let params = body.get("params").cloned().unwrap_or(Value::Null);
     Ok((method, params))
 }
 
@@ -174,7 +171,9 @@ pub fn dispatch(
                 })?;
             let store = service.hub().store();
             let job = match store.job(job_id) {
-                Ok(Some(job)) if job.device_id.as_deref() == Some(context.device_id.as_str()) => job,
+                Ok(Some(job)) if job.device_id.as_deref() == Some(context.device_id.as_str()) => {
+                    job
+                }
                 Ok(_) => return Err(from_device_error(DeviceError::job_not_found())),
                 Err(error) => {
                     return Err(Refusal::new(
@@ -253,7 +252,11 @@ mod tests {
         let refused = parse_envelope(&serde_json::json!({"method": "delete.everything"}))
             .expect_err("refused");
         assert_eq!(refused.status, 404);
-        assert!(refused.message.contains("models.list"), "{}", refused.message);
+        assert!(
+            refused.message.contains("models.list"),
+            "{}",
+            refused.message
+        );
     }
 
     #[test]
@@ -298,7 +301,10 @@ mod tests {
             let _ = params;
             Ok(method)
         });
-        assert_eq!(refused.expect("turn.cancel is a method"), Method::TurnCancel);
+        assert_eq!(
+            refused.expect("turn.cancel is a method"),
+            Method::TurnCancel
+        );
         assert!(Method::parse("turn.cancel").is_some());
     }
 

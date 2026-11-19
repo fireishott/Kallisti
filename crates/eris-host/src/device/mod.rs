@@ -47,8 +47,8 @@ pub mod control;
 pub mod gateway;
 pub mod handlers;
 pub mod legacy;
-pub mod rpc;
 pub mod notify;
+pub mod rpc;
 pub mod turns;
 pub mod wire;
 

@@ -544,35 +544,38 @@ pub fn install_from_url(
         .enable_all()
         .build()
         .map_err(|error| format!("cannot start a fetch: {error}"))?;
-    let body: String = runtime
-        .block_on(async {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(crate::tools::FETCH_TIMEOUT_SECS))
-                .redirect(reqwest::redirect::Policy::limited(crate::tools::MAX_FETCH_REDIRECTS))
-                .build()
-                .map_err(|error| format!("cannot build a client: {error}"))?;
-            let response = client
-                .get(url)
-                .header(reqwest::header::USER_AGENT, "kallisti-hub/1.0")
-                .send()
-                .await
-                .map_err(|error| format!("cannot fetch {url}: {error}"))?;
-            if !response.status().is_success() {
-                return Err(format!("{url} answered {}", response.status()));
-            }
-            // A declared length over the cap is refused before the body is read;
-            // an undeclared one is caught after, below.
-            if response.content_length().unwrap_or(0) > MAX_HUB_BYTES {
-                return Err(format!(
-                    "{url} declares {} bytes; the hub limit is {MAX_HUB_BYTES}",
-                    response.content_length().unwrap_or(0)
-                ));
-            }
-            response
-                .text()
-                .await
-                .map_err(|error| format!("cannot read {url}: {error}"))
-        })?;
+    let body: String = runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(
+                crate::tools::FETCH_TIMEOUT_SECS,
+            ))
+            .redirect(reqwest::redirect::Policy::limited(
+                crate::tools::MAX_FETCH_REDIRECTS,
+            ))
+            .build()
+            .map_err(|error| format!("cannot build a client: {error}"))?;
+        let response = client
+            .get(url)
+            .header(reqwest::header::USER_AGENT, "kallisti-hub/1.0")
+            .send()
+            .await
+            .map_err(|error| format!("cannot fetch {url}: {error}"))?;
+        if !response.status().is_success() {
+            return Err(format!("{url} answered {}", response.status()));
+        }
+        // A declared length over the cap is refused before the body is read;
+        // an undeclared one is caught after, below.
+        if response.content_length().unwrap_or(0) > MAX_HUB_BYTES {
+            return Err(format!(
+                "{url} declares {} bytes; the hub limit is {MAX_HUB_BYTES}",
+                response.content_length().unwrap_or(0)
+            ));
+        }
+        response
+            .text()
+            .await
+            .map_err(|error| format!("cannot read {url}: {error}"))
+    })?;
     if body.len() as u64 > MAX_HUB_BYTES {
         return Err(format!(
             "that skill is {} bytes; the hub limit is {MAX_HUB_BYTES}",
@@ -1581,8 +1584,13 @@ mod install_tests {
     #[test]
     fn a_bad_key_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let refused = install(Some(dir.path().to_str().unwrap_or("")), "Not A Key", "# x", true)
-            .expect_err("refused");
+        let refused = install(
+            Some(dir.path().to_str().unwrap_or("")),
+            "Not A Key",
+            "# x",
+            true,
+        )
+        .expect_err("refused");
         assert!(refused.contains("skill key"), "{refused}");
     }
 

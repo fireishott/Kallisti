@@ -952,10 +952,8 @@ pub async fn session(State(service): State<DeviceService>, headers: HeaderMap) -
         Ok(Some(device)) => device,
         Ok(None) => return DeviceError::device_not_found().into_response(),
         Err(error) => {
-            return DeviceError::db_unavailable(format!(
-                "the device could not be read: {error}"
-            ))
-            .into_response();
+            return DeviceError::db_unavailable(format!("the device could not be read: {error}"))
+                .into_response();
         }
     };
     if device.revoked_at.is_some() {

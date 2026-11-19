@@ -676,7 +676,7 @@ pub fn journal_for(db: &Db, run_id: &str) -> Result<Vec<DeliveryEntry>, crate::d
                 created_at: row.get(3)?,
             })
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     })
 }
 
@@ -699,7 +699,7 @@ pub fn recent(db: &Db, limit: usize) -> Result<Vec<DeliveryEntry>, crate::db::Db
                 created_at: row.get(3)?,
             })
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     })
 }
 

@@ -48,8 +48,7 @@ pub fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "schedule_cancel".to_owned(),
-            description: "Delete one schedule by id. Returns the name it removed."
-                .to_owned(),
+            description: "Delete one schedule by id. Returns the name it removed.".to_owned(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -78,9 +77,21 @@ fn schedule_run(arguments: &Value, db: &Db) -> ToolResult {
              schedule off after it fires. Give a `cron` expression instead.",
         );
     }
-    let name = arguments.get("name").and_then(Value::as_str).unwrap_or("").trim();
-    let cron = arguments.get("cron").and_then(Value::as_str).unwrap_or("").trim();
-    let prompt = arguments.get("prompt").and_then(Value::as_str).unwrap_or("").trim();
+    let name = arguments
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let cron = arguments
+        .get("cron")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let prompt = arguments
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if name.is_empty() || cron.is_empty() || prompt.is_empty() {
         return ToolResult::refused("schedule_run needs a `name`, a `cron` and a `prompt`");
     }

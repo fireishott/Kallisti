@@ -3199,8 +3199,14 @@ async fn a_long_transcript_and_a_long_list_are_bounded_and_say_so() {
     // it, and `has_more` tells the surface there is older history behind `x-before`.
     // Serving the oldest page first meant a long chat opened at the top of its
     // history and the recent messages were a scroll away.
-    assert_eq!(messages[0]["body"], "message 5", "the newest page, oldest first");
-    assert_eq!(messages[199]["body"], "message 204", "and it ends at the newest message");
+    assert_eq!(
+        messages[0]["body"], "message 5",
+        "the newest page, oldest first"
+    );
+    assert_eq!(
+        messages[199]["body"], "message 204",
+        "and it ends at the newest message"
+    );
     assert_eq!(body["has_more"], true, "older history is behind the cursor");
 
     // More conversations than a page, too.
@@ -7812,11 +7818,16 @@ async fn a_turn_stores_the_conversation_it_names() {
             "POST",
             "/v1/turns",
             &auth,
-            Some(&format!(r#"{{"text":"hello","conversation":"{conversation}"}}"#)),
+            Some(&format!(
+                r#"{{"text":"hello","conversation":"{conversation}"}}"#
+            )),
         )
         .await;
     assert_eq!(response.status, 202, "{}", response.body);
-    let job_id = response.json()["job_id"].as_str().expect("job id").to_owned();
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("job id")
+        .to_owned();
 
     let db = harness.engine.db().clone();
     let stored: Option<String> = db
@@ -7856,7 +7867,10 @@ async fn a_turn_without_a_conversation_gets_one() {
         .request("POST", "/v1/turns", &auth, Some(r#"{"text":"hello"}"#))
         .await;
     assert_eq!(response.status, 202, "{}", response.body);
-    let job_id = response.json()["job_id"].as_str().expect("job id").to_owned();
+    let job_id = response.json()["job_id"]
+        .as_str()
+        .expect("job id")
+        .to_owned();
 
     let db = harness.engine.db().clone();
     let stored: Option<String> = db

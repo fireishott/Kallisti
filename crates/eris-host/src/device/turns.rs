@@ -1612,7 +1612,11 @@ fn requeue_reclaimed(store: &TurnStore, job_id: &str) -> bool {
     let Some(conversation) = job.conversation_id.as_deref() else {
         return false;
     };
-    let Some(text) = job.request_text.as_deref().filter(|text| !text.trim().is_empty()) else {
+    let Some(text) = job
+        .request_text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    else {
         return false;
     };
     if job.chain_depth >= crate::queue::MAX_AUTO {
@@ -2473,12 +2477,13 @@ impl TurnHub {
                             // built from the same record the transcript keeps and
                             // never from a second reading of the file.
                             if name == "write_file"
-                                && let Some(diff) = serde_json::from_str::<serde_json::Value>(&full_output)
-                                    .ok()
-                                    .and_then(|value| {
-                                        let diff = value.get("diff")?;
-                                        (!diff.is_null()).then(|| diff.clone())
-                                    })
+                                && let Some(diff) =
+                                    serde_json::from_str::<serde_json::Value>(&full_output)
+                                        .ok()
+                                        .and_then(|value| {
+                                            let diff = value.get("diff")?;
+                                            (!diff.is_null()).then(|| diff.clone())
+                                        })
                             {
                                 let artifact = serde_json::json!({
                                     "turn_id": writer_job,
@@ -2495,12 +2500,17 @@ impl TurnHub {
                             // height cap rides along so the phone never has to
                             // guess how tall a card may grow.
                             if name == "write_file"
-                                && let Some(page) = serde_json::from_str::<serde_json::Value>(&full_output)
-                                    .ok()
-                                    .and_then(|value| {
-                                        let page = value.get("page")?;
-                                        if page.is_null() { None } else { Some(page.clone()) }
-                                    })
+                                && let Some(page) =
+                                    serde_json::from_str::<serde_json::Value>(&full_output)
+                                        .ok()
+                                        .and_then(|value| {
+                                            let page = value.get("page")?;
+                                            if page.is_null() {
+                                                None
+                                            } else {
+                                                Some(page.clone())
+                                            }
+                                        })
                             {
                                 let artifact = serde_json::json!({
                                     "turn_id": writer_job,
@@ -2560,8 +2570,7 @@ impl TurnHub {
                                     .format(&time::format_description::well_known::Rfc3339)
                                     .unwrap_or_default(),
                             });
-                            if let Ok(Some(seq)) =
-                                store.append(&writer_job, FrameKind::Step, &step)
+                            if let Ok(Some(seq)) = store.append(&writer_job, FrameKind::Step, &step)
                             {
                                 publish(&sender, seq, FrameKind::Step, step);
                             }
@@ -3614,7 +3623,11 @@ mod tests {
         let (job, _session) = queued(&store, &device);
         assert!(store.claim(&job).expect("claim"));
         store
-            .append(&job, FrameKind::Step, &serde_json::json!({"step_id": "one"}))
+            .append(
+                &job,
+                FrameKind::Step,
+                &serde_json::json!({"step_id": "one"}),
+            )
             .expect("append")
             .expect("a running turn accepts a step");
 
@@ -3653,7 +3666,12 @@ mod tests {
         assert_eq!(payload["turn_id"], "turn-9");
         assert_eq!(payload["approval_id"], "appr-1");
         assert_eq!(payload["scope"], "write_file");
-        assert!(payload["command"].as_str().expect("command").contains("a.txt"));
+        assert!(
+            payload["command"]
+                .as_str()
+                .expect("command")
+                .contains("a.txt")
+        );
         assert_eq!(payload["reason"], "looks safe");
         assert!(payload["cwd"].is_null());
         assert!(payload["deadline"].is_null());
@@ -3701,7 +3719,8 @@ mod tests {
         assert_eq!(frames[1]["choices"].as_array().expect("choices").len(), 2);
         let deadline = frames[0]["deadline"].as_str().expect("a stated deadline");
         assert!(
-            time::OffsetDateTime::parse(deadline, &time::format_description::well_known::Rfc3339).is_ok(),
+            time::OffsetDateTime::parse(deadline, &time::format_description::well_known::Rfc3339)
+                .is_ok(),
             "the deadline is RFC 3339: {deadline}"
         );
     }
@@ -3810,7 +3829,10 @@ mod tests {
         let (store, device) = store(64);
         let (job, _session) = queued(&store, &device);
         assert!(store.lease_expired_jobs().expect("read").is_empty());
-        assert!(store.claim(&job).expect("claim"), "a queued job is claimable");
+        assert!(
+            store.claim(&job).expect("claim"),
+            "a queued job is claimable"
+        );
 
         // The claim stamps a lease in the future, so the job is not expired.
         assert!(store.lease_expired_jobs().expect("read").is_empty());
@@ -3863,7 +3885,10 @@ mod tests {
     fn the_opening_frame_round_trips_and_is_not_terminal() {
         assert_eq!(FrameKind::Start.as_str(), "turn.start");
         assert_eq!(FrameKind::parse("turn.start"), Some(FrameKind::Start));
-        assert!(!FrameKind::Start.is_terminal(), "a turn has not ended at the start");
+        assert!(
+            !FrameKind::Start.is_terminal(),
+            "a turn has not ended at the start"
+        );
         assert!(FrameKind::ALL.contains(&FrameKind::Start));
     }
 
@@ -3885,7 +3910,10 @@ mod tests {
         assert_eq!(mark, Some(2), "the mark is the acked sequence");
         let retained = store.events_after(&job, 0).expect("events");
         assert_eq!(retained.len(), 2, "seq 1 and 2 were released");
-        assert_eq!(retained[0].seq, 3, "the first retained frame is the next one");
+        assert_eq!(
+            retained[0].seq, 3,
+            "the first retained frame is the next one"
+        );
 
         // A replayed older ack never rewinds the mark.
         let mark = store.acknowledge(&job, &device, 1).expect("ack");

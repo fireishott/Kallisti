@@ -1223,16 +1223,20 @@ pub async fn conversation(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let (messages, truncated) =
-        match chat::load_page(db, &conversation_id, before.as_deref(), CONVERSATION_MESSAGE_LIMIT) {
-            Ok(read) => read,
-            Err(error) => {
-                return DeviceError::db_unavailable(format!(
-                    "cannot read the conversation messages: {error}"
-                ))
-                .into_response();
-            }
-        };
+    let (messages, truncated) = match chat::load_page(
+        db,
+        &conversation_id,
+        before.as_deref(),
+        CONVERSATION_MESSAGE_LIMIT,
+    ) {
+        Ok(read) => read,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!(
+                "cannot read the conversation messages: {error}"
+            ))
+            .into_response();
+        }
+    };
     // The count bound above is not a size bound, and this is the surface that has
     // to live with the difference: a tool-heavy conversation is megabytes of
     // stdout, and a phone that cannot finish reading it opens the chat blank.
@@ -2339,7 +2343,6 @@ fn read_tts_enabled(engine: &SetupEngine) -> Result<String, DeviceError> {
 fn read_tts_voice(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::speech::voice(engine.db()))
 }
-
 
 fn read_workboard_default_project(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::workboard::default_project(engine.db()).unwrap_or_default())
@@ -5313,7 +5316,9 @@ pub async fn upload_sensor_batch(
     };
     let rows = match crate::sensors::parse_batch(&value) {
         Ok(rows) => rows,
-        Err(message) => return DeviceError::bad_request("sensor_batch_invalid", message).into_response(),
+        Err(message) => {
+            return DeviceError::bad_request("sensor_batch_invalid", message).into_response();
+        }
     };
     // The contract's `off` is applied here, before the write: a value that
     // reached the table has already leaked into every backup of it. The mapping
@@ -5323,10 +5328,10 @@ pub async fn upload_sensor_batch(
         std::collections::HashMap::new();
     for row in &rows {
         let key = row.key.clone().unwrap_or_else(|| row.kind.clone());
-        if !levels.contains_key(&key) {
-            let level = crate::sensitivity::level_for(service.engine().db(), &key)
+        if let std::collections::hash_map::Entry::Vacant(slot) = levels.entry(key) {
+            let level = crate::sensitivity::level_for(service.engine().db(), slot.key())
                 .unwrap_or(crate::sensitivity::Level::Ask);
-            levels.insert(key, level);
+            slot.insert(level);
         }
     }
     crate::sensitivity::apply_to_batch(&mut rows, |key| {
@@ -5345,10 +5350,10 @@ pub async fn upload_sensor_batch(
             "newest": newest,
         }))
         .into_response(),
-        Err(error) => DeviceError::db_unavailable(format!(
-            "the sensor batch could not be stored: {error}"
-        ))
-        .into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("the sensor batch could not be stored: {error}"))
+                .into_response()
+        }
     }
 }
 
@@ -5357,11 +5362,7 @@ pub async fn upload_sensor_batch(
 /// The context is read from the bearer rather than from the path: admin scope is
 /// the operator, anything else is a device. A method that needs the operator
 /// refuses a phone with 403 instead of quietly answering less.
-pub async fn rpc(
-    State(service): State<DeviceService>,
-    headers: HeaderMap,
-    body: Body,
-) -> Response {
+pub async fn rpc(State(service): State<DeviceService>, headers: HeaderMap, body: Body) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
         Err(error) => return error.into_response(),
@@ -5373,7 +5374,10 @@ pub async fn rpc(
     let (method, params) = match crate::device::rpc::parse_envelope(&value) {
         Ok(parsed) => parsed,
         Err(refusal) => {
-            return (status_for(refusal.status), axum::Json(crate::device::rpc::failure(&refusal)))
+            return (
+                status_for(refusal.status),
+                axum::Json(crate::device::rpc::failure(&refusal)),
+            )
                 .into_response();
         }
     };
@@ -5397,7 +5401,10 @@ pub async fn rpc(
                 fields.insert(key.to_owned(), text.to_owned());
             }
         }
-        if let Some(ids) = params.get("attachments").and_then(serde_json::Value::as_array) {
+        if let Some(ids) = params
+            .get("attachments")
+            .and_then(serde_json::Value::as_array)
+        {
             let joined = ids
                 .iter()
                 .filter_map(serde_json::Value::as_str)
@@ -5437,11 +5444,14 @@ pub async fn rpc(
         return (parts.status, axum::Json(body)).into_response();
     }
     match crate::device::rpc::dispatch(method, &params, &context, &service) {
-        Ok(result) => axum::Json(crate::device::rpc::success(method, &context, result)).into_response(),
-        Err(refusal) => {
-            (status_for(refusal.status), axum::Json(crate::device::rpc::failure(&refusal)))
-                .into_response()
+        Ok(result) => {
+            axum::Json(crate::device::rpc::success(method, &context, result)).into_response()
         }
+        Err(refusal) => (
+            status_for(refusal.status),
+            axum::Json(crate::device::rpc::failure(&refusal)),
+        )
+            .into_response(),
     }
 }
 
@@ -5495,10 +5505,7 @@ pub async fn mcp_jsonrpc(
 ///
 /// Operator scope: it names runs and channels, and it is how a failed delivery is
 /// found rather than guessed at.
-pub async fn deliveries(
-    State(service): State<DeviceService>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn deliveries(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
         Err(error) => return error.into_response(),
@@ -5524,10 +5531,10 @@ pub async fn deliveries(
                 .collect::<Vec<_>>(),
         }))
         .into_response(),
-        Err(error) => DeviceError::db_unavailable(format!(
-            "the delivery journal could not be read: {error}"
-        ))
-        .into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("the delivery journal could not be read: {error}"))
+                .into_response()
+        }
     }
 }
 
@@ -5556,11 +5563,7 @@ pub async fn install_skill(
     let skill_body = field(&fields, "body");
     let replace = matches!(field(&fields, "replace").trim(), "true" | "1" | "on");
     let dir_key = crate::skills::setting_key("dir");
-    let stored = service
-        .engine()
-        .setting(&dir_key)
-        .ok()
-        .flatten();
+    let stored = service.engine().setting(&dir_key).ok().flatten();
     // A `url` installs from a hub, and the guard that stops the daemon fetching
     // its own network runs inside `install_from_url`.
     let url = field(&fields, "url").trim().to_owned();
@@ -5584,10 +5587,7 @@ pub async fn install_skill(
 ///
 /// Operator scope only: the buffer names turns and timings, which is host
 /// administration rather than a phone's business.
-pub async fn diagnostics(
-    State(service): State<DeviceService>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn diagnostics(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
         Err(error) => return error.into_response(),
@@ -5683,8 +5683,7 @@ pub async fn room_say(
         let mut turn_fields = std::collections::BTreeMap::new();
         turn_fields.insert("text".to_owned(), turn.prompt.clone());
         turn_fields.insert("conversation".to_owned(), conversation.clone());
-        let response =
-            create_turn_with(&service, &token, &turn_fields, None).await;
+        let response = create_turn_with(&service, &token, &turn_fields, None).await;
         let status = response.status();
         let (_, body) = response.into_parts();
         let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
@@ -7152,10 +7151,7 @@ fn talk_store_error(error: crate::db::DbError) -> DeviceError {
 }
 
 /// One session by id, or `None` when no row holds it.
-fn read_talk_session(
-    db: &crate::db::Db,
-    id: &str,
-) -> Result<Option<TalkSessionRow>, DeviceError> {
+fn read_talk_session(db: &crate::db::Db, id: &str) -> Result<Option<TalkSessionRow>, DeviceError> {
     use rusqlite::OptionalExtension;
     db.with_conn(|conn| {
         conn.query_row(
@@ -7177,10 +7173,7 @@ fn read_talk_session(
 }
 
 /// Every turn of one session, in the order it was spoken.
-fn read_talk_turns(
-    db: &crate::db::Db,
-    session_id: &str,
-) -> Result<Vec<TalkTurnRow>, DeviceError> {
+fn read_talk_turns(db: &crate::db::Db, session_id: &str) -> Result<Vec<TalkTurnRow>, DeviceError> {
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
             "SELECT role, text, heard_text, barge_in FROM talk_turns \
@@ -7381,7 +7374,11 @@ pub async fn create_talk_turn(
     }
     let source = {
         let value = field(&fields, "source");
-        if value.is_empty() { "voice".to_owned() } else { value.to_owned() }
+        if value.is_empty() {
+            "voice".to_owned()
+        } else {
+            value.to_owned()
+        }
     };
     let text = field(&fields, "text").to_owned();
     if text.is_empty() {
@@ -7492,10 +7489,7 @@ pub async fn inject_talk_transcript(
     let mut unheard = String::new();
     if let Some(last) = turns.iter().rev().find(|turn| turn.role == "assistant") {
         if last.barge_in {
-            heard = last
-                .heard_text
-                .clone()
-                .unwrap_or_else(|| last.text.clone());
+            heard = last.heard_text.clone().unwrap_or_else(|| last.text.clone());
             if let Some(rest) = last.text.strip_prefix(heard.as_str()) {
                 unheard = rest.trim().to_owned();
             }
@@ -9337,9 +9331,11 @@ fn resolve_turn_model(engine: &SetupEngine, requested: &str) -> Result<String, D
         })?
         .unwrap_or_default();
     let choice = chat::split_model_value(requested, &registry, &primary);
-    let known = engine.provider_catalog(&choice.provider_id).map_err(|error| {
-        DeviceError::db_unavailable(format!("cannot read that provider's catalogue: {error}"))
-    })?;
+    let known = engine
+        .provider_catalog(&choice.provider_id)
+        .map_err(|error| {
+            DeviceError::db_unavailable(format!("cannot read that provider's catalogue: {error}"))
+        })?;
     if !known.is_empty() && !known.iter().any(|model| model == &choice.model) {
         return Err(DeviceError::bad_request(
             "model_not_in_probe",
@@ -9364,16 +9360,16 @@ pub(crate) async fn create_turn_with(
     fields: &std::collections::BTreeMap<String, String>,
     idempotency_key: Option<&str>,
 ) -> Response {
-    let text: String = field(&fields, "text").to_owned();
+    let text: String = field(fields, "text").to_owned();
     // Files this turn carries. Ids only: the bytes were uploaded first and are
     // already rows, so a turn never carries a body that can fail halfway.
-    let attachment_ids =
-        match attachments::parse_ids(field(&fields, attachments::ATTACHMENTS_FIELD)) {
-            Ok(ids) => ids,
-            Err(message) => {
-                return DeviceError::bad_request("attachments_invalid", message).into_response();
-            }
-        };
+    let attachment_ids = match attachments::parse_ids(field(fields, attachments::ATTACHMENTS_FIELD))
+    {
+        Ok(ids) => ids,
+        Err(message) => {
+            return DeviceError::bad_request("attachments_invalid", message).into_response();
+        }
+    };
     // A turn that carries files does not need words. The operator who drops a
     // screenshot and presses send has said everything with the picture, and
     // refusing it with text_required taught the app nothing: it answered 400 and
@@ -9389,7 +9385,7 @@ pub(crate) async fn create_turn_with(
     // does not hold is refused here, before anything is written, so a refused
     // turn leaves no half a conversation behind.
     let conversation = {
-        let requested = field(&fields, "conversation").to_owned();
+        let requested = field(fields, "conversation").to_owned();
         if requested.is_empty() {
             None
         } else {
@@ -9509,13 +9505,7 @@ pub(crate) async fn create_turn_with(
             }
         }
         if !starts_a_turn {
-            return run_command(
-                &service,
-                token.device_id(),
-                &text,
-                &command,
-                idempotency_key,
-            );
+            return run_command(service, token.device_id(), &text, &command, idempotency_key);
         }
     }
 
@@ -9531,7 +9521,7 @@ pub(crate) async fn create_turn_with(
     // a kilobyte. Anything longer is treated as absent rather than truncated, so
     // the id a client gets back is always the id it sent or nothing at all.
     let client_message_id = {
-        let raw = field(&fields, "client_message_id");
+        let raw = field(fields, "client_message_id");
         if raw.is_empty() || raw.len() > MAX_CLIENT_MESSAGE_ID {
             None
         } else {
@@ -9548,7 +9538,7 @@ pub(crate) async fn create_turn_with(
     // A caller that names a model pins this conversation to it for the turn and
     // every turn after it. The note sync uses this to run enrichment on its own
     // model without moving the daemon default or the chat picker.
-    if let (Some(conversation_id), requested) = (&conversation, field(&fields, "model")) {
+    if let (Some(conversation_id), requested) = (&conversation, field(fields, "model")) {
         let requested = requested.trim();
         if !requested.is_empty() {
             let qualified = match resolve_turn_model(service.engine(), requested) {
@@ -9575,7 +9565,7 @@ pub(crate) async fn create_turn_with(
     // would be named from the first line of its instruction block, which is a
     // header, not a title.
     if let Some(conversation_id) = &conversation {
-        let requested = field(&fields, "title").trim();
+        let requested = field(fields, "title").trim();
         if !requested.is_empty() {
             // A titled turn is a background turn. It must not spend the model
             // pin the phone's picker left for the chat the operator is in.

@@ -881,7 +881,11 @@ pub async fn speak(
                 &format!("voice={voice} bytes={}", bytes.len()),
             );
             let mut out = axum::http::HeaderMap::new();
-            let content_type = if bytes.starts_with(b"RIFF") { "audio/wav" } else { "audio/mpeg" };
+            let content_type = if bytes.starts_with(b"RIFF") {
+                "audio/wav"
+            } else {
+                "audio/mpeg"
+            };
             out.insert(
                 axum::http::header::CONTENT_TYPE,
                 axum::http::HeaderValue::from_static(content_type),
@@ -928,18 +932,17 @@ pub async fn transcribe(
     if let Err(error) = require_scope(&token, Scope::Chat) {
         return error.into_response();
     }
-    let bytes =
-        match axum::body::to_bytes(body, crate::speech::MAX_TRANSCRIBE_BYTES).await {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                return DeviceError::new(
-                    axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-                    "stt_too_large",
-                    "one clip may be at most 32 MB",
-                )
-                .into_response()
-            }
-        };
+    let bytes = match axum::body::to_bytes(body, crate::speech::MAX_TRANSCRIBE_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return DeviceError::new(
+                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                "stt_too_large",
+                "one clip may be at most 32 MB",
+            )
+            .into_response();
+        }
+    };
     match crate::speech::transcribe(service.engine().db(), &bytes).await {
         Ok(heard) => {
             let chars = heard

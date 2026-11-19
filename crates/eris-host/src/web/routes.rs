@@ -6452,11 +6452,9 @@ async fn save_push(
                 ),
             );
         }
-        if let Err(error) = store::settings_put(
-            state.engine.db(),
-            crate::speech::SETTING_BASE_URL,
-            value,
-        ) {
+        if let Err(error) =
+            store::settings_put(state.engine.db(), crate::speech::SETTING_BASE_URL, value)
+        {
             return store_failure(&request_id.0, "the speech base URL", error);
         }
     }

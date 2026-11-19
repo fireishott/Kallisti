@@ -890,17 +890,17 @@ fn write_file(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
             // A file of bytes is not a file of lines: diffing it would render the
             // contents as coloured noise. The frame says binary and the card shows
             // an availability note instead.
-            "diff": if is_binary_path(&requested) {
+            "diff": if is_binary_path(requested) {
                 serde_json::Value::Null
             } else {
-                crate::diff::file(&requested, before.as_deref().unwrap_or(""), content)
+                crate::diff::file(requested, before.as_deref().unwrap_or(""), content)
             },
-            "binary": is_binary_path(&requested),
+            "binary": is_binary_path(requested),
             // A written page is a page the phone can draw. The content rides in
             // the result rather than being re-read from disk, so the frame the
             // turn publishes is exactly what was written, and only for a file
             // that is HTML and small enough to render.
-            "page": page_payload(&requested, content),
+            "page": page_payload(requested, content),
         })),
         Err(error) => ToolResult::error(format!("{requested}: {error}")),
     }

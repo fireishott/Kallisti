@@ -75,12 +75,7 @@ pub fn specs() -> Vec<ToolSpec> {
 }
 
 /// Run one call. `None` means this module does not own the name.
-pub fn run(
-    name: &str,
-    arguments: &Value,
-    sensors: &SensorStore,
-    db: &Db,
-) -> Option<ToolResult> {
+pub fn run(name: &str, arguments: &Value, sensors: &SensorStore, db: &Db) -> Option<ToolResult> {
     match name {
         "where_is_the_operator" => Some(where_is(sensors, db)),
         "health_today" => Some(health_today(sensors, db)),
@@ -118,7 +113,9 @@ fn where_is(sensors: &SensorStore, db: &Db) -> ToolResult {
             "place": Value::Null,
             "note": "the phone has not reported a location",
         })),
-        Err(error) => ToolResult::refused(&format!("the location store could not be read: {error}")),
+        Err(error) => {
+            ToolResult::refused(&format!("the location store could not be read: {error}"))
+        }
     }
 }
 
@@ -161,9 +158,7 @@ fn recent_activity(arguments: &Value, sensors: &SensorStore, db: &Db) -> ToolRes
                 .collect();
             ToolResult::ok(json!({"level": level.as_str(), "activities": events}))
         }
-        Err(error) => {
-            ToolResult::refused(&format!("the sensor store could not be read: {error}"))
-        }
+        Err(error) => ToolResult::refused(&format!("the sensor store could not be read: {error}")),
     }
 }
 
@@ -206,12 +201,9 @@ fn query_device(arguments: &Value, sensors: &SensorStore, db: &Db) -> ToolResult
                 .collect();
             ToolResult::ok(json!({"kind": kind, "events": events}))
         }
-        Err(error) => {
-            ToolResult::refused(&format!("the sensor store could not be read: {error}"))
-        }
+        Err(error) => ToolResult::refused(&format!("the sensor store could not be read: {error}")),
     }
 }
-
 
 #[cfg(test)]
 mod tests {

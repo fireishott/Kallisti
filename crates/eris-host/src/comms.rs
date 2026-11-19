@@ -118,7 +118,10 @@ pub fn confirm(db: &Db, id: &str, recipient: &str) -> Result<Value, String> {
             "that message is already `{status}`; a confirmation cannot be replayed"
         ));
     }
-    if staged_recipient.trim().to_ascii_lowercase() != recipient.trim().to_ascii_lowercase() {
+    if !staged_recipient
+        .trim()
+        .eq_ignore_ascii_case(recipient.trim())
+    {
         return Err(format!(
             "the confirmation names `{recipient}` but the message was staged for \
              `{staged_recipient}`. Nothing was confirmed: re-stage the message for the new \
@@ -190,7 +193,10 @@ pub fn run(name: &str, arguments: &Value, db: &Db) -> Option<crate::tools::ToolR
 
 fn stage_tool(arguments: &Value, db: &Db) -> crate::tools::ToolResult {
     let kind = arguments.get("kind").and_then(Value::as_str).unwrap_or("");
-    let recipient = arguments.get("recipient").and_then(Value::as_str).unwrap_or("");
+    let recipient = arguments
+        .get("recipient")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let body = arguments.get("body").and_then(Value::as_str).unwrap_or("");
     match stage(db, kind, recipient, body) {
         Ok(id) => crate::tools::ToolResult::ok(json!({
@@ -206,7 +212,10 @@ fn stage_tool(arguments: &Value, db: &Db) -> crate::tools::ToolResult {
 
 fn confirm_tool(arguments: &Value, db: &Db) -> crate::tools::ToolResult {
     let id = arguments.get("id").and_then(Value::as_str).unwrap_or("");
-    let recipient = arguments.get("recipient").and_then(Value::as_str).unwrap_or("");
+    let recipient = arguments
+        .get("recipient")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     match confirm(db, id, recipient) {
         Ok(value) => crate::tools::ToolResult::ok(value),
         Err(message) => crate::tools::ToolResult::refused(&message),
@@ -215,7 +224,7 @@ fn confirm_tool(arguments: &Value, db: &Db) -> crate::tools::ToolResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{confirm, stage, SETTING_ALLOWLIST};
+    use super::{SETTING_ALLOWLIST, confirm, stage};
     use crate::db::Db;
 
     fn with_allowlist(entries: &str) -> Db {
@@ -239,7 +248,9 @@ mod tests {
         let refused = stage(&db, "sms", "+15025550100", "hi").expect_err("refused");
         assert!(refused.contains("allowlist"), "{refused}");
         let rows: i64 = db
-            .with_conn(|conn| Ok(conn.query_row("SELECT count(*) FROM comms_outbox", [], |r| r.get(0))?))
+            .with_conn(|conn| {
+                Ok(conn.query_row("SELECT count(*) FROM comms_outbox", [], |r| r.get(0))?)
+            })
             .expect("count");
         assert_eq!(rows, 0);
     }

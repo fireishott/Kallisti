@@ -228,10 +228,9 @@ fn legacy_component(
     last_checked_at: &str,
     error: Option<&str>,
 ) -> serde_json::Value {
-    let newest = newest_staged(staged)
-        .filter(|(version, build)| {
-            crate::release::is_newer(version, *build, admin::VERSION, admin::BUILD)
-        });
+    let newest = newest_staged(staged).filter(|(version, build)| {
+        crate::release::is_newer(version, *build, admin::VERSION, admin::BUILD)
+    });
     let newer_release = latest.filter(|release| is_newer_than_self(release));
     // A parse failure means the host cannot say what it would install, so
     // `updateAvailable` is false and the sentence says why: a phone that shows
@@ -1550,7 +1549,10 @@ mod tests {
         // running binary made the daemon advertise a downgrade as an update.
         let build = admin::BUILD.saturating_sub(1);
         let staged = vec![format!("eris.new-{}-{build}", admin::VERSION)];
-        assert!(!update_offered(&staged, None), "an older staged build is not an offer");
+        assert!(
+            !update_offered(&staged, None),
+            "an older staged build is not an offer"
+        );
         let envelope = legacy_envelope(None, &staged, "2026-11-10T00:00:00Z", None);
         let component = &envelope["components"][COMPONENT];
         assert_eq!(component["updateAvailable"], false);

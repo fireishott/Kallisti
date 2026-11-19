@@ -118,7 +118,11 @@ pub async fn speak(
         "voice": chosen,
     });
     let keyless = matches!(
-        crate::web::store::settings_get(db, SETTING_KEYLESS).ok().flatten().as_deref().map(str::trim),
+        crate::web::store::settings_get(db, SETTING_KEYLESS)
+            .ok()
+            .flatten()
+            .as_deref()
+            .map(str::trim),
         Some("true")
     );
     let key = if keyless {

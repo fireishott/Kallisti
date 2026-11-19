@@ -28,8 +28,8 @@
 //! reads them, so an operator with JavaScript blocked still sees every subagent
 //! and its result.
 
-use std::path::PathBuf;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -585,11 +585,7 @@ pub fn get(db: &Db, id: &str) -> Result<Option<Subagent>, DbError> {
 /// Every child one parent turn dispatched, filtered by the statuses the caller
 /// cares about. Used by the turn watchdog: the parent waits on the rows instead
 /// of trusting the model to remember what it dispatched.
-pub fn for_parent(
-    db: &Db,
-    parent: &str,
-    statuses: &[&str],
-) -> Result<Vec<Subagent>, DbError> {
+pub fn for_parent(db: &Db, parent: &str, statuses: &[&str]) -> Result<Vec<Subagent>, DbError> {
     if statuses.is_empty() {
         return Ok(Vec::new());
     }
@@ -1707,7 +1703,8 @@ mod tests {
             spec.description
         );
         assert!(
-            spec.description.contains("cannot dispatch another subagent"),
+            spec.description
+                .contains("cannot dispatch another subagent"),
             "no recursion is stated: {}",
             spec.description
         );
