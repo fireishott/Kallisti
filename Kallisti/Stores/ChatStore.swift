@@ -4629,11 +4629,12 @@ final class ChatStore {
     private var progressMirrorTask: Task<Void, Never>?
 
     func startProgressMirror() {
-        guard isStreaming, progressMirrorTask == nil else { return }
+        guard isStreaming || hasPendingMessages, progressMirrorTask == nil else { return }
         progressMirrorTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3))
-                guard let self, !Task.isCancelled, self.isStreaming else { break }
+                guard let self, !Task.isCancelled,
+                      self.isStreaming || self.hasPendingMessages else { break }
                 await self.mirrorProgress()
             }
             self?.progressMirrorTask = nil
