@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The wrist keeps its pairing in an ungrouped keychain item when its profile
   does not grant the shared access group, which is what a distribution profile
   can do. Before this, every turn answered `no_transport` on a real watch.
+- The watch app had no microphone usage description, so the first tap on the
+  orb terminated it. It now carries one, and says what it is for.
+- Talk asked the daemon's Mimo readiness route even when the daemon's own speech
+  was selected, so the screen still demanded a Mimo key. That route is only
+  consulted when the Mimo engine is chosen.
 
 ## [0.2.3] - 2026-08-11
 

@@ -642,6 +642,16 @@ final class AppContainer {
                     guard let url = URL(string: base)?.appendingPathComponent("talk/readiness") else {
                         return (ready: false, blockedReason: "Invalid daemon address.")
                     }
+                    // The daemon's readiness route exists for the Mimo realtime
+                    // session. When the engines are the daemon's own, a paired
+                    // daemon with a token is the whole requirement, and asking a
+                    // Mimo route would re-impose the key this change removes.
+                    if speechEngine != .mimo {
+                        return (
+                            ready: token?.isEmpty == false,
+                            blockedReason: (token?.isEmpty == false) ? nil : "No daemon token yet. Reopen the app."
+                        )
+                    }
                     struct Readiness: Decodable {
                         let ready: Bool
                         let hostOnline: Bool?
