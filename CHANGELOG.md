@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The notification preview stayed one character over its cap when it clipped,
   because the ellipsis was appended after the clamp.
+- The watch app called itself KallistiWatch on the home screen, said "Herald" in
+  its notifications and its unpaired screen, and wore a placeholder flame. It is
+  Kallisti, with the phone app's icon, in build 221.
+- Talk sent every answer to the Mimo cloud client and named a Mimo voice in the
+  call. The engine is chosen per answer now: the daemon's own `POST /v1/speak`
+  first, which uses whatever provider the daemon is configured for, then Mimo
+  when its key is the only thing that can speak. Settings -> Voice carries the
+  choice.
 
 ## [0.2.3] - 2026-08-11
 
