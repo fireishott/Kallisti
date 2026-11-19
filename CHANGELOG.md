@@ -52,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A paired phone hands its wrist the daemon origin and token pair over
   WatchConnectivity, so the watch opens on the conversation instead of a
   heartbeat waiting to be told what to do.
+- Talk no longer refuses to start without a Mimo key. The key is required only
+  when the Mimo engine is selected; the daemon speaks and hears on its own.
+- The wrist keeps its pairing in an ungrouped keychain item when its profile
+  does not grant the shared access group, which is what a distribution profile
+  can do. Before this, every turn answered `no_transport` on a real watch.
 
 ## [0.2.3] - 2026-08-11
 
