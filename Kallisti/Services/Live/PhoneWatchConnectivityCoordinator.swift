@@ -45,6 +45,9 @@ final class PhoneWatchConnectivityCoordinator: NSObject {
 
     private weak var handler: WatchActionHandler?
 
+    /// Builds the pairing to hand the wrist, or nil when there is nothing to give.
+    private var pairingProvider: (@MainActor () async -> WatchPairingHandoff?)?
+
     /// Recent Watch-originated idempotency IDs, used to collapse duplicate
     /// immediateMessage + transferUserInfo deliveries. The size is bounded
     /// by `maxIdempotencyWindow`.
@@ -55,6 +58,27 @@ final class PhoneWatchConnectivityCoordinator: NSObject {
     private(set) var lastDuplicateCollapsed: Date?
 
     private let session: WCSession? = WCSession.isSupported() ? WCSession.default : nil
+
+    /// Hand the wrist the daemon pairing, now and whenever it becomes reachable.
+    func attach(pairing: @escaping @MainActor () async -> WatchPairingHandoff?) {
+        pairingProvider = pairing
+        Task { await pushPairing() }
+    }
+
+    /// Push the pairing if there is one and the session is up. An application
+    /// context survives a sleeping wrist: WatchConnectivity delivers it again
+    /// when the watch next runs.
+    func pushPairing() async {
+        guard let session, session.activationState == .activated,
+              let handoff = await pairingProvider?()
+        else { return }
+        do {
+            try session.updateApplicationContext(handoff.context)
+        } catch {
+            // Not fatal: a wrist that cannot take it now can take it later.
+            lastDuplicateCollapsed = nil
+        }
+    }
 
     private override init() {
         super.init()
@@ -198,6 +222,10 @@ extension PhoneWatchConnectivityCoordinator: WCSessionDelegate {
         let reachable = session.isReachable
         Task { @MainActor in
             self.isReachable = reachable
+            if reachable {
+                // A wrist that just woke is the moment it can take a pairing.
+                await self.pushPairing()
+            }
         }
     }
 

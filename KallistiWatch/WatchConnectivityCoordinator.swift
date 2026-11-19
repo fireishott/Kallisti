@@ -75,6 +75,18 @@ final class WatchConnectivityCoordinator: NSObject {
     /// The delegate callbacks run off the main actor and a `[String: Any]` is
     /// not `Sendable`, so the three strings are read where the message arrives
     /// and only values cross to this side.
+    /// Store a handoff from the phone and open the conversation.
+    func acceptPairing(_ context: [String: Any]) {
+        guard let handoff = WatchPairingHandoff(context: context) else { return }
+        let credentials = handoff.credentials(deviceID: "phone")
+        do {
+            try WatchPairingStore().save(credentials)
+            WatchLaunchState.shared.open(listening: false)
+        } catch {
+            lastError = "The pairing could not be stored: \(error.localizedDescription)"
+        }
+    }
+
     private func handleAcknowledgement(
         idString: String?,
         status: String?,
@@ -151,6 +163,16 @@ extension WatchConnectivityCoordinator: WCSessionDelegate {
             if let failure {
                 self.lastError = failure
             }
+        }
+    }
+
+    nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        // The phone hands over its own pairing: origin, access token, refresh
+        // token. An application context is redelivered if the wrist was asleep,
+        // so a watch that missed it still pairs on its next run.
+        let context = applicationContext
+        Task { @MainActor in
+            self.acceptPairing(context)
         }
     }
 

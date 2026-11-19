@@ -96,3 +96,58 @@ struct WatchActionEnvelope: Sendable, Equatable {
         )
     }
 }
+
+/// The pairing the phone hands its wrist, so the watch can talk to the same
+/// daemon without a second ceremony. Sent as an application context, which
+/// WatchConnectivity delivers again on the next launch if the wrist was asleep.
+struct WatchPairingHandoff: Codable, Sendable, Equatable {
+    var baseURL: String
+    var accessToken: String
+    var refreshToken: String
+
+    enum Key {
+        static let kind = "kind"
+        static let baseURL = "baseURL"
+        static let accessToken = "accessToken"
+        static let refreshToken = "refreshToken"
+        static let kindValue = "pairing"
+    }
+
+    /// What travels over WatchConnectivity. Plain strings, because an
+    /// application context is a property list.
+    var context: [String: Any] {
+        [
+            Key.kind: Key.kindValue,
+            Key.baseURL: baseURL,
+            Key.accessToken: accessToken,
+            Key.refreshToken: refreshToken,
+        ]
+    }
+
+    init(baseURL: String, accessToken: String, refreshToken: String) {
+        self.baseURL = baseURL
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+    }
+
+    init?(context: [String: Any]) {
+        guard context[Key.kind] as? String == Key.kindValue,
+              let baseURL = context[Key.baseURL] as? String, !baseURL.isEmpty,
+              let accessToken = context[Key.accessToken] as? String, !accessToken.isEmpty,
+              let refreshToken = context[Key.refreshToken] as? String, !refreshToken.isEmpty
+        else { return nil }
+        self.baseURL = baseURL
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+    }
+
+    /// The watch's own credential type, with the device id the phone is using.
+    func credentials(deviceID: String) -> WatchCredentials {
+        WatchCredentials(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            deviceID: deviceID,
+            origin: URL(string: baseURL)
+        )
+    }
+}

@@ -35,6 +35,18 @@ final class WatchActionBridge: WatchActionHandler {
     init(container: AppContainer) {
         self.container = container
         PhoneWatchConnectivityCoordinator.shared.attach(handler: self)
+        // The wrist pairs by being handed the phone's own pairing: the same
+        // daemon, the same origin, the same tokens. A wrist that is asleep gets
+        // it the next time it runs, because an application context persists.
+        PhoneWatchConnectivityCoordinator.shared.attach { [container] in
+            guard let base = container.settingsStore.settings
+                .relayConfiguration.activeBaseURLString, !base.isEmpty
+            else { return nil }
+            let access = await container.sessionStore.currentAccessToken() ?? ""
+            let refresh = await container.sessionStore.currentRefreshToken() ?? ""
+            guard !access.isEmpty else { return nil }
+            return WatchPairingHandoff(baseURL: base, accessToken: access, refreshToken: refresh)
+        }
     }
 
     func handleReply(
