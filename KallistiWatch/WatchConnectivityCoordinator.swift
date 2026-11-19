@@ -77,7 +77,12 @@ final class WatchConnectivityCoordinator: NSObject {
     /// and only values cross to this side.
     /// Store a handoff from the phone and open the conversation.
     func acceptPairing(_ handoff: WatchPairingHandoff) {
-        let credentials = handoff.credentials(deviceID: "phone")
+        let credentials = WatchCredentials(
+            accessToken: handoff.accessToken,
+            refreshToken: handoff.refreshToken,
+            deviceID: "phone",
+            origin: URL(string: handoff.baseURL)
+        )
         do {
             try WatchPairingStore().save(credentials)
             WatchLaunchState.shared.open(listening: false)

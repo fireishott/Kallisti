@@ -140,14 +140,4 @@ struct WatchPairingHandoff: Codable, Sendable, Equatable {
         self.accessToken = accessToken
         self.refreshToken = refreshToken
     }
-
-    /// The watch's own credential type, with the device id the phone is using.
-    func credentials(deviceID: String) -> WatchCredentials {
-        WatchCredentials(
-            accessToken: accessToken,
-            refreshToken: refreshToken,
-            deviceID: deviceID,
-            origin: URL(string: baseURL)
-        )
-    }
 }
