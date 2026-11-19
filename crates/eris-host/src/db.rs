@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 43;
+pub const SCHEMA_VERSION: i64 = 44;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -316,6 +316,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 43,
         name: "0043_talk_sessions",
         sql: MIGRATION_0043,
+    },
+    Migration {
+        version: 44,
+        name: "0044_job_source",
+        sql: MIGRATION_0044,
     },
 ];
 
@@ -1416,6 +1421,19 @@ const MIGRATION_0036: &str = r"
 ALTER TABLE jobs ADD COLUMN acked_seq INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Where a turn came from: `phone`, `watch`, `browser` or `cli`.
+///
+/// Provenance only. The default is `phone` because every turn that exists today
+/// was started from the phone, and an older client that sends nothing keeps the
+/// value it would have had.
+///
+/// Down path: `ALTER TABLE jobs DROP COLUMN source;`. The column records where a
+/// turn started and nothing reads it to make a decision, so dropping it loses the
+/// label and nothing else.
+const MIGRATION_0044: &str = r"
+ALTER TABLE jobs ADD COLUMN source TEXT NOT NULL DEFAULT 'phone';
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 /// `setup` until onboarding completes, `ready` after.
@@ -1931,22 +1949,26 @@ mod tests {
         assert_eq!(TABLES.len(), 40, "the list and the schema agree on arity");
     }
 
-    /// Migration 0043 has to apply to a file an older binary left at 42, not
-    /// only to a fresh one. This file is rolled back the way a 42 binary left
-    /// it - the row and both tables gone - and then reopened.
+    /// Every migration after 42 has to apply to a file an older binary left at
+    /// 42, not only to a fresh one. This file is rolled back the way a 42 binary
+    /// left it - the rows, both talk tables and the source column gone - and then
+    /// reopened. The runner applies `version > MAX(version)`, so the rows must go
+    /// together: leaving 0044 in place would hide 0043 from the runner.
     #[test]
-    fn migration_forty_three_applies_to_a_forty_two_file() {
+    fn migrations_after_forty_two_apply_to_a_forty_two_file() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("v42.db");
         Db::open(&path).expect("first open");
         {
             let conn = rusqlite::Connection::open(&path).expect("raw open");
-            conn.execute("DELETE FROM schema_migrations WHERE version = 43", [])
-                .expect("drop the row");
+            conn.execute("DELETE FROM schema_migrations WHERE version >= 43", [])
+                .expect("drop the rows");
             conn.execute_batch(
-                "DROP TABLE IF EXISTS talk_turns; DROP TABLE IF EXISTS talk_sessions;",
+                "DROP TABLE IF EXISTS talk_turns;
+                 DROP TABLE IF EXISTS talk_sessions;
+                 ALTER TABLE jobs DROP COLUMN source;",
             )
-            .expect("drop the tables");
+            .expect("drop the schema the newer migrations added");
         }
         let db = Db::open(&path).expect("an upgrade from 42 must not fail");
         assert_eq!(db.schema_version().expect("version"), SCHEMA_VERSION);
@@ -1957,6 +1979,13 @@ mod tests {
                 "{table} was not created by the upgrade"
             );
         }
+        assert!(
+            db.column_names("jobs")
+                .expect("columns")
+                .iter()
+                .any(|name| name == "source"),
+            "the upgrade adds the source column"
+        );
         assert_eq!(
             db.applied_migration_count().expect("count"),
             MIGRATIONS.len() as i64,

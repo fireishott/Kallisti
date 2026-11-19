@@ -20,7 +20,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
 use crate::approvals::{self, Decision};
 use crate::auth::{
@@ -312,7 +312,8 @@ fn synthetic_terminal(kind: FrameKind, text: String) -> serde_json::Value {
         | FrameKind::Asked
         | FrameKind::Round
         | FrameKind::ToolStart
-        | FrameKind::ToolOutput => serde_json::Value::Null,
+        | FrameKind::ToolOutput
+        | FrameKind::SpeakClause => serde_json::Value::Null,
     }
 }
 
@@ -330,6 +331,89 @@ fn frame_event(frame: &TurnFrame) -> Event {
         event
     } else {
         event.id(frame.seq.to_string())
+    }
+}
+
+/// Turns an answer's text into spoken clauses while the stream carries it.
+///
+/// One state per `audio=1` reader: the text it has seen but not yet spoken, and
+/// how many clauses it has spoken. Clauses come from [`crate::talk::split`], so
+/// the boundaries are the same ones the phone and the wrist hear.
+struct SpeechSplicer {
+    db: crate::db::Db,
+    config: Option<chat::TurnConfig>,
+    turn_id: String,
+    /// Text seen but not yet spoken. Holds the trailing fragment, which may still
+    /// be a half-written word.
+    pending: String,
+    index: usize,
+}
+
+impl SpeechSplicer {
+    /// Read one frame, appending any clause frames it releases to `out`.
+    async fn observe(&mut self, frame: &TurnFrame, out: &mut Vec<TurnFrame>) {
+        match frame.kind {
+            FrameKind::Delta => {
+                if let Some(text) = frame.data.get("text").and_then(serde_json::Value::as_str) {
+                    self.pending.push_str(text);
+                    for clause in self.take_complete() {
+                        self.speak(clause, out).await;
+                    }
+                }
+            }
+            FrameKind::Done | FrameKind::Cancelled | FrameKind::Error => {
+                // A replayed job whose deltas were pruned still carries the
+                // answer in the terminal frame, so the last words are not lost.
+                if self.pending.trim().is_empty()
+                    && frame.kind == FrameKind::Done
+                    && let Some(text) = frame.data.get("text").and_then(serde_json::Value::as_str)
+                {
+                    self.pending.push_str(text);
+                }
+                let rest = crate::talk::split(&self.pending);
+                self.pending.clear();
+                for clause in rest {
+                    self.speak(clause, out).await;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Every clause that is finished, holding back the trailing fragment.
+    fn take_complete(&mut self) -> Vec<String> {
+        let clauses = crate::talk::split(&self.pending);
+        if clauses.len() <= 1 {
+            return Vec::new();
+        }
+        let last = clauses[clauses.len() - 1].clone();
+        let complete = clauses[..clauses.len() - 1].to_vec();
+        self.pending = last;
+        complete
+    }
+
+    /// One clause, synthesized. A refusal is a silent clause rather than an end
+    /// to the turn: the text is still worth showing, and the words do not speak
+    /// for themselves.
+    async fn speak(&mut self, clause: String, out: &mut Vec<TurnFrame>) {
+        use base64::Engine as _;
+        let encoded = match crate::speech::speak(&self.db, self.config.as_ref(), &clause).await {
+            Ok((bytes, _voice)) => base64::engine::general_purpose::STANDARD.encode(bytes),
+            Err(_) => String::new(),
+        };
+        let index = self.index;
+        self.index += 1;
+        out.push(TurnFrame {
+            seq: 0,
+            kind: FrameKind::SpeakClause,
+            data: serde_json::json!({
+                "turnID": self.turn_id,
+                "index": index,
+                "mime": "audio/wav",
+                "b64": encoded,
+                "text": clause,
+            }),
+        });
     }
 }
 
@@ -434,6 +518,186 @@ pub async fn pair(
 }
 
 // ---------------------------------------------------------------------------
+// POST /v1/watch/pair and GET /v1/watch/state
+// ---------------------------------------------------------------------------
+
+/// `POST /v1/watch/pair` - pair a watch from a phone that is already paired.
+///
+/// The wrist never types a code. A phone holding a session token asks for the
+/// watch's credentials and hands them over its own transport, so the only secret
+/// that crosses a person's screen is the one the phone already holds. Admin is
+/// not required: pairing a second device is the same operation as pairing the
+/// first, and the phone that asks is already trusted.
+pub async fn watch_pair(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let asked = field(&fields, "deviceName").trim();
+    let bare = if asked.is_empty() { "watch" } else { asked };
+    let name = if bare.starts_with(crate::device::WATCH_DEVICE_PREFIX) {
+        bare.to_owned()
+    } else {
+        format!("{}{bare}", crate::device::WATCH_DEVICE_PREFIX)
+    };
+
+    let db = service.engine().db().clone();
+    let tokens = TokenService::new(db);
+    let device_id = match tokens.register_device(&name, "watch") {
+        Ok(device_id) => device_id,
+        Err(error) => {
+            return DeviceError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "device_register_failed",
+                error.to_string(),
+            )
+            .into_response();
+        }
+    };
+    let scopes = ScopeSet::device_default();
+    let minted = match tokens.mint_pair(&device_id, scopes, TokenOrigin::Device) {
+        Ok(minted) => minted,
+        Err(error) => {
+            return DeviceError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "pairing_rejected",
+                error.to_string(),
+            )
+            .into_response();
+        }
+    };
+
+    let list: Vec<&'static str> = scopes.iter().map(Scope::as_str).collect();
+    (
+        StatusCode::CREATED,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "device_id": device_id,
+            "access_token": minted.access.token(),
+            "refresh_token": minted.refresh.token(),
+            "scopes": list,
+            "expires_at": format_timestamp(minted.access.expires_at()),
+            "relay": service
+                .engine()
+                .setting(crate::device::SETTING_RELAY)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            "lan": watch_lan_origin(
+                service
+                    .engine()
+                    .setting(crate::device::SETTING_LISTEN)
+                    .ok()
+                    .flatten(),
+            ),
+        })),
+    )
+        .into_response()
+}
+
+/// The origin a watch can dial for the direct path.
+///
+/// The listen row holds every address the daemon binds, loopback included. A
+/// wrist cannot reach this host's loopback, so the first non-loopback entry wins
+/// and the list is reported as the one origin the transport can use rather than
+/// as a JSON array every client would have to re-learn.
+fn watch_lan_origin(raw: Option<String>) -> String {
+    let Some(raw) = raw else {
+        return String::new();
+    };
+    let Ok(list) = serde_json::from_str::<Vec<String>>(&raw) else {
+        return String::new();
+    };
+    list.iter()
+        .find(|address| !address.starts_with("127.") && !address.starts_with("localhost"))
+        .or_else(|| list.first())
+        .map(|address| format!("http://{address}"))
+        .unwrap_or_default()
+}
+
+/// The one question a watch face asks, in one object and no transcript.
+fn read_watch_state(db: &crate::db::Db) -> Result<serde_json::Value, crate::db::DbError> {
+    use rusqlite::OptionalExtension;
+    let (active, unread, last) = db.with_conn(|conn| {
+        let active: i64 = conn.query_row(
+            "SELECT count(*) FROM jobs WHERE status IN ('queued', 'running')",
+            [],
+            |row| row.get(0),
+        )?;
+        // A settled turn is unread until the client has acknowledged its last
+        // frame. `acked_seq` is the mark `POST /v1/turns/{id}/ack` moves, so this
+        // is the same number the phone already tracks rather than a second idea
+        // of "seen".
+        let unread: i64 = conn.query_row(
+            "SELECT count(*) FROM jobs
+              WHERE status IN ('succeeded', 'failed', 'cancelled')
+                AND acked_seq < (
+                    SELECT COALESCE(MAX(seq), 0) FROM job_events e WHERE e.job_id = jobs.id
+                )",
+            [],
+            |row| row.get(0),
+        )?;
+        let last: Option<String> = conn
+            .query_row(
+                "SELECT body FROM chat_messages WHERE role = 'assistant' \
+                  ORDER BY created_at DESC, id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok((active, unread, last))
+    })?;
+    let last_line: String = last
+        .unwrap_or_default()
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(WATCH_LAST_LINE_CHARS)
+        .collect();
+    Ok(serde_json::json!({
+        // The request reached the host, so the host is online. This is the field
+        // a face draws as a dot, and a failed request never produces a body.
+        "hostOnline": true,
+        "turnActive": active > 0,
+        "unreadCount": unread,
+        "lastLine": last_line,
+        "generatedAt": format_timestamp(crate::auth::now()),
+    }))
+}
+
+/// How much of the last answer a face can carry.
+const WATCH_LAST_LINE_CHARS: usize = 120;
+
+/// `GET /v1/watch/state` - a glance, not a transcript.
+pub async fn watch_state(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    match read_watch_state(service.engine().db()) {
+        Ok(state) => axum::Json(state).into_response(),
+        Err(error) => DeviceError::db_unavailable(format!("cannot read the watch state: {error}"))
+            .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // POST /v1/token/refresh
 // ---------------------------------------------------------------------------
 
@@ -517,7 +781,8 @@ pub async fn create_turn(
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    create_turn_with(&service, &token, &fields, idempotency_key).await
+    let source = field(&fields, "source").to_owned();
+    create_turn_with(&service, &token, &fields, idempotency_key, &source).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1437,6 +1702,7 @@ pub async fn delete_conversation(
 pub async fn events(
     State(service): State<DeviceService>,
     Path(job_id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
     let token = match authenticate(&service, &headers) {
@@ -1555,30 +1821,64 @@ pub async fn events(
         replay_ended = true;
     }
 
-    let replay_events: Vec<Result<Event, Infallible>> =
-        replay.iter().map(|frame| Ok(frame_event(frame))).collect();
+    // `audio=1` asks for the answer as speech, clause by clause. It is opt-in
+    // because it changes what the stream carries: a reader that did not ask sees
+    // exactly the frames it saw before, in the same order.
+    let wants_audio = params.get("audio").is_some_and(|value| value.trim() == "1")
+        && crate::speech::enabled(service.engine().db())
+        && crate::speech::engine_healthy(service.engine().db()).await;
 
-    let stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
-        match (replay_ended, receiver) {
-            (false, Some(receiver)) => {
-                let live = BroadcastStream::new(receiver).filter_map(move |item| match item {
-                    // A live-only frame (seq 0) has nothing to resume from, so the
-                    // resume boundary does not apply to it: dropping it would hide
-                    // the output a reconnecting reader is waiting for.
-                    Ok(frame) if frame.seq == 0 || frame.seq > replay_last => {
-                        Some(Ok::<_, Infallible>(frame_event(&frame)))
-                    }
-                    // A lagged subscriber missed frames in this process. The ids
-                    // it already has tell it what to ask for next, and a resume
-                    // past the retention window gets the documented 409.
-                    _ => None,
-                });
-                Box::pin(tokio_stream::iter(replay_events).chain(live))
-            }
-            // A job with no live worker (finished, or from an earlier process)
-            // is answered from the log alone.
-            _ => Box::pin(tokio_stream::iter(replay_events)),
+    let base: Pin<Box<dyn Stream<Item = TurnFrame> + Send>> = match (replay_ended, receiver) {
+        (false, Some(receiver)) => {
+            let live = BroadcastStream::new(receiver).filter_map(move |item| match item {
+                // A live-only frame (seq 0) has nothing to resume from, so the
+                // resume boundary does not apply to it: dropping it would hide
+                // the output a reconnecting reader is waiting for.
+                Ok(frame) if frame.seq == 0 || frame.seq > replay_last => Some(frame),
+                // A lagged subscriber missed frames in this process. The ids
+                // it already has tell it what to ask for next, and a resume
+                // past the retention window gets the documented 409.
+                _ => None,
+            });
+            Box::pin(tokio_stream::iter(replay).chain(live))
+        }
+        // A job with no live worker (finished, or from an earlier process)
+        // is answered from the log alone.
+        _ => Box::pin(tokio_stream::iter(replay)),
+    };
+
+    let stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = if wants_audio {
+        // The stream is driven by a task because synthesis is a second await on
+        // every clause, and a stream combinator that holds two awaits at once is
+        // one more thing to get wrong. The channel is the seam: one reader, one
+        // writer, and the client closing the connection ends both.
+        let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
+        let mut splicer = SpeechSplicer {
+            db: service.engine().db().clone(),
+            config: chat::turn_config(service.engine()).ok().flatten(),
+            turn_id: job_id.clone(),
+            pending: String::new(),
+            index: 0,
         };
+        tokio::spawn(async move {
+            let mut base = base;
+            while let Some(frame) = base.next().await {
+                let mut before: Vec<TurnFrame> = Vec::new();
+                splicer.observe(&frame, &mut before).await;
+                for clause in before {
+                    if sender.send(Ok(frame_event(&clause))).await.is_err() {
+                        return;
+                    }
+                }
+                if sender.send(Ok(frame_event(&frame))).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Box::pin(ReceiverStream::new(receiver))
+    } else {
+        Box::pin(base.map(|frame| Ok::<_, Infallible>(frame_event(&frame))))
+    };
 
     Sse::new(stream)
         .keep_alive(
@@ -5417,7 +5717,14 @@ pub async fn rpc(State(service): State<DeviceService>, headers: HeaderMap, body:
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        let response = create_turn_with(&service, &token, &fields, idempotency).await;
+        let response = create_turn_with(
+            &service,
+            &token,
+            &fields,
+            idempotency,
+            crate::device::turns::DEFAULT_SOURCE,
+        )
+        .await;
         let (parts, body) = response.into_parts();
         let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
             .await
@@ -5683,7 +5990,14 @@ pub async fn room_say(
         let mut turn_fields = std::collections::BTreeMap::new();
         turn_fields.insert("text".to_owned(), turn.prompt.clone());
         turn_fields.insert("conversation".to_owned(), conversation.clone());
-        let response = create_turn_with(&service, &token, &turn_fields, None).await;
+        let response = create_turn_with(
+            &service,
+            &token,
+            &turn_fields,
+            None,
+            crate::device::turns::DEFAULT_SOURCE,
+        )
+        .await;
         let status = response.status();
         let (_, body) = response.into_parts();
         let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
@@ -7228,6 +7542,13 @@ pub async fn talk_readiness(State(service): State<DeviceService>, headers: Heade
         "selectedModel": selected,
         "voice": crate::speech::voice(db),
         "voiceContextUpdatedAt": serde_json::Value::Null,
+        // Which surface asked. A watch draws different words from the same
+        // numbers, and the name it paired under is the only durable fact that
+        // says which one this is.
+        "transport": match service.engine().auth().device(token.device_id()) {
+            Ok(Some(device)) if device.name.starts_with(crate::device::WATCH_DEVICE_PREFIX) => "watch",
+            _ => "phone",
+        },
     })))
     .into_response()
 }
@@ -7883,6 +8204,102 @@ mod tests {
 
         let dead = push_report("device-3", "abcd", &crate::apns::Outcome::TokenInvalid);
         assert_eq!(dead["state"], "token_invalid");
+    }
+
+    /// A watch cannot dial this host's loopback, so the origin it is handed is
+    /// the first address that is not loopback.
+    #[test]
+    fn the_lan_origin_skips_loopback() {
+        assert_eq!(
+            watch_lan_origin(Some(r#"["127.0.0.1:7341","192.168.1.5:7341"]"#.to_owned())),
+            "http://192.168.1.5:7341"
+        );
+        assert_eq!(
+            watch_lan_origin(Some(r#"["127.0.0.1:7341"]"#.to_owned())),
+            "http://127.0.0.1:7341"
+        );
+        assert_eq!(watch_lan_origin(None), "");
+        assert_eq!(watch_lan_origin(Some("not json".to_owned())), "");
+    }
+
+    /// A phone pairs a watch, the watch reads the glance, and readiness says
+    /// which surface asked.
+    #[tokio::test]
+    async fn a_phone_pairs_a_watch_and_the_watch_reads_the_state() {
+        let fx = fixture();
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/watch/pair",
+            &fx.chat,
+            r#"{"deviceName":"wrist"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["ok"], serde_json::json!(true));
+        let device = body["device_id"].as_str().expect("device id").to_owned();
+        let watch = body["access_token"]
+            .as_str()
+            .expect("access token")
+            .to_owned();
+        assert!(body["refresh_token"].is_string(), "{body}");
+        assert!(
+            body["scopes"]
+                .as_array()
+                .is_some_and(|scopes| !scopes.is_empty()),
+            "{body}"
+        );
+        assert!(
+            body.get("relay").is_some() && body.get("lan").is_some(),
+            "{body}"
+        );
+
+        // The name carries the prefix the transport hint and the dashboard key on.
+        let record = fx
+            .service
+            .engine()
+            .auth()
+            .device(&device)
+            .expect("device read")
+            .expect("device row");
+        assert_eq!(record.name, "watch-wrist");
+        assert_eq!(record.platform, "watch");
+
+        let (status, body) = send(&fx.service, "GET", "/v1/watch/state", &watch, "").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        for key in [
+            "hostOnline",
+            "turnActive",
+            "unreadCount",
+            "lastLine",
+            "generatedAt",
+        ] {
+            assert!(body.get(key).is_some(), "{key} missing: {body}");
+        }
+        assert_eq!(body["unreadCount"], serde_json::json!(0));
+
+        let (_, body) = send(&fx.service, "GET", "/v1/talk/readiness", &fx.chat, "").await;
+        assert_eq!(body["data"]["transport"], serde_json::json!("phone"));
+        let (_, body) = send(&fx.service, "GET", "/v1/talk/readiness", &watch, "").await;
+        assert_eq!(body["data"]["transport"], serde_json::json!("watch"));
+    }
+
+    /// The splicer speaks a finished clause and holds the fragment that may
+    /// still be half a word, which is the only way a clause boundary can be
+    /// trusted mid-stream.
+    #[tokio::test]
+    async fn the_splicer_holds_back_the_half_written_clause() {
+        let mut splicer = SpeechSplicer {
+            db: crate::db::Db::open_in_memory().expect("db"),
+            config: None,
+            turn_id: "turn-1".to_owned(),
+            pending: "The first clause is long enough to stand alone. And the sec".to_owned(),
+            index: 0,
+        };
+        let complete = splicer.take_complete();
+        assert_eq!(complete.len(), 1, "{complete:?}");
+        assert!(complete[0].ends_with("alone."), "{complete:?}");
+        assert_eq!(splicer.pending, "And the sec");
     }
 
     #[tokio::test]
@@ -9359,6 +9776,7 @@ pub(crate) async fn create_turn_with(
     token: &crate::auth::VerifiedToken,
     fields: &std::collections::BTreeMap<String, String>,
     idempotency_key: Option<&str>,
+    source: &str,
 ) -> Response {
     let text: String = field(fields, "text").to_owned();
     // Files this turn carries. Ids only: the bytes were uploaded first and are
@@ -9737,6 +10155,7 @@ pub(crate) async fn create_turn_with(
         &prompt,
         conversation.as_deref(),
         0,
+        source,
     ) {
         Ok(job_id) => job_id,
         Err(error) => {

@@ -100,17 +100,19 @@ pub async fn speak(
     if trimmed.is_empty() {
         return Err((400, "tts_empty"));
     }
-    let Some(config) = config else {
-        return Err((503, "tts_not_configured"));
-    };
     let clipped: String = trimmed.chars().take(MAX_SPEAK_CHARS).collect();
     let chosen = voice(db);
-    let base = crate::web::store::settings_get(db, SETTING_BASE_URL)
-        .ok()
-        .flatten()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| config.base_url.trim_end_matches('/').to_owned());
+    // The endpoint is the engine's when a base URL is stored, and the chat
+    // provider's otherwise. Only the second needs a provider: a keyless local
+    // engine answers with no provider configured at all, which is the whole point
+    // of the row.
+    let base = match engine_base(db) {
+        Some(base) => base,
+        None => match config {
+            Some(config) => config.base_url.trim_end_matches('/').to_owned(),
+            None => return Err((503, "tts_not_configured")),
+        },
+    };
     let endpoint = format!("{}/audio/speech", base.trim_end_matches('/'));
     let body = serde_json::json!({
         "model": MODEL,
@@ -128,6 +130,9 @@ pub async fn speak(
     let key = if keyless {
         None
     } else {
+        let Some(config) = config else {
+            return Err((503, "tts_not_configured"));
+        };
         Some(
             crate::oauth::credential::resolve_key_now(&config.key_ref)
                 .map_err(|_| (503, "tts_not_configured"))?,

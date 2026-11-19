@@ -87,6 +87,31 @@ pub const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// recorded on that turn's conversation so the chat keeps it afterwards.
 pub const SETTING_PENDING_MODEL: &str = "device.model_pending";
 
+/// Where a turn came from, when the client names nothing.
+pub const DEFAULT_SOURCE: &str = "phone";
+
+/// The origins a job may record.
+///
+/// A closed set on purpose: `source` is read by an operator looking at a row,
+/// not by a decision, and a free-text column would collect `watchOS`, `Watch`
+/// and `watch ` as three different origins.
+pub const SOURCES: [&str; 4] = ["phone", "watch", "browser", "cli"];
+
+/// The origin a word names, or [`DEFAULT_SOURCE`] when it names none of them.
+///
+/// Unknown is not an error here: a client that invents a word should still get
+/// its turn, and the row it leaves is the value every turn had before the column.
+#[must_use]
+pub fn normalise_source(value: &str) -> &'static str {
+    let value = value.trim();
+    for known in SOURCES {
+        if known.eq_ignore_ascii_case(value) {
+            return known;
+        }
+    }
+    DEFAULT_SOURCE
+}
+
 /// Which frame this is. The names are the wire names and the stored kinds, and
 /// they are the same names the browser's turn stream sends for the same events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,12 +183,19 @@ pub enum FrameKind {
     /// carries the whole output the turn stored. This is the streaming view, not
     /// a second copy of the record.
     ToolOutput,
+    /// One clause of the answer, already spoken.
+    ///
+    /// Live only, never journalled, and only on a stream that asked for audio: a
+    /// reader that did not ask must see the same frames it always saw. The payload
+    /// is `{turnID, index, mime, b64, text}`, one WAV per clause in the order the
+    /// voice says them, so the first words are heard while the rest is written.
+    SpeakClause,
 }
 
 impl FrameKind {
     /// Every kind, so a client can learn the vocabulary from `/v1/version`
     /// instead of pinning a build number.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Start,
         Self::Step,
         Self::StepResult,
@@ -182,6 +214,7 @@ impl FrameKind {
         Self::ToolStart,
         Self::ToolOutput,
         Self::Attachment,
+        Self::SpeakClause,
     ];
 
     /// The storage and wire spelling.
@@ -206,6 +239,7 @@ impl FrameKind {
             Self::ToolStart => "tool_start",
             Self::ToolOutput => "tool_output",
             Self::Attachment => "attachment",
+            Self::SpeakClause => "speak.clause",
         }
     }
 
@@ -231,6 +265,7 @@ impl FrameKind {
             "tool_start" => Some(Self::ToolStart),
             "tool_output" => Some(Self::ToolOutput),
             "attachment" => Some(Self::Attachment),
+            "speak.clause" => Some(Self::SpeakClause),
             _ => None,
         }
     }
@@ -256,6 +291,7 @@ impl FrameKind {
                 | Self::Round
                 | Self::ToolStart
                 | Self::ToolOutput
+                | Self::SpeakClause
         )
     }
 
@@ -276,7 +312,8 @@ impl FrameKind {
             | Self::Asked
             | Self::Round
             | Self::ToolStart
-            | Self::ToolOutput => None,
+            | Self::ToolOutput
+            | Self::SpeakClause => None,
             Self::Done => Some("succeeded"),
             Self::Error => Some("failed"),
             Self::Cancelled => Some("cancelled"),
@@ -734,6 +771,7 @@ impl TurnStore {
             request_text,
             None,
             0,
+            DEFAULT_SOURCE,
         )
     }
 
@@ -742,6 +780,9 @@ impl TurnStore {
     /// `conversation` and `depth` are what a queued task needs: the transcript it
     /// must land on, and how far down a continuation chain it is. An operator's own
     /// turn passes `None` and zero, which is the row this table always held.
+    // Seven inputs and the id it returns. A parameter struct would be one more
+    // type for two callers and would hide the two fields that are new here.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_job_in(
         &self,
         device_id: &str,
@@ -750,14 +791,16 @@ impl TurnStore {
         request_text: &str,
         conversation: Option<&str>,
         depth: i64,
+        source: &str,
     ) -> Result<String, DbError> {
         let id = Uuid::now_v7().to_string();
+        let source = normalise_source(source);
         self.db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO jobs
                      (id, kind, status, device_id, session_id, idempotency_key, request_text, \
-                      conversation_id, chain_depth)
-                 VALUES (?1, 'chat', 'queued', ?2, ?3, ?4, ?5, ?6, ?7)",
+                      conversation_id, chain_depth, source)
+                 VALUES (?1, 'chat', 'queued', ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     id,
                     device_id,
@@ -765,12 +808,34 @@ impl TurnStore {
                     idempotency_key,
                     request_text,
                     conversation,
-                    depth
+                    depth,
+                    source
                 ],
             )?;
             Ok(())
         })?;
         Ok(id)
+    }
+
+    /// The origin recorded on one job.
+    ///
+    /// An unreadable row answers `phone`, which is the value every turn had
+    /// before the column existed: a stream that cannot say where a turn came from
+    /// is not a reason to drop the frame that announces it.
+    #[must_use]
+    pub fn job_source(&self, job_id: &str) -> String {
+        self.db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT source FROM jobs WHERE id = ?1",
+                    params![job_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| DEFAULT_SOURCE.to_owned())
     }
 
     /// Move this job's lease forward.
@@ -2212,6 +2277,7 @@ impl TurnHub {
         let opening = serde_json::json!({
             "model": config.model,
             "profile": config.provider_id,
+            "source": store.job_source(&job_id),
         });
         if let Ok(Some(seq)) = store.append(&job_id, FrameKind::Start, &opening) {
             publish(&sender, seq, FrameKind::Start, opening);
@@ -3611,6 +3677,25 @@ mod tests {
             .create_job(device, &session, None, "reply with the single word: ok")
             .expect("job");
         (job, session)
+    }
+
+    /// `source` is recorded on the row, read back by `job_source`, and a word
+    /// outside the closed set lands as `phone` rather than failing the turn.
+    #[test]
+    fn a_job_records_the_source_it_was_created_with() {
+        let (store, device) = store(8);
+        let session = store.ensure_session(&device).expect("session");
+        let watch = store
+            .create_job_in(&device, &session, None, "hi", None, 0, "watch")
+            .expect("job");
+        assert_eq!(store.job_source(&watch), "watch");
+
+        let invented = store
+            .create_job_in(&device, &session, None, "hi", None, 0, "wrist")
+            .expect("job");
+        assert_eq!(store.job_source(&invented), "phone");
+        assert_eq!(normalise_source("  WATCH "), "watch");
+        assert_eq!(normalise_source(""), "phone");
     }
 
     /// The contract's "cancel is honoured at the next step boundary", stated as

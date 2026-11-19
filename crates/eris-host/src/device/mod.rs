@@ -74,6 +74,18 @@ pub const DEVICE_ADDR: &str = "127.0.0.1:7341";
 /// `POST /v1/pair` - redeem a pairing code for an access and refresh pair.
 pub const ROUTE_PAIR: &str = "/v1/pair";
 
+/// `POST /v1/watch/pair` - pair a watch from a phone that is already paired.
+pub const ROUTE_WATCH_PAIR: &str = "/v1/watch/pair";
+
+/// `GET /v1/watch/state` - the one question a complication asks.
+pub const ROUTE_WATCH_STATE: &str = "/v1/watch/state";
+
+/// The prefix a watch's device name carries.
+///
+/// One string, one place: the dashboard's device list, the readiness body's
+/// `transport` and the pairing route all decide "is this a wrist" from it.
+pub const WATCH_DEVICE_PREFIX: &str = "watch-";
+
 /// The `settings` row holding the addresses the device listener binds, as JSON.
 pub const SETTING_LISTEN: &str = "device.listen";
 
@@ -1191,6 +1203,8 @@ pub fn router(service: DeviceService) -> Router {
 
     Router::new()
         .route(ROUTE_PAIR, post(handlers::pair))
+        .route(ROUTE_WATCH_PAIR, post(handlers::watch_pair))
+        .route(ROUTE_WATCH_STATE, get(handlers::watch_state))
         .route(ROUTE_REFRESH, post(handlers::refresh))
         .route(ROUTE_TURNS, post(handlers::create_turn))
         .route(ROUTE_MEMORY, get(control::memory_files))
@@ -1504,6 +1518,8 @@ mod tests {
             ROUTE_TALK_TURNS,
             ROUTE_TALK_INJECT,
             ROUTE_TRANSCRIBE,
+            ROUTE_WATCH_PAIR,
+            ROUTE_WATCH_STATE,
             ROUTE_MODELS,
             ROUTE_CRON,
             ROUTE_CRON_ITEM,
