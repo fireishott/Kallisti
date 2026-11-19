@@ -33,6 +33,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
+use crate::auth::Scope;
 use crate::aux;
 use crate::device::{DeviceError, DeviceService};
 use crate::onboarding::SetupEngine;
@@ -43,7 +44,7 @@ use crate::web::{chat, store};
 
 use super::handlers::{
     authenticate, field, model_write_refusal, read_fields, refuse_value, require_admin,
-    resolve_model_value, settings_unavailable,
+    require_scope, resolve_model_value, settings_unavailable,
 };
 
 // ---------------------------------------------------------------------------
@@ -880,9 +881,10 @@ pub async fn speak(
                 &format!("voice={voice} bytes={}", bytes.len()),
             );
             let mut out = axum::http::HeaderMap::new();
+            let content_type = if bytes.starts_with(b"RIFF") { "audio/wav" } else { "audio/mpeg" };
             out.insert(
                 axum::http::header::CONTENT_TYPE,
-                axum::http::HeaderValue::from_static("audio/mpeg"),
+                axum::http::HeaderValue::from_static(content_type),
             );
             if let Ok(value) = axum::http::HeaderValue::from_str(&voice) {
                 out.insert(
@@ -903,6 +905,66 @@ pub async fn speak(
                     "no provider is configured with a speech endpoint, so nothing was spoken"
                 }
                 _ => "the provider refused the speech request",
+            },
+        )
+        .into_response(),
+    }
+}
+
+/// `POST /v1/transcribe` - turn one clip into text.
+///
+/// Raw bytes, one way only, the same shape `attachments::upload` takes: the
+/// phone has the clip in hand and a multipart encoder is one more thing to get
+/// wrong.
+pub async fn transcribe(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let bytes =
+        match axum::body::to_bytes(body, crate::speech::MAX_TRANSCRIBE_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return DeviceError::new(
+                    axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                    "stt_too_large",
+                    "one clip may be at most 32 MB",
+                )
+                .into_response()
+            }
+        };
+    match crate::speech::transcribe(service.engine().db(), &bytes).await {
+        Ok(heard) => {
+            let chars = heard
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map_or(0, |text| text.chars().count());
+            let _ = audit(
+                &service,
+                token.device_id(),
+                "stt.transcribed",
+                &format!("bytes={} chars={chars}", bytes.len()),
+            );
+            axum::Json(heard).into_response()
+        }
+        Err((status, code)) => DeviceError::new(
+            axum::http::StatusCode::from_u16(status)
+                .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+            code,
+            match code {
+                "stt_empty" => "the upload carried no audio",
+                "stt_too_large" => "the upload is past the 32 MB clip cap",
+                "stt_not_configured" => {
+                    "no engine base URL is configured, so nothing was transcribed"
+                }
+                _ => "the engine refused the transcription",
             },
         )
         .into_response(),

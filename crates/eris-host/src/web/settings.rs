@@ -1893,6 +1893,8 @@ const WEB_CONTROLS: &[(&str, &str)] = &[
     ),
     (crate::speech::SETTING_ENABLED, "tts_enabled"),
     (crate::speech::SETTING_VOICE, "tts_voice"),
+    (crate::speech::SETTING_BASE_URL, "tts_base_url"),
+    (crate::speech::SETTING_KEYLESS, "tts_keyless"),
     (crate::push::SETTING_NOTIFY_ON_REPLY, "notify_on_reply"),
     (crate::push::SETTING_NOTIFY_SCOPE, "notify_scope"),
     (crate::push::SETTING_NOTIFY_DEVICES, "notify_devices"),
@@ -2021,9 +2023,18 @@ fn every_writable_capability_has_a_web_control_on_the_same_row() {
 
     // And nothing in the mapping is invented: every row it names belongs to a
     // capability, so the page cannot write a setting the record does not state.
+    //
+    // Two rows are the exception, on purpose. The engine base URL is host-only
+    // configuration, and the keyless switch means nothing without it; a record
+    // that carried either would put an `http://` string in the snapshot the phone
+    // renders, which is the leak the device settings guard exists to prevent.
+    const HOST_ONLY: [&str; 2] = [
+        crate::speech::SETTING_BASE_URL,
+        crate::speech::SETTING_KEYLESS,
+    ];
     for (row, field) in WEB_CONTROLS {
         assert!(
-            SETTING_SPECS.iter().any(|spec| spec.row == *row),
+            HOST_ONLY.contains(row) || SETTING_SPECS.iter().any(|spec| spec.row == *row),
             "the web control `{field}` writes the row `{row}`, which is not a capability"
         );
     }

@@ -1053,6 +1053,18 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     );
     view.tts_enabled = crate::speech::enabled(state.engine.db());
     view.tts_voice = crate::speech::voice(state.engine.db());
+    view.tts_base_url = engine
+        .setting(crate::speech::SETTING_BASE_URL)
+        .map_err(|error| form_error(&error))?
+        .unwrap_or_default();
+    view.tts_keyless = matches!(
+        engine
+            .setting(crate::speech::SETTING_KEYLESS)
+            .map_err(|error| form_error(&error))?
+            .as_deref()
+            .map(str::trim),
+        Some("true")
+    );
     view.notify_scope = crate::push::notify_scope(
         engine
             .setting(crate::push::SETTING_NOTIFY_SCOPE)
@@ -6418,6 +6430,44 @@ async fn save_push(
             store::settings_put(state.engine.db(), crate::speech::SETTING_VOICE, &chosen)
         {
             return store_failure(&request_id.0, "the speech voice", error);
+        }
+    }
+    // An engine base URL is a URL or it is refused: a value that does not parse
+    // would fail at request time with a message nobody could act on, and the
+    // settings page is where an operator can see the field.
+    if let Some(raw) = fields.get("tts_base_url") {
+        let value = raw.trim();
+        let parsed = !value.is_empty()
+            && (value.starts_with("http://") || value.starts_with("https://"))
+            && !value.chars().any(char::is_whitespace)
+            && value.len() > "https://".len();
+        if !parsed && !value.is_empty() {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("tts_base_url"),
+                    "tts_base_url_invalid",
+                    format!("`{value}` is not an http:// or https:// base URL"),
+                ),
+            );
+        }
+        if let Err(error) = store::settings_put(
+            state.engine.db(),
+            crate::speech::SETTING_BASE_URL,
+            value,
+        ) {
+            return store_failure(&request_id.0, "the speech base URL", error);
+        }
+    }
+    if let Some(raw) = fields.get("tts_keyless") {
+        let on = matches!(raw.trim(), "true" | "on" | "1");
+        if let Err(error) = store::settings_put(
+            state.engine.db(),
+            crate::speech::SETTING_KEYLESS,
+            if on { "true" } else { "false" },
+        ) {
+            return store_failure(&request_id.0, "the keyless switch", error);
         }
     }
     if let Some(raw) = fields.get("tts_enabled") {

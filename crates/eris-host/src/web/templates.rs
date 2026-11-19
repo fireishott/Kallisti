@@ -2414,6 +2414,10 @@ pub struct SettingsView {
     pub tts_enabled: bool,
     /// The voice it speaks with.
     pub tts_voice: String,
+    /// The engine base URL speech goes to, or empty for the chat provider.
+    pub tts_base_url: String,
+    /// Whether speech skips the credential, which a local engine requires.
+    pub tts_keyless: bool,
     /// Whether an over-long review is repaired instead of dropped.
     pub learning_repair: bool,
     /// How long a skill nothing has ever read may stay in the catalog.
@@ -2565,6 +2569,8 @@ impl SettingsView {
             tool_index_enabled: true,
             tts_enabled: false,
             tts_voice: crate::speech::DEFAULT_VOICE.to_owned(),
+            tts_base_url: String::new(),
+            tts_keyless: false,
             learning_repair: true,
             curator_archive_days: crate::learning::DEFAULT_UNUSED_DAYS.to_string(),
             consolidate_nightly: false,
@@ -4804,6 +4810,29 @@ fn tab_devices(view: &SettingsView) -> Markup {
                     span .hint {
                         "The list is the daemon's, not the client's, and `GET /v1/voices` "
                         "publishes it with the current choice."
+                    }
+                }
+                div .field {
+                    label for="tts_base_url" { "Engine base URL" }
+                    input type="text" id="tts_base_url" name="tts_base_url"
+                        value=(view.tts_base_url) placeholder="http://127.0.0.1:7342";
+                    span .hint {
+                        "Empty means the chat provider's speech endpoint. A local engine on "
+                        "this host answers here instead."
+                    }
+                    @if let Some(error) = view.error.as_ref().filter(|e| e.field.as_deref() == Some("tts_base_url")) {
+                        span .error { (error.message) }
+                    }
+                }
+                div .field {
+                    label for="tts_keyless" {
+                        input type="checkbox" id="tts_keyless" name="tts_keyless" value="true"
+                            checked[view.tts_keyless];
+                        " This engine needs no credential"
+                    }
+                    span .hint {
+                        "When on, the daemon does not read a provider key for speech, which is "
+                        "what a local engine requires. The key itself is never shown here."
                     }
                 }
                 div .field {

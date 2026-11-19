@@ -166,6 +166,9 @@ pub const ROUTE_VOICES: &str = "/v1/voices";
 /// `POST /v1/speak` - synthesize one answer.
 pub const ROUTE_SPEAK: &str = "/v1/speak";
 
+/// `POST /v1/transcribe` - turn a clip into text.
+pub const ROUTE_TRANSCRIBE: &str = "/v1/transcribe";
+
 /// `GET /v1/workboard` - every task, filterable by status.
 pub const ROUTE_WORKBOARD: &str = "/v1/workboard";
 
@@ -1301,6 +1304,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_SKILLS, get(control::skills_list))
         .route(ROUTE_VOICES, get(control::voices))
         .route(ROUTE_SPEAK, post(control::speak))
+        .route(ROUTE_TRANSCRIBE, post(control::transcribe))
         .route(ROUTE_SEARCH, get(control::search_transcript))
         .route(
             ROUTE_WORKBOARD,
@@ -1499,6 +1503,7 @@ mod tests {
             ROUTE_TALK_SESSION_END,
             ROUTE_TALK_TURNS,
             ROUTE_TALK_INJECT,
+            ROUTE_TRANSCRIBE,
             ROUTE_MODELS,
             ROUTE_CRON,
             ROUTE_CRON_ITEM,

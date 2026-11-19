@@ -59,9 +59,30 @@ struct ErisInboxActionResult: Decodable, Sendable {
 
 // MARK: - Talk readiness
 
-/// `GET /v1/talk/readiness` body. The voice lane is a placeholder: `ready` is
-/// `false` until the backend ships a real route.
+/// `GET /v1/talk/readiness` body: the `success` envelope around the eight
+/// fields the daemon answers with.
+///
+/// `hostOnline` and `configured` are not optional. A body missing either one
+/// throws, and the caller then shows a generic failure instead of a state, so the
+/// daemon always sends both. `voiceContextUpdatedAt` stays a string because this
+/// client decodes with a plain `JSONDecoder`, which has no date strategy.
 struct ErisTalkReadiness: Decodable, Sendable {
-    let ready: Bool
-    let reason: String?
+    struct Meta: Decodable, Sendable {
+        let requestId: String
+        let timestamp: String
+    }
+
+    struct Body: Decodable, Sendable {
+        let ready: Bool
+        let hostOnline: Bool
+        let configured: Bool
+        let blockedReason: String?
+        let preferredModels: [String]?
+        let selectedModel: String?
+        let voice: String?
+        let voiceContextUpdatedAt: String?
+    }
+
+    let data: Body
+    let meta: Meta
 }

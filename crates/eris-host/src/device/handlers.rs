@@ -2340,6 +2340,7 @@ fn read_tts_voice(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::speech::voice(engine.db()))
 }
 
+
 fn read_workboard_default_project(engine: &SetupEngine) -> Result<String, DeviceError> {
     Ok(crate::workboard::default_project(engine.db()).unwrap_or_default())
 }
@@ -7112,10 +7113,98 @@ pub async fn send_push(
 }
 
 // ---------------------------------------------------------------------------
-// Talk (placeholder - in development)
+// Talk: readiness, sessions and turns
 // ---------------------------------------------------------------------------
 
-/// `GET /v1/talk/readiness` - always "not ready, in development".
+/// One talk session, as the store keeps it.
+struct TalkSessionRow {
+    id: String,
+    status: String,
+    voice: String,
+    started_at: String,
+    ended_at: Option<String>,
+}
+
+/// One stored turn, plus the barge-in cursor it recorded.
+struct TalkTurnRow {
+    role: String,
+    text: String,
+    heard_text: Option<String>,
+    barge_in: bool,
+}
+
+/// The wire shape one session takes, which is what the phone decodes.
+fn talk_session_json(row: &TalkSessionRow, model: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "id": row.id,
+        "status": row.status,
+        "model": model,
+        "voice": row.voice,
+        "startedAt": row.started_at,
+        "endedAt": row.ended_at,
+        "lastError": serde_json::Value::Null,
+    })
+}
+
+/// A store failure, in the shape the client already reads.
+fn talk_store_error(error: crate::db::DbError) -> DeviceError {
+    DeviceError::db_unavailable(format!("the talk store could not be read: {error}"))
+}
+
+/// One session by id, or `None` when no row holds it.
+fn read_talk_session(
+    db: &crate::db::Db,
+    id: &str,
+) -> Result<Option<TalkSessionRow>, DeviceError> {
+    use rusqlite::OptionalExtension;
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT id, status, voice, started_at, ended_at FROM talk_sessions WHERE id = ?1",
+            rusqlite::params![id],
+            |row| {
+                Ok(TalkSessionRow {
+                    id: row.get(0)?,
+                    status: row.get(1)?,
+                    voice: row.get(2)?,
+                    started_at: row.get(3)?,
+                    ended_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+    })
+    .map_err(talk_store_error)
+}
+
+/// Every turn of one session, in the order it was spoken.
+fn read_talk_turns(
+    db: &crate::db::Db,
+    session_id: &str,
+) -> Result<Vec<TalkTurnRow>, DeviceError> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT role, text, heard_text, barge_in FROM talk_turns \
+             WHERE session_id = ?1 ORDER BY created_at, rowid",
+        )?;
+        let rows = statement.query_map(rusqlite::params![session_id], |row| {
+            Ok(TalkTurnRow {
+                role: row.get(0)?,
+                text: row.get(1)?,
+                heard_text: row.get(2)?,
+                barge_in: row.get::<_, i64>(3)? != 0,
+            })
+        })?;
+        rows.collect()
+    })
+    .map_err(talk_store_error)
+}
+
+/// `GET /v1/talk/readiness` - the voice lane's state, in the field set the phone
+/// decodes.
+///
+/// `ready` is a conjunction and the refusal names which half failed, because an
+/// operator who reads `tts_disabled` and an operator who reads
+/// `engine_unreachable` have two different things to fix.
 pub async fn talk_readiness(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
@@ -7124,23 +7213,33 @@ pub async fn talk_readiness(State(service): State<DeviceService>, headers: Heade
     if let Err(error) = require_scope(&token, Scope::Chat) {
         return error.into_response();
     }
+    let engine = service.engine();
+    let db = engine.db();
+    let configured = crate::speech::enabled(db);
+    let reachable = configured && crate::speech::engine_healthy(db).await;
+    let blocked = if !configured {
+        Some("tts_disabled")
+    } else if !reachable {
+        Some("engine_unreachable")
+    } else {
+        None
+    };
+    let preferred = engine.primary_provider_catalog().unwrap_or_default();
+    let selected = engine.model().ok().flatten();
     axum::Json(success(serde_json::json!({
-        "ready": false,
-        "reason": "in_development",
+        "ready": reachable,
+        "hostOnline": true,
+        "configured": configured,
+        "blockedReason": blocked,
+        "preferredModels": preferred,
+        "selectedModel": selected,
+        "voice": crate::speech::voice(db),
+        "voiceContextUpdatedAt": serde_json::Value::Null,
     })))
     .into_response()
 }
 
-/// The typed "not implemented" reply for the talk session routes.
-fn talk_not_implemented() -> DeviceError {
-    DeviceError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "not_implemented",
-        "talk mode is in development and is not implemented yet",
-    )
-}
-
-/// `POST /v1/talk/session` - placeholder.
+/// `POST /v1/talk/session` - open one spoken conversation.
 pub async fn create_talk_session(
     State(service): State<DeviceService>,
     headers: HeaderMap,
@@ -7152,14 +7251,58 @@ pub async fn create_talk_session(
     if let Err(error) = require_scope(&token, Scope::Chat) {
         return error.into_response();
     }
-    talk_not_implemented().into_response()
+    let engine = service.engine();
+    let db = engine.db();
+    let id = uuid::Uuid::now_v7().to_string();
+    let voice = crate::speech::voice(db);
+    let inserted = db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO talk_sessions (id, device_id, status, voice) VALUES (?1, ?2, 'open', ?3)",
+            rusqlite::params![id, token.device_id(), voice],
+        )
+    });
+    if let Err(error) = inserted {
+        return talk_store_error(error).into_response();
+    }
+    let Some(row) = (match read_talk_session(db, &id) {
+        Ok(row) => row,
+        Err(error) => return error.into_response(),
+    }) else {
+        return DeviceError::db_unavailable("the talk session was written and not read back")
+            .into_response();
+    };
+    if let Err(error) = service.engine().auth().audit(
+        token.device_id(),
+        "talk.session_opened",
+        Some(&format!("session={id}")),
+    ) {
+        tracing::warn!(%error, "could not audit the talk session open");
+    }
+    let model = engine.model().ok().flatten();
+    let body = success(serde_json::json!({
+        "voiceSession": talk_session_json(&row, model.as_deref()),
+        "bootstrap": {
+            // The daemon runs no realtime transport, so this is a per-session
+            // opaque handle rather than a provider credential: it exists because
+            // the client's shape requires the field, and it names nothing.
+            "clientSecret": uuid::Uuid::now_v7().to_string(),
+            "expiresAt": serde_json::Value::Null,
+            "session": { "id": row.id },
+            "model": model,
+            "voice": row.voice,
+        },
+    }));
+    (StatusCode::CREATED, axum::Json(body)).into_response()
 }
 
-/// `POST /v1/talk/session/{id}/end` - placeholder.
+/// `POST /v1/talk/session/{id}/end` - close one conversation.
+///
+/// Ending an ended session is not an error: a client that retried a lost reply
+/// gets the row it already has.
 pub async fn end_talk_session(
     State(service): State<DeviceService>,
     headers: HeaderMap,
-    Path(_session_id): Path<String>,
+    Path(session_id): Path<String>,
 ) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
@@ -7168,14 +7311,46 @@ pub async fn end_talk_session(
     if let Err(error) = require_scope(&token, Scope::Chat) {
         return error.into_response();
     }
-    talk_not_implemented().into_response()
+    let engine = service.engine();
+    let db = engine.db();
+    let ended = db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE talk_sessions \
+             SET status = 'ended', ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+             WHERE id = ?1 AND status = 'open'",
+            rusqlite::params![session_id],
+        )
+    });
+    if let Err(error) = ended {
+        return talk_store_error(error).into_response();
+    }
+    let Some(row) = (match read_talk_session(db, &session_id) {
+        Ok(row) => row,
+        Err(error) => return error.into_response(),
+    }) else {
+        return DeviceError::new(
+            StatusCode::NOT_FOUND,
+            "talk_session_not_found",
+            "no talk session has that id",
+        )
+        .into_response();
+    };
+    let model = engine.model().ok().flatten();
+    axum::Json(success(serde_json::json!({
+        "voiceSession": talk_session_json(&row, model.as_deref()),
+    })))
+    .into_response()
 }
 
-/// `POST /v1/talk/session/{id}/turns` - placeholder.
+/// `POST /v1/talk/session/{id}/turns` - record one turn.
+///
+/// `clientTurnId` is the idempotency key: a retried turn is the same row, not a
+/// second one, so a dropped reply cannot double the transcript.
 pub async fn create_talk_turn(
     State(service): State<DeviceService>,
     headers: HeaderMap,
-    Path(_session_id): Path<String>,
+    Path(session_id): Path<String>,
+    body: Body,
 ) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
@@ -7184,14 +7359,110 @@ pub async fn create_talk_turn(
     if let Err(error) = require_scope(&token, Scope::Chat) {
         return error.into_response();
     }
-    talk_not_implemented().into_response()
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let client_turn_id = field(&fields, "clientTurnId").to_owned();
+    if client_turn_id.is_empty() {
+        return DeviceError::bad_request(
+            "talk_turn_missing_id",
+            "a turn needs the clientTurnId the client will retry under",
+        )
+        .into_response();
+    }
+    let role = field(&fields, "role").to_owned();
+    if !matches!(role.as_str(), "user" | "assistant") {
+        return DeviceError::bad_request(
+            "talk_role_invalid",
+            "a turn is either `user` or `assistant`",
+        )
+        .into_response();
+    }
+    let source = {
+        let value = field(&fields, "source");
+        if value.is_empty() { "voice".to_owned() } else { value.to_owned() }
+    };
+    let text = field(&fields, "text").to_owned();
+    if text.is_empty() {
+        return DeviceError::bad_request("talk_turn_empty", "a turn needs text").into_response();
+    }
+
+    let db = service.engine().db();
+    let Some(session) = (match read_talk_session(db, &session_id) {
+        Ok(row) => row,
+        Err(error) => return error.into_response(),
+    }) else {
+        return DeviceError::new(
+            StatusCode::NOT_FOUND,
+            "talk_session_not_found",
+            "no talk session has that id",
+        )
+        .into_response();
+    };
+    if session.status != "open" {
+        return DeviceError::new(
+            StatusCode::CONFLICT,
+            "talk_session_ended",
+            "the session is closed, so it takes no new turns",
+        )
+        .into_response();
+    }
+
+    let inserted = db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO talk_turns (id, session_id, client_turn_id, role, source, text) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT (session_id, client_turn_id) DO NOTHING",
+            rusqlite::params![
+                uuid::Uuid::now_v7().to_string(),
+                session_id,
+                client_turn_id,
+                role,
+                source,
+                text
+            ],
+        )
+    });
+    if let Err(error) = inserted {
+        return talk_store_error(error).into_response();
+    }
+    let turn_id = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT id FROM talk_turns WHERE session_id = ?1 AND client_turn_id = ?2",
+                rusqlite::params![session_id, client_turn_id],
+                |row| row.get::<_, String>(0),
+            )
+        })
+        .map_err(talk_store_error);
+    let turn_id = match turn_id {
+        Ok(turn_id) => turn_id,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = service.engine().auth().audit(
+        token.device_id(),
+        "talk.turn_recorded",
+        Some(&format!("session={session_id} role={role}")),
+    ) {
+        tracing::warn!(%error, "could not audit the talk turn");
+    }
+    (
+        StatusCode::CREATED,
+        axum::Json(success(serde_json::json!({ "turn": { "id": turn_id } }))),
+    )
+        .into_response()
 }
 
-/// `POST /v1/talk/session/{id}/inject` - placeholder.
+/// `POST /v1/talk/session/{id}/inject` - hand the model what was heard.
+///
+/// The split is the barge-in cursor: an interrupted answer contributes the text
+/// the client recorded as heard, and the rest as unheard. An answer that was not
+/// interrupted is fully heard.
 pub async fn inject_talk_transcript(
     State(service): State<DeviceService>,
     headers: HeaderMap,
-    Path(_session_id): Path<String>,
+    Path(session_id): Path<String>,
 ) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
@@ -7200,7 +7471,48 @@ pub async fn inject_talk_transcript(
     if let Err(error) = require_scope(&token, Scope::Chat) {
         return error.into_response();
     }
-    talk_not_implemented().into_response()
+    let db = service.engine().db();
+    let Some(_session) = (match read_talk_session(db, &session_id) {
+        Ok(row) => row,
+        Err(error) => return error.into_response(),
+    }) else {
+        return DeviceError::new(
+            StatusCode::NOT_FOUND,
+            "talk_session_not_found",
+            "no talk session has that id",
+        )
+        .into_response();
+    };
+    let turns = match read_talk_turns(db, &session_id) {
+        Ok(turns) => turns,
+        Err(error) => return error.into_response(),
+    };
+
+    let mut heard = String::new();
+    let mut unheard = String::new();
+    if let Some(last) = turns.iter().rev().find(|turn| turn.role == "assistant") {
+        if last.barge_in {
+            heard = last
+                .heard_text
+                .clone()
+                .unwrap_or_else(|| last.text.clone());
+            if let Some(rest) = last.text.strip_prefix(heard.as_str()) {
+                unheard = rest.trim().to_owned();
+            }
+        } else {
+            heard = last.text.clone();
+        }
+    }
+    let transcript: Vec<serde_json::Value> = turns
+        .iter()
+        .map(|turn| serde_json::json!({"role": turn.role, "text": turn.text}))
+        .collect();
+    axum::Json(success(serde_json::json!({
+        "heard": heard,
+        "unheard": unheard,
+        "turns": transcript,
+    })))
+    .into_response()
 }
 
 #[cfg(test)]
@@ -7580,17 +7892,91 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn talk_routes_are_placeholders() {
+    async fn talk_routes_answer_with_their_shapes() {
         let fx = fixture();
 
+        // Speech off: the refusal names the switch, and the field set is the one
+        // the phone decodes.
         let (status, body) = send(&fx.service, "GET", "/v1/talk/readiness", &fx.chat, "").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["ready"], serde_json::json!(false));
-        assert_eq!(body["data"]["reason"], serde_json::json!("in_development"));
+        assert_eq!(body["data"]["hostOnline"], serde_json::json!(true));
+        assert_eq!(body["data"]["configured"], serde_json::json!(false));
+        assert_eq!(
+            body["data"]["blockedReason"],
+            serde_json::json!("tts_disabled")
+        );
+        assert!(body["data"].get("preferredModels").is_some());
+
+        // Speech on with no engine behind it: the other half of the conjunction.
+        fx.service
+            .engine()
+            .set_setting("tts.enabled", "true")
+            .expect("speech on");
+        let (status, body) = send(&fx.service, "GET", "/v1/talk/readiness", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["configured"], serde_json::json!(true));
+        assert_eq!(
+            body["data"]["blockedReason"],
+            serde_json::json!("engine_unreachable")
+        );
 
         let (status, body) = send(&fx.service, "POST", "/v1/talk/session", &fx.chat, "").await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(body["code"], serde_json::json!("not_implemented"));
+        assert_eq!(status, StatusCode::CREATED);
+        let session_id = body["data"]["voiceSession"]["id"]
+            .as_str()
+            .expect("session id")
+            .to_owned();
+        assert_eq!(
+            body["data"]["voiceSession"]["status"],
+            serde_json::json!("open")
+        );
+        assert!(body["data"]["bootstrap"]["clientSecret"].is_string());
+        assert_eq!(
+            body["data"]["bootstrap"]["session"]["id"],
+            serde_json::json!(session_id)
+        );
+
+        let turns = format!("/v1/talk/session/{session_id}/turns");
+        let turn = serde_json::json!({
+            "clientTurnId": "turn-1",
+            "role": "user",
+            "source": "voice",
+            "text": "hello there",
+        });
+        let (status, body) = send(&fx.service, "POST", &turns, &fx.chat, &turn.to_string()).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let turn_id = body["data"]["turn"]["id"]
+            .as_str()
+            .expect("turn id")
+            .to_owned();
+
+        // The same client turn id is the same row, so a retried reply cannot
+        // double the transcript.
+        let (status, body) = send(&fx.service, "POST", &turns, &fx.chat, &turn.to_string()).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["data"]["turn"]["id"], serde_json::json!(turn_id));
+
+        let inject = format!("/v1/talk/session/{session_id}/inject");
+        let (status, body) = send(&fx.service, "POST", &inject, &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["data"]["turns"][0]["text"],
+            serde_json::json!("hello there")
+        );
+
+        let end = format!("/v1/talk/session/{session_id}/end");
+        let (status, body) = send(&fx.service, "POST", &end, &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["data"]["voiceSession"]["status"],
+            serde_json::json!("ended")
+        );
+
+        // A closed session takes no new turns, and says so by name.
+        let (status, body) = send(&fx.service, "POST", &turns, &fx.chat, &turn.to_string()).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], serde_json::json!("talk_session_ended"));
     }
 
     #[test]

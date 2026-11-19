@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 42;
+pub const SCHEMA_VERSION: i64 = 43;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,8 +43,8 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// `schedules` and `schedule_runs`; 0020 adds a column to `chat_conversations`
 /// and no table at all; 0024 adds the three learning tables; 0029 adds the four
 /// memory-tier tables. 0030 adds the standing roster. 0031 adds the webhook
-/// triggers and the fires they record.
-pub const TABLES: [&str; 38] = [
+/// triggers and the fires they record. 0043 adds the two talk tables.
+pub const TABLES: [&str; 40] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
@@ -88,6 +88,9 @@ pub const TABLES: [&str; 38] = [
     "delivery_journal",
     // 0045: what a path is allowed to touch.
     "sensitivity_map",
+    // 0043: the spoken conversation - one row per session, one per turn.
+    "talk_sessions",
+    "talk_turns",
 ];
 
 /// One forward migration. Never edited once released; add a new version.
@@ -308,6 +311,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 42,
         name: "0042_room_conversation",
         sql: MIGRATION_0042,
+    },
+    Migration {
+        version: 43,
+        name: "0043_talk_sessions",
+        sql: MIGRATION_0043,
     },
 ];
 
@@ -1369,6 +1377,38 @@ const MIGRATION_0042: &str = r"
 ALTER TABLE rooms ADD COLUMN conversation_id TEXT;
 ";
 
+/// Talk sessions and their turns.
+///
+/// Down path: `DROP TABLE talk_turns; DROP TABLE talk_sessions;`. The rows are
+/// a record of spoken conversation and nothing else reads them, so a drop loses
+/// only history.
+const MIGRATION_0043: &str = r"
+CREATE TABLE IF NOT EXISTS talk_sessions (
+    id          TEXT PRIMARY KEY,
+    device_id   TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'open'
+                CHECK (status IN ('open', 'ended', 'failed')),
+    voice       TEXT NOT NULL DEFAULT 'amy',
+    started_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ended_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS talk_turns (
+    id                 TEXT PRIMARY KEY,
+    session_id         TEXT NOT NULL REFERENCES talk_sessions (id) ON DELETE CASCADE,
+    client_turn_id     TEXT NOT NULL,
+    role               TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    source             TEXT NOT NULL DEFAULT 'voice',
+    text               TEXT NOT NULL,
+    heard_text         TEXT,
+    barge_in           INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (session_id, client_turn_id)
+);
+
+CREATE INDEX IF NOT EXISTS talk_turns_by_session ON talk_turns (session_id, created_at);
+";
+
 /// Down path: `ALTER TABLE jobs DROP COLUMN acked_seq;`. Nothing else reads the
 /// column, and dropping it loses only the marks, which a client re-sends by
 /// acknowledging again after the next reconnect.
@@ -1868,7 +1908,7 @@ mod tests {
             );
         }
         assert_eq!(db.schema_version().expect("version"), SCHEMA_VERSION);
-        assert_eq!(TABLES.len(), 38, "the list and the schema agree on arity");
+        assert_eq!(TABLES.len(), 40, "the list and the schema agree on arity");
     }
 
     /// Migration 0031 adds the trigger tables, and `TABLES` names both.
@@ -1884,7 +1924,40 @@ mod tests {
             );
         }
         assert_eq!(db.schema_version().expect("version"), SCHEMA_VERSION);
-        assert_eq!(TABLES.len(), 38, "the list and the schema agree on arity");
+        assert_eq!(TABLES.len(), 40, "the list and the schema agree on arity");
+    }
+
+    /// Migration 0043 has to apply to a file an older binary left at 42, not
+    /// only to a fresh one. This file is rolled back the way a 42 binary left
+    /// it - the row and both tables gone - and then reopened.
+    #[test]
+    fn migration_forty_three_applies_to_a_forty_two_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("v42.db");
+        Db::open(&path).expect("first open");
+        {
+            let conn = rusqlite::Connection::open(&path).expect("raw open");
+            conn.execute("DELETE FROM schema_migrations WHERE version = 43", [])
+                .expect("drop the row");
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS talk_turns; DROP TABLE IF EXISTS talk_sessions;",
+            )
+            .expect("drop the tables");
+        }
+        let db = Db::open(&path).expect("an upgrade from 42 must not fail");
+        assert_eq!(db.schema_version().expect("version"), SCHEMA_VERSION);
+        let present = db.table_names().expect("tables");
+        for table in ["talk_sessions", "talk_turns"] {
+            assert!(
+                present.iter().any(|name| name == table),
+                "{table} was not created by the upgrade"
+            );
+        }
+        assert_eq!(
+            db.applied_migration_count().expect("count"),
+            MIGRATIONS.len() as i64,
+            "the upgrade leaves one row per migration"
+        );
     }
 }
 
