@@ -46,6 +46,8 @@ enum ErisRoute: Equatable, Sendable {
     case updateCron(id: String)
     /// `DELETE /v1/cron/{id}` - delete one schedule. Admin scope.
     case deleteCron(id: String)
+    /// `GET /v1/subagents` - the children this daemon has run, newest first.
+    case subagents
     /// `GET /v1/skills` - the daemon's skill catalogue. Admin scope.
     case skills
     /// `GET /v1/gw/update/check` - is there a newer build. Admin scope.
@@ -135,6 +137,8 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/cron"
         case .updateCron(let id), .deleteCron(let id):
             return "/v1/cron/\(Self.segment(id))"
+        case .subagents:
+            return "/v1/subagents"
         case .skills:
             return "/v1/skills"
         case .updateCheck:
@@ -192,7 +196,7 @@ enum ErisRoute: Equatable, Sendable {
     var method: String {
         switch self {
         case .events, .session, .conversations, .conversation, .settings, .projects, .approvals,
-             .cron, .skills, .updateCheck, .gatewayHealth, .diagnostics, .updateProgress, .attachment,
+             .cron, .subagents, .skills, .updateCheck, .gatewayHealth, .diagnostics, .updateProgress, .attachment,
              .healthLatest, .location, .inbox, .notes, .noteDetail, .talkReadiness,
              .models, .aux:
             return "GET"
@@ -675,6 +679,12 @@ actor ErisClient {
     ///
     /// The route takes no body: the daemon names it with the same placeholder the
     /// browser uses, and the first question renames it through the same code.
+    /// `GET /v1/subagents` - the children this daemon has run.
+    func subagents() async throws -> ErisSubagentPage {
+        let data = try await send(route: .subagents, form: nil)
+        return try decode(ErisSubagentPage.self, from: data)
+    }
+
     func createConversation() async throws -> ErisCreatedConversation {
         let data = try await send(route: .createConversation, form: nil)
         return try decode(ErisCreatedConversation.self, from: data)

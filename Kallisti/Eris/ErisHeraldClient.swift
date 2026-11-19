@@ -631,6 +631,18 @@ final class ErisHeraldClient: HeraldClientProtocol {
         )
     }
 
+    /// The children this daemon ran for a chat, newest first. Used by the
+    /// subagent badge and its watchdog; an unreachable daemon reads as none.
+    func subagents(for localID: UUID?) async -> [ErisSubagent] {
+        guard let client = await pairedClient(),
+              let page = try? await client.subagents()
+        else { return [] }
+        guard let localID,
+              let conversationID = await serverConversationID(for: localID)
+        else { return page.subagents }
+        return page.subagents.filter { $0.parentConversation == conversationID }
+    }
+
     func deleteSession(id: UUID) async throws {
         guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
         guard let conversationID = await serverConversationID(for: id) else {

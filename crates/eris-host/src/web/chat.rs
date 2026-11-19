@@ -4298,6 +4298,7 @@ pub fn run_turn_with_key(
         &mut execute,
         messages,
         gate,
+        agents,
         settings.max_rounds,
         settings.context_budget,
         sink,
@@ -4675,6 +4676,7 @@ pub fn drive_tool_loop(
     execute: &mut ToolExecute<'_>,
     mut messages: Vec<ChatMessage>,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
+    agents: Option<&crate::subagents::Desk>,
     max_rounds: usize,
     budget: Option<u64>,
     sink: &mut dyn FnMut(StreamPart<'_>),
@@ -4861,6 +4863,63 @@ pub fn drive_tool_loop(
                     continue;
                 }
                 TurnSignal::Continue => {}
+            }
+            // The watchdog. A turn that dispatched children and then wrote
+            // "let me know when they finish" is not done: the daemon holds the
+            // turn while they work, then hands their results back to the model
+            // in the same turn. The wait is bounded by the child count and the
+            // 10-minute ceiling, and the phone's subagent poll keeps its own
+            // watchdog alive while the stream is quiet.
+            if let Some(desk) = agents {
+                let pending = desk.pending_for_turn().unwrap_or_default();
+                if !pending.is_empty() {
+                    if !completion.text.trim().is_empty() {
+                        messages.push(ChatMessage::text(ChatRole::Assistant, completion.text.clone()));
+                    }
+                    let budget = std::time::Duration::from_secs(
+                        (60 + 60 * pending.len() as u64).min(600),
+                    );
+                    let deadline = std::time::Instant::now() + budget;
+                    while std::time::Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        match desk.pending_for_turn() {
+                            Ok(rows) if rows.is_empty() => break,
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                    }
+                    let finished = desk.results_for_turn().unwrap_or_default();
+                    let still_running = desk.pending_for_turn().unwrap_or_default();
+                    let mut report = String::from(
+                        "The subagents you dispatched have checked in. Use their results to \
+                         finish the task. Do not repeat work they already completed.\n",
+                    );
+                    for row in &finished {
+                        report.push_str(&format!(
+                            "\n- {} [{}]\n{}",
+                            row.label,
+                            row.status.as_str(),
+                            row.result
+                                .as_deref()
+                                .filter(|text| !text.trim().is_empty())
+                                .or(row.error_code.as_deref())
+                                .unwrap_or("no result text")
+                        ));
+                    }
+                    if !still_running.is_empty() {
+                        let names = still_running
+                            .iter()
+                            .map(|row| row.label.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        report.push_str(&format!(
+                            "\n\nStill running after the check-in window: {names}. \
+                             Continue without them and say what remains."
+                        ));
+                    }
+                    messages.push(ChatMessage::text(ChatRole::User, report));
+                    continue;
+                }
             }
             // A boundary that produced nothing usable still spent the budget, so
             // the turn is capped even though the model, not a stray call, is what
@@ -5660,6 +5719,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "check the warehouse")],
             &mut |_call| GateDecision::Run,
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -5787,6 +5847,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "start")],
             &mut |_call| GateDecision::Run,
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -5839,6 +5900,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "read a.txt")],
             &mut |_call| GateDecision::Run,
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -5876,6 +5938,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "count to a billion")],
             &mut |_call| GateDecision::Run,
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -5921,6 +5984,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "look at two things")],
             &mut |_call| GateDecision::Run,
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -7185,6 +7249,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "read a.txt")],
             &mut |_call| GateDecision::Run,
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -7254,6 +7319,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "loop forever")],
             &mut |_call| GateDecision::Run,
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -7347,6 +7413,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "loop forever")],
             &mut |_call| GateDecision::Run,
+            None,
             1,
             None,
             &mut |_part| {},
@@ -7401,6 +7468,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "hi")],
             &mut |_call| GateDecision::Run,
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -7450,6 +7518,7 @@ mod tests {
             &mut |_call| GateDecision::Park {
                 approval_id: "ap_1".to_owned(),
             },
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -7526,6 +7595,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "keep looking")],
             &mut |_call| GateDecision::Run,
+            None,
             4,
             None,
             &mut |_part| {},
@@ -7810,6 +7880,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "audit every directory")],
             &mut |_call| GateDecision::Run,
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -7882,6 +7953,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "read it and tell me")],
             &mut |_call| GateDecision::Run,
+            None,
             4,
             None,
             &mut |_part| {},
@@ -7927,6 +7999,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "say hi")],
             &mut |_call| GateDecision::Run,
+            None,
             MAX_TOOL_ROUNDS,
             None,
             &mut |_part| {},
@@ -7972,6 +8045,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "keep looking")],
             &mut |_call| GateDecision::Run,
+            None,
             4,
             None,
             &mut |_part| {},
@@ -8037,6 +8111,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "read it and tell me")],
             &mut |_call| GateDecision::Run,
+            None,
             4,
             None,
             &mut |_part| {},
@@ -8078,6 +8153,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "say hi")],
             &mut |_call| GateDecision::Run,
+            None,
             4,
             None,
             &mut |_part| {},
@@ -8115,6 +8191,7 @@ mod tests {
             },
             vec![ChatMessage::text(ChatRole::User, "one round only")],
             &mut |_call| GateDecision::Run,
+            None,
             1,
             None,
             &mut |_part| {},

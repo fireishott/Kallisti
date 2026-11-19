@@ -7,6 +7,8 @@ import SwiftUI
 struct PencilCanvasRepresentable: UIViewRepresentable {
     @Binding var drawing: PKDrawing
     var pageStyle: NotePageStyle
+    /// Multiplier on the ruled-line spacing from Settings.
+    var lineSpacingScale: CGFloat = 1.4
     var pencilOnly: Bool = true
     /// Explicit column width from the SwiftUI layout (GeometryReader).
     /// Without this, a sidebar drag changes the frame but SwiftUI never
@@ -40,7 +42,11 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         context.coordinator.canvasView = canvas
 
         // Install paper layer behind canvas content
-        context.coordinator.installPaper(in: canvas, style: pageStyle)
+        context.coordinator.installPaper(
+            in: canvas,
+            style: pageStyle,
+            lineSpacingScale: lineSpacingScale
+        )
 
         // Tool picker — instance-based API (iOS 16+)
         let picker = PKToolPicker()
@@ -82,10 +88,15 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
             canvas.drawingPolicy = desiredPolicy
         }
 
-        // Update paper if style changed
-        if context.coordinator.currentStyle != pageStyle {
+        // Update paper if the style or the spacing scale changed
+        if context.coordinator.currentStyle != pageStyle
+            || context.coordinator.currentLineSpacingScale != lineSpacingScale {
             context.coordinator.currentStyle = pageStyle
-            context.coordinator.updatePaper(style: pageStyle)
+            context.coordinator.currentLineSpacingScale = lineSpacingScale
+            context.coordinator.updatePaper(
+                style: pageStyle,
+                lineSpacingScale: lineSpacingScale
+            )
         }
 
         // Keep canvas width in sync with the view frame so lines span the
@@ -138,6 +149,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         weak var canvasView: PKCanvasView?
         var isDrawingActive = false
         var currentStyle: NotePageStyle
+        var currentLineSpacingScale: CGFloat
         private weak var paperView: NotePaperUIView?
         private var contentObserver: NSKeyValueObservation?
         private var scrollObserver: NSKeyValueObservation?
@@ -145,6 +157,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         init(_ parent: PencilCanvasRepresentable) {
             self.parent = parent
             self.currentStyle = parent.pageStyle
+            self.currentLineSpacingScale = parent.lineSpacingScale
         }
 
         func installAutoGrow(canvas: PKCanvasView) {
@@ -163,8 +176,16 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
             }
         }
 
-        func installPaper(in canvas: PKCanvasView, style: NotePageStyle) {
-            let paper = NotePaperUIView(style: style, frame: canvas.bounds)
+        func installPaper(
+            in canvas: PKCanvasView,
+            style: NotePageStyle,
+            lineSpacingScale: CGFloat
+        ) {
+            let paper = NotePaperUIView(
+                style: style,
+                frame: canvas.bounds,
+                lineSpacingScale: lineSpacingScale
+            )
             paper.backgroundColor = .clear
             paper.isUserInteractionEnabled = false
             paper.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -189,8 +210,11 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
             }
         }
 
-        func updatePaper(style: NotePageStyle) {
+        func updatePaper(style: NotePageStyle, lineSpacingScale: CGFloat? = nil) {
             paperView?.style = style
+            if let lineSpacingScale {
+                paperView?.lineSpacingScale = lineSpacingScale
+            }
             paperView?.setNeedsDisplay()
         }
 
@@ -292,9 +316,12 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
 /// Used inside PKCanvasView (UIKit) so paper scrolls and zooms with ink.
 final class NotePaperUIView: UIView {
     var style: NotePageStyle
+    /// Multiplier from Settings, applied on top of the page style's spacing.
+    var lineSpacingScale: CGFloat = 1.4
 
-    init(style: NotePageStyle, frame: CGRect) {
+    init(style: NotePageStyle, frame: CGRect, lineSpacingScale: CGFloat = 1.4) {
         self.style = style
+        self.lineSpacingScale = lineSpacingScale
         super.init(frame: frame)
         isOpaque = false
         backgroundColor = .clear
@@ -309,7 +336,7 @@ final class NotePaperUIView: UIView {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
 
         let size = bounds.size
-        let spacing = style.lineSpacing
+        let spacing = style.lineSpacing * lineSpacingScale
         guard spacing > 0 else { return }
 
         let trait = traitCollection.userInterfaceStyle

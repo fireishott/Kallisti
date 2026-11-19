@@ -549,6 +549,41 @@ pub fn get(db: &Db, id: &str) -> Result<Option<Subagent>, DbError> {
     Ok(found)
 }
 
+/// Every child one parent turn dispatched, filtered by the statuses the caller
+/// cares about. Used by the turn watchdog: the parent waits on the rows instead
+/// of trusting the model to remember what it dispatched.
+pub fn for_parent(
+    db: &Db,
+    parent: &str,
+    statuses: &[&str],
+) -> Result<Vec<Subagent>, DbError> {
+    if statuses.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = (0..statuses.len())
+        .map(|index| format!("?{}", index + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {columns}, {elapsed} AS elapsed
+           FROM subagents
+          WHERE parent_turn = ?1 AND status IN ({placeholders})
+          ORDER BY created_at, id",
+        columns = COLUMNS,
+        elapsed = ELAPSED,
+    );
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(&sql)?;
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(parent.to_owned())];
+        for status in statuses {
+            values.push(Box::new((*status).to_owned()));
+        }
+        let refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(AsRef::as_ref).collect();
+        let rows = statement.query_map(refs.as_slice(), row_to_subagent)?;
+        rows.collect()
+    })
+}
+
 /// What the bar lists: anything still working, plus anything that finished
 /// inside [`RECENT_MINUTES`]. Newest first, bounded.
 ///
@@ -957,6 +992,22 @@ impl Desk {
                     desk.execute(&id, &label, &prompt, agent);
                 });
             }
+        }
+    }
+
+    /// The children this desk's parent turn dispatched that are still working.
+    pub fn pending_for_turn(&self) -> Result<Vec<Subagent>, DbError> {
+        match self.parent_turn.as_deref() {
+            Some(turn) => for_parent(&self.db, turn, &["queued", "running"]),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// The children this desk's parent turn dispatched that have settled.
+    pub fn results_for_turn(&self) -> Result<Vec<Subagent>, DbError> {
+        match self.parent_turn.as_deref() {
+            Some(turn) => for_parent(&self.db, turn, &["succeeded", "failed", "cancelled"]),
+            None => Ok(Vec::new()),
         }
     }
 

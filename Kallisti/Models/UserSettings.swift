@@ -620,6 +620,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     /// The editor's writing column, as a multiple of the available width.
     /// 1.0 is full width; the slider is bounded 0.5 to 1.5.
     var notesCanvasWidthScale: Double
+    /// Multiplier on the ruled-line spacing. 1.4 is the roomier default.
+    var notesLineSpacingScale: Double
 
     init(
         userName: String = "User",
@@ -660,7 +662,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         notesEnrichmentModelName: String? = nil,
         notesEnrichmentProvider: String? = nil,
         notesDefaultLinesEnabled: Bool = true,
-        notesCanvasWidthScale: Double = 1.0
+        notesCanvasWidthScale: Double = 1.0,
+        notesLineSpacingScale: Double = 1.4
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -701,6 +704,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.notesEnrichmentProvider = notesEnrichmentProvider
         self.notesDefaultLinesEnabled = notesDefaultLinesEnabled
         self.notesCanvasWidthScale = notesCanvasWidthScale
+        self.notesLineSpacingScale = notesLineSpacingScale
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -743,6 +747,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case notesEnrichmentProvider
         case notesDefaultLinesEnabled
         case notesCanvasWidthScale
+        case notesLineSpacingScale
     }
 
     init(from decoder: Decoder) throws {
@@ -794,6 +799,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         notesEnrichmentProvider = try container.decodeIfPresent(String.self, forKey: .notesEnrichmentProvider)
         notesDefaultLinesEnabled = try container.decodeIfPresent(Bool.self, forKey: .notesDefaultLinesEnabled) ?? true
         notesCanvasWidthScale = try container.decodeIfPresent(Double.self, forKey: .notesCanvasWidthScale) ?? 1.0
+        notesLineSpacingScale = try container.decodeIfPresent(Double.self, forKey: .notesLineSpacingScale) ?? 1.4
     }
 
     func encode(to encoder: Encoder) throws {
@@ -837,6 +843,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encodeIfPresent(notesEnrichmentProvider, forKey: .notesEnrichmentProvider)
         try container.encode(notesDefaultLinesEnabled, forKey: .notesDefaultLinesEnabled)
         try container.encode(notesCanvasWidthScale, forKey: .notesCanvasWidthScale)
+        try container.encode(notesLineSpacingScale, forKey: .notesLineSpacingScale)
     }
 
     func applyingEnvironmentPolicy(

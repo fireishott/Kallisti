@@ -91,6 +91,35 @@ struct ErisAttachmentRef: Equatable, Sendable, Decodable, Identifiable {
     }
 }
 
+/// One subagent row from `GET /v1/subagents`.
+struct ErisSubagent: Identifiable, Decodable, Equatable, Sendable {
+    let id: String
+    let label: String
+    let status: String
+    let result: String?
+    let errorCode: String?
+    let parentConversation: String?
+    let parentTurn: String?
+    let elapsedSecs: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, label, status, result
+        case errorCode = "error_code"
+        case parentConversation = "parent_conversation"
+        case parentTurn = "parent_turn"
+        case elapsedSecs = "elapsed_secs"
+    }
+
+    var isActive: Bool { status == "running" || status == "queued" }
+}
+
+/// The `GET /v1/subagents` body.
+struct ErisSubagentPage: Decodable, Sendable {
+    let count: Int
+    let truncated: Bool
+    let subagents: [ErisSubagent]
+}
+
 /// The `PATCH /v1/conversations/{id}` body: the id and the title it now holds.
 struct ErisRenamedConversation: Decodable {
     let id: String

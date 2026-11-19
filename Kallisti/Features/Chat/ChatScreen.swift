@@ -509,6 +509,7 @@ struct ChatScreen: View {
                 async let hostRefresh: Void = hostStore.refresh()
                 async let conversationLoad: Void = chatStore.loadConversationIfNeeded()
                 chatStore.startProgressMirror()
+                chatStore.startSubagentWatch()
                 // Build 124: when the thread is already cached (typical on
                 // appear), loadConversationIfNeeded no-ops and the user sees
                 // whatever the last fetch returned — stale if another device
@@ -776,6 +777,18 @@ struct ChatScreen: View {
                     : Design.Colors.secondaryForeground)
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            if chatStore.activeSubagentCount > 0 {
+                Text("\(min(chatStore.activeSubagentCount, 99))")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(Design.Colors.background)
+                    .frame(minWidth: 14, minHeight: 14)
+                    .padding(1)
+                    .background(Circle().fill(Design.Brand.accent))
+                    .offset(x: 7, y: -7)
+                    .accessibilityLabel("\(chatStore.activeSubagentCount) subagents running")
+            }
+        }
         .accessibilityLabel("Open canvas")
     }
 

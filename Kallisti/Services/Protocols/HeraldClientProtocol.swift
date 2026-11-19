@@ -85,6 +85,10 @@ protocol HeraldClientProtocol {
     /// overload — mock and legacy relay clients ignore the conversationID.
     func createSession(title: String, conversationID: UUID?) async throws -> SessionSummary
 
+    /// The subagents a chat dispatched, newest first. Legacy transports have
+    /// none, so the default answers an empty list rather than failing the UI.
+    func subagents(for localID: UUID?) async -> [ErisSubagent]
+
     /// Delete a session by ID.
     func deleteSession(id: UUID) async throws
 
@@ -191,6 +195,9 @@ protocol HeraldClientProtocol {
 
 // MARK: - Default implementations
 extension HeraldClientProtocol {
+    /// Legacy transports never dispatch subagents.
+    func subagents(for localID: UUID?) async -> [ErisSubagent] { [] }
+
     /// Default: no-op for clients that do not support session resume (mocks,
     /// legacy relay path). The native gateway client overrides this.
     func resumeActiveSessionIfNeeded() async -> Bool {

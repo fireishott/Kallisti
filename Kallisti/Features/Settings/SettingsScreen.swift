@@ -2384,6 +2384,41 @@ struct SettingsScreen: View {
                 Text("The writing column as a percentage of the available width.")
                     .font(Design.Typography.caption)
                     .foregroundStyle(Design.Colors.secondaryForeground)
+
+                sectionDivider
+
+                VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "text.alignleft")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        Text("Line spacing")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Spacer()
+                        Text("\(Int(settingsStore.settings.notesLineSpacingScale * 100))%")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .monospacedDigit()
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+
+                    Slider(
+                        value: Binding(
+                            get: { settingsStore.settings.notesLineSpacingScale },
+                            set: { settingsStore.settings.notesLineSpacingScale = $0 }
+                        ),
+                        in: 0.8...2.5,
+                        step: 0.05
+                    )
+                    .tint(Design.Brand.accent)
+                    .accessibilityLabel("Line spacing scale")
+                }
+
+                Text("More space between ruled lines. 140% is the default; drag right for a roomier page.")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
             }
         }
     }

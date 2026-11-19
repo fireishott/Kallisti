@@ -4622,6 +4622,34 @@ final class ChatStore {
 
     // MARK: - Cross-device catch-up (Build 124)
 
+    /// How many children this chat dispatched are still queued or running.
+    /// Polled rather than streamed: the daemon's subagent rows are the truth,
+    /// and a child can outlive the turn that started it.
+    var activeSubagentCount = 0
+    private var subagentPollTask: Task<Void, Never>?
+
+    func startSubagentWatch() {
+        guard subagentPollTask == nil else { return }
+        subagentPollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, !Task.isCancelled else { break }
+                let rows = await self.heraldClient.subagents(for: self.conversation?.id)
+                let active = rows.filter(\.isActive).count
+                if self.activeSubagentCount != active {
+                    self.activeSubagentCount = active
+                }
+                // A parent turn parked on its children emits no stream frames
+                // for minutes. The poll is progress: keep the stall watchdog
+                // from treating the wait as a dead socket.
+                if active > 0, self.isStreaming {
+                    self.noteStreamingProgress()
+                }
+            }
+            self?.subagentPollTask = nil
+        }
+    }
+
     /// While a turn is live, mirror the daemon's transcript into the open chat
     /// every couple of seconds. The SSE stream is the primary channel; this is
     /// the safety net for a stream that died with the process (a background,

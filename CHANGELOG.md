@@ -187,6 +187,13 @@ observe; commit history carries the detail.
   `tool_start`, `tool` and `tool_output` frames; the app decoded only the step
   label, so the Live sheet showed a tool name and a timer with no stdout. Those
   frames now become the tool row's start, preview and live terminal output.
+- **A finished turn waits for its children.** When the model stops while
+  subagents it dispatched are still queued or running, the daemon holds the
+  turn, polls them, and then hands their settled results back to the model in
+  the same turn so it can finish the task. The wait is bounded by the child
+  count (60 seconds each, 10 minutes maximum); children still working at the
+  deadline are named in the continuation. The phone's subagent poll keeps the
+  stall watchdog alive while the stream is quiet. `build 196`.
 
 ## 1.9.2
 

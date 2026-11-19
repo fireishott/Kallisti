@@ -244,6 +244,7 @@ struct NoteEditorView: View {
             PencilCanvasRepresentable(
                 drawing: $drawing,
                 pageStyle: pageStyle,
+                lineSpacingScale: CGFloat(settingsStore.settings.notesLineSpacingScale),
                 pencilOnly: pencilOnly,
                 canvasWidth: proxy.size.width
                     * CGFloat(settingsStore.settings.notesCanvasWidthScale),
