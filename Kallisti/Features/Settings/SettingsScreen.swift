@@ -14,6 +14,11 @@ struct SettingsScreen: View {
     @Environment(PermissionsStore.self) private var permissionsStore
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(TabRouter.self) private var router
+
+    @State private var speechModel = ""
+    @State private var speechModels: [String] = []
+    @State private var speechError: String?
+    @State private var speechModelsLoaded = false
     @State private var mimoAPIKey: String = ""
     // Build 70: aux service lives on the container (loaded at connection).
     private var auxService: AuxModelService? { container.auxService }
@@ -2062,6 +2067,75 @@ struct SettingsScreen: View {
 
 
 
+    private var speechModelBinding: Binding<String> {
+        Binding(
+            get: { speechModel },
+            set: { chosen in
+                speechModel = chosen
+                Task { await chooseSpeechModel(chosen) }
+            }
+        )
+    }
+
+    /// The daemon's speech model, and the models it already has provisioned.
+    private func loadSpeechModels() async {
+        guard !speechModelsLoaded else { return }
+        speechModelsLoaded = true
+        guard let base = speechBaseURL else {
+            speechError = "No daemon is paired, so there is no speech model to list."
+            return
+        }
+        var request = URLRequest(url: base.appending(path: "/v1/speech"))
+        if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                speechError = "The daemon refused the speech list."
+                return
+            }
+            struct Speech: Decodable {
+                let model: String
+                let models: [String]
+            }
+            let speech = try JSONDecoder().decode(Speech.self, from: data)
+            speechModel = speech.model
+            speechModels = speech.models
+            speechError = speech.models.isEmpty ? "The daemon has no provisioned models to choose from." : nil
+        } catch {
+            speechError = "The speech list could not be read: \(error.localizedDescription)"
+        }
+    }
+
+    private func chooseSpeechModel(_ model: String) async {
+        guard let base = speechBaseURL else { return }
+        var request = URLRequest(url: base.appending(path: "/v1/speech"))
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model])
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                speechError = "The daemon refused the model, so it is still speaking with the old one."
+                return
+            }
+            speechError = nil
+        } catch {
+            speechError = "The model could not be stored: \(error.localizedDescription)"
+        }
+    }
+
+    private var speechBaseURL: URL? {
+        guard let base = settingsStore.settings.relayConfiguration.activeBaseURLString
+            ?? pairingStore.pairedRelayConfiguration?.baseURLString, !base.isEmpty
+        else { return nil }
+        return URL(string: base)
+    }
+
     private var sttEngineBinding: Binding<SpeechEnginePreference> {
         Binding(
             get: {
@@ -2113,7 +2187,7 @@ struct SettingsScreen: View {
                                 .frame(width: 20, alignment: .center)
 
                             Picker("Engine", selection: ttsEngineBinding) {
-                                ForEach(SpeechEnginePreference.allCases, id: \.self) { engine in
+                                ForEach([SpeechEnginePreference.auto, .daemon], id: \.self) { engine in
                                     Text(engine.title).tag(engine)
                                 }
                             }
@@ -2138,7 +2212,7 @@ struct SettingsScreen: View {
                                 .frame(width: 20, alignment: .center)
 
                             Picker("Microphone", selection: sttEngineBinding) {
-                                ForEach(SpeechEnginePreference.allCases, id: \.self) { engine in
+                                ForEach([SpeechEnginePreference.auto, .daemon], id: \.self) { engine in
                                     Text(engine.title).tag(engine)
                                 }
                             }
@@ -2156,43 +2230,30 @@ struct SettingsScreen: View {
 
                     VStack(alignment: .leading, spacing: Design.Spacing.xs) {
                         HStack(spacing: Design.Spacing.sm) {
-                            Image(systemName: "key.fill")
+                            Image(systemName: "waveform")
                                 .font(.system(size: 14))
                                 .foregroundStyle(.orange)
                                 .frame(width: 20, alignment: .center)
 
-                            if showAPIKey {
-                                TextField("Mimo API Key", text: $mimoAPIKey)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled()
-                                    .font(Design.Typography.callout.monospaced())
-                                    .foregroundStyle(Design.Colors.foreground)
-                                    .onChange(of: mimoAPIKey) { _, newValue in
-                                        Task { await mimoKeychain.store(key: "mimo.apiKey", value: newValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                                    }
-                            } else {
-                                SecureField("Mimo API Key", text: $mimoAPIKey)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled()
-                                    .font(Design.Typography.callout.monospaced())
-                                    .foregroundStyle(Design.Colors.foreground)
-                                    .onChange(of: mimoAPIKey) { _, newValue in
-                                        Task { await mimoKeychain.store(key: "mimo.apiKey", value: newValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                                    }
+                            Picker("Speech model", selection: speechModelBinding) {
+                                if !speechModels.contains(speechModel), !speechModel.isEmpty {
+                                    Text(speechModel).tag(speechModel)
+                                }
+                                ForEach(speechModels, id: \.self) { model in
+                                    Text(model).tag(model)
+                                }
                             }
-
-                            Button { showAPIKey.toggle() } label: {
-                                Image(systemName: showAPIKey ? "eye.slash" : "eye")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Design.Colors.secondaryForeground)
-                            }
+                            .pickerStyle(.menu)
+                            .tint(Design.Colors.secondaryForeground)
+                            .disabled(speechModels.isEmpty)
                         }
 
-                        Text("Get your key from mimo.mi.com")
+                        Text(speechError ?? "The models this daemon already has provisioned. It speaks with the one picked here; a model without audio refuses and says so.")
                             .font(Design.Typography.caption)
-                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .foregroundStyle(speechError == nil ? Design.Colors.secondaryForeground : Design.Colors.warning)
                     }
                     .padding(.vertical, Design.Spacing.xs)
+                    .task { await loadSpeechModels() }
 
                     sectionDivider
 

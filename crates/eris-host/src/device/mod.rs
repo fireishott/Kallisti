@@ -175,6 +175,9 @@ pub const ROUTE_SESSION: &str = "/v1/sessions/{id}";
 /// `GET /v1/voices` - the voices this daemon will ask for.
 pub const ROUTE_VOICES: &str = "/v1/voices";
 
+/// `GET /v1/speech` and `PUT /v1/speech` - the model the daemon speaks with.
+pub const ROUTE_SPEECH: &str = "/v1/speech";
+
 /// `POST /v1/speak` - synthesize one answer.
 pub const ROUTE_SPEAK: &str = "/v1/speak";
 
@@ -1317,6 +1320,7 @@ pub fn router(service: DeviceService) -> Router {
         )
         .route(ROUTE_SKILLS, get(control::skills_list))
         .route(ROUTE_VOICES, get(control::voices))
+        .route(ROUTE_SPEECH, get(control::speech_get).put(control::speech_put))
         .route(ROUTE_SPEAK, post(control::speak))
         .route(ROUTE_TRANSCRIBE, post(control::transcribe))
         .route(ROUTE_SEARCH, get(control::search_transcript))

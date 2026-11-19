@@ -85,6 +85,13 @@ pub const ROLES: &[Role] = &[
         consumed_by: ("a turn whose primary model failed, once this role is pinned to a model"),
     },
     Role {
+        key: "speech",
+        label: "Speech",
+        probe_validated: false,
+        purpose: "Speaks an answer in the voice the phone asks for.",
+        consumed_by: ("an answer the phone asks the daemon to speak"),
+    },
+    Role {
         key: "learning",
         label: "Learning",
         probe_validated: true,

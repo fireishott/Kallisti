@@ -48,6 +48,18 @@ pub const MAX_SPEAK_CHARS: usize = 4_000;
 /// The model name every OpenAI-shaped `/audio/speech` endpoint knows.
 pub const MODEL: &str = "tts-1";
 
+/// The speech model, which is an aux role because an audio model is not a chat
+/// model and must not be held to the chat catalogue.
+#[must_use]
+pub fn model(db: &crate::db::Db) -> String {
+    crate::web::store::settings_get(db, &crate::aux::setting_key("speech"))
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| MODEL.to_owned())
+}
+
 /// Whether speech is switched on.
 #[must_use]
 pub fn enabled(db: &crate::db::Db) -> bool {
@@ -115,7 +127,7 @@ pub async fn speak(
     };
     let endpoint = format!("{}/audio/speech", base.trim_end_matches('/'));
     let body = serde_json::json!({
-        "model": MODEL,
+        "model": model(db),
         "input": clipped,
         "voice": chosen,
     });
@@ -163,7 +175,7 @@ pub async fn speak(
 }
 
 /// The engine base URL from `tts.base_url`, if one is stored.
-fn engine_base(db: &crate::db::Db) -> Option<String> {
+pub fn engine_base(db: &crate::db::Db) -> Option<String> {
     crate::web::store::settings_get(db, SETTING_BASE_URL)
         .ok()
         .flatten()

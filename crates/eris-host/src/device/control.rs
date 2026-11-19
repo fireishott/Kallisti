@@ -851,6 +851,87 @@ pub async fn voices(State(service): State<DeviceService>, headers: HeaderMap) ->
     .into_response()
 }
 
+/// `GET /v1/speech` - the speech model in force, the voices, and the models this
+/// daemon already has provisioned.
+///
+/// The list is the provider catalogue the daemon was set up with, because the
+/// phone should not have to guess a model name or hold a second cloud key. A
+/// model outside the catalogue is still accepted on a `PUT`: the catalogue is
+/// what was probed, not a closed set, and an audio model is usually absent from
+/// it.
+pub async fn speech_get(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let db = service.engine().db();
+    let models: Vec<String> = crate::web::store::settings_get(db, "provider.models")
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "model": crate::speech::model(db),
+        "default_model": crate::speech::MODEL,
+        "models": models,
+        "voices": crate::speech::VOICES
+            .iter()
+            .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
+            .collect::<Vec<_>>(),
+        "voice": crate::speech::voice(db),
+        "configured": crate::speech::engine_base(db).is_some(),
+    }))
+    .into_response()
+}
+
+/// `PUT /v1/speech` - choose the model the daemon speaks with.
+///
+/// Administration, because it points a provider call at a model of the
+/// operator's choosing.
+pub async fn speech_put(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Admin) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let model = field(&fields, "model").trim().to_owned();
+    if model.is_empty() {
+        return DeviceError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            "speech_model_empty",
+            "a speech model name is required",
+        )
+        .into_response();
+    }
+    if let Err(error) = crate::web::store::settings_put(
+        service.engine().db(),
+        &crate::aux::setting_key("speech"),
+        &model,
+    ) {
+        return DeviceError::db_unavailable(format!("cannot store the speech model: {error}"))
+            .into_response();
+    }
+    let _ = audit(&service, token.device_id(), "tts.model", &model);
+    axum::Json(serde_json::json!({ "ok": true, "model": model })).into_response()
+}
+
 /// `POST /v1/speak` - synthesize one answer, as audio bytes.
 ///
 /// The same aux path vision takes: the base URL, key and model come from the
