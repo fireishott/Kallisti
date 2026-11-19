@@ -4620,6 +4620,39 @@ final class ChatStore {
 
     // MARK: - Cross-device catch-up (Build 124)
 
+    /// While a turn is live, mirror the daemon's transcript into the open chat
+    /// every couple of seconds. The SSE stream is the primary channel; this is
+    /// the safety net for a stream that died with the process (a background,
+    /// a suspended socket, an iOS teardown) and never resumed. Without it the
+    /// bubble sat on its first tool count while the daemon kept working, and
+    /// only a manual leave-and-return revealed progress.
+    private var progressMirrorTask: Task<Void, Never>?
+
+    func startProgressMirror() {
+        guard isStreaming, progressMirrorTask == nil else { return }
+        progressMirrorTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, !Task.isCancelled, self.isStreaming else { break }
+                await self.mirrorProgress()
+            }
+            self?.progressMirrorTask = nil
+        }
+    }
+
+    private func mirrorProgress() async {
+        let generation = conversationGeneration
+        guard let fresh = await refreshActiveConversation() else { return }
+        guard generation == conversationGeneration,
+              conversation?.id == fresh.id else { return }
+        conversation = mergeConversationMetadata(from: conversation, into: fresh)
+        restoreInFlightRows()
+        if let conversation {
+            persistence.saveConversationCache(conversation)
+            onConversationChanged?()
+        }
+    }
+
     /// Build 124: silent catch-up refresh on foreground. When the app returns
     /// to the foreground, re-fetch the active conversation and merge — even
     /// when a local cache exists — so content produced on another device

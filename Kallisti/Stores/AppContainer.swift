@@ -1350,6 +1350,7 @@ final class AppContainer {
         chatStore.reconcileStreamingPhase()
         if chatStore.isStreaming {
             await chatStore.recoverStalledStream()
+            chatStore.startProgressMirror()
         }
         // A turn that finished while the app was suspended never ran the
         // completion handler, so its Live Activity was left on "Thinking".

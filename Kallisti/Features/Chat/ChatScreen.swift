@@ -508,6 +508,7 @@ struct ChatScreen: View {
                 chatStore.setPollingEnabled(true)
                 async let hostRefresh: Void = hostStore.refresh()
                 async let conversationLoad: Void = chatStore.loadConversationIfNeeded()
+                chatStore.startProgressMirror()
                 // Build 124: when the thread is already cached (typical on
                 // appear), loadConversationIfNeeded no-ops and the user sees
                 // whatever the last fetch returned — stale if another device
