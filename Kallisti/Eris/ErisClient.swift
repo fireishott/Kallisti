@@ -305,7 +305,22 @@ actor ErisClient {
     /// The daemon does not rotate the refresh token on this route, so the stored
     /// pair keeps the refresh token it already had and only the access half is
     /// replaced.
+    /// The refresh in flight, if one is. Two calls arriving together each rotated
+    /// the family, and the loser of that race presented a token the winner had
+    /// already retired: the app read that as "pair me again".
+    private var refreshInFlight: Task<ErisTokenPair, Error>?
+
     func refresh() async throws -> ErisTokenPair {
+        if let inFlight = refreshInFlight {
+            return try await inFlight.value
+        }
+        let task = Task { try await self.performRefresh() }
+        refreshInFlight = task
+        defer { refreshInFlight = nil }
+        return try await task.value
+    }
+
+    private func performRefresh() async throws -> ErisTokenPair {
         guard let stored = try await tokenStore.load() else {
             throw ErisError.missingToken
         }

@@ -132,7 +132,16 @@ final class AppSessionStore {
     }
 
     func currentRefreshToken() async -> String? {
-        await secureStore.retrieve(key: SecureKeys.refreshToken)
+        // The Eris pair is the live credential, and it is the one whose access
+        // half `currentAccessToken` returns. Reading the pre-Eris key here gave
+        // the refresh call a token from a different pair than the pair it
+        // refreshed, so the daemon rotated one family while the app kept
+        // presenting the other, and the next request asked to be paired again.
+        if let stored = try? await KeychainErisTokenStore(secureStore: secureStore).load(),
+           let refresh = stored.refreshToken, !refresh.isEmpty {
+            return refresh
+        }
+        return await secureStore.retrieve(key: SecureKeys.refreshToken)
     }
 
     func refreshAccessTokenIfNeeded() async {

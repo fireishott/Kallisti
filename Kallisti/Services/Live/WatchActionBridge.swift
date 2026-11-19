@@ -40,12 +40,34 @@ final class WatchActionBridge: WatchActionHandler {
         // it the next time it runs, because an application context persists.
         PhoneWatchConnectivityCoordinator.shared.attach { [container] in
             guard let base = container.settingsStore.settings
-                .relayConfiguration.activeBaseURLString, !base.isEmpty
+                .relayConfiguration.activeBaseURLString, !base.isEmpty,
+                let origin = URL(string: base)
             else { return nil }
+            // The wrist gets its own device and its own token pair. Copying the
+            // phone's pair made both clients refresh one family of tokens, so
+            // whichever refreshed first retired the other and the phone asked to
+            // be paired again. `POST /v1/watch/pair` is the route that exists for
+            // exactly this, and it also answers the origin the wrist can dial.
             let access = await container.sessionStore.currentAccessToken() ?? ""
-            let refresh = await container.sessionStore.currentRefreshToken() ?? ""
             guard !access.isEmpty else { return nil }
-            return WatchPairingHandoff(baseURL: base, accessToken: access, refreshToken: refresh)
+            var request = URLRequest(url: origin.appending(path: "/v1/watch/pair"))
+            request.httpMethod = "POST"
+            request.timeoutInterval = 20
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: ["deviceName": "watch-wrist"])
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let watchAccess = object["access_token"] as? String,
+                  let watchRefresh = object["refresh_token"] as? String
+            else { return nil }
+            let lan = (object["lan"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return WatchPairingHandoff(
+                baseURL: lan ?? base,
+                accessToken: watchAccess,
+                refreshToken: watchRefresh
+            )
         }
     }
 

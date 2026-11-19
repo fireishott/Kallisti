@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can do. Before this, every turn answered `no_transport` on a real watch.
 - The watch app had no microphone usage description, so the first tap on the
   orb terminated it. It now carries one, and says what it is for.
+- Pairing lasted longer. The app read its access token from the live Eris pair
+  and its refresh token from the older pre-Eris key, so a refresh rotated one
+  family while the app kept presenting the other and the daemon asked for a new
+  pairing. Both halves come from the same pair now, and two refreshes arriving
+  together are single-flighted instead of racing to retire each other.
+- The wrist pairs as its own device, through `POST /v1/watch/pair`. Handing it a
+  copy of the phone's tokens made the two clients rotate one family, so the
+  phone's next refresh failed and it asked to be paired again.
 - Talk asked the daemon's Mimo readiness route even when the daemon's own speech
   was selected, so the screen still demanded a Mimo key. That route is only
   consulted when the Mimo engine is chosen.
