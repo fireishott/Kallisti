@@ -42,7 +42,7 @@ struct NotificationViewModel {
 
     init(payload: WatchNotificationPayload?, notification: UNNotificationContent) {
         self.payload = payload
-        self.title = payload?.title ?? notification.title ?? "Herald"
+        self.title = payload?.title ?? notification.title ?? "Kallisti"
         self.body = payload?.sanitizedPreview ?? notification.body
         self.category = payload?.category
         self.isValid = payload != nil
@@ -94,7 +94,7 @@ struct HeraldNotificationView: View {
     }
 
     private var bodySection: some View {
-        Text(viewModel.body.isEmpty ? "Herald has a new update." : viewModel.body)
+        Text(viewModel.body.isEmpty ? "Kallisti has a new update." : viewModel.body)
             .font(.body)
             .multilineTextAlignment(.leading)
             .lineLimit(8)
@@ -157,7 +157,7 @@ struct HeraldNotificationView: View {
     }
 
     private var invalidSection: some View {
-        Label("Herald notification couldn't be validated.", systemImage: "exclamationmark.triangle")
+        Label("Kallisti notification couldn't be validated.", systemImage: "exclamationmark.triangle")
             .font(.footnote)
             .foregroundStyle(.secondary)
     }

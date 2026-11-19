@@ -141,9 +141,9 @@ struct WatchNotificationPayload: Sendable, Equatable {
 
     private static func defaultTitle(for category: NotificationCategoryID) -> String {
         switch category {
-        case .messageReady: return "Herald"
-        case .jobActive: return "Herald Job"
-        case .sessionReminder: return "Herald Reminder"
+        case .messageReady: return "Kallisti"
+        case .jobActive: return "Kallisti Job"
+        case .sessionReminder: return "Kallisti Reminder"
         }
     }
 }

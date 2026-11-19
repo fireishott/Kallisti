@@ -99,7 +99,7 @@ final class HeraldNotificationSceneController: WKUserNotificationHostingControll
         let payload = WatchNotificationPayload.decode(from: notification.userInfo)
         return WatchNotificationRoot(
             payload: payload,
-            fallbackTitle: notification.title.isEmpty ? "Herald" : notification.title,
+            fallbackTitle: notification.title.isEmpty ? "Kallisti" : notification.title,
             fallbackBody: WatchNotificationPayload.sanitize(notification.body)
         )
     }
@@ -158,7 +158,7 @@ struct HeartbeatView: View {
             Image(systemName: "shield.lefthalf.filled")
                 .imageScale(.large)
                 .foregroundStyle(.tint)
-            Text("Herald")
+            Text("Kallisti")
                 .font(.headline)
             Text(coordinator.isReachable ? "Phone reachable" : "Phone unreachable")
                 .font(.footnote)
