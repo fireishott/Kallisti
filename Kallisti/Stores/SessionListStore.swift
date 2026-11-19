@@ -473,6 +473,9 @@ final class SessionListStore {
             // reply would reset its preview, activity time and pin state.
             var updated = session
             updated.title = renamed.title
+            if chatStore.conversation?.id == session.id {
+                chatStore.setConversationTitle(renamed.title)
+            }
             if let idx = pinnedSessions.firstIndex(where: { $0.id == session.id }) {
                 pinnedSessions[idx] = updated
             }
