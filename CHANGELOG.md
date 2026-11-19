@@ -230,6 +230,15 @@ observe; commit history carries the detail.
 
 ## 1.10.0
 
+- **A truncated tool call retries instead of failing the turn.** A stream that
+  ended mid-arguments failed the round with a protocol error, and the only way
+  forward was the phone's Retry, which replayed the same truncated turn. One
+  bounded retry of the round now happens first.
+- **A call with no provider id gets one.** A Gemini-shaped stream names a call by
+  its function name and carries no id; replaying that transcript into a dialect
+  that requires `tool_use.id` failed the whole next round with `Field required`.
+  The assembler mints `call_<index>` when none arrived, and a provider-issued id
+  is kept untouched. `build 201`.
 - **A turn knows where it came from.** `jobs` gained `source` (migration 0044),
   `turn.start` carries it, and the set is closed to `phone`, `watch`, `browser`
   and `cli`, with anything else landing on `phone`. A watch turn was previously

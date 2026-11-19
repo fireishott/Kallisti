@@ -186,11 +186,14 @@ impl ToolAccumulator {
                 self.index
             )));
         }
-        let Some(id) = self.id.filter(|id| !id.is_empty()) else {
-            return Err(classify::protocol(format!(
-                "tool call `{}` at index {} completed without an id",
-                self.name, self.index
-            )));
+        // A Gemini-shaped stream names a call by its function name and carries no
+        // id at all. Replaying that transcript into a dialect that requires an id
+        // (`tool_use.id: Field required`) failed the whole next round, so one is
+        // minted here and the tool result carries the same name. A provider that
+        // did issue an id keeps it untouched.
+        let id = match self.id.filter(|id| !id.is_empty()) {
+            Some(id) => id,
+            None => format!("call_{}", self.index),
         };
 
         let buffered = self.arguments.trim();

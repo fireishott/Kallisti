@@ -4829,6 +4829,19 @@ pub fn drive_tool_loop(
                 wrapped_up = false;
                 break String::new();
             }
+            // A stream cut in the middle of a tool call is the provider's
+            // sockets, not the model's decision. One retry of the same round
+            // costs one round trip and saves the turn: Retry on the phone was
+            // the only way forward before this, and it replayed the truncated
+            // turn back into the provider.
+            Err(failure)
+                if tools_allowed && failure.1.contains("never completed into valid JSON") =>
+            {
+                match stream(&messages, tools_allowed, &mut *sink) {
+                    Ok(completion) => completion,
+                    Err(failure) => return Err(failure),
+                }
+            }
             Err(failure) => return Err(failure),
         };
 
