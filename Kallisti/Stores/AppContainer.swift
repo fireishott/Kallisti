@@ -715,7 +715,7 @@ final class AppContainer {
                             }
                         ),
                         mimo: mimoTTSService,
-                        mimoKeyPresent: { apiKeyHolder.get().isEmpty == false },
+                        mimoKeyPresent: { (apiKeyHolder.get() ?? "").isEmpty == false },
                         daemonAvailable: {
                             let paired = settingsStore.settings.relayConfiguration.activeBaseURLString
                                 ?? activePairingStore?.pairedRelayConfiguration?.baseURLString
