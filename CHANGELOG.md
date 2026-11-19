@@ -10,6 +10,34 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-11-19
+
+### Added
+
+- A watchOS app that ships inside the phone app: the conversation in one glance,
+  one tap to talk, the Action Button and Siri through `StartConversationIntent`,
+  and a complication on all four accessory families that opens straight into the
+  conversation through `kallisti://talk`.
+- Answers arrive in the ear clause by clause, so speech starts before the
+  paragraph is finished. A tap while the wrist is talking cuts the clause off and
+  hands back the mic, and the state is a named one rather than a spinner.
+- The wrist never transcribes. It records 16 kHz mono, caps the capture at 45
+  seconds, and the host turns it into text, so the clip stays on the machine.
+
+### Changed
+
+- A turn records where it came from, so a watch turn is visible as one instead of
+  being guessed from the client's shape.
+- The watch pairing is a token pair with one refresh and a `reauth` on the second
+  refusal, kept in the shared keychain group.
+- The watch test target runs without a host app; the suite had never started
+  because it named an executable that does not exist.
+
+### Fixed
+
+- The notification preview stayed one character over its cap when it clipped,
+  because the ellipsis was appended after the clamp.
+
 ## [0.2.3] - 2026-08-11
 
 ### Added
@@ -174,6 +202,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versions follow the daemon's own `VERSION`, with a build number that moves on every
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
+
+## 1.10.0
+
+- **A turn knows where it came from.** `jobs` gained `source` (migration 0044),
+  `turn.start` carries it, and the set is closed to `phone`, `watch`, `browser`
+  and `cli`, with anything else landing on `phone`. A watch turn was previously
+  indistinguishable from a phone turn once it reached the daemon. `build 198`.
+- **The daemon speaks as it writes.** With `?audio=1` the event stream carries a
+  `speak.clause` frame per clause, each with one WAV, emitted as the answer is
+  produced rather than after `done`. Without the parameter the stream is
+  unchanged. Speech resolves its engine from `tts.base_url` first, so a keyless
+  local engine no longer needs a chat provider to exist.
+- **A watch can pair and read state.** `POST /v1/watch/pair` mints a token pair
+  for a wrist and reports the origin it can actually dial; `GET /v1/watch/state`
+  reports whether a turn is active and how much is unread. The readiness frame
+  gained `transport` so a phone knows which credential it is holding.
+- **Transcription is a route.** `POST /v1/transcribe` accepts a 16 kHz mono clip
+  and answers text, which is how the watch hears without a speech framework.
 
 ## 1.9.3
 
