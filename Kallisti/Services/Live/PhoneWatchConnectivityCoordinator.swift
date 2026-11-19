@@ -124,47 +124,94 @@ final class PhoneWatchConnectivityCoordinator: NSObject {
     }
 }
 
+/// A reply closure outlives the delegate callback that was handed it, and
+/// `[String: Any]` is not `Sendable`. The box is the one place that is asserted
+/// rather than proved: the closure is called exactly once, from the main actor,
+/// before the box itself falls out of scope.
+private final class ReplyHandlerBox: @unchecked Sendable {
+    private let handler: ([String: Any]) -> Void
+
+    init(_ handler: @escaping ([String: Any]) -> Void) {
+        self.handler = handler
+    }
+
+    func call(_ payload: [String: Any]) {
+        handler(payload)
+    }
+}
+
 extension PhoneWatchConnectivityCoordinator: WCSessionDelegate {
-    nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
+    nonisolated func session(
+        _ session: WCSession,
+        activationDidCompleteWith activationState: WCSessionActivationState,
+        error: Error?
+    ) {
+        // Read what is needed before the hop: the session itself is not
+        // `Sendable`, and nothing after this line needs it.
+        let reachable = session.isReachable
         Task { @MainActor in
-            self.isReachable = session.isReachable
+            self.isReachable = reachable
         }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        // Fire-and-forget immediate delivery; the canonical reply path on
-        // Watch only needs the acknowledgement.
+        // Decode first, for the same reason: the envelope is a value, the
+        // dictionary it came from is not.
+        guard let envelope = WatchActionEnvelope.fromWCDictionary(message) else {
+            return
+        }
         Task { @MainActor in
-            await self.handleRawMessage(message)
+            _ = await self.dispatch(envelope)
         }
     }
 
-    nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+    nonisolated func session(
+        _ session: WCSession,
+        didReceiveMessage message: [String: Any],
+        replyHandler: @escaping ([String: Any]) -> Void
+    ) {
+        let envelope = WatchActionEnvelope.fromWCDictionary(message)
+        let reply = ReplyHandlerBox(replyHandler)
         Task { @MainActor in
-            let status = await self.handleRawMessage(message)
-            if let envelope = WatchActionEnvelope.fromWCDictionary(message) {
-                replyHandler(self.reply(for: envelope, status: status))
-            } else {
-                replyHandler([WatchPayloadKey.acknowledgementStatus.rawValue: WatchAckStatus.rejected.rawValue])
+            guard let envelope else {
+                reply.call([
+                    WatchPayloadKey.acknowledgementStatus.rawValue:
+                        WatchAckStatus.rejected.rawValue
+                ])
+                return
             }
+            let status = await self.dispatch(envelope)
+            reply.call(self.reply(for: envelope, status: status))
         }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        guard let envelope = WatchActionEnvelope.fromWCDictionary(userInfo) else {
+            return
+        }
         Task { @MainActor in
-            await self.handleRawMessage(userInfo)
+            _ = await self.dispatch(envelope)
         }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
-        Task { @MainActor in self.isReachable = session.isReachable }
+        let reachable = session.isReachable
+        Task { @MainActor in
+            self.isReachable = reachable
+        }
     }
 
-    @MainActor
-    private func handleRawMessage(_ message: [String: Any]) async -> WatchAckStatus {
-        guard let envelope = WatchActionEnvelope.fromWCDictionary(message) else {
-            return .rejected
-        }
-        return await dispatch(envelope)
+    // The two requirements that exist on iOS only. A watch has no second watch to
+    // deactivate for, so they are absent there rather than empty.
+    #if os(iOS)
+    nonisolated func sessionDidBecomeInactive(_ session: WCSession) {
+        // Another watch took over. Stay activated: deactivating here would drop
+        // the session for the watch that is still wearing it.
     }
+
+    nonisolated func sessionDidDeactivate(_ session: WCSession) {
+        // Reactivate so the swapped-out watch can pair again later.
+        session.activate()
+    }
+    #endif
 }

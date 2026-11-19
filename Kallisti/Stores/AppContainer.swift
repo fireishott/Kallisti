@@ -988,6 +988,9 @@ final class AppContainer {
         // (SwiftUI-side .onChange pushed ChatScreen past the type-checker
         // limit, so this lives on the store side instead.)
         container.observeActiveModelChanges()
+        // The wrist talks to the phone through this bridge, so it exists for the
+        // life of the process rather than for the screen that happens to open.
+        WatchActionBridge.install(container: container)
 
         return container
     }

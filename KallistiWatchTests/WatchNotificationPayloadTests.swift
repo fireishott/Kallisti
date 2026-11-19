@@ -3,19 +3,29 @@ import XCTest
 /// The payload decoder is the watch's only input, so its two jobs are pinned here:
 /// a good payload decodes, and a hostile string cannot reach a label unshrunk.
 final class WatchNotificationPayloadTests: XCTestCase {
-    func testASessionPayloadDecodes() {
+    func testAReadyPayloadDecodes() {
+        let conversation = UUID()
         let payload = WatchNotificationPayload.decode(from: [
-            "category": "session.ready",
-            "sessionId": "20261114_101010_abcdef",
-            "title": "Answer ready",
+            NotificationPayloadKey.category.rawValue:
+                NotificationCategoryID.messageReady.rawValue,
+            NotificationPayloadKey.conversationId.rawValue:
+                conversation.uuidString.lowercased(),
+            NotificationPayloadKey.contractVersion.rawValue:
+                NotificationContractVersion.current,
+            NotificationPayloadKey.sanitizedPreview.rawValue: "The answer is ready.",
+            NotificationPayloadKey.title.rawValue: "Answer ready",
         ])
-        XCTAssertEqual(payload?.sessionId, "20261114_101010_abcdef")
+        XCTAssertEqual(payload?.conversationId, conversation)
         XCTAssertEqual(payload?.title, "Answer ready")
+        XCTAssertEqual(payload?.sanitizedPreview, "The answer is ready.")
+        XCTAssertFalse(payload?.id.isEmpty ?? true)
     }
 
     func testAnUnknownCategoryIsIgnored() {
         XCTAssertNil(
-            WatchNotificationPayload.decode(from: ["category": "nothing.here"])
+            WatchNotificationPayload.decode(from: [
+                NotificationPayloadKey.category.rawValue: "nothing.here"
+            ])
         )
     }
 

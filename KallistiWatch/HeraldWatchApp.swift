@@ -20,7 +20,7 @@ struct HeraldWatchApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HeartbeatView()
+            WatchAppRoot()
         }
         WKNotificationScene(
             controller: HeraldNotificationSceneController.self,
@@ -34,6 +34,40 @@ struct HeraldWatchApp: App {
             controller: HeraldNotificationSceneController.self,
             category: NotificationCategoryID.sessionReminder.rawValue
         )
+    }
+}
+
+/// What the app shows: the conversation when something asked for it, the
+/// heartbeat otherwise.
+struct WatchAppRoot: View {
+    @State private var launch = WatchLaunchState.shared
+    @State private var runtime: WatchRuntime?
+
+    var body: some View {
+        Group {
+            if let runtime, launch.openConversation {
+                WatchConversationScreen(
+                    chooser: runtime.chooser,
+                    transport: runtime.streamer,
+                    autoListen: launch.startListening
+                )
+            } else {
+                HeartbeatView()
+            }
+        }
+        .task {
+            if runtime == nil {
+                runtime = WatchRuntime.make()
+                // A paired wrist opens on the conversation: the heartbeat is the
+                // unpaired state, not a home screen to get past.
+                if (try? WatchPairingStore().credentials()) != nil {
+                    launch.open(listening: false)
+                }
+            }
+        }
+        .onOpenURL { url in
+            launch.handle(url)
+        }
     }
 }
 
@@ -51,14 +85,21 @@ final class HeraldWatchAppDelegate: NSObject, WKApplicationDelegate {
 /// instantiates this per-incoming notification and passes the `UNNotification`
 /// to it. We hand off to the SwiftUI presentation path.
 final class HeraldNotificationSceneController: WKUserNotificationHostingController<WatchNotificationRoot> {
+    /// What the system handed this scene. `body` is read after `didReceive`, and
+    /// `notificationContent` is not an API of this class - the content arrives
+    /// through the only callback the controller has.
+    private var content = UNNotificationContent()
+
+    override func didReceive(_ notification: UNNotification) {
+        content = notification.request.content
+    }
+
     override var body: WatchNotificationRoot {
-        guard let notification = notificationContent else {
-            return WatchNotificationRoot(payload: nil, fallbackTitle: "Herald", fallbackBody: "")
-        }
+        let notification = content
         let payload = WatchNotificationPayload.decode(from: notification.userInfo)
         return WatchNotificationRoot(
             payload: payload,
-            fallbackTitle: notification.title ?? "Herald",
+            fallbackTitle: notification.title.isEmpty ? "Herald" : notification.title,
             fallbackBody: WatchNotificationPayload.sanitize(notification.body)
         )
     }
@@ -95,7 +136,9 @@ extension SyntheticNotification {
 }
 
 extension NotificationViewModel {
-    init(payload: WatchNotificationPayload?, notification: SyntheticNotification) {
+    // `SyntheticNotification` is private to this file, and this initializer is
+    // its only user; an internal one could not name the type.
+    fileprivate init(payload: WatchNotificationPayload?, notification: SyntheticNotification) {
         self.payload = payload
         self.title = payload?.title ?? notification.title
         self.body = payload?.sanitizedPreview ?? notification.body

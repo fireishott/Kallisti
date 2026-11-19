@@ -132,7 +132,9 @@ struct WatchNotificationPayload: Sendable, Equatable {
         while s.contains("  ") { s = s.replacingOccurrences(of: "  ", with: " ") }
         s = s.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.count > previewMaxLength {
-            s = String(s.prefix(previewMaxLength)) + "…"
+            // The ellipsis is part of the cap: a preview one character over the
+            // limit is still a preview the label has to shrink.
+            s = String(s.prefix(max(0, previewMaxLength - 1))) + "…"
         }
         return s
     }

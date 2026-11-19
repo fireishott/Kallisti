@@ -56,6 +56,10 @@ schemes:
         KallistiWatch: all
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: KallistiWatchTests
     profile:
       config: Release
     analyze:
@@ -85,11 +89,6 @@ targets:
           - "**/.DS_Store"
           # Editor backups that regeneration must never pick up as sources.
           - "**/*.bak*"
-          # Build 108: exclude Watch WIP files until Task 10 finishes them.
-          # These reference types defined in the Watch target that are not
-          # yet integrated into the iOS build.
-          - "Services/Live/PhoneWatchConnectivityCoordinator.swift"
-          - "Services/Live/WatchActionBridge.swift"
       - path: KallistiWidgets/KallistiAppState.swift
       - path: KallistiWidgets/GatewayState.swift
       - path: KallistiWidgets/KallistiActivityAttributes.swift
@@ -107,7 +106,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti
         PRODUCT_NAME: Kallisti
         MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "218"
+        CURRENT_PROJECT_VERSION: "219"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
@@ -191,7 +190,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
         PRODUCT_NAME: KallistiWidgets
         MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "218"
+        CURRENT_PROJECT_VERSION: "219"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
@@ -230,7 +229,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
         PRODUCT_NAME: KallistiNotificationService
         MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "218"
+        CURRENT_PROJECT_VERSION: "219"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -271,7 +270,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
         PRODUCT_NAME: KallistiIntents
         MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "218"
+        CURRENT_PROJECT_VERSION: "219"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -299,7 +298,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
         PRODUCT_NAME: KallistiControls
         MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "218"
+        CURRENT_PROJECT_VERSION: "219"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -335,18 +334,34 @@ targets:
     deploymentTarget: "11.0"
     sources:
       - path: KallistiWatch
+        excludes:
+          # The complication has its own @main and its own target; only the
+          # shared snapshot file is compiled into the app.
+          - "Widgets/KallistiWidgetBundle.swift"
+          - "Widgets/KallistiComplication.swift"
       - path: Kallisti/Services/Protocols/NotificationCategories.swift
+      - path: Kallisti/Services/Protocols/WatchContracts.swift
+      - path: KallistiWatch/Widgets/WatchStateSnapshot.swift
+    dependencies:
+      - target: KallistiWatchWidgets
+        embed: true
     entitlements:
       path: KallistiWatch/KallistiWatch.entitlements
       properties:
         com.apple.security.application-groups:
           - group.net.fihonline.kallisti
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     info:
       path: KallistiWatch/Info.plist
       properties:
         CFBundleDisplayName: KallistiWatch
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleURLTypes:
+          - CFBundleURLName: net.fihonline.kallisti.watch
+            CFBundleURLSchemes:
+              - kallisti
         WKApplication: true
         WKCompanionAppBundleIdentifier: net.fihonline.kallisti
         WKWatchOnly: false
@@ -355,7 +370,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
         PRODUCT_NAME: KallistiWatch
         MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "218"
+        CURRENT_PROJECT_VERSION: "219"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -364,6 +379,36 @@ targets:
         SDKROOT: watchos
         WATCHOS_DEPLOYMENT_TARGET: "11.0"
 
+  KallistiWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "11.0"
+    sources:
+      - path: KallistiWatch/Widgets
+    entitlements:
+      path: KallistiWatchWidgets/KallistiWatchWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.net.fihonline.kallisti
+    info:
+      path: KallistiWatchWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Kallisti
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp.widgets
+        PRODUCT_NAME: KallistiWatchWidgets
+        MARKETING_VERSION: "1.6.1"
+        CURRENT_PROJECT_VERSION: "219"
+        SWIFT_VERSION: "6.2"
+        TARGETED_DEVICE_FAMILY: "4"
+        SDKROOT: watchos
+        WATCHOS_DEPLOYMENT_TARGET: "11.0"
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+
   KallistiWatchTests:
     type: bundle.unit-test
     platform: watchOS
@@ -371,6 +416,13 @@ targets:
     sources:
       - path: KallistiWatchTests
       - path: KallistiWatch/WatchNotificationPayload.swift
+      - path: Kallisti/Services/Protocols/WatchContracts.swift
+      - path: KallistiWatch/App
+      - path: KallistiWatch/Auth
+      - path: KallistiWatch/Conversation
+      - path: KallistiWatch/Voice
+      - path: KallistiWatch/Transport
+      - path: KallistiWatch/Widgets/WatchStateSnapshot.swift
       - path: KallistiWatch/WatchConnectivityCoordinator.swift
       - path: Kallisti/Services/Protocols/NotificationCategories.swift
     settings:
@@ -382,8 +434,9 @@ targets:
         SDKROOT: watchos
         WATCHOS_DEPLOYMENT_TARGET: "11.0"
         GENERATE_INFOPLIST_FILE: true
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/KallistiWatch.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/HeraldWatch"
-        BUNDLE_LOADER: "$(TEST_HOST)"
+        # Logic tests: every source they exercise is compiled into the bundle
+        # (see the list above), so no host app is needed and no stale TEST_HOST
+        # can stop the suite from running.
 
   KallistiTests:
     type: bundle.unit-test
