@@ -251,11 +251,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_image_role_skips_the_chat_model_probe() {
+    fn only_the_audio_roles_skip_the_chat_model_probe() {
+        // An image model and a speech model are not chat models, so neither is
+        // held to the chat catalogue. Every other role is.
         for role in ROLES {
+            let audio = matches!(role.key, "image" | "speech");
             assert_eq!(
                 role.probe_validated,
-                role.key != "image",
+                !audio,
                 "{} is validated against the wrong catalogue",
                 role.key
             );
@@ -276,6 +279,7 @@ mod tests {
                 "title_generation",
                 "approval",
                 "fallback",
+                "speech",
                 "learning"
             ]
         );

@@ -7863,7 +7863,7 @@ pub fn devices_page(view: &DevicesView) -> Markup {
                 }
                 div .field {
                     label for="allow_admin" {
-                        input type="checkbox" id="allow_admin" name="allow_admin" value="true";
+                        input type="checkbox" id="allow_admin" name="allow_admin" value="true" checked;
                         " Allow this device to administer"
                     }
                     span .hint {

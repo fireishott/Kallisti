@@ -4670,6 +4670,13 @@ pub type ToolExecute<'a> = dyn FnMut(
 // next completion. Bundling them into a struct would move the same eight fields
 // one line up and make the call sites read worse.
 #[allow(clippy::too_many_arguments)]
+/// The longest a turn may spend calling tools before it is made to answer.
+///
+/// Rounds are not a unit of time: a slow tool makes one round cost minutes. This
+/// is the second limit, and it exists because a stalled turn looks exactly like
+/// a busy one to the phone.
+const TURN_WALL_CLOCK: std::time::Duration = std::time::Duration::from_secs(8 * 60);
+
 pub fn drive_tool_loop(
     execute: &mut ToolExecute<'_>,
     mut messages: Vec<ChatMessage>,
@@ -4716,6 +4723,12 @@ pub fn drive_tool_loop(
     // way out has to decide which of the two facts it is.
     let mut wrapped_up: bool;
 
+    // A turn has a wall clock as well as a round budget. Thirty rounds at forty
+    // seconds each is twenty minutes of silence, and a person who asked a
+    // question does not want the answer inside a second turn. Past this the
+    // tools go away and the model answers with what it has.
+    let started = std::time::Instant::now();
+    let mut deadline_told = false;
     let mut text = loop {
         // The first boundary: nothing has been sent for this round yet, so a stop
         // here costs nothing and a steer joins the prompt before it is billed.
@@ -4745,7 +4758,8 @@ pub fn drive_tool_loop(
         // better than one round with the tools the operator gave it. Those budgets
         // behave exactly as they did before.
         let last_action = max_rounds > 2 && rounds == max_rounds.saturating_sub(2);
-        let answering = max_rounds > 2 && rounds >= max_rounds.saturating_sub(1);
+        let out_of_time = started.elapsed() >= TURN_WALL_CLOCK;
+        let answering = (max_rounds > 2 && rounds >= max_rounds.saturating_sub(1)) || out_of_time;
         let tools_allowed = rounds < max_rounds && !answering;
         // One coherent sentence, not two. The action round is told to finish, the
         // answer round is told to write, and a turn whose tools ran out with no
@@ -4763,6 +4777,10 @@ pub fn drive_tool_loop(
             messages.push(ChatMessage::text(ChatRole::User, LAST_ACTION));
         } else if answering && !answer_told {
             answer_told = true;
+            answer_shape = answer_budget(rounds, &records);
+            messages.push(ChatMessage::text(ChatRole::User, wrap_up(answer_shape)));
+        } else if out_of_time && !deadline_told {
+            deadline_told = true;
             answer_shape = answer_budget(rounds, &records);
             messages.push(ChatMessage::text(ChatRole::User, wrap_up(answer_shape)));
         } else if !tools_allowed && !budget_told && !last_action_told && !answer_told {

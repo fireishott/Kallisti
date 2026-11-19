@@ -336,7 +336,7 @@ fn revoking_a_device_keeps_the_row_and_marks_it() {
 }
 
 #[test]
-fn the_mint_form_offers_administration_and_starts_unchecked() {
+fn the_mint_form_offers_administration_and_starts_checked() {
     let (_dir, engine, app, cookie) = ready_app();
     let db = engine.db();
 
@@ -393,7 +393,7 @@ fn the_mint_form_offers_administration_and_starts_unchecked() {
     assert!(tag.contains(r#"name="allow_admin""#), "{tag}");
     assert!(tag.contains(r#"value="true""#), "{tag}");
     assert!(
-        !tag.contains("checked"),
+        tag.contains("checked"),
         "the box is unchecked by default: {tag}"
     );
     assert!(
