@@ -175,6 +175,19 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.9.3
+
+- **Subagents can use tools.** A `dispatch_agent` child was a single tool-less
+  inference: useful for drafting text, useless for "go fix this." It now gets
+  the same tool list its parent has, eight rounds to use it, and the parent's
+  workspace reach. The recursion guard is structural: `dispatch_agent` is never
+  offered to a child, and a child that invents the call is refused by the tool
+  layer. The child deadline moves from 2 minutes to 10 so real work can finish.
+- **Tool output reaches the phone's Live tab.** The daemon has always streamed
+  `tool_start`, `tool` and `tool_output` frames; the app decoded only the step
+  label, so the Live sheet showed a tool name and a timer with no stdout. Those
+  frames now become the tool row's start, preview and live terminal output.
+
 ## 1.9.2
 
 - **Phone chats get a real name, not their first sentence.** The title role

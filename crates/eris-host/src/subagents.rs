@@ -68,7 +68,7 @@ pub const MAX_PER_TURN: i64 = 8;
 /// Short on purpose. A subagent is a bounded piece of work; a job that needs
 /// longer belongs in the turn that started it, where the operator can see it
 /// streaming and stop it.
-pub const DEADLINE: Duration = Duration::from_secs(120);
+pub const DEADLINE: Duration = Duration::from_secs(600);
 
 /// The longest label the bar shows, in characters.
 pub const MAX_LABEL_CHARS: usize = 60;
@@ -658,15 +658,18 @@ pub struct Report<'a> {
     pub status: &'a str,
 }
 
-/// What a child turn is allowed to do, which is: no tools, and no dispatching.
+/// What a plain child turn is allowed to do: tools, but never dispatching.
 ///
-/// One function, called by the runner and read by a test, so the claim "a
-/// subagent has no tools" is a value rather than a comment.
+/// A child is a real turn, so it gets the same tools its parent has. The one
+/// thing it may not do is call `dispatch_agent`, which is what keeps the fan-out
+/// bounded: a child that could dispatch would be an unbounded tree of provider
+/// calls and processes on the operator's box.
 #[must_use]
 pub fn child_settings() -> TurnSettings {
     TurnSettings {
-        tools: false,
-        max_rounds: 1,
+        tools: true,
+        // Enough rounds to read, run, and then answer with what it found.
+        max_rounds: 8,
         agents: false,
         index: true,
         // A child turn carries one prompt and no history, so its prompt cannot
@@ -705,14 +708,16 @@ pub fn agent_settings() -> TurnSettings {
     }
 }
 
-/// The sandbox a child runs in: the parent's workspace, read-only, always.
+/// The sandbox a child runs in: the parent's workspace, with the reach the parent
+/// already had.
 ///
-/// The mode is not inherited. A child has no tools, so this is never consulted for
-/// anything a tool would do, and that is exactly why it must not be permissive: if
-/// a tool ever did reach a child, the sandbox still refuses to write.
+/// Dispatching is offered only from a `Full` turn, so a child that can use tools
+/// can read and write what its parent can. The confinement that matters is the
+/// missing `dispatch_agent`, not a mode the child never needed while it was
+/// tool-less.
 #[must_use]
 pub fn child_sandbox(workspace: PathBuf) -> crate::tools::Sandbox {
-    crate::tools::Sandbox::new(workspace, crate::tools::SandboxMode::ReadOnly)
+    crate::tools::Sandbox::new(workspace, crate::tools::SandboxMode::Full)
 }
 
 /// The production runner: one tool-less turn through the same loop every other
@@ -736,12 +741,9 @@ fn run_child_turn(request: &RunRequest) -> Result<RunOutput, (String, String)> {
     // invented despite being offered an empty tool list. A standing agent's
     // child runs its calls inside its own sandbox, which is what confines them:
     // the allowance came from an operator's roster row, not from this turn.
-    let mut gate = |_call: &core_domain::ToolCall| match &request.agent {
-        Some(_) => chat::GateDecision::Run,
-        None => chat::GateDecision::Refuse {
-            reason: "a subagent has no tools".to_owned(),
-        },
-    };
+    // A child may run what its tool list offers. `dispatch_agent` is not on that
+    // list (child_settings keeps `agents` false), which is the recursion guard.
+    let mut gate = |_call: &core_domain::ToolCall| chat::GateDecision::Run;
     let mut sink = |_part: chat::StreamPart<'_>| {};
     let mut poll = || chat::TurnSignal::Continue;
     let messages = vec![ChatMessage::text(ChatRole::User, request.prompt.clone())];
@@ -1046,13 +1048,13 @@ pub fn spec() -> ToolSpec {
             "Hand one self-contained task to a subagent and return immediately with its id. \
              The subagent is a separate model turn with this turn's system prompt and persona, \
              its own token budget and its own timeout, running in the background while this \
-             turn carries on. With no agent it has no tools at all: it cannot read or write \
-             files, run commands, browse, or dispatch another subagent, so give it a task that \
-             can be done in one answer from the prompt alone. With agent set to a standing \
-             agent's name it carries that agent's brief and tool allowance, and works inside \
-             its own scope. At most {MAX_RUNNING} run at once and {MAX_PER_TURN} per turn; \
-             beyond that the call is refused and says why. The result appears on the \
-             subagents control in the top bar."
+             turn carries on. It can use the same tools this turn can - read and write files, \
+             run commands, browse, search - so give it real work, not just a prompt to answer. \
+             It cannot dispatch another subagent, and its calls run in this turn's workspace. \
+             With agent set to a standing agent's name it carries that agent's brief and tool \
+             allowance, and works inside its own scope. At most {MAX_RUNNING} run at once and \
+             {MAX_PER_TURN} per turn; beyond that the call is refused and says why. The result \
+             appears on the subagents control in the top bar."
         ),
         parameters: serde_json::json!({
             "type": "object",
@@ -1566,55 +1568,48 @@ mod tests {
         assert_eq!(running_count(&db).expect("running"), 0);
     }
 
-    /// A subagent gets no tools and cannot dispatch another one. All three layers
-    /// are asserted, because each one alone is a single point of failure.
+    /// A subagent gets the parent's tools, but never the dispatcher. Both the
+    /// capability and the recursion guard are asserted: a child that could
+    /// dispatch would be an unbounded tree of provider calls.
     #[test]
-    fn a_child_turn_is_offered_no_tools_and_cannot_dispatch() {
+    fn a_child_turn_has_tools_but_cannot_dispatch() {
         let settings = child_settings();
-        assert!(!settings.tools, "a subagent is never offered a tool");
+        assert!(settings.tools, "a subagent may use tools");
         assert!(
             !settings.agents,
             "a subagent cannot dispatch another subagent"
         );
+        assert!(settings.max_rounds > 1, "a tool-using child needs rounds");
 
-        // The child's sandbox is read-only whatever the parent's mode is, so the
-        // tool list for its own mode carries neither commands nor dispatching.
         let workspace = std::env::temp_dir();
-        for parent in [
-            crate::tools::SandboxMode::Full,
-            crate::tools::SandboxMode::WorkspaceWrite,
-        ] {
-            let child = child_sandbox(workspace.clone());
-            let names: Vec<String> = crate::tools::specs_offering(child.mode(), settings.agents)
-                .into_iter()
-                .map(|spec| spec.name)
-                .collect();
-            assert!(
-                !names.contains(&TOOL.to_owned()),
-                "a {parent:?} turn's child is never offered dispatching: {names:?}"
-            );
-            assert!(
-                !names.contains(&"run_command".to_owned()),
-                "a child is never offered a command: {names:?}"
-            );
-        }
+        let child = child_sandbox(workspace);
+        let names: Vec<String> = crate::tools::specs_offering(child.mode(), settings.agents)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(
+            names.contains(&"run_command".to_owned()),
+            "a child may run a command: {names:?}"
+        );
+        assert!(
+            names.contains(&"read_file".to_owned()),
+            "a child may read a file: {names:?}"
+        );
+        assert!(
+            !names.contains(&TOOL.to_owned()),
+            "a child is never offered dispatching: {names:?}"
+        );
 
-        // And the spec the parent sees says so, so a model cannot hand a
-        // tool-less child work that needs a command.
+        // The parent is told what the child can do, so it hands over real work.
         let spec = spec();
         assert_eq!(spec.name, TOOL);
         assert!(
-            spec.description.contains("no tools"),
-            "the spec states that a subagent has no tools: {}",
+            spec.description.contains("same tools"),
+            "the spec states that a subagent has tools: {}",
             spec.description
         );
         assert!(
-            spec.description.contains("cannot read or write files"),
-            "the limit is named, not implied: {}",
-            spec.description
-        );
-        assert!(
-            spec.description.contains("dispatch another subagent"),
+            spec.description.contains("cannot dispatch another subagent"),
             "no recursion is stated: {}",
             spec.description
         );

@@ -332,10 +332,31 @@ final class ErisHeraldClient: HeraldClientProtocol {
                         requestID: requestID,
                         multiSelect: multi
                     ))
-                case .step(let label, _):
-                    // A step is an activity line, not answer text: it lands in the
-                    // Thought process row the UI already draws.
-                    continuation.yield(.toolActivity(label))
+                case .toolStart(let name):
+                    // The daemon sends both a step frame and a tool_start for the
+                    // same call. The tool_start is the one that carries the id
+                    // the output and completion frames match on, so it owns the
+                    // live row.
+                    continuation.yield(.toolStarted(ToolActivity(
+                        label: name,
+                        toolCallID: name,
+                        name: name
+                    )))
+                case .toolFinished(let name, let output, let isError):
+                    continuation.yield(.toolCompleted(
+                        toolCallID: name,
+                        resultPreview: String(output.prefix(1200)),
+                        isError: isError,
+                        durationMs: nil
+                    ))
+                case .toolOutput(let name, let chunk):
+                    continuation.yield(.toolOutput(toolCallID: name, chunk: chunk))
+                case .step(let label, let stepType):
+                    // A tool_call step duplicates the tool_start above. Other
+                    // steps are activity lines, not answer text.
+                    if stepType != "tool_call" {
+                        continuation.yield(.toolActivity(label))
+                    }
                 case .done(let full, let usage):
                     let content = full.isEmpty ? text : full
                     let final = Message(

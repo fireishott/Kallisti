@@ -270,6 +270,13 @@ enum ErisFrame: Equatable, Sendable {
     case error(ErisError)
     /// The turn was cancelled: `{"reason":"cancel"}`.
     case cancelled(reason: String?)
+    /// A tool call is about to run: `{"name":"run_command","arguments":"..."}`.
+    case toolStart(name: String)
+    /// A tool call finished: `{"name":..,"output":..,"is_error":..}`.
+    case toolFinished(name: String, output: String, isError: Bool)
+    /// Output as a command runs: `{"name":..,"chunk":..}`. Live only; the
+    /// finished frame's preview is what a reconnect sees.
+    case toolOutput(name: String, chunk: String)
     /// One step of the turn: `{"turn_id":..,"step_id":..,"step_type":..,"label":..}`.
     ///
     /// WP-03 writes these on every tool call and thinking step, and this client
@@ -295,7 +302,8 @@ enum ErisFrame: Equatable, Sendable {
     /// Whether this frame ends the stream. Matches `FrameKind::is_terminal`.
     var isTerminal: Bool {
         switch self {
-        case .delta, .reasoning, .step, .artifactDiff, .artifactPage, .attachment, .ask, .approval: return false
+        case .delta, .reasoning, .toolStart, .toolFinished, .toolOutput, .step,
+             .artifactDiff, .artifactPage, .attachment, .ask, .approval: return false
         case .done, .error, .cancelled: return true
         }
     }
@@ -305,7 +313,9 @@ enum ErisFrame: Equatable, Sendable {
         switch self {
         case .delta(let text): return text
         case .done(let text, _): return text
-        case .reasoning, .step, .artifactDiff, .artifactPage, .attachment, .ask, .approval, .error, .cancelled: return nil
+        case .reasoning, .toolStart, .toolFinished, .toolOutput, .step,
+             .artifactDiff, .artifactPage, .attachment, .ask, .approval, .error,
+             .cancelled: return nil
         }
     }
 
@@ -317,6 +327,22 @@ enum ErisFrame: Equatable, Sendable {
     static func decode(event: String?, data: String) throws -> ErisFrame? {
         guard let event else { return nil }
         switch event {
+        case "tool_start":
+            let object = (try? ErisJSON.object(data)) ?? [:]
+            return .toolStart(name: object["name"] as? String ?? "")
+        case "tool":
+            let object = (try? ErisJSON.object(data)) ?? [:]
+            return .toolFinished(
+                name: object["name"] as? String ?? "",
+                output: object["output"] as? String ?? "",
+                isError: object["is_error"] as? Bool ?? false
+            )
+        case "tool_output":
+            let object = (try? ErisJSON.object(data)) ?? [:]
+            return .toolOutput(
+                name: object["name"] as? String ?? "",
+                chunk: object["chunk"] as? String ?? ""
+            )
         case "delta":
             let object = try ErisJSON.object(data)
             return .delta(text: object["text"] as? String ?? "")

@@ -2288,7 +2288,9 @@ final class ChatStore {
                     if self.activeToolCount > 0 { self.activeToolCount -= 1 }
                     progressContinuation?.yield(())
                     if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
-                       let activityIdx = conv.messages[idx].toolActivities.firstIndex(where: { $0.toolCallID == toolCallID }) {
+                       let activityIdx = conv.messages[idx].toolActivities.lastIndex(where: {
+                           $0.toolCallID == toolCallID && $0.isActive
+                       }) ?? conv.messages[idx].toolActivities.lastIndex(where: { $0.toolCallID == toolCallID }) {
                         conv.messages[idx].toolActivities[activityIdx].isActive = false
                         conv.messages[idx].toolActivities[activityIdx].finishedAt = .now
                         conv.messages[idx].toolActivities[activityIdx].resultPreview = resultPreview
@@ -2301,7 +2303,7 @@ final class ChatStore {
                     self.noteStreamingProgress()
                     self.clearStall()
                     if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
-                       let activityIdx = conv.messages[idx].toolActivities.firstIndex(where: { $0.toolCallID == toolCallID }),
+                       let activityIdx = conv.messages[idx].toolActivities.lastIndex(where: { $0.toolCallID == toolCallID }),
                        conv.messages[idx].toolActivities[activityIdx].liveOutput.count < (256 * 1024) {
                         conv.messages[idx].toolActivities[activityIdx].liveOutput += chunk
                         self.conversation = conv
