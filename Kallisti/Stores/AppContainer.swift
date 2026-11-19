@@ -722,9 +722,37 @@ final class AppContainer {
                             return (paired?.isEmpty == false)
                         }
                     )
+                    let speechRouterForMic = ASRRouter(
+                        preference: { [settingsStore] in
+                            SpeechEnginePreference(
+                                rawValue: settingsStore.settings.sttEnginePreference ?? ""
+                            ) ?? .auto
+                        },
+                        daemon: DaemonASRService(
+                            baseURLProvider: {
+                                guard let baseURLString =
+                                    settingsStore.settings.relayConfiguration.activeBaseURLString
+                                    ?? activePairingStore?.pairedRelayConfiguration?.baseURLString
+                                else {
+                                    return nil
+                                }
+                                return URL(string: baseURLString)
+                            },
+                            accessTokenProvider: { [sessionStore] in
+                                await sessionStore.currentAccessToken()
+                            }
+                        ),
+                        mimo: asr,
+                        mimoKeyPresent: { (apiKeyHolder.get() ?? "").isEmpty == false },
+                        daemonAvailable: {
+                            let paired = settingsStore.settings.relayConfiguration.activeBaseURLString
+                                ?? activePairingStore?.pairedRelayConfiguration?.baseURLString
+                            return (paired?.isEmpty == false)
+                        }
+                    )
                     let coordinator = HermesTalkCoordinator(
                         capture: capture,
-                        asr: asr,
+                        asr: speechRouterForMic,
                         tts: speechRouter,
                         turnClient: turnClient,
                         playback: playback,

@@ -588,6 +588,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     var ttsEnabled: Bool
     /// Which engine speaks. Nil means automatic: the daemon first, then Mimo.
     var ttsEnginePreference: String?
+    /// Which engine hears. Nil means automatic: the daemon first, then Mimo.
+    var sttEnginePreference: String?
     var ttsVoice: String
     var ttsAutoSpeak: Bool
     var ttsAutoSpeakDuringStreaming: Bool
@@ -643,6 +645,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         showAllDevices: Bool = true,
         ttsEnabled: Bool = false,
         ttsEnginePreference: String? = nil,
+        sttEnginePreference: String? = nil,
         ttsVoice: String = "Mia",
         ttsAutoSpeak: Bool = false,
         ttsAutoSpeakDuringStreaming: Bool = true,
@@ -685,6 +688,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.showAllDevices = showAllDevices
         self.ttsEnabled = ttsEnabled
         self.ttsEnginePreference = ttsEnginePreference
+        self.sttEnginePreference = sttEnginePreference
         self.ttsVoice = ttsVoice
         self.ttsAutoSpeak = ttsAutoSpeak
         self.ttsAutoSpeakDuringStreaming = ttsAutoSpeakDuringStreaming

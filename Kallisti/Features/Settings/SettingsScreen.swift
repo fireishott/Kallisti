@@ -2062,6 +2062,16 @@ struct SettingsScreen: View {
 
 
 
+    private var sttEngineBinding: Binding<SpeechEnginePreference> {
+        Binding(
+            get: {
+                settingsStore.settings.sttEnginePreference
+                    .flatMap { SpeechEnginePreference(rawValue: $0) } ?? .auto
+            },
+            set: { settingsStore.settings.sttEnginePreference = $0.rawValue }
+        )
+    }
+
     private var ttsEngineBinding: Binding<SpeechEnginePreference> {
         Binding(
             get: {
@@ -2113,6 +2123,30 @@ struct SettingsScreen: View {
 
                         Text(settingsStore.settings.ttsEnginePreference.flatMap { SpeechEnginePreference(rawValue: $0) }?.detail
                              ?? SpeechEnginePreference.auto.detail)
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .padding(.vertical, Design.Spacing.xs)
+
+                    sectionDivider
+
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(Design.Brand.accent)
+                                .frame(width: 20, alignment: .center)
+
+                            Picker("Microphone", selection: sttEngineBinding) {
+                                ForEach(SpeechEnginePreference.allCases, id: \.self) { engine in
+                                    Text(engine.title).tag(engine)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .tint(Design.Colors.secondaryForeground)
+                        }
+
+                        Text("Where your words are turned into text. Automatic uses the daemon's transcription endpoint, which runs whatever model the daemon is configured with.")
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                     }
