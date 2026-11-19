@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first, which uses whatever provider the daemon is configured for, then Mimo
   when its key is the only thing that can speak. Settings -> Voice carries the
   choice.
+- The microphone was Mimo-only. It now sends the clip to the daemon's
+  `POST /v1/transcribe`, which forwards it to the transcription model the daemon
+  is configured with. Settings -> Voice carries a Microphone choice beside the
+  speaker: Automatic, This daemon, Mimo cloud.
+- A paired phone hands its wrist the daemon origin and token pair over
+  WatchConnectivity, so the watch opens on the conversation instead of a
+  heartbeat waiting to be told what to do.
 
 ## [0.2.3] - 2026-08-11
 
