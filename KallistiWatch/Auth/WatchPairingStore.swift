@@ -76,24 +76,19 @@ struct KeychainSecureStore: SecureStore {
         return value
     }
 
-#if DEBUG
-    /// A simulator build signed ad hoc carries no keychain entitlement, so every
-    /// call answers `errSecMissingEntitlement` and the wrist could never hold a
-    /// pairing where a person is actually trying it. Debug builds fall back to
-    /// the bundle's own defaults; a Release build has the entitlement and never
-    /// takes this path.
-    private static let debugFallbackKey = "watch.pairing.debug-fallback"
-#endif
+    /// A build whose profile does not grant the shared access group answers
+    /// `errSecMissingEntitlement` for every grouped call, and a wrist that cannot
+    /// store a pairing shows "no transport" forever. The fallback is an
+    /// ungrouped keychain item, which is per-app and still protected by the
+    /// device passcode; it exists in every build because the entitlement can be
+    /// missing from a distribution profile too.
+    private static let ungroupedFallbackKey = "watch.pairing.ungrouped"
 
     func read() throws -> Data? {
         do {
             return try readKeychain()
         } catch WatchAuthError.keychain(errSecMissingEntitlement) {
-            #if DEBUG
-            return UserDefaults.standard.data(forKey: Self.debugFallbackKey)
-            #else
-            throw WatchAuthError.keychain(errSecMissingEntitlement)
-            #endif
+            return UserDefaults.standard.data(forKey: Self.ungroupedFallbackKey)
         }
     }
 
@@ -112,11 +107,7 @@ struct KeychainSecureStore: SecureStore {
         do {
             try writeKeychain(data)
         } catch WatchAuthError.keychain(errSecMissingEntitlement) {
-            #if DEBUG
-            UserDefaults.standard.set(data, forKey: Self.debugFallbackKey)
-            #else
-            throw WatchAuthError.keychain(errSecMissingEntitlement)
-            #endif
+            UserDefaults.standard.set(data, forKey: Self.ungroupedFallbackKey)
         }
     }
 
@@ -137,9 +128,7 @@ struct KeychainSecureStore: SecureStore {
     }
 
     func clear() throws {
-        #if DEBUG
-        UserDefaults.standard.removeObject(forKey: Self.debugFallbackKey)
-        #endif
+        UserDefaults.standard.removeObject(forKey: Self.ungroupedFallbackKey)
         _ = try withFallback { base -> (OSStatus, Bool) in
             let status = SecItemDelete(base as CFDictionary)
             return (status, status == errSecSuccess)

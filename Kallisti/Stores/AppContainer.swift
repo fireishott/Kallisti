@@ -626,8 +626,18 @@ final class AppContainer {
                         return (ready: false, blockedReason: "No daemon configured.")
                     }
                     let token = await sessionStore.currentAccessToken()
-                    guard let apiKey = apiKeyHolder.get(), !apiKey.isEmpty else {
-                        return (ready: false, blockedReason: "Mimo API key required — add it in Settings → Voice")
+                    // Talk used to demand a Mimo key before it would even ask the
+                    // daemon. The daemon has its own speech now, so the key is
+                    // only required when the person picked the Mimo engine.
+                    let speechEngine = SpeechEnginePreference(
+                        rawValue: settingsStore.settings.ttsEnginePreference ?? ""
+                    ) ?? .auto
+                    let apiKey = apiKeyHolder.get() ?? ""
+                    if speechEngine == .mimo, apiKey.isEmpty {
+                        return (
+                            ready: false,
+                            blockedReason: "Mimo cloud is selected for speech but no key is set — add one in Settings → Voice, or choose Automatic."
+                        )
                     }
                     guard let url = URL(string: base)?.appendingPathComponent("talk/readiness") else {
                         return (ready: false, blockedReason: "Invalid daemon address.")

@@ -173,8 +173,14 @@ extension PhoneWatchConnectivityCoordinator: WCSessionDelegate {
         // Read what is needed before the hop: the session itself is not
         // `Sendable`, and nothing after this line needs it.
         let reachable = session.isReachable
+        let state = activationState
         Task { @MainActor in
             self.isReachable = reachable
+            if state == .activated {
+                // Activation is what `updateApplicationContext` needs; the push
+                // at attach time can find the session still activating.
+                await self.pushPairing()
+            }
         }
     }
 
