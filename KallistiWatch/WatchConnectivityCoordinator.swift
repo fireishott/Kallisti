@@ -25,90 +25,6 @@ import Foundation
 import WatchConnectivity
 import Observation
 
-/// Wire contract for a Watch-originated action that the iOS side will execute.
-enum WatchAction: String, Sendable {
-    case reply
-    case stop
-    case read
-    case nudge
-}
-
-/// Encode/decode WatchConnectivity payload keys. Keep in sync with the iOS
-/// side coordinator and the shared `NotificationPayloadKey` set.
-enum WatchPayloadKey: String, Sendable {
-    case action = "action"
-    case conversationId = "conversationId"
-    case canonicalMessageId = "canonicalMessageId"
-    case jobId = "jobId"
-    case clientMessageId = "clientMessageId"
-    case idempotencyId = "idempotencyId"
-    case replyText = "replyText"
-    case contractVersion = "contractVersion"
-    case acknowledgementStatus = "ackStatus"
-    case errorMessage = "error"
-}
-
-enum WatchAckStatus: String, Sendable {
-    case accepted
-    case duplicate
-    case rejected
-    case unavailable
-}
-
-/// One Watch-originated message envelope.
-struct WatchActionEnvelope: Sendable, Equatable {
-    let action: WatchAction
-    let idempotencyId: UUID
-    let conversationId: UUID?
-    let canonicalMessageId: String?
-    let jobId: UUID?
-    let clientMessageId: UUID?
-    let replyText: String?
-    let sentAt: Date
-
-    func toWCDictionary() -> [String: Any] {
-        var dict: [String: Any] = [
-            WatchPayloadKey.action.rawValue: action.rawValue,
-            WatchPayloadKey.idempotencyId.rawValue: idempotencyId.uuidString,
-            WatchPayloadKey.contractVersion.rawValue: NotificationContractVersion.current,
-            "ts": sentAt.timeIntervalSince1970
-        ]
-        if let v = conversationId { dict[WatchPayloadKey.conversationId.rawValue] = v.uuidString }
-        if let v = canonicalMessageId { dict[WatchPayloadKey.canonicalMessageId.rawValue] = v }
-        if let v = jobId { dict[WatchPayloadKey.jobId.rawValue] = v.uuidString }
-        if let v = clientMessageId { dict[WatchPayloadKey.clientMessageId.rawValue] = v.uuidString }
-        if let v = replyText { dict[WatchPayloadKey.replyText.rawValue] = v }
-        return dict
-    }
-
-    static func fromWCDictionary(_ dict: [String: Any]) -> WatchActionEnvelope? {
-        guard let actionString = dict[WatchPayloadKey.action.rawValue] as? String,
-              let action = WatchAction(rawValue: actionString),
-              let idString = dict[WatchPayloadKey.idempotencyId.rawValue] as? String,
-              let idempotencyId = UUID(uuidString: idString) else {
-            return nil
-        }
-        let conversationId = (dict[WatchPayloadKey.conversationId.rawValue] as? String)
-            .flatMap { UUID(uuidString: $0) }
-        let canonicalMessageId = dict[WatchPayloadKey.canonicalMessageId.rawValue] as? String
-        let jobId = (dict[WatchPayloadKey.jobId.rawValue] as? String)
-            .flatMap { UUID(uuidString: $0) }
-        let clientMessageId = (dict[WatchPayloadKey.clientMessageId.rawValue] as? String)
-            .flatMap { UUID(uuidString: $0) }
-        let replyText = dict[WatchPayloadKey.replyText.rawValue] as? String
-        let ts = (dict["ts"] as? TimeInterval) ?? Date().timeIntervalSince1970
-        return WatchActionEnvelope(
-            action: action,
-            idempotencyId: idempotencyId,
-            conversationId: conversationId,
-            canonicalMessageId: canonicalMessageId,
-            jobId: jobId,
-            clientMessageId: clientMessageId,
-            replyText: replyText,
-            sentAt: Date(timeIntervalSince1970: ts)
-        )
-    }
-}
 
 /// WatchConnectivity session coordinator. Activate on Watch launch. UI
 /// observers watch `pendingActions` for queued/unacknowledged state and
@@ -154,6 +70,27 @@ final class WatchConnectivityCoordinator: NSObject {
         }
     }
 
+    /// One acknowledgement, as plain values rather than a dictionary.
+    ///
+    /// The delegate callbacks run off the main actor and a `[String: Any]` is
+    /// not `Sendable`, so the three strings are read where the message arrives
+    /// and only values cross to this side.
+    private func handleAcknowledgement(
+        idString: String?,
+        status: String?,
+        errorMessage: String?
+    ) {
+        guard let idString, let id = UUID(uuidString: idString) else {
+            return
+        }
+        let status = status.flatMap(WatchAckStatus.init(rawValue:)) ?? .accepted
+        // Once acknowledged, drop from pending - exactly once per id.
+        pendingActions[id] = nil
+        if status == .rejected {
+            lastError = errorMessage ?? "iOS rejected the action."
+        }
+    }
+
     private func handleReply(_ reply: [String: Any]) {
         guard let idString = reply[WatchPayloadKey.idempotencyId.rawValue] as? String,
               let id = UUID(uuidString: idString) else {
@@ -184,33 +121,79 @@ final class WatchConnectivityCoordinator: NSObject {
     }
 }
 
+/// A reply closure outlives the delegate callback that was handed it, and
+/// `[String: Any]` is not `Sendable`. The box is asserted rather than proved:
+/// the closure is called once, on the main actor, before the box falls out of
+/// scope.
+private final class WatchReplyBox: @unchecked Sendable {
+    private let handler: ([String: Any]) -> Void
+
+    init(_ handler: @escaping ([String: Any]) -> Void) {
+        self.handler = handler
+    }
+
+    func call(_ payload: [String: Any]) {
+        handler(payload)
+    }
+}
+
 extension WatchConnectivityCoordinator: WCSessionDelegate {
-    nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
+    nonisolated func session(
+        _ session: WCSession,
+        activationDidCompleteWith activationState: WCSessionActivationState,
+        error: Error?
+    ) {
+        // Read what is needed before the hop: the session is not `Sendable`.
+        let reachable = session.isReachable
+        let failure = error?.localizedDescription
         Task { @MainActor in
-            self.isReachable = session.isReachable
-            if let error {
-                self.lastError = error.localizedDescription
+            self.isReachable = reachable
+            if let failure {
+                self.lastError = failure
             }
         }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        // iOS may send us an acknowledgement cold (e.g. reply delivered while
-        // the Watch was backgrounded). Treat identically to a reply handler.
-        Task { @MainActor in self.handleReply(message) }
+        // The phone may send an acknowledgement cold (a reply delivered while
+        // the wrist was backgrounded). Read the three values it needs here.
+        let id = message[WatchPayloadKey.idempotencyId.rawValue] as? String
+        let status = message[WatchPayloadKey.acknowledgementStatus.rawValue] as? String
+        let failure = message[WatchPayloadKey.errorMessage.rawValue] as? String
+        Task { @MainActor in
+            self.handleAcknowledgement(idString: id, status: status, errorMessage: failure)
+        }
     }
 
-    nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
-        Task { @MainActor in self.handleReply(message) }
-        replyHandler([:])
+    nonisolated func session(
+        _ session: WCSession,
+        didReceiveMessage message: [String: Any],
+        replyHandler: @escaping ([String: Any]) -> Void
+    ) {
+        let id = message[WatchPayloadKey.idempotencyId.rawValue] as? String
+        let status = message[WatchPayloadKey.acknowledgementStatus.rawValue] as? String
+        let failure = message[WatchPayloadKey.errorMessage.rawValue] as? String
+        let reply = WatchReplyBox(replyHandler)
+        Task { @MainActor in
+            self.handleAcknowledgement(idString: id, status: status, errorMessage: failure)
+            reply.call([:])
+        }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
-        // Queued transferUserInfo delivery from iOS — handle the same way.
-        Task { @MainActor in self.handleReply(userInfo) }
+        // Queued `transferUserInfo` delivery from the phone: the same path.
+        let id = userInfo[WatchPayloadKey.idempotencyId.rawValue] as? String
+        let status = userInfo[WatchPayloadKey.acknowledgementStatus.rawValue] as? String
+        let failure = userInfo[WatchPayloadKey.errorMessage.rawValue] as? String
+        Task { @MainActor in
+            self.handleAcknowledgement(idString: id, status: status, errorMessage: failure)
+        }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
-        Task { @MainActor in self.isReachable = session.isReachable }
+        let reachable = session.isReachable
+        Task { @MainActor in
+            self.isReachable = reachable
+        }
     }
 }

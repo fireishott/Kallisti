@@ -19,6 +19,19 @@ import Foundation
 final class WatchActionBridge: WatchActionHandler {
     private let container: AppContainer
 
+    /// The one bridge this process keeps alive.
+    ///
+    /// The coordinator holds its handler weakly, so a bridge nobody retains is
+    /// deallocated the moment launch finishes and every wrist action would then
+    /// answer `unavailable` for the life of the install.
+    private static var retained: WatchActionBridge?
+
+    /// Build the bridge once, at launch, and keep it.
+    static func install(container: AppContainer) {
+        guard retained == nil else { return }
+        retained = WatchActionBridge(container: container)
+    }
+
     init(container: AppContainer) {
         self.container = container
         PhoneWatchConnectivityCoordinator.shared.attach(handler: self)
