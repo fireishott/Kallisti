@@ -436,6 +436,7 @@
 		DB179EDDCEF43D734B9502B3 /* InboxItemType.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BA4F1E18AC65C525C5B6FB9 /* InboxItemType.swift */; };
 		DB5DEF9A886E8E0FE05E561B /* InboxItemRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C60CB983E7C6F07D78CE765 /* InboxItemRow.swift */; };
 		DCD105C87A38A27217AA622F /* ErisApprovalTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5386B87A928E0469534CA2D4 /* ErisApprovalTypes.swift */; };
+		DD625C6CD7D12AEB634C4AFF /* KallistiWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 8D99E044165CDC59EF9FE077 /* KallistiWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		DD9050776760023CA8F9669E /* MockMediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61566DB0C7B6EE69901264F3 /* MockMediaService.swift */; };
 		DDAA3483F908482D7FBE572E /* SessionListStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8090B281AA542D356FFA252 /* SessionListStore.swift */; };
 		DDD60DB72A312904552541CA /* MacTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2681A4CC09E2BD63EC49FE0A /* MacTerminalView.swift */; };
@@ -560,6 +561,13 @@
 			remoteGlobalIDString = CC1169D5D7DD30E9D5D1AA20;
 			remoteInfo = KallistiSupport;
 		};
+		7A6B0C5A7FFDE4C3A6AB667A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 048690861F90F2E563EE2B0E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EBB658CFDD0BCAA031750D83;
+			remoteInfo = KallistiWatch;
+		};
 		844EB62B0C39B9A927C4D0C0 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 048690861F90F2E563EE2B0E /* Project object */;
@@ -620,6 +628,17 @@
 				DF7A928D752ED02D469BDAB5 /* KallistiIntents.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E62E54849A8120982EB864CA /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				DD625C6CD7D12AEB634C4AFF /* KallistiWatch.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -2311,6 +2330,7 @@
 				3A0222B7F39B38CACC4D1361 /* Resources */,
 				2E1F740D8EFBF8A81637B83D /* Frameworks */,
 				91D7EA25200D07FB1F4631FB /* Embed Foundation Extensions */,
+				E62E54849A8120982EB864CA /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
@@ -2319,6 +2339,7 @@
 				6F5631E6EDC05420DFC4BC53 /* PBXTargetDependency */,
 				A78F16BA53B153EFA40F3B7C /* PBXTargetDependency */,
 				2D15E7A10A73A9B2F9D8A376 /* PBXTargetDependency */,
+				5682AD341F8740373D8FAB84 /* PBXTargetDependency */,
 			);
 			name = Kallisti;
 			packageProductDependencies = (
@@ -3096,6 +3117,11 @@
 			target = CC1169D5D7DD30E9D5D1AA20 /* KallistiSupport */;
 			targetProxy = 68F38DD861690CAA7AE7DD0E /* PBXContainerItemProxy */;
 		};
+		5682AD341F8740373D8FAB84 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EBB658CFDD0BCAA031750D83 /* KallistiWatch */;
+			targetProxy = 7A6B0C5A7FFDE4C3A6AB667A /* PBXContainerItemProxy */;
+		};
 		59A319186E73B57FC999C142 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 1B9305B74595D85AE7867B76 /* KallistiWatchWidgets */;
@@ -3160,7 +3186,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3206,7 +3232,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3234,7 +3260,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
 				MARKETING_VERSION = 1.6.1;
@@ -3255,7 +3281,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -3285,7 +3311,7 @@
 				CODE_SIGN_ENTITLEMENTS = Kallisti/Kallisti.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Kallisti/Resources/Info.plist;
@@ -3335,7 +3361,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3427,7 +3453,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiWatchWidgets/KallistiWatchWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				INFOPLIST_FILE = KallistiWatchWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -3473,7 +3499,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3587,7 +3613,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3634,7 +3660,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3702,7 +3728,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
 				MARKETING_VERSION = 1.6.1;
@@ -3722,7 +3748,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiWatchWidgets/KallistiWatchWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				INFOPLIST_FILE = KallistiWatchWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -3819,7 +3845,7 @@
 				CODE_SIGN_ENTITLEMENTS = Kallisti/Kallisti.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Kallisti/Resources/Info.plist;
@@ -3847,7 +3873,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 219;
+				CURRENT_PROJECT_VERSION = 220;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
