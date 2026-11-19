@@ -586,6 +586,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     var chatTextColorHex: String?
     var showAllDevices: Bool
     var ttsEnabled: Bool
+    /// Which engine speaks. Nil means automatic: the daemon first, then Mimo.
+    var ttsEnginePreference: String?
     var ttsVoice: String
     var ttsAutoSpeak: Bool
     var ttsAutoSpeakDuringStreaming: Bool
@@ -640,6 +642,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         chatTextColorHex: String? = nil,
         showAllDevices: Bool = true,
         ttsEnabled: Bool = false,
+        ttsEnginePreference: String? = nil,
         ttsVoice: String = "Mia",
         ttsAutoSpeak: Bool = false,
         ttsAutoSpeakDuringStreaming: Bool = true,
@@ -681,6 +684,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.chatTextColorHex = chatTextColorHex
         self.showAllDevices = showAllDevices
         self.ttsEnabled = ttsEnabled
+        self.ttsEnginePreference = ttsEnginePreference
         self.ttsVoice = ttsVoice
         self.ttsAutoSpeak = ttsAutoSpeak
         self.ttsAutoSpeakDuringStreaming = ttsAutoSpeakDuringStreaming

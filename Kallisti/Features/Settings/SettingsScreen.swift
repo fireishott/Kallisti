@@ -2062,6 +2062,16 @@ struct SettingsScreen: View {
 
 
 
+    private var ttsEngineBinding: Binding<SpeechEnginePreference> {
+        Binding(
+            get: {
+                settingsStore.settings.ttsEnginePreference
+                    .flatMap(SpeechEnginePreference.init(rawValue:)) ?? .auto
+            },
+            set: { settingsStore.settings.ttsEnginePreference = $0.rawValue }
+        )
+    }
+
     private var reasoningEffortBinding: Binding<ReasoningEffort> {
         Binding(
             get: { settingsStore.settings.reasoningEffort },
@@ -2073,7 +2083,7 @@ struct SettingsScreen: View {
     // MARK: - Voice (Mimo TTS)
 
     private var voiceSection: some View {
-        SettingsSectionView(title: "Voice (Mimo TTS)") {
+        SettingsSectionView(title: "Voice") {
             VStack(spacing: 0) {
                 settingsToggle(
                     icon: "speaker.wave.2.fill",
@@ -2083,6 +2093,31 @@ struct SettingsScreen: View {
                 )
 
                 if settingsStore.settings.ttsEnabled {
+                    sectionDivider
+
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "waveform.badge.mic")
+                                .font(.system(size: 14))
+                                .foregroundStyle(Design.Brand.accent)
+                                .frame(width: 20, alignment: .center)
+
+                            Picker("Engine", selection: ttsEngineBinding) {
+                                ForEach(SpeechEnginePreference.allCases, id: \.self) { engine in
+                                    Text(engine.title).tag(engine)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .tint(Design.Colors.secondaryForeground)
+                        }
+
+                        Text(settingsStore.settings.ttsEnginePreference.flatMap(SpeechEnginePreference.init(rawValue:))?.detail
+                             ?? SpeechEnginePreference.auto.detail)
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .padding(.vertical, Design.Spacing.xs)
+
                     sectionDivider
 
                     VStack(alignment: .leading, spacing: Design.Spacing.xs) {

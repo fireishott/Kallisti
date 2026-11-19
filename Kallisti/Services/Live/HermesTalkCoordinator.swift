@@ -37,7 +37,7 @@ final class HermesTalkCoordinator {
 
     private let capture: TalkAudioCapture
     private let asr: any SpeechRecognizing
-    private let tts: MimoTTSService
+    private let tts: any SpeechSynthesizing
     private let turnClient: TalkTurnClient
     private let playback: PCMPlaybackQueue
     let conversationId: UUID
@@ -66,7 +66,7 @@ final class HermesTalkCoordinator {
     init(
         capture: TalkAudioCapture,
         asr: any SpeechRecognizing,
-        tts: MimoTTSService,
+        tts: any SpeechSynthesizing,
         turnClient: TalkTurnClient,
         playback: PCMPlaybackQueue,
         conversationId: UUID

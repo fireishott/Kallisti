@@ -692,10 +692,40 @@ final class AppContainer {
                     let playback = PCMPlaybackQueue()
                     let turnClient = TalkTurnClient(heraldClient: heraldClient)
                     let conversationId = UUID()
+                    // The engine is chosen per answer, not at construction: the
+                    // daemon's own speech first, Mimo only when its key is set.
+                    let speechRouter = SpeechRouter(
+                        preference: { [settingsStore] in
+                            SpeechEnginePreference(
+                                rawValue: settingsStore.settings.ttsEnginePreference ?? ""
+                            ) ?? .auto
+                        },
+                        daemon: DaemonTTSService(
+                            baseURLProvider: {
+                                guard let baseURLString =
+                                    settingsStore.settings.relayConfiguration.activeBaseURLString
+                                    ?? activePairingStore?.pairedRelayConfiguration?.baseURLString
+                                else {
+                                    return nil
+                                }
+                                return URL(string: baseURLString)
+                            },
+                            accessTokenProvider: { [sessionStore] in
+                                await sessionStore.currentAccessToken()
+                            }
+                        ),
+                        mimo: mimoTTSService,
+                        mimoKeyPresent: { apiKeyHolder.get().isEmpty == false },
+                        daemonAvailable: {
+                            let paired = settingsStore.settings.relayConfiguration.activeBaseURLString
+                                ?? activePairingStore?.pairedRelayConfiguration?.baseURLString
+                            return (paired?.isEmpty == false)
+                        }
+                    )
                     let coordinator = HermesTalkCoordinator(
                         capture: capture,
                         asr: asr,
-                        tts: mimoTTSService,
+                        tts: speechRouter,
                         turnClient: turnClient,
                         playback: playback,
                         conversationId: conversationId
