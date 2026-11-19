@@ -1054,8 +1054,16 @@ final class ErisHeraldClient: HeraldClientProtocol {
         )
     }
 
+    /// The daemon's own continuation prompt. It is a machine instruction, not
+    /// something the operator typed, so the transcript shows a quiet system
+    /// line instead of a wall of text in a user bubble.
+    static let autoContinuationPrefix =
+        "Continue this job. The previous turn ended at its tool-round cap"
+
     static func message(from m: ErisConversationMessage) -> Message {
-        Message(
+        let isAutoContinuation = m.isUser
+            && m.body.hasPrefix(autoContinuationPrefix)
+        return Message(
             id: stableUUID(from: m.id),
             // The two handles the daemon stamps on the row. Without them a
             // refreshed transcript could only be matched to the bubble on screen
@@ -1063,8 +1071,10 @@ final class ErisHeraldClient: HeraldClientProtocol {
             // newline came back as a second copy of itself: one row in the
             // database, two bubbles on the phone.
             clientMessageID: m.clientMessageID.flatMap { UUID(uuidString: $0) },
-            sender: m.isUser ? .user : .herald,
-            content: m.body,
+            sender: isAutoContinuation ? .system : (m.isUser ? .user : .herald),
+            content: isAutoContinuation
+                ? "Continued automatically after the tool-round limit."
+                : m.body,
             timestamp: ErisTimestamp.date(from: m.createdAt) ?? .now,
             jobID: m.jobID.flatMap { $0.isEmpty ? nil : Self.stableUUID(from: $0) },
             status: m.isFailed ? .failed : .sent,
