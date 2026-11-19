@@ -76,8 +76,7 @@ final class WatchConnectivityCoordinator: NSObject {
     /// not `Sendable`, so the three strings are read where the message arrives
     /// and only values cross to this side.
     /// Store a handoff from the phone and open the conversation.
-    func acceptPairing(_ context: [String: Any]) {
-        guard let handoff = WatchPairingHandoff(context: context) else { return }
+    func acceptPairing(_ handoff: WatchPairingHandoff) {
         let credentials = handoff.credentials(deviceID: "phone")
         do {
             try WatchPairingStore().save(credentials)
@@ -170,9 +169,10 @@ extension WatchConnectivityCoordinator: WCSessionDelegate {
         // The phone hands over its own pairing: origin, access token, refresh
         // token. An application context is redelivered if the wrist was asleep,
         // so a watch that missed it still pairs on its next run.
-        let context = applicationContext
+        // Decode on this side: the dictionary is not Sendable, the handoff is.
+        guard let handoff = WatchPairingHandoff(context: applicationContext) else { return }
         Task { @MainActor in
-            self.acceptPairing(context)
+            self.acceptPairing(handoff)
         }
     }
 
