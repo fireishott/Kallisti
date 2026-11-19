@@ -412,6 +412,12 @@ final class SessionListStore {
 
         do {
             try await heraldClient.deleteSession(id: session.id)
+            // The row is gone from the daemon. If it was the chat on screen,
+            // leave the operator on a fresh one instead of a thread whose next
+            // send would answer conversation_not_found.
+            if chatStore.conversation?.id == session.id {
+                _ = chatStore.installLocalConversation(id: UUID())
+            }
         } catch {
             // Relay deletion failed, but local state is already updated.
             // The session won't reappear unless the relay re-lists it.
@@ -462,7 +468,11 @@ final class SessionListStore {
 
     func renameSession(_ session: SessionSummary, newTitle: String) async {
         do {
-            let updated = try await heraldClient.renameSession(id: session.id, title: newTitle)
+            let renamed = try await heraldClient.renameSession(id: session.id, title: newTitle)
+            // Only the title moved. Replacing the row with the client's thin
+            // reply would reset its preview, activity time and pin state.
+            var updated = session
+            updated.title = renamed.title
             if let idx = pinnedSessions.firstIndex(where: { $0.id == session.id }) {
                 pinnedSessions[idx] = updated
             }

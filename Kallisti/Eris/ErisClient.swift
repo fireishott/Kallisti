@@ -32,6 +32,10 @@ enum ErisRoute: Equatable, Sendable {
     case createConversation
     /// `GET /v1/conversations/{id}` - one conversation and its transcript.
     case conversation(conversationID: String)
+    /// `PATCH /v1/conversations/{id}` - rename one conversation.
+    case renameConversation(conversationID: String)
+    /// `DELETE /v1/conversations/{id}` - delete one conversation and its rows.
+    case deleteConversation(conversationID: String)
     /// `GET /v1/attachments/{id}` - the bytes of one file a turn attached.
     case attachment(attachmentID: String)
     /// `POST /v1/attachments` - take the bytes, hand back an id.
@@ -119,7 +123,9 @@ enum ErisRoute: Equatable, Sendable {
             return "/v1/sessions/\(Self.segment(sessionID))"
         case .conversations, .createConversation:
             return "/v1/conversations"
-        case .conversation(let conversationID):
+        case .conversation(let conversationID),
+             .renameConversation(let conversationID),
+             .deleteConversation(let conversationID):
             return "/v1/conversations/\(Self.segment(conversationID))"
         case .attachment(let attachmentID):
             return "/v1/attachments/\(Self.segment(attachmentID))"
@@ -195,9 +201,9 @@ enum ErisRoute: Equatable, Sendable {
              .decideApproval, .sensorLocation, .sensorHealth, .inboxAction, .createNote,
              .setModel, .setAux:
             return "POST"
-        case .updateNote, .updateCron:
+        case .updateNote, .updateCron, .renameConversation:
             return "PATCH"
-        case .deleteNote, .deleteCron:
+        case .deleteNote, .deleteCron, .deleteConversation:
             return "DELETE"
         }
     }
@@ -692,6 +698,20 @@ actor ErisClient {
             headers: headers
         )
         return try decode(ErisConversationDetail.self, from: data)
+    }
+
+    /// `PATCH /v1/conversations/{id}` - rename one conversation.
+    func renameConversation(id: String, title: String) async throws -> ErisRenamedConversation {
+        let data = try await send(
+            route: .renameConversation(conversationID: id),
+            form: ["title": title]
+        )
+        return try decode(ErisRenamedConversation.self, from: data)
+    }
+
+    /// `DELETE /v1/conversations/{id}` - delete the conversation and its rows.
+    func deleteConversation(id: String) async throws {
+        _ = try await send(route: .deleteConversation(conversationID: id), form: nil)
     }
 
     /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.

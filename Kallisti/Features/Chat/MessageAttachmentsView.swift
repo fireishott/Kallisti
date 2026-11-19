@@ -820,6 +820,9 @@ struct ErisPDFEditor: View {
     @State private var failure: String?
     @State private var shareURL: URL?
     @State private var filling = false
+    /// Reading a page in a form sheet wastes the screen. This opens the same
+    /// document edge to edge; the sheet (and its Save/share) stays underneath.
+    @State private var isFullscreen = false
 
     /// How many form fields the document carries, so the toolbar can say the form
     /// is fillable instead of leaving the operator to discover it.
@@ -853,6 +856,13 @@ struct ErisPDFEditor: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        isFullscreen = true
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .disabled(document == nil)
+                    .accessibilityLabel("Full screen")
                     if filledFieldCount > 0 {
                         Label("\(filledFieldCount) fields", systemImage: "square.and.pencil")
                             .labelStyle(.iconOnly)
@@ -867,6 +877,11 @@ struct ErisPDFEditor: View {
                 }
             }
             .task { await load() }
+            .fullScreenCover(isPresented: $isFullscreen) {
+                if let document {
+                    ErisPDFFullscreen(document: document, fileName: fileName)
+                }
+            }
             .sheet(item: Binding(
                 get: { shareURL.map(IdentifiableURL.init) },
                 set: { _ in shareURL = nil }
@@ -911,6 +926,29 @@ struct ErisPDFEditor: View {
 }
 
 /// PDFKit's view, with form fields live and pages fitted.
+/// The PDF at full screen, for reading. The form editor stays in the sheet
+/// underneath and owns Save/share; this is the page at a useful size.
+private struct ErisPDFFullscreen: View {
+    let document: PDFDocument
+    let fileName: String
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            PDFKitView(document: document)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle(fileName)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+        }
+    }
+}
+
 struct PDFKitView: UIViewRepresentable {
     let document: PDFDocument
 

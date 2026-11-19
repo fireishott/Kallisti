@@ -611,8 +611,13 @@ final class ErisHeraldClient: HeraldClientProtocol {
     }
 
     func deleteSession(id: UUID) async throws {
-        // Eris has no delete-conversation route (only clear). Fail typed.
-        throw ErisHeraldError.notBackedYet("deleteSession")
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        guard let conversationID = await serverConversationID(for: id) else {
+            throw ErisHeraldError.notConnected
+        }
+        try await client.deleteConversation(id: conversationID)
+        conversationIDByLocalID.removeValue(forKey: id)
+        localIDByConversationID.removeValue(forKey: conversationID)
     }
 
     func archiveSession(id: UUID) async throws {
@@ -624,7 +629,18 @@ final class ErisHeraldClient: HeraldClientProtocol {
     }
 
     func renameSession(id: UUID, title: String) async throws -> SessionSummary {
-        throw ErisHeraldError.notBackedYet("renameSession")
+        guard let client = await pairedClient() else { throw ErisHeraldError.notConnected }
+        guard let conversationID = await serverConversationID(for: id) else {
+            throw ErisHeraldError.notConnected
+        }
+        let renamed = try await client.renameConversation(id: conversationID, title: title)
+        conversationIDByLocalID[id] = conversationID
+        localIDByConversationID[conversationID] = id
+        return SessionSummary(
+            id: id,
+            title: renamed.title,
+            sessionKey: conversationID
+        )
     }
 
     func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
@@ -935,6 +951,22 @@ final class ErisHeraldClient: HeraldClientProtocol {
     private func currentConversationID() -> String? {
         guard let currentConversation else { return nil }
         return conversationIDByLocalID[currentConversation.id]
+    }
+
+    /// The daemon's id for a chat the rail shows, even when this process has
+    /// never opened it. A session row's local id is derived from the daemon id,
+    /// so the list can answer without a binding; this binds it once found.
+    private func serverConversationID(for localID: UUID) async -> String? {
+        if let bound = conversationIDByLocalID[localID] { return bound }
+        guard let client = await pairedClient(),
+              let page = try? await client.conversations(),
+              let match = page.conversations.first(where: {
+                  Self.stableUUID(from: $0.id) == localID
+              })
+        else { return nil }
+        conversationIDByLocalID[localID] = match.id
+        localIDByConversationID[match.id] = localID
+        return match.id
     }
 
     private func localID(forConversation conversationID: String) -> UUID {

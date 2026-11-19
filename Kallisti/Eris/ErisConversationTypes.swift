@@ -91,6 +91,12 @@ struct ErisAttachmentRef: Equatable, Sendable, Decodable, Identifiable {
     }
 }
 
+/// The `PATCH /v1/conversations/{id}` body: the id and the title it now holds.
+struct ErisRenamedConversation: Decodable {
+    let id: String
+    let title: String
+}
+
 /// The `GET /v1/conversations` body.
 struct ErisConversationPage: Equatable, Sendable, Decodable {
     /// How many rows this page carries.
