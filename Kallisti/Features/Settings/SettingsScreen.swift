@@ -2066,7 +2066,7 @@ struct SettingsScreen: View {
         Binding(
             get: {
                 settingsStore.settings.ttsEnginePreference
-                    .flatMap(SpeechEnginePreference.init(rawValue:)) ?? .auto
+                    .flatMap { SpeechEnginePreference(rawValue: $0) } ?? .auto
             },
             set: { settingsStore.settings.ttsEnginePreference = $0.rawValue }
         )
@@ -2111,7 +2111,7 @@ struct SettingsScreen: View {
                             .tint(Design.Colors.secondaryForeground)
                         }
 
-                        Text(settingsStore.settings.ttsEnginePreference.flatMap(SpeechEnginePreference.init(rawValue:))?.detail
+                        Text(settingsStore.settings.ttsEnginePreference.flatMap { SpeechEnginePreference(rawValue: $0) }?.detail
                              ?? SpeechEnginePreference.auto.detail)
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
