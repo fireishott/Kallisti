@@ -123,6 +123,15 @@ final class ChatStore {
     /// probe + refresh loop keeps the thread live until the server reports idle.
     private var serverTurnPollTask: Task<Void, Never>?
     private var streamingTask: Task<Void, Never>?
+    /// The feed resumed for a turn this device already accepted, when the app
+    /// comes back to a stream whose socket iOS reaped. Held apart from
+    /// `streamingTask` on purpose: the send path clears that handle when its
+    /// own attempt unwinds, and a reattach that lost its handle could not be
+    /// stopped without bumping the attempt generation.
+    private var reattachTask: Task<Void, Never>?
+    /// Identity of the current reattach task, so a task that finishes late
+    /// cannot clear a newer one's handle.
+    private var reattachToken: UUID?
     /// Build 31 (fix): monotonically-incrementing generation token.  Every new
     /// streaming attempt captures this value; every callback in the consumer task
     /// checks it before mutating global state.  A retry or cancel bumps it, so
@@ -406,6 +415,16 @@ final class ChatStore {
     /// (desktop parity) and keep waiting instead of declaring "took too long".
     private var streamBackgroundedAt: Date?
 
+    /// Set when the app went to the background with a stream in flight.
+    ///
+    /// `streamBackgroundedAt` cannot answer this on foreground - it is cleared
+    /// by `markStreamForegrounded()` before any catch-up runs - and the clock
+    /// cannot either: `recoverStalledStream` refreshes the progress stamp when
+    /// the session is still running, which makes a dead feed look current. The
+    /// row is the honest signal: only the turn that was live when the app left
+    /// can be reattached, never a newer one. The next catch-up consumes it.
+    private var streamDetachedPlaceholderID: UUID?
+
     /// Foreground-only elapsed time since the last progress signal. If the
     /// app was backgrounded mid-stream, suspended wall time is excluded so
     /// the watchdog only fires after real, user-visible silence.
@@ -422,6 +441,10 @@ final class ChatStore {
     /// Records the suspension start so the watchdog excludes frozen wall time
     /// and recoverStalledStream knows a resume may be needed.
     func markStreamBackgrounded() {
+        // The socket the consumer is reading is reaped while the app is
+        // suspended, so the row that is live here is not live on return.
+        // Remember WHICH row: the catch-up reattaches that turn, or none.
+        streamDetachedPlaceholderID = isStreaming ? streamingMessageID : nil
         guard streamBackgroundedAt == nil else { return }
         streamBackgroundedAt = .now
     }
@@ -2016,7 +2039,6 @@ final class ChatStore {
         let stream = heraldClient.sendStreaming(message: content, attachments: attachments, clientMessageID: clientMessageID, continuationContext: continuationContext)
         var acceptedJobID: UUID?
         var needsPollingFallback = false
-        var reasoningStartedAt: Date?
         let sendStartedAt = Date.now
 
         streamingPhase = .sending
@@ -2032,814 +2054,22 @@ final class ChatStore {
             guard let self else { return }
             defer { consumerFinished = true }
             self.appendLog(level: .info, "Streaming started")
+            var state = StreamingContext(
+                attemptID: attemptID,
+                clientMessageID: clientMessageID,
+                placeholderID: placeholderID,
+                sendStartedAt: sendStartedAt,
+                progressContinuation: progressContinuation,
+                acceptedJobID: acceptedJobID,
+                needsPollingFallback: needsPollingFallback,
+                reasoningStartedAt: nil
+            )
             for await update in stream {
                 if Task.isCancelled { break }
-                switch update {
-                case .messageSent(let jobID, let daemonJobID):
-                    // Build N+: guard against stale .messageSent from a
-                    // previous attempt.  cancelStreaming() bumps
-                    // activeAttemptID, so a late arrival from the old stream
-                    // must not overwrite streamingPhase or register in
-                    // activeStreams for the new conversation.
-                    guard self.activeAttemptID == attemptID else { break }
-                    let elapsed = Date.now.timeIntervalSince(sendStartedAt)
-                    Self.logger.debug("⏱ TIMING: .messageSent received after \(String(format: "%.1f", elapsed))s — job \(jobID.uuidString.prefix(8))")
-                    self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
-                    acceptedJobID = jobID
-                    self.streamingPhase = .waitingForJob
-                    self.sendPhase = .waitingForHermes
-                    // Build 64: surface a human lastActivity label for
-                    // the banner. "model loading" is the natural value
-                    // here because the relay has just accepted the job
-                    // and Hermes is still working server-side.
-                    self.recordStreamingActivity(label: "model loading")
-                    // Durable outbox: job accepted — record the jobID so
-                    // relaunch recovery can settle the job via the relay.
-                    if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
-                        self.outboxItems[idx].state = .accepted
-                        self.outboxItems[idx].jobID = jobID
-                        // The daemon's own id: `jobID` is a hash and cannot be
-                        // asked about, so a settled send could never be confirmed.
-                        self.outboxItems[idx].daemonJobID = daemonJobID
-                        self.persistOutbox()
-                    }
-                    self.activeStreams[jobID] = placeholderID
-                    self.pendingStreamPlaceholders.remove(placeholderID)
-                    // Correlate the placeholder with its server-assigned job
-                    // identity so the conversation refresh merge can match
-                    // persisted assistant rows back to this live placeholder
-                    // without relying on content heuristics.
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].jobID = jobID
-                        self.conversation = conv
-                    }
-                    // Arm the polling safety net. If the SSE stream fails silently
-                    // (transport drop, proxy timeout, connector stall), polling
-                    // recovers the response so the user isn't stuck staring at a
-                    // blank screen. When streaming delivers normally the pending
-                    // message is already resolved, so polling becomes a no-op.
-                    needsPollingFallback = true
-                    // Start Live Activity with "Thinking" phase — the agent is
-                    // processing but hasn't begun streaming content yet.
-                    self.chatLiveActivity.startThinking()
-                    // Show a phase indicator on the streaming placeholder so the
-                    // user knows the app isn't frozen during long model loads.
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].toolActivity = "Model loading…"
-                        self.conversation = conv
-                    }
-                    // Yield progress — the relay accepting the job IS proof the
-                    // connection is alive. This keeps the continuous watchdog
-                    // satisfied during long model loads (30-45s prefill on
-                    // constrained hardware).
-                    self.noteStreamingProgress()
-                    progressContinuation?.yield(())
-
-                case .textDelta(let delta):
-                    self.noteStreamingProgress()
-                    // Build 64: any text delta proves the model is
-                    // producing. Reset the stall snapshot (auto-clearing
-                    // the banner) and increment the live token counter
-                    // so the bubble can show progress.
-                    self.streamingTokenCount += delta.utf8.count
-                    self.clearStall()
-                    // Build 64: surface a live token counter on the
-                    // streaming bubble's tool activity so the user sees
-                    // the model actively producing. The next flush
-                    // will clear it, which is fine; the placeholders'
-                    // built-in streaming indicator takes over for the
-                    // "still going" signal.
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].toolActivity = "\(self.streamingTokenCount) tokens streamed"
-                        self.conversation = conv
-                    }
-                    progressContinuation?.yield(())
-                    self.streamingPhase = .streaming
-                    self.sendPhase = .streaming
-                    Self.logger.info("stream textDelta bytes=\(delta.utf8.count) placeholder=\(placeholderID.uuidString.prefix(8))")
-                    self.chatLiveActivity.updatePhase("Responding")
-                    // Route content to reasoning vs visible text.
-                    // If a reasoning stream is already active, check if this
-                    // delta closes the block; otherwise check if it opens one.
-                    if reasoningStartedAt != nil {
-                        // We're inside reasoning — check if the delta closes it
-                        let hasCloseTag = delta.range(
-                            of: #"</think(?:ing)?>"#, options: .regularExpression
-                        ) != nil
-                        if hasCloseTag {
-                            // Split at the close tag — reasoning before, visible after
-                            if let closeRange = delta.range(of: #"</think(?:ing)?>"#, options: .regularExpression) {
-                                let reasoningPart = String(delta[delta.startIndex..<closeRange.lowerBound])
-                                let visiblePart = String(delta[closeRange.upperBound...])
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                if !reasoningPart.isEmpty {
-                                    self.enqueueReasoningDelta(reasoningPart, placeholderID: placeholderID)
-                                }
-                                if !visiblePart.isEmpty {
-                                    if let settings = self.ttsSettingsProvider?(),
-                                       settings.enabled,
-                                       settings.autoSpeakDuringStreaming {
-                                        self.ttsService?.speakStreaming(visiblePart, voice: settings.voice)
-                                    }
-                                    self.enqueueDelta(visiblePart, placeholderID: placeholderID)
-                                }
-                            }
-                        } else {
-                            self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
-                        }
-                    } else {
-                        // Check if this delta opens a reasoning block
-                        let hasOpenThinkTag = delta.range(
-                            of: #"<think(?:ing)?>"#, options: .regularExpression
-                        ) != nil
-                        if hasOpenThinkTag {
-                            reasoningStartedAt = .now
-                            // Split at the open tag — visible before (unlikely), reasoning after
-                            if let openRange = delta.range(of: #"<think(?:ing)?>"#, options: .regularExpression) {
-                                let beforeTag = String(delta[delta.startIndex..<openRange.lowerBound])
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                let afterTag = String(delta[openRange.upperBound...])
-                                if !beforeTag.isEmpty {
-                                    self.enqueueDelta(beforeTag, placeholderID: placeholderID)
-                                }
-                                if !afterTag.isEmpty {
-                                    self.enqueueReasoningDelta(afterTag, placeholderID: placeholderID)
-                                }
-                            } else {
-                                self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
-                            }
-                        } else {
-                            // Normal visible content
-                            if let settings = self.ttsSettingsProvider?(),
-                               settings.enabled,
-                               settings.autoSpeakDuringStreaming {
-                                self.ttsService?.speakStreaming(delta, voice: settings.voice)
-                            }
-                            self.enqueueDelta(delta, placeholderID: placeholderID)
-                        }
-                    }
-
-                case .reasoningDelta(let delta):
-                    self.noteStreamingProgress()
-                    // Build 64: a reasoning delta is also real progress.
-                    // Count it as tokens and clear the stall snapshot.
-                    self.streamingTokenCount += delta.utf8.count
-                    self.clearStall()
-                    progressContinuation?.yield(())
-                    self.chatLiveActivity.updatePhase("Thinking")
-                    self.sendPhase = .streaming
-                    if reasoningStartedAt == nil { reasoningStartedAt = .now }
-                    self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
-
-                case .artifactPage(let html, let cap):
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].pageHTML = html
-                        conv.messages[idx].pageHeightCap = cap
-                        self.conversation = conv
-                    }
-
-                case .uploading(let attachmentID, let completed, let total, let name):
-                    self.uploadPhases[attachmentID] = completed >= total
-                        ? .uploaded
-                        : .uploading(completed: completed, total: total)
-                    // A visible count is the only way to tell an upload in flight
-                    // from one that silently failed.
-                    let label = completed >= total
-                        ? "Files uploaded (\(total))"
-                        : "Uploading \(completed + 1) of \(total): \(name)"
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].toolActivity = label
-                        self.conversation = conv
-                    }
-
-                case .attachment(let file):
-                    // `attach_file` already wrote the row on the daemon. Draw the
-                    // chip on the bubble being watched instead of waiting for a
-                    // conversation reload, which is why the reply could say
-                    // "attached" with nothing under it.
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        if !conv.messages[idx].attachments.contains(where: { $0.id == file.id }) {
-                            conv.messages[idx].attachments.append(file)
-                            self.conversation = conv
-                            self.cacheModifiedConversation()
-                        }
-                    }
-
-                case .artifactDiff(let diff):
-                    // The card lands on the message as it arrives, so it is
-                    // visible during the turn rather than only at the end.
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].codeDiff = diff
-                        self.conversation = conv
-                    }
-
-                case .toolActivity(let label):
-                    self.noteStreamingProgress()
-                    // Build 64: a tool activity event is real progress;
-                    // record what the model was doing for the banner and
-                    // clear any existing stall snapshot.
-                    self.recordStreamingActivity(label: "tool: \(label)")
-                    self.clearStall()
-                    progressContinuation?.yield(())
-                    self.flushPendingDeltas(placeholderID: placeholderID)
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        for i in conv.messages[idx].toolActivities.indices {
-                            conv.messages[idx].toolActivities[i].isActive = false
-                        }
-                        let activity = ToolActivity(label: label)
-                        conv.messages[idx].toolActivities.append(activity)
-                        conv.messages[idx].toolActivity = label
-                        self.conversation = conv
-                    }
-                    // Show tool progress on Lock Screen / Dynamic Island
-                    self.chatLiveActivity.startToolCall(toolName: label)
-                    self.chatLiveActivity.updateToolProgress(label)
-
-                case .toolStarted(let activity):
-                    self.noteStreamingProgress()
-                    // Build 64: tool start is real progress too. Record
-                    // the label and clear any existing stall snapshot.
-                    self.recordStreamingActivity(label: "tool: \(activity.label)")
-                    self.clearStall()
-                    // Build 55: mark a tool as in-flight. Long tool calls
-                    // (image gen) emit no further events until completion, so
-                    // the stall watchdog must exempt this window.
-                    self.activeToolCount += 1
-                    progressContinuation?.yield(())
-                    self.flushPendingDeltas(placeholderID: placeholderID)
-                    if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        for i in conv.messages[idx].toolActivities.indices { conv.messages[idx].toolActivities[i].isActive = false }
-                        conv.messages[idx].toolActivities.append(activity)
-                        conv.messages[idx].toolActivity = activity.label
-                        self.conversation = conv
-                    }
-                    self.chatLiveActivity.startToolCall(toolName: activity.label)
-                    self.chatLiveActivity.updateToolProgress(activity.label)
-
-                case .toolCompleted(let toolCallID, let resultPreview, let isError, let durationMs):
-                    self.noteStreamingProgress()
-                    // Build 55: tool finished - clear the in-flight marker.
-                    // Only decrement if we saw the matching start; guards
-                    // against out-of-order/duplicated terminal events.
-                    if self.activeToolCount > 0 { self.activeToolCount -= 1 }
-                    progressContinuation?.yield(())
-                    if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
-                       let activityIdx = conv.messages[idx].toolActivities.lastIndex(where: {
-                           $0.toolCallID == toolCallID && $0.isActive
-                       }) ?? conv.messages[idx].toolActivities.lastIndex(where: { $0.toolCallID == toolCallID }) {
-                        conv.messages[idx].toolActivities[activityIdx].isActive = false
-                        conv.messages[idx].toolActivities[activityIdx].finishedAt = .now
-                        conv.messages[idx].toolActivities[activityIdx].resultPreview = resultPreview
-                        conv.messages[idx].toolActivities[activityIdx].isError = isError
-                        conv.messages[idx].toolActivities[activityIdx].durationMs = durationMs
-                        self.conversation = conv
-                    }
-
-                case .toolOutput(let toolCallID, let chunk):
-                    self.noteStreamingProgress()
-                    self.clearStall()
-                    if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
-                       let activityIdx = conv.messages[idx].toolActivities.lastIndex(where: { $0.toolCallID == toolCallID }),
-                       conv.messages[idx].toolActivities[activityIdx].liveOutput.count < (256 * 1024) {
-                        conv.messages[idx].toolActivities[activityIdx].liveOutput += chunk
-                        self.conversation = conv
-                    }
-
-                case .systemNotice(let text):
-                    // Build 104: faint in-transcript system line for
-                    // self-improvement / memory reviews.
-                    self.appendSystemNotice(text)
-
-                case .clarifyRequest(let question, let choices, let requestID, let multiSelect):
-                    // Build 128.76: the turn parked on a clarify question.
-                    // Stop pretending the model is working - the USER is up.
-                    // Show the ClarifyCard above the composer so the question
-                    // is answerable instead of hanging for the full timeout.
-                    self.noteStreamingProgress()
-                    self.clearStall()
-                    self.recordStreamingActivity(label: "awaiting your answer")
-                    self.pendingClarify = PendingClarify(
-                        question: question,
-                        choices: choices,
-                        requestID: requestID,
-                        multiSelect: multiSelect
-                    )
-                    // Update the placeholder row's tool activity so the
-                    // spinner reads "awaiting your answer" instead of the
-                    // stale tool label.
-                    if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].toolActivity = "awaiting your answer"
-                        self.conversation = conv
-                    }
-
-                case .keepalive:
-                    // Transport keepalives prove the connection is alive but do
-                    // NOT prove the model is making progress. Do not reset the
-                    // watchdog — only text/reasoning/tool events count.
-                    break
-
-                case .finished(let finalMessage, let usage, let diff, let context):
-                    guard self.activeAttemptID == attemptID else { break }
-                    // Build 64: turn terminated, clear any pending stall
-                    // snapshot so the banner hides.
-                    self.clearStall()
-                    // Build 128.76: the turn moved on - no clarify pending
-                    // anymore (answered, skipped, or timed out server-side).
-                    if self.pendingClarify != nil {
-                        self.pendingClarify = nil
-                        self.appendLog(level: .info, "Clarify resolved (turn finished)")
-                    }
-                    self.pendingStreamPlaceholders.remove(placeholderID)
-                    progressContinuation?.yield(())
-                    self.updateConnectionStatus(.connected)
-                    self.activeStreams.removeAll()
-                    self.streamingPhase = .idle
-                    // Build 128.50: turn done - push an immediate session-list
-                    // refresh so other devices see the new preview/timestamp/
-                    // blue-dot state without waiting for the 30s auto-tick.
-                    self.onTurnCompleted?()
-                    // Build 78: sweep orphaned streaming placeholders.
-                    // activeStreams was just cleared above; any remaining
-                    // isStreaming placeholder is now ownerless and would
-                    // otherwise animate forever.
-                    if let _conv78c = self.conversation {
-                        for _idx78c in _conv78c.messages.indices where _conv78c.messages[_idx78c].isStreaming {
-                            self.conversation?.messages[_idx78c].isStreaming = false
-                        }
-                    }
-                    Self.logger.info("stream finished content=\(finalMessage.content.count) chars")
-                    self.flushPendingReasoning(placeholderID: placeholderID)
-                    self.flushPendingDeltas(placeholderID: placeholderID)
-                    var isCredibleCompletion = false
-                    if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        let placeholder = self.conversation?.messages[idx]
-                        let activities = placeholder?.toolActivities ?? []
-                        let streamedReasoning = placeholder?.reasoning ?? ""
-                        Self.logger.info("REASON_DBG finished placeholder=\(placeholderID.uuidString.prefix(8)) streamedReasoningLen=\(streamedReasoning.count) finalMessageReasoningLen=\(finalMessage.reasoning.count)")
-                        // A terminal event carrying empty content must never erase
-                        // text that already streamed into the placeholder. Build 41
-                        // dropped this guard (it arrived in B35 as `c5069af`), which
-                        // re-opened the blank-bubble regression.
-                        let streamedContent = placeholder?.content ?? ""
-                        var resolved = Self.mergeResolvedMessage(
-                            resolved: finalMessage,
-                            streamedContent: streamedContent
-                        )
-                        // The terminal frame carries the moment it landed, not
-                        // the moment the turn began, and the placeholder is
-                        // where the turn's place in the thread lives. Keep the
-                        // start stamp so a reply that finishes after a newer
-                        // message cannot claim to be newer than the message
-                        // below it (7:09 answer above a 7:05 question).
-                        if let startedAt = placeholder?.timestamp {
-                            resolved.timestamp = startedAt
-                        }
-                        resolved.toolActivities = activities
-                        // The terminal frame has no file list; the chips arrived
-                        // on their own Attachment frames and live on the
-                        // placeholder. Replacing the row without carrying them
-                        // would make the chip vanish at the exact moment the
-                        // answer settles.
-                        if let streamedAttachments = placeholder?.attachments,
-                           !streamedAttachments.isEmpty {
-                            resolved.attachments = streamedAttachments
-                        }
-                        resolved.codeDiff = diff
-                        // Priority for reasoning:
-                        // 1) finalMessage.reasoning — set by LiveHeraldClient (SSE terminal
-                        //    reasoning from the done payload, or splitThinkingBlocks extraction).
-                        // 2) placeholder's streamed reasoning — from reasoningDelta SSE events,
-                        //    only used when finalMessage has no reasoning of its own.
-                        // 3) regex extraction from content — last resort for models that embed
-                        //    <think> tags inline without a separate reasoning field.
-                        if resolved.reasoning.isEmpty && !streamedReasoning.isEmpty {
-                            resolved.reasoning = streamedReasoning
-                            if let startedAt = reasoningStartedAt {
-                                resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
-                            }
-                        } else if !streamedReasoning.isEmpty {
-                            // finalMessage already has reasoning — keep it but carry over
-                            // the duration from the streamed placeholder
-                            if resolved.reasoningDuration == nil, let startedAt = reasoningStartedAt {
-                                resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
-                            }
-                        }
-                        // Last resort: regex extraction for models that embed reasoning
-                        // as XML tags inline in the content (DeepSeek <think>, Qwen <thinking>).
-                        // splitThinkingBlocks in LiveHeraldClient handles this on the sync
-                        // path; this is the SSE-path safety net.
-                        if resolved.reasoning.isEmpty {
-                            if let thinkRegex = try? NSRegularExpression(
-                                pattern: "<think(?:ing)?>(.*?)</think(?:ing)?>",
-                                options: [.dotMatchesLineSeparators, .caseInsensitive]
-                            ) {
-                                let nsContent = resolved.content as NSString
-                                let matches = thinkRegex.matches(
-                                    in: resolved.content,
-                                    range: NSRange(location: 0, length: nsContent.length)
-                                )
-                                let extracted = matches.compactMap { match -> String? in
-                                    guard match.numberOfRanges > 1 else { return nil }
-                                    return nsContent.substring(with: match.range(at: 1))
-                                }.joined(separator: "\n")
-                                if !extracted.isEmpty {
-                                    resolved.reasoning = extracted.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    if let startedAt = reasoningStartedAt {
-                                        resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
-                                    }
-                                }
-                            }
-                            // Also try unclosed <think> tags (model interrupted mid-reasoning)
-                            if resolved.reasoning.isEmpty {
-                                if let unclosedRegex = try? NSRegularExpression(
-                                    pattern: "<think(?:ing)?>([\\s\\S]*?)$",
-                                    options: [.caseInsensitive]
-                                ) {
-                                    let nsContent = resolved.content as NSString
-                                    if let match = unclosedRegex.firstMatch(
-                                        in: resolved.content,
-                                        range: NSRange(location: 0, length: nsContent.length)
-                                    ), match.numberOfRanges > 1 {
-                                        let extracted = nsContent.substring(with: match.range(at: 1))
-                                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                                        if !extracted.isEmpty {
-                                            resolved.reasoning = extracted
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // Always strip <think>…</think> (and <thinking>…</thinking>)
-                        // tags from the visible content.
-                        if let regex = try? NSRegularExpression(pattern: "<think(?:ing)?>.*?</think(?:ing)?>", options: [.dotMatchesLineSeparators, .caseInsensitive]) {
-                            let range = NSRange(resolved.content.startIndex..., in: resolved.content)
-                            resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, withTemplate: "")
-                                .trimmingCharacters(in: .whitespacesAndNewlines)
-                        }
-                        let resolvedText = resolved.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                        // Usage is returned by every provider on every turn, including turns
-                        // that produced nothing.  Treating it as proof of a reply is what
-                        // put a delivered check and a completion haptic on empty bubbles.
-                        // Only rendered content — visible text or attachments — makes a
-                        // completion credible.  Hidden reasoning alone is never a visible
-                        // delivered check.
-                        isCredibleCompletion = !resolvedText.isEmpty
-                            || !resolved.attachments.isEmpty
-                        // The row keeps the time the turn STARTED, not the
-                        // time it finished. Stamping completion time made a
-                        // reply that landed after a newer message read as
-                        // newer than the message below it: the 7:09 answer sat
-                        // above the 7:05 question it could not have answered
-                        // (Curtis, 2026-11-18). Position and stamp now agree:
-                        // a long answer stays with its question and says when
-                        // the question was sent.
-                        self.conversation?.messages[idx] = resolved
-                        // Build 117 fix: do NOT mark the user message as
-                        // .delivered here.  The user message's delivery status
-                        // is managed by the outbox lifecycle
-                        // (terminalizeOutboxItem), not by the assistant's
-                        // content arrival.  Marking it .delivered here defeated
-                        // hasPendingDuplicateMessage when the user retried
-                        // after a stream drop — the guard checked for
-                        // status == .sending, found .delivered, and let a
-                        // second optimistic row with the same clientMessageID
-                        // through, producing two "Hey homie" bubbles.
-                    }
-                    let oldTitle = self.conversation?.title
-                    // Build 26: the terminal message is authoritative in the
-                    // active chat.  Persist the cache atomically before clearing
-                    // stream ownership so a polling refresh, foreground recovery,
-                    // or stale currentConversation snapshot cannot remove the
-                    // answer the user already saw.
-                    //
-                    // currentConversation at this point is often the POST
-                    // acknowledgement (one user message) or an intermediate
-                    // polling snapshot that may not yet contain the terminal row.
-                    // A message-count heuristic cannot safely decide freshness —
-                    // equal or greater count does not prove the snapshot includes
-                    // this turn.  Only merge metadata (title, usage, context)
-                    // from the server; never replace the local message array
-                    // inside the .finished handler.
-                    self.cacheModifiedConversation()
-                    let refreshed = self.heraldClient.currentConversation
-                    if var conv = self.conversation {
-                        // Accept server-derived title only when local is a default.
-                        if conv.title == "New Chat" || conv.title == "Kallisti",
-                           let serverTitle = refreshed?.title,
-                           serverTitle != "New Chat", serverTitle != "Kallisti" {
-                            conv.title = serverTitle
-                        }
-                        conv.latestUsage = refreshed?.latestUsage ?? conv.latestUsage
-                        conv.contextPercent = refreshed?.contextPercent ?? conv.contextPercent
-                        self.conversation = conv
-                    }
-                    // Deferred reconciliation: mark that a server refresh is
-                    // pending.  The next explicit session fetch (chat-list tap,
-                    // foreground, or poll) will reconcile through
-                    // mergeConversationMetadata, which preserves local attachments
-                    // and content when the server copy is empty or truncated
-                    // (B39 T5 guards at lines 1579-1595 and 1613-1618).
-                    self.pendingServerReconciliation = true
-                    if let latestUsage = self.conversation?.latestUsage {
-                        self.lastTokenUsage = latestUsage
-                    } else if let usage {
-                        self.lastTokenUsage = usage
-                    }
-                    if let context {
-                        self.lastContextInfo = context
-                        self.conversation?.contextPercent = context.percentUsed
-                    }
-                    await self.detectProfileSwitch(in: finalMessage.content)
-                    if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
-                    self.pendingMessageSentAt = nil
-                    self.chatLiveActivity.endActivity()
-                    self.streamingPhase = .idle
-                    // Durable outbox: the job reached a server terminal state —
-                    // record the canonical identities and release the phase.
-                    // Also mark the user message as .delivered so the green
-                    // checkmark dot appears.  terminalizeOutboxItem is the
-                    // ONLY place that sets .delivered on the user message;
-                    // without this call the green dot never fires on the
-                    // streaming path (the polling fallback path at line 1216
-                    // does call it, but only on stall — not on normal
-                    // completion).
-                    if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
-                        self.terminalizeOutboxItem(
-                            self.outboxItems[idx],
-                            canonicalUserMessageID: clientMessageID,
-                            terminalMessageID: finalMessage.id
-                        )
-                    }
-                    self.sendPhase = .completed
-                    self.sendPhaseOwner = nil
-                    // Build 30: bump the conversation generation so any in-flight
-                    // poll/refresh captures are discarded.  This ensures a stale
-                    // server snapshot that arrived after terminal commit cannot
-                    // replace the local message array — the poll loop will re-fetch
-                    // on the next cycle and the server will include the terminal row.
-                    self.conversationGeneration &+= 1
-
-                    // Haptic feedback on response completion — fired immediately
-                    // in the stream handler so it's synchronous with the content
-                    // appearing, not delayed by the ChatScreen's onChange observer.
-                    if isCredibleCompletion, self.hapticFeedbackEnabled() {
-                        HapticEngine.responseReceived()
-                    }
-
-                    // Finish TTS streaming — flush any remaining buffered text
-                    self.ttsService?.finishStream()
-                    // Notify if merge changed the title (server-derived title)
-                    if let conv = self.conversation, conv.title != oldTitle {
-                        self.onTitleChanged?(conv.id, conv.title)
-                    }
-                    await self.autoTitleIfNeeded()
-
-                    // D5: autoCompress() deleted — it sent a /compress user
-                    // turn into the transcript, invoking a connector command
-                    // whose implementation called a nonexistent `hermes
-                    // compress` subcommand.  The agent's own ContextCompressor
-                    // handles compaction at 25%.
-
-                    // Post local notification if app is in background.
-                    // Dedup against `lastNotifiedTerminalMessageID` so a
-                    // re-entry of the `.finished` handler for the same
-                    // terminal message (retry that re-emits `.finished`,
-                    // late SSE replay, or a foreground→background
-                    // round-trip that re-fires the terminal commit) cannot
-                    // enqueue a second 'Turn complete' banner. Combined
-                    // with the foreground guard this yields exactly one
-                    // notification per turn, in send order.
-                    if UIApplication.shared.applicationState == .background,
-                       lastNotifiedTerminalMessageID != finalMessage.id {
-                        let content = UNMutableNotificationContent()
-                        content.title = "Kallisti"
-                        content.body = String(finalMessage.content.prefix(100))
-                        content.sound = .default
-                        content.categoryIdentifier = NotificationCategoryID.messageReady.rawValue
-                        if let convId = self.conversation?.id.uuidString {
-                            content.userInfo = [
-                                "conversationId": convId,
-                                "messageId": finalMessage.id.uuidString,
-                            ]
-                        }
-
-                        let request = UNNotificationRequest(
-                            identifier: "herald-response-\(finalMessage.id.uuidString)",
-                            content: content,
-                            trigger: nil
-                        )
-                        try? await UNUserNotificationCenter.current().add(request)
-                        // Mark BEFORE the await-driven continuation so a
-                        // re-entrant `.finished` for the same id cannot
-                        // slip through the guard between the add() call
-                        // and the assignment.
-                        lastNotifiedTerminalMessageID = finalMessage.id
-                    }
-
-                    // Build 33 WSB: the FIFO chain lives in submitNextEligible —
-                    // when this attempt returns, its tail submits the next
-                    // queued item for the conversation. (Calling it here would
-                    // no-op anyway: submitInFlight is true for the whole
-                    // attempt, and the chain runs once it is released.)
-                case .started(let phase):
-                    self.appendLog(level: .info, "Job started — phase: \(phase)")
-                    progressContinuation?.yield(())
-                    self.chatLiveActivity.updateToolProgress(phase)
-                    // Update the placeholder to show what the model is doing
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].toolActivity = phase
-                        self.conversation = conv
-                    }
-
-                case .heartbeat(let phase):
-                    // Heartbeat proves the connector process is alive, but does
-                    // NOT prove the model is making progress. Do NOT reset the
-                    // watchdog — keepalive/transport liveness alone must not
-                    // prevent the stall detector from firing.
-                    self.appendLog(level: .debug, "Job heartbeat — phase: \(phase)")
-
-                case .reconnecting:
-                    // Build 31 (fix): discard stale callbacks from a superseded
-                    // attempt.  A retry/replacement bumps activeAttemptID, so the
-                    // old stream coordinator's reconnect event cannot overwrite
-                    // the new attempt's banner or placeholder.
-                    guard self.activeAttemptID == attemptID else { break }
-                    self.appendLog(level: .warn, "Stream reconnecting...")
-                    // Build 64: capture the snapshot so the banner reads the
-                    // current transport state instead of a frozen
-                    // "Stream stalled" string. clearStall on .finished below
-                    // ensures the banner hides as soon as content resumes.
-                    self.markStalled()
-                    self.streamingPhase = .reconnecting
-                    self.sendPhase = .restoringStream
-                    // Reconnection attempts are transport recovery, not model
-                    // progress. Do not reset the watchdog.
-                    // Build 64: mirror the in-app reconnect banner onto the
-                    // Lock Screen / Dynamic Island so the user sees progress
-                    // recovery instead of the frozen last phase.
-                    self.chatLiveActivity.updatePhase(LiveActivityPhase.waitingForHost.rawValue)
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].toolActivity = "Restoring response stream…"
-                        self.conversation = conv
-                    }
-                    // Start polling immediately as a parallel recovery path.
-                    // If the SSE stream is struggling to stay connected, the
-                    // polling loop can pick up the response independently.
-                    // When polling resolves the pending message the stream
-                    // coordinator will naturally exit on its next reconnect.
-                    self.restartPendingPollingIfNeeded()
-
-                case .cancelled:
-                    guard self.activeAttemptID == attemptID else { break }
-                    // Build 64: turn cancelled, clear any pending stall
-                    // snapshot so the banner hides.
-                    self.clearStall()
-                    self.pendingStreamPlaceholders.remove(placeholderID)
-                    self.appendLog(level: .info, "Job cancelled")
-                    progressContinuation?.yield(())
-                    self.flushPendingReasoning(placeholderID: placeholderID)
-                    self.flushPendingDeltas(placeholderID: placeholderID)
-                    if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        self.conversation?.messages[idx] = Message(
-                            sender: .system,
-                            content: "Cancelled",
-                            status: .failed
-                        )
-                    }
-                    if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
-                    self.pendingMessageSentAt = nil
-                    self.chatLiveActivity.endActivity()
-                    self.streamingPhase = .idle
-                    // Durable outbox: user cancelled — the item is never
-                    // auto-resubmitted; a manual retry re-enqueues fresh.
-                    if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
-                        self.outboxItems[idx].state = .cancelled
-                        self.outboxItems[idx].lastError = "Cancelled by user"
-                        self.persistOutbox()
-                        self.outboxStore.removeStagedAttachments(for: self.outboxItems[idx])
-                    }
-                    self.sendPhase = .idle
-                    self.sendPhaseOwner = nil
-                    // Build 23: cancellation must NOT mark the outgoing user
-                    // message as delivered.  The green check is a final-delivery
-                    // signal tied to a credible terminal result.
-                    if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
-                        self.conversation?.messages[idx].status = .sending
-                    }
-                    await self.autoTitleIfNeeded()
-
-                case .failed(let errorMessage, let category, let action):
-                    guard self.activeAttemptID == attemptID else { break }
-                    // Build 64: turn failed, clear any pending stall
-                    // snapshot so the banner hides.
-                    self.clearStall()
-                    // Build 128.76: the turn died - the clarify card has
-                    // nothing to answer anymore.
-                    if self.pendingClarify != nil {
-                        self.pendingClarify = nil
-                        self.appendLog(level: .info, "Clarify cleared (turn failed)")
-                    }
-                    self.pendingStreamPlaceholders.remove(placeholderID)
-                    // An explicit failure is a real signal, not silence — let it
-                    // resolve the watchdog race immediately rather than waiting
-                    // out the timeout, and handle it exactly as before.
-                    progressContinuation?.yield(())
-                    self.flushPendingReasoning(placeholderID: placeholderID)
-                    self.flushPendingDeltas(placeholderID: placeholderID)
-
-                    // Store error context for the UI
-                    self.lastErrorCategory = category
-                    self.lastErrorAction = action
-
-                    // Build 64: push the Live Activity to needsAttention BEFORE
-                    // ending it so the Lock Screen / Dynamic Island briefly
-                    // shows the warning state (per Apple HIG: an activity
-                    // should reflect a meaningful end-state for users who
-                    // arrive late via the lock screen). The next endActivity
-                    // call below dismisses the activity with .immediate.
-                    self.chatLiveActivity.updatePhase(LiveActivityPhase.needsAttention.rawValue)
-
-                    // Show actionable guidance based on error category
-                    let guidance: String
-                    switch category {
-                    case "context_exceeded":
-                        guidance = "This session is too long for the current model. Start a new session or switch models."
-                    case "rate_limited":
-                        guidance = "Kallisti is rate-limited. Please wait and try again."
-                    case "timeout":
-                        guidance = "The request timed out. Check your connection and retry."
-                    case "empty_response":
-                        guidance = "Kallisti returned an empty response. Try again or start a new session."
-                    case "upstream_interrupted":
-                        guidance = "The model was interrupted upstream. Please retry."
-                    default:
-                        guidance = errorMessage
-                    }
-
-                    if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        // Build N+: "Could not fetch job status" is a transient
-                        // reconnect signal, not a terminal failure.  The relay
-                        // accepted the job (acceptedJobID != nil) and the
-                        // response IS coming — don't replace the placeholder
-                        // with a system error that persists in the chat after
-                        // the response arrives.  Leave the placeholder as-is
-                        // (still streaming) so the .finished handler can
-                        // replace it cleanly when the response lands.
-                        if acceptedJobID != nil && category == nil {
-                            self.appendLog(level: .info, "Transient fetch failure for job \(placeholderID.uuidString.prefix(8)) — waiting for reconnect")
-                        } else {
-                            self.conversation?.messages[idx] = Message(
-                                sender: .system,
-                                content: guidance,
-                                status: .failed,
-                                errorCategory: category
-                            )
-                        }
-                    }
-                    if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
-                    self.chatLiveActivity.endActivity()
-                    self.streamingPhase = .idle
-                    // Durable outbox: an explicit failure before acceptance is a
-                    // retryable failure with backoff; a failure AFTER acceptance
-                    // leaves the job with the relay — the polling fallback below
-                    // (or a later recovery pass) resolves it.
-                    if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
-                        if acceptedJobID == nil {
-                            let item = self.outboxItems[idx]
-                            self.failOutboxItem(
-                                item,
-                                state: .retryableFailure,
-                                error: guidance,
-                                retryAfter: self.backoffInterval(forAttempt: item.attemptCount)
-                            )
-                        } else {
-                            self.outboxItems[idx].lastError = errorMessage
-                            self.persistOutbox()
-                        }
-                    }
-                    if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
-                        self.conversation?.messages[idx].status = acceptedJobID == nil ? .failed : .sending
-                    }
-                    if acceptedJobID != nil {
-                        needsPollingFallback = true
-                        self.sendPhase = .restoringStream
-                    } else {
-                        self.pendingMessageSentAt = nil
-                        self.sendPhase = .failed(guidance)
-                    }
-                    await self.autoTitleIfNeeded()
-                }
+                await self.applyStreamUpdate(update, state: &state)
             }
+            acceptedJobID = state.acceptedJobID
+            needsPollingFallback = state.needsPollingFallback
             progressContinuation?.finish()
         }
         streamingTask = consumerTask
@@ -2963,6 +2193,865 @@ final class ChatStore {
         // follow-up indefinitely.
         let outboxAlreadyTerminal = outboxItems.first(where: { $0.clientMessageID == clientMessageID })?.isTerminal ?? false
         return needsPollingFallback && !outboxAlreadyTerminal
+    }
+
+    /// The per-attempt state a stream consumer carries between frames.
+    ///
+    /// A value type, so one attempt's bookkeeping cannot leak into another:
+    /// the live send and a reattach each hold their own, and both apply the
+    /// same frame shapes.
+    private struct StreamingContext {
+        /// The attempt generation that owns the frames.
+        let attemptID: UUID
+        /// The client message id: the outbox record and the user row.
+        let clientMessageID: UUID
+        /// The row the frames are drawn on.
+        let placeholderID: UUID
+        /// When the send started, for the acceptance latency log.
+        let sendStartedAt: Date
+        /// Fired once per counted progress event; nil when no watchdog is
+        /// racing the consumer.
+        let progressContinuation: AsyncStream<Void>.Continuation?
+        /// Set by `.messageSent`, read by the terminal cases.
+        var acceptedJobID: UUID?
+        /// Set by `.messageSent` and by a turn that failed after acceptance;
+        /// read once the stream ends to decide whether polling takes over.
+        var needsPollingFallback: Bool
+        /// The first reasoning frame's timestamp, for the thinking duration.
+        var reasoningStartedAt: Date?
+    }
+
+    /// Apply one frame of a turn to the store.
+    ///
+    /// This is the streaming consumer's body: every case, every side effect and
+    /// every early exit, moved here unchanged so that the live send and a
+    /// reattach to the same turn drive the same code instead of a second copy
+    /// of it that drifts.
+    ///
+    /// The `context` bound by `.finished` is the context-window reading that
+    /// frame carries; it is unrelated to `state`.
+    private func applyStreamUpdate(
+        _ update: StreamingUpdate,
+        state: inout StreamingContext
+    ) async {
+        let attemptID = state.attemptID
+        let clientMessageID = state.clientMessageID
+        let placeholderID = state.placeholderID
+        let sendStartedAt = state.sendStartedAt
+        let progressContinuation = state.progressContinuation
+        var acceptedJobID = state.acceptedJobID
+        var needsPollingFallback = state.needsPollingFallback
+        var reasoningStartedAt = state.reasoningStartedAt
+
+        switch update {
+        case .messageSent(let jobID, let daemonJobID):
+            // Build N+: guard against stale .messageSent from a
+            // previous attempt.  cancelStreaming() bumps
+            // activeAttemptID, so a late arrival from the old stream
+            // must not overwrite streamingPhase or register in
+            // activeStreams for the new conversation.
+            guard self.activeAttemptID == attemptID else { break }
+            let elapsed = Date.now.timeIntervalSince(sendStartedAt)
+            Self.logger.debug("⏱ TIMING: .messageSent received after \(String(format: "%.1f", elapsed))s — job \(jobID.uuidString.prefix(8))")
+            self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
+            acceptedJobID = jobID
+            self.streamingPhase = .waitingForJob
+            self.sendPhase = .waitingForHermes
+            // Build 64: surface a human lastActivity label for
+            // the banner. "model loading" is the natural value
+            // here because the relay has just accepted the job
+            // and Hermes is still working server-side.
+            self.recordStreamingActivity(label: "model loading")
+            // Durable outbox: job accepted — record the jobID so
+            // relaunch recovery can settle the job via the relay.
+            if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                self.outboxItems[idx].state = .accepted
+                self.outboxItems[idx].jobID = jobID
+                // The daemon's own id: `jobID` is a hash and cannot be
+                // asked about, so a settled send could never be confirmed.
+                self.outboxItems[idx].daemonJobID = daemonJobID
+                self.persistOutbox()
+            }
+            self.activeStreams[jobID] = placeholderID
+            self.pendingStreamPlaceholders.remove(placeholderID)
+            // Correlate the placeholder with its server-assigned job
+            // identity so the conversation refresh merge can match
+            // persisted assistant rows back to this live placeholder
+            // without relying on content heuristics.
+            if var conv = self.conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].jobID = jobID
+                self.conversation = conv
+            }
+            // Arm the polling safety net. If the SSE stream fails silently
+            // (transport drop, proxy timeout, connector stall), polling
+            // recovers the response so the user isn't stuck staring at a
+            // blank screen. When streaming delivers normally the pending
+            // message is already resolved, so polling becomes a no-op.
+            needsPollingFallback = true
+            // Start Live Activity with "Thinking" phase — the agent is
+            // processing but hasn't begun streaming content yet.
+            self.chatLiveActivity.startThinking()
+            // Show a phase indicator on the streaming placeholder so the
+            // user knows the app isn't frozen during long model loads.
+            if var conv = self.conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].toolActivity = "Model loading…"
+                self.conversation = conv
+            }
+            // Yield progress — the relay accepting the job IS proof the
+            // connection is alive. This keeps the continuous watchdog
+            // satisfied during long model loads (30-45s prefill on
+            // constrained hardware).
+            self.noteStreamingProgress()
+            progressContinuation?.yield(())
+
+        case .textDelta(let delta):
+            self.noteStreamingProgress()
+            // Build 64: any text delta proves the model is
+            // producing. Reset the stall snapshot (auto-clearing
+            // the banner) and increment the live token counter
+            // so the bubble can show progress.
+            self.streamingTokenCount += delta.utf8.count
+            self.clearStall()
+            // Build 64: surface a live token counter on the
+            // streaming bubble's tool activity so the user sees
+            // the model actively producing. The next flush
+            // will clear it, which is fine; the placeholders'
+            // built-in streaming indicator takes over for the
+            // "still going" signal.
+            if var conv = self.conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].toolActivity = "\(self.streamingTokenCount) tokens streamed"
+                self.conversation = conv
+            }
+            progressContinuation?.yield(())
+            self.streamingPhase = .streaming
+            self.sendPhase = .streaming
+            Self.logger.info("stream textDelta bytes=\(delta.utf8.count) placeholder=\(placeholderID.uuidString.prefix(8))")
+            self.chatLiveActivity.updatePhase("Responding")
+            // Route content to reasoning vs visible text.
+            // If a reasoning stream is already active, check if this
+            // delta closes the block; otherwise check if it opens one.
+            if reasoningStartedAt != nil {
+                // We're inside reasoning — check if the delta closes it
+                let hasCloseTag = delta.range(
+                    of: #"</think(?:ing)?>"#, options: .regularExpression
+                ) != nil
+                if hasCloseTag {
+                    // Split at the close tag — reasoning before, visible after
+                    if let closeRange = delta.range(of: #"</think(?:ing)?>"#, options: .regularExpression) {
+                        let reasoningPart = String(delta[delta.startIndex..<closeRange.lowerBound])
+                        let visiblePart = String(delta[closeRange.upperBound...])
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !reasoningPart.isEmpty {
+                            self.enqueueReasoningDelta(reasoningPart, placeholderID: placeholderID)
+                        }
+                        if !visiblePart.isEmpty {
+                            if let settings = self.ttsSettingsProvider?(),
+                               settings.enabled,
+                               settings.autoSpeakDuringStreaming {
+                                self.ttsService?.speakStreaming(visiblePart, voice: settings.voice)
+                            }
+                            self.enqueueDelta(visiblePart, placeholderID: placeholderID)
+                        }
+                    }
+                } else {
+                    self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
+                }
+            } else {
+                // Check if this delta opens a reasoning block
+                let hasOpenThinkTag = delta.range(
+                    of: #"<think(?:ing)?>"#, options: .regularExpression
+                ) != nil
+                if hasOpenThinkTag {
+                    reasoningStartedAt = .now
+                    // Split at the open tag — visible before (unlikely), reasoning after
+                    if let openRange = delta.range(of: #"<think(?:ing)?>"#, options: .regularExpression) {
+                        let beforeTag = String(delta[delta.startIndex..<openRange.lowerBound])
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let afterTag = String(delta[openRange.upperBound...])
+                        if !beforeTag.isEmpty {
+                            self.enqueueDelta(beforeTag, placeholderID: placeholderID)
+                        }
+                        if !afterTag.isEmpty {
+                            self.enqueueReasoningDelta(afterTag, placeholderID: placeholderID)
+                        }
+                    } else {
+                        self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
+                    }
+                } else {
+                    // Normal visible content
+                    if let settings = self.ttsSettingsProvider?(),
+                       settings.enabled,
+                       settings.autoSpeakDuringStreaming {
+                        self.ttsService?.speakStreaming(delta, voice: settings.voice)
+                    }
+                    self.enqueueDelta(delta, placeholderID: placeholderID)
+                }
+            }
+
+        case .reasoningDelta(let delta):
+            self.noteStreamingProgress()
+            // Build 64: a reasoning delta is also real progress.
+            // Count it as tokens and clear the stall snapshot.
+            self.streamingTokenCount += delta.utf8.count
+            self.clearStall()
+            progressContinuation?.yield(())
+            self.chatLiveActivity.updatePhase("Thinking")
+            self.sendPhase = .streaming
+            if reasoningStartedAt == nil { reasoningStartedAt = .now }
+            self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
+
+        case .artifactPage(let html, let cap):
+            if var conv = self.conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].pageHTML = html
+                conv.messages[idx].pageHeightCap = cap
+                self.conversation = conv
+            }
+
+        case .uploading(let attachmentID, let completed, let total, let name):
+            self.uploadPhases[attachmentID] = completed >= total
+                ? .uploaded
+                : .uploading(completed: completed, total: total)
+            // A visible count is the only way to tell an upload in flight
+            // from one that silently failed.
+            let label = completed >= total
+                ? "Files uploaded (\(total))"
+                : "Uploading \(completed + 1) of \(total): \(name)"
+            if var conv = self.conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].toolActivity = label
+                self.conversation = conv
+            }
+
+        case .attachment(let file):
+            // `attach_file` already wrote the row on the daemon. Draw the
+            // chip on the bubble being watched instead of waiting for a
+            // conversation reload, which is why the reply could say
+            // "attached" with nothing under it.
+            if var conv = self.conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                if !conv.messages[idx].attachments.contains(where: { $0.id == file.id }) {
+                    conv.messages[idx].attachments.append(file)
+                    self.conversation = conv
+                    self.cacheModifiedConversation()
+                }
+            }
+
+        case .artifactDiff(let diff):
+            // The card lands on the message as it arrives, so it is
+            // visible during the turn rather than only at the end.
+            if var conv = self.conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].codeDiff = diff
+                self.conversation = conv
+            }
+
+        case .toolActivity(let label):
+            self.noteStreamingProgress()
+            // Build 64: a tool activity event is real progress;
+            // record what the model was doing for the banner and
+            // clear any existing stall snapshot.
+            self.recordStreamingActivity(label: "tool: \(label)")
+            self.clearStall()
+            progressContinuation?.yield(())
+            self.flushPendingDeltas(placeholderID: placeholderID)
+            if var conv = self.conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                for i in conv.messages[idx].toolActivities.indices {
+                    conv.messages[idx].toolActivities[i].isActive = false
+                }
+                let activity = ToolActivity(label: label)
+                conv.messages[idx].toolActivities.append(activity)
+                conv.messages[idx].toolActivity = label
+                self.conversation = conv
+            }
+            // Show tool progress on Lock Screen / Dynamic Island
+            self.chatLiveActivity.startToolCall(toolName: label)
+            self.chatLiveActivity.updateToolProgress(label)
+
+        case .toolStarted(let activity):
+            self.noteStreamingProgress()
+            // Build 64: tool start is real progress too. Record
+            // the label and clear any existing stall snapshot.
+            self.recordStreamingActivity(label: "tool: \(activity.label)")
+            self.clearStall()
+            // Build 55: mark a tool as in-flight. Long tool calls
+            // (image gen) emit no further events until completion, so
+            // the stall watchdog must exempt this window.
+            self.activeToolCount += 1
+            progressContinuation?.yield(())
+            self.flushPendingDeltas(placeholderID: placeholderID)
+            if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                for i in conv.messages[idx].toolActivities.indices { conv.messages[idx].toolActivities[i].isActive = false }
+                conv.messages[idx].toolActivities.append(activity)
+                conv.messages[idx].toolActivity = activity.label
+                self.conversation = conv
+            }
+            self.chatLiveActivity.startToolCall(toolName: activity.label)
+            self.chatLiveActivity.updateToolProgress(activity.label)
+
+        case .toolCompleted(let toolCallID, let resultPreview, let isError, let durationMs):
+            self.noteStreamingProgress()
+            // Build 55: tool finished - clear the in-flight marker.
+            // Only decrement if we saw the matching start; guards
+            // against out-of-order/duplicated terminal events.
+            if self.activeToolCount > 0 { self.activeToolCount -= 1 }
+            progressContinuation?.yield(())
+            if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
+               let activityIdx = conv.messages[idx].toolActivities.lastIndex(where: {
+                   $0.toolCallID == toolCallID && $0.isActive
+               }) ?? conv.messages[idx].toolActivities.lastIndex(where: { $0.toolCallID == toolCallID }) {
+                conv.messages[idx].toolActivities[activityIdx].isActive = false
+                conv.messages[idx].toolActivities[activityIdx].finishedAt = .now
+                conv.messages[idx].toolActivities[activityIdx].resultPreview = resultPreview
+                conv.messages[idx].toolActivities[activityIdx].isError = isError
+                conv.messages[idx].toolActivities[activityIdx].durationMs = durationMs
+                self.conversation = conv
+            }
+
+        case .toolOutput(let toolCallID, let chunk):
+            self.noteStreamingProgress()
+            self.clearStall()
+            if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
+               let activityIdx = conv.messages[idx].toolActivities.lastIndex(where: { $0.toolCallID == toolCallID }),
+               conv.messages[idx].toolActivities[activityIdx].liveOutput.count < (256 * 1024) {
+                conv.messages[idx].toolActivities[activityIdx].liveOutput += chunk
+                self.conversation = conv
+            }
+
+        case .systemNotice(let text):
+            // Build 104: faint in-transcript system line for
+            // self-improvement / memory reviews.
+            self.appendSystemNotice(text)
+
+        case .clarifyRequest(let question, let choices, let requestID, let multiSelect):
+            // Build 128.76: the turn parked on a clarify question.
+            // Stop pretending the model is working - the USER is up.
+            // Show the ClarifyCard above the composer so the question
+            // is answerable instead of hanging for the full timeout.
+            self.noteStreamingProgress()
+            self.clearStall()
+            self.recordStreamingActivity(label: "awaiting your answer")
+            self.pendingClarify = PendingClarify(
+                question: question,
+                choices: choices,
+                requestID: requestID,
+                multiSelect: multiSelect
+            )
+            // Update the placeholder row's tool activity so the
+            // spinner reads "awaiting your answer" instead of the
+            // stale tool label.
+            if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].toolActivity = "awaiting your answer"
+                self.conversation = conv
+            }
+
+        case .keepalive:
+            // Transport keepalives prove the connection is alive but do
+            // NOT prove the model is making progress. Do not reset the
+            // watchdog — only text/reasoning/tool events count.
+            break
+
+        case .finished(let finalMessage, let usage, let diff, let context):
+            guard self.activeAttemptID == attemptID else { break }
+            // Build 64: turn terminated, clear any pending stall
+            // snapshot so the banner hides.
+            self.clearStall()
+            // Build 128.76: the turn moved on - no clarify pending
+            // anymore (answered, skipped, or timed out server-side).
+            if self.pendingClarify != nil {
+                self.pendingClarify = nil
+                self.appendLog(level: .info, "Clarify resolved (turn finished)")
+            }
+            self.pendingStreamPlaceholders.remove(placeholderID)
+            progressContinuation?.yield(())
+            self.updateConnectionStatus(.connected)
+            self.activeStreams.removeAll()
+            self.streamingPhase = .idle
+            // Build 128.50: turn done - push an immediate session-list
+            // refresh so other devices see the new preview/timestamp/
+            // blue-dot state without waiting for the 30s auto-tick.
+            self.onTurnCompleted?()
+            // Build 78: sweep orphaned streaming placeholders.
+            // activeStreams was just cleared above; any remaining
+            // isStreaming placeholder is now ownerless and would
+            // otherwise animate forever.
+            if let _conv78c = self.conversation {
+                for _idx78c in _conv78c.messages.indices where _conv78c.messages[_idx78c].isStreaming {
+                    self.conversation?.messages[_idx78c].isStreaming = false
+                }
+            }
+            Self.logger.info("stream finished content=\(finalMessage.content.count) chars")
+            self.flushPendingReasoning(placeholderID: placeholderID)
+            self.flushPendingDeltas(placeholderID: placeholderID)
+            var isCredibleCompletion = false
+            if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
+                let placeholder = self.conversation?.messages[idx]
+                let activities = placeholder?.toolActivities ?? []
+                let streamedReasoning = placeholder?.reasoning ?? ""
+                Self.logger.info("REASON_DBG finished placeholder=\(placeholderID.uuidString.prefix(8)) streamedReasoningLen=\(streamedReasoning.count) finalMessageReasoningLen=\(finalMessage.reasoning.count)")
+                // A terminal event carrying empty content must never erase
+                // text that already streamed into the placeholder. Build 41
+                // dropped this guard (it arrived in B35 as `c5069af`), which
+                // re-opened the blank-bubble regression.
+                let streamedContent = placeholder?.content ?? ""
+                var resolved = Self.mergeResolvedMessage(
+                    resolved: finalMessage,
+                    streamedContent: streamedContent
+                )
+                // The terminal frame carries the moment it landed, not
+                // the moment the turn began, and the placeholder is
+                // where the turn's place in the thread lives. Keep the
+                // start stamp so a reply that finishes after a newer
+                // message cannot claim to be newer than the message
+                // below it (7:09 answer above a 7:05 question).
+                if let startedAt = placeholder?.timestamp {
+                    resolved.timestamp = startedAt
+                }
+                resolved.toolActivities = activities
+                // The terminal frame has no file list; the chips arrived
+                // on their own Attachment frames and live on the
+                // placeholder. Replacing the row without carrying them
+                // would make the chip vanish at the exact moment the
+                // answer settles.
+                if let streamedAttachments = placeholder?.attachments,
+                   !streamedAttachments.isEmpty {
+                    resolved.attachments = streamedAttachments
+                }
+                resolved.codeDiff = diff
+                // Priority for reasoning:
+                // 1) finalMessage.reasoning — set by LiveHeraldClient (SSE terminal
+                //    reasoning from the done payload, or splitThinkingBlocks extraction).
+                // 2) placeholder's streamed reasoning — from reasoningDelta SSE events,
+                //    only used when finalMessage has no reasoning of its own.
+                // 3) regex extraction from content — last resort for models that embed
+                //    <think> tags inline without a separate reasoning field.
+                if resolved.reasoning.isEmpty && !streamedReasoning.isEmpty {
+                    resolved.reasoning = streamedReasoning
+                    if let startedAt = reasoningStartedAt {
+                        resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
+                    }
+                } else if !streamedReasoning.isEmpty {
+                    // finalMessage already has reasoning — keep it but carry over
+                    // the duration from the streamed placeholder
+                    if resolved.reasoningDuration == nil, let startedAt = reasoningStartedAt {
+                        resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
+                    }
+                }
+                // Last resort: regex extraction for models that embed reasoning
+                // as XML tags inline in the content (DeepSeek <think>, Qwen <thinking>).
+                // splitThinkingBlocks in LiveHeraldClient handles this on the sync
+                // path; this is the SSE-path safety net.
+                if resolved.reasoning.isEmpty {
+                    if let thinkRegex = try? NSRegularExpression(
+                        pattern: "<think(?:ing)?>(.*?)</think(?:ing)?>",
+                        options: [.dotMatchesLineSeparators, .caseInsensitive]
+                    ) {
+                        let nsContent = resolved.content as NSString
+                        let matches = thinkRegex.matches(
+                            in: resolved.content,
+                            range: NSRange(location: 0, length: nsContent.length)
+                        )
+                        let extracted = matches.compactMap { match -> String? in
+                            guard match.numberOfRanges > 1 else { return nil }
+                            return nsContent.substring(with: match.range(at: 1))
+                        }.joined(separator: "\n")
+                        if !extracted.isEmpty {
+                            resolved.reasoning = extracted.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if let startedAt = reasoningStartedAt {
+                                resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
+                            }
+                        }
+                    }
+                    // Also try unclosed <think> tags (model interrupted mid-reasoning)
+                    if resolved.reasoning.isEmpty {
+                        if let unclosedRegex = try? NSRegularExpression(
+                            pattern: "<think(?:ing)?>([\\s\\S]*?)$",
+                            options: [.caseInsensitive]
+                        ) {
+                            let nsContent = resolved.content as NSString
+                            if let match = unclosedRegex.firstMatch(
+                                in: resolved.content,
+                                range: NSRange(location: 0, length: nsContent.length)
+                            ), match.numberOfRanges > 1 {
+                                let extracted = nsContent.substring(with: match.range(at: 1))
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !extracted.isEmpty {
+                                    resolved.reasoning = extracted
+                                }
+                            }
+                        }
+                    }
+                }
+                // Always strip <think>…</think> (and <thinking>…</thinking>)
+                // tags from the visible content.
+                if let regex = try? NSRegularExpression(pattern: "<think(?:ing)?>.*?</think(?:ing)?>", options: [.dotMatchesLineSeparators, .caseInsensitive]) {
+                    let range = NSRange(resolved.content.startIndex..., in: resolved.content)
+                    resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, withTemplate: "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                let resolvedText = resolved.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Usage is returned by every provider on every turn, including turns
+                // that produced nothing.  Treating it as proof of a reply is what
+                // put a delivered check and a completion haptic on empty bubbles.
+                // Only rendered content — visible text or attachments — makes a
+                // completion credible.  Hidden reasoning alone is never a visible
+                // delivered check.
+                isCredibleCompletion = !resolvedText.isEmpty
+                    || !resolved.attachments.isEmpty
+                // The row keeps the time the turn STARTED, not the
+                // time it finished. Stamping completion time made a
+                // reply that landed after a newer message read as
+                // newer than the message below it: the 7:09 answer sat
+                // above the 7:05 question it could not have answered
+                // (Curtis, 2026-11-18). Position and stamp now agree:
+                // a long answer stays with its question and says when
+                // the question was sent.
+                self.conversation?.messages[idx] = resolved
+                // Build 117 fix: do NOT mark the user message as
+                // .delivered here.  The user message's delivery status
+                // is managed by the outbox lifecycle
+                // (terminalizeOutboxItem), not by the assistant's
+                // content arrival.  Marking it .delivered here defeated
+                // hasPendingDuplicateMessage when the user retried
+                // after a stream drop — the guard checked for
+                // status == .sending, found .delivered, and let a
+                // second optimistic row with the same clientMessageID
+                // through, producing two "Hey homie" bubbles.
+            }
+            let oldTitle = self.conversation?.title
+            // Build 26: the terminal message is authoritative in the
+            // active chat.  Persist the cache atomically before clearing
+            // stream ownership so a polling refresh, foreground recovery,
+            // or stale currentConversation snapshot cannot remove the
+            // answer the user already saw.
+            //
+            // currentConversation at this point is often the POST
+            // acknowledgement (one user message) or an intermediate
+            // polling snapshot that may not yet contain the terminal row.
+            // A message-count heuristic cannot safely decide freshness —
+            // equal or greater count does not prove the snapshot includes
+            // this turn.  Only merge metadata (title, usage, context)
+            // from the server; never replace the local message array
+            // inside the .finished handler.
+            self.cacheModifiedConversation()
+            let refreshed = self.heraldClient.currentConversation
+            if var conv = self.conversation {
+                // Accept server-derived title only when local is a default.
+                if conv.title == "New Chat" || conv.title == "Kallisti",
+                   let serverTitle = refreshed?.title,
+                   serverTitle != "New Chat", serverTitle != "Kallisti" {
+                    conv.title = serverTitle
+                }
+                conv.latestUsage = refreshed?.latestUsage ?? conv.latestUsage
+                conv.contextPercent = refreshed?.contextPercent ?? conv.contextPercent
+                self.conversation = conv
+            }
+            // Deferred reconciliation: mark that a server refresh is
+            // pending.  The next explicit session fetch (chat-list tap,
+            // foreground, or poll) will reconcile through
+            // mergeConversationMetadata, which preserves local attachments
+            // and content when the server copy is empty or truncated
+            // (B39 T5 guards at lines 1579-1595 and 1613-1618).
+            self.pendingServerReconciliation = true
+            if let latestUsage = self.conversation?.latestUsage {
+                self.lastTokenUsage = latestUsage
+            } else if let usage {
+                self.lastTokenUsage = usage
+            }
+            if let context {
+                self.lastContextInfo = context
+                self.conversation?.contextPercent = context.percentUsed
+            }
+            await self.detectProfileSwitch(in: finalMessage.content)
+            if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
+            self.pendingMessageSentAt = nil
+            self.chatLiveActivity.endActivity()
+            self.streamingPhase = .idle
+            // Durable outbox: the job reached a server terminal state —
+            // record the canonical identities and release the phase.
+            // Also mark the user message as .delivered so the green
+            // checkmark dot appears.  terminalizeOutboxItem is the
+            // ONLY place that sets .delivered on the user message;
+            // without this call the green dot never fires on the
+            // streaming path (the polling fallback path at line 1216
+            // does call it, but only on stall — not on normal
+            // completion).
+            if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                self.terminalizeOutboxItem(
+                    self.outboxItems[idx],
+                    canonicalUserMessageID: clientMessageID,
+                    terminalMessageID: finalMessage.id
+                )
+            }
+            self.sendPhase = .completed
+            self.sendPhaseOwner = nil
+            // Build 30: bump the conversation generation so any in-flight
+            // poll/refresh captures are discarded.  This ensures a stale
+            // server snapshot that arrived after terminal commit cannot
+            // replace the local message array — the poll loop will re-fetch
+            // on the next cycle and the server will include the terminal row.
+            self.conversationGeneration &+= 1
+
+            // Haptic feedback on response completion — fired immediately
+            // in the stream handler so it's synchronous with the content
+            // appearing, not delayed by the ChatScreen's onChange observer.
+            if isCredibleCompletion, self.hapticFeedbackEnabled() {
+                HapticEngine.responseReceived()
+            }
+
+            // Finish TTS streaming — flush any remaining buffered text
+            self.ttsService?.finishStream()
+            // Notify if merge changed the title (server-derived title)
+            if let conv = self.conversation, conv.title != oldTitle {
+                self.onTitleChanged?(conv.id, conv.title)
+            }
+            await self.autoTitleIfNeeded()
+
+            // D5: autoCompress() deleted — it sent a /compress user
+            // turn into the transcript, invoking a connector command
+            // whose implementation called a nonexistent `hermes
+            // compress` subcommand.  The agent's own ContextCompressor
+            // handles compaction at 25%.
+
+            // Post local notification if app is in background.
+            // Dedup against `lastNotifiedTerminalMessageID` so a
+            // re-entry of the `.finished` handler for the same
+            // terminal message (retry that re-emits `.finished`,
+            // late SSE replay, or a foreground→background
+            // round-trip that re-fires the terminal commit) cannot
+            // enqueue a second 'Turn complete' banner. Combined
+            // with the foreground guard this yields exactly one
+            // notification per turn, in send order.
+            if UIApplication.shared.applicationState == .background,
+               lastNotifiedTerminalMessageID != finalMessage.id {
+                let content = UNMutableNotificationContent()
+                content.title = "Kallisti"
+                content.body = String(finalMessage.content.prefix(100))
+                content.sound = .default
+                content.categoryIdentifier = NotificationCategoryID.messageReady.rawValue
+                if let convId = self.conversation?.id.uuidString {
+                    content.userInfo = [
+                        "conversationId": convId,
+                        "messageId": finalMessage.id.uuidString,
+                    ]
+                }
+
+                let request = UNNotificationRequest(
+                    identifier: "herald-response-\(finalMessage.id.uuidString)",
+                    content: content,
+                    trigger: nil
+                )
+                try? await UNUserNotificationCenter.current().add(request)
+                // Mark BEFORE the await-driven continuation so a
+                // re-entrant `.finished` for the same id cannot
+                // slip through the guard between the add() call
+                // and the assignment.
+                lastNotifiedTerminalMessageID = finalMessage.id
+            }
+
+            // Build 33 WSB: the FIFO chain lives in submitNextEligible —
+            // when this attempt returns, its tail submits the next
+            // queued item for the conversation. (Calling it here would
+            // no-op anyway: submitInFlight is true for the whole
+            // attempt, and the chain runs once it is released.)
+        case .started(let phase):
+            self.appendLog(level: .info, "Job started — phase: \(phase)")
+            progressContinuation?.yield(())
+            self.chatLiveActivity.updateToolProgress(phase)
+            // Update the placeholder to show what the model is doing
+            if var conv = self.conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].toolActivity = phase
+                self.conversation = conv
+            }
+
+        case .heartbeat(let phase):
+            // Heartbeat proves the connector process is alive, but does
+            // NOT prove the model is making progress. Do NOT reset the
+            // watchdog — keepalive/transport liveness alone must not
+            // prevent the stall detector from firing.
+            self.appendLog(level: .debug, "Job heartbeat — phase: \(phase)")
+
+        case .reconnecting:
+            // Build 31 (fix): discard stale callbacks from a superseded
+            // attempt.  A retry/replacement bumps activeAttemptID, so the
+            // old stream coordinator's reconnect event cannot overwrite
+            // the new attempt's banner or placeholder.
+            guard self.activeAttemptID == attemptID else { break }
+            self.appendLog(level: .warn, "Stream reconnecting...")
+            // Build 64: capture the snapshot so the banner reads the
+            // current transport state instead of a frozen
+            // "Stream stalled" string. clearStall on .finished below
+            // ensures the banner hides as soon as content resumes.
+            self.markStalled()
+            self.streamingPhase = .reconnecting
+            self.sendPhase = .restoringStream
+            // Reconnection attempts are transport recovery, not model
+            // progress. Do not reset the watchdog.
+            // Build 64: mirror the in-app reconnect banner onto the
+            // Lock Screen / Dynamic Island so the user sees progress
+            // recovery instead of the frozen last phase.
+            self.chatLiveActivity.updatePhase(LiveActivityPhase.waitingForHost.rawValue)
+            if var conv = self.conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].toolActivity = "Restoring response stream…"
+                self.conversation = conv
+            }
+            // Start polling immediately as a parallel recovery path.
+            // If the SSE stream is struggling to stay connected, the
+            // polling loop can pick up the response independently.
+            // When polling resolves the pending message the stream
+            // coordinator will naturally exit on its next reconnect.
+            self.restartPendingPollingIfNeeded()
+
+        case .cancelled:
+            guard self.activeAttemptID == attemptID else { break }
+            // Build 64: turn cancelled, clear any pending stall
+            // snapshot so the banner hides.
+            self.clearStall()
+            self.pendingStreamPlaceholders.remove(placeholderID)
+            self.appendLog(level: .info, "Job cancelled")
+            progressContinuation?.yield(())
+            self.flushPendingReasoning(placeholderID: placeholderID)
+            self.flushPendingDeltas(placeholderID: placeholderID)
+            if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
+                self.conversation?.messages[idx] = Message(
+                    sender: .system,
+                    content: "Cancelled",
+                    status: .failed
+                )
+            }
+            if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
+            self.pendingMessageSentAt = nil
+            self.chatLiveActivity.endActivity()
+            self.streamingPhase = .idle
+            // Durable outbox: user cancelled — the item is never
+            // auto-resubmitted; a manual retry re-enqueues fresh.
+            if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                self.outboxItems[idx].state = .cancelled
+                self.outboxItems[idx].lastError = "Cancelled by user"
+                self.persistOutbox()
+                self.outboxStore.removeStagedAttachments(for: self.outboxItems[idx])
+            }
+            self.sendPhase = .idle
+            self.sendPhaseOwner = nil
+            // Build 23: cancellation must NOT mark the outgoing user
+            // message as delivered.  The green check is a final-delivery
+            // signal tied to a credible terminal result.
+            if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
+                self.conversation?.messages[idx].status = .sending
+            }
+            await self.autoTitleIfNeeded()
+
+        case .failed(let errorMessage, let category, let action):
+            guard self.activeAttemptID == attemptID else { break }
+            // Build 64: turn failed, clear any pending stall
+            // snapshot so the banner hides.
+            self.clearStall()
+            // Build 128.76: the turn died - the clarify card has
+            // nothing to answer anymore.
+            if self.pendingClarify != nil {
+                self.pendingClarify = nil
+                self.appendLog(level: .info, "Clarify cleared (turn failed)")
+            }
+            self.pendingStreamPlaceholders.remove(placeholderID)
+            // An explicit failure is a real signal, not silence — let it
+            // resolve the watchdog race immediately rather than waiting
+            // out the timeout, and handle it exactly as before.
+            progressContinuation?.yield(())
+            self.flushPendingReasoning(placeholderID: placeholderID)
+            self.flushPendingDeltas(placeholderID: placeholderID)
+
+            // Store error context for the UI
+            self.lastErrorCategory = category
+            self.lastErrorAction = action
+
+            // Build 64: push the Live Activity to needsAttention BEFORE
+            // ending it so the Lock Screen / Dynamic Island briefly
+            // shows the warning state (per Apple HIG: an activity
+            // should reflect a meaningful end-state for users who
+            // arrive late via the lock screen). The next endActivity
+            // call below dismisses the activity with .immediate.
+            self.chatLiveActivity.updatePhase(LiveActivityPhase.needsAttention.rawValue)
+
+            // Show actionable guidance based on error category
+            let guidance: String
+            switch category {
+            case "context_exceeded":
+                guidance = "This session is too long for the current model. Start a new session or switch models."
+            case "rate_limited":
+                guidance = "Kallisti is rate-limited. Please wait and try again."
+            case "timeout":
+                guidance = "The request timed out. Check your connection and retry."
+            case "empty_response":
+                guidance = "Kallisti returned an empty response. Try again or start a new session."
+            case "upstream_interrupted":
+                guidance = "The model was interrupted upstream. Please retry."
+            default:
+                guidance = errorMessage
+            }
+
+            if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
+                // Build N+: "Could not fetch job status" is a transient
+                // reconnect signal, not a terminal failure.  The relay
+                // accepted the job (acceptedJobID != nil) and the
+                // response IS coming — don't replace the placeholder
+                // with a system error that persists in the chat after
+                // the response arrives.  Leave the placeholder as-is
+                // (still streaming) so the .finished handler can
+                // replace it cleanly when the response lands.
+                if acceptedJobID != nil && category == nil {
+                    self.appendLog(level: .info, "Transient fetch failure for job \(placeholderID.uuidString.prefix(8)) — waiting for reconnect")
+                } else {
+                    self.conversation?.messages[idx] = Message(
+                        sender: .system,
+                        content: guidance,
+                        status: .failed,
+                        errorCategory: category
+                    )
+                }
+            }
+            if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
+            self.chatLiveActivity.endActivity()
+            self.streamingPhase = .idle
+            // Durable outbox: an explicit failure before acceptance is a
+            // retryable failure with backoff; a failure AFTER acceptance
+            // leaves the job with the relay — the polling fallback below
+            // (or a later recovery pass) resolves it.
+            if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                if acceptedJobID == nil {
+                    let item = self.outboxItems[idx]
+                    self.failOutboxItem(
+                        item,
+                        state: .retryableFailure,
+                        error: guidance,
+                        retryAfter: self.backoffInterval(forAttempt: item.attemptCount)
+                    )
+                } else {
+                    self.outboxItems[idx].lastError = errorMessage
+                    self.persistOutbox()
+                }
+            }
+            if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
+                self.conversation?.messages[idx].status = acceptedJobID == nil ? .failed : .sending
+            }
+            if acceptedJobID != nil {
+                needsPollingFallback = true
+                self.sendPhase = .restoringStream
+            } else {
+                self.pendingMessageSentAt = nil
+                self.sendPhase = .failed(guidance)
+            }
+            await self.autoTitleIfNeeded()
+        }
+
+        state.acceptedJobID = acceptedJobID
+        state.needsPollingFallback = needsPollingFallback
+        state.reasoningStartedAt = reasoningStartedAt
     }
 
     // MARK: - Structured concurrency race (Build 102 P0-A)
@@ -3582,6 +3671,12 @@ final class ChatStore {
 
         streamingTask?.cancel()
         streamingTask = nil
+        // A reattached feed reads a turn the user just cancelled: stop the
+        // reader before the generation bump below can leave it dangling on a
+        // stream nobody ends.
+        reattachTask?.cancel()
+        reattachTask = nil
+        reattachToken = nil
         // Invalidate stale callbacks from the cancelled stream coordinator.
         activeAttemptID = UUID()
         chatLiveActivity.endActivity()
@@ -4710,7 +4805,16 @@ final class ChatStore {
     /// (desktop, iPad, another phone) appears without a manual refresh.
     /// Sets `pendingNewMessageCount` when the server has rows this device has
     /// not rendered yet.
+    ///
+    /// It also repaints a turn that was live when the app left. The transcript
+    /// refresh cannot show a running turn - its rows are written when it ends -
+    /// so a turn the daemon still holds is reattached below and its feed drives
+    /// the same consumer the live send uses.
     func performForegroundCatchUp() async {
+        // Consume the detached-row mark once per catch-up, so a later
+        // foreground cannot reattach a feed that was never detached.
+        let detachedPlaceholderID = streamDetachedPlaceholderID
+        streamDetachedPlaceholderID = nil
         guard isPollingEnabled, conversation != nil else { return }
         // Build 128.47: heal the socket BEFORE the HTTP refresh. A gateway
         // restart kills the WS silently (receive() never surfaces the error),
@@ -4726,11 +4830,15 @@ final class ChatStore {
         // conversation and will reconcile on their own. A stream that was
         // frozen by a background trip is not in flight, though: it is a socket
         // that will never deliver again, and refusing to catch up because of it
-        // is why the refresh button did nothing while a turn was live.
-        guard !hasPendingMessages else { return }
+        // is why the refresh button did nothing while a turn was live. Its
+        // `.sending` user row must not veto the refresh either: the row is
+        // `.sending` precisely because no terminal event ever arrived to
+        // settle it, so waiting for it to clear waits for the dead socket.
         let streamLooksDead = isStreaming
-            && (streamBackgroundedAt != nil
+            && (detachedPlaceholderID == streamingMessageID
+                || streamBackgroundedAt != nil
                 || Date.now.timeIntervalSince(streamingProgressAt) > Self.catchUpStallInterval)
+        guard !hasPendingMessages || streamLooksDead else { return }
         if isStreaming && !streamLooksDead { return }
         if streamLooksDead {
             // Reconcile the frozen phase before the transcript refresh, so a
@@ -4767,9 +4875,114 @@ final class ChatStore {
         }
         restartPendingPollingIfNeeded()
         clearNotificationsForCurrentConversation()
+        // A turn that was live when the app left gets its feed back. Any other
+        // quiet stream is still owned by the send path's consumer and the
+        // watchdog decides what to do with it, so only the row that was
+        // detached is reattached here.
+        if let detachedPlaceholderID, detachedPlaceholderID == streamingMessageID {
+            await reattachStreamingTurnIfNeeded()
+        }
         // Build 128.46: re-arm the server-turn watch if the session is still
         // running server-side (we cancelled it above to force this refresh).
         await startServerTurnWatchIfNeeded()
+    }
+
+    /// Attach to a turn the daemon is still running for this conversation.
+    ///
+    /// The live send reads a turn as a server-sent stream. iOS reaps that
+    /// socket when the app is suspended without surfacing an error, so its
+    /// `for await` neither ends nor yields: the bubble sits frozen while the
+    /// daemon keeps producing. The turn itself is still there and the
+    /// transport can ask for its frames again, so this reattaches and hands
+    /// the frames to the same consumer the live send uses. A reattach is a
+    /// second reader of one turn, not a second implementation of reading it.
+    ///
+    /// No-ops unless this device accepted a job for the conversation on
+    /// screen, the daemon's own id for that job is known (the local job id is
+    /// a hash of it and cannot be asked about), the daemon still holds it, and
+    /// a streaming row is on screen. A turn that finished while the app was
+    /// away is settled by the transcript refresh that already ran.
+    private func reattachStreamingTurnIfNeeded() async {
+        guard isPollingEnabled, conversation != nil, reattachTask == nil else { return }
+        guard let conversationID = conversation?.id else { return }
+        guard let placeholderID = streamingMessageID else { return }
+        guard conversation?.messages.contains(where: { $0.id == placeholderID }) == true else { return }
+        // Only a job this device sent has a daemon id in its outbox record. A
+        // turn started elsewhere is the server-turn watch's problem, not this.
+        guard let record = outboxItems.first(where: {
+            $0.conversationID == conversationID && $0.state == .accepted
+        }) else { return }
+        guard let daemonJobID = record.daemonJobID, !daemonJobID.isEmpty else { return }
+        guard let jobID = record.jobID ?? acceptedJobID else { return }
+        // Ask before attaching. A turn the daemon no longer holds would answer
+        // only an error frame, and writing a failure onto a bubble whose reply
+        // is already in the transcript is worse than leaving it alone.
+        guard let job = await heraldClient.jobState(daemonJobID: daemonJobID),
+              job.status != "terminal" else { return }
+
+        // One reader per turn. The suspended consumer is not coming back, and
+        // cancelling it releases the send path's watchdog: that reports the
+        // stall the existing polling fallback already settles, while this feed
+        // repaints the row in the meantime. A second reader on the same row
+        // would apply every frame twice.
+        streamingTask?.cancel()
+        streamingTask = nil
+        // A fresh attempt generation, so nothing the old consumer still holds
+        // can outlive this line and the reattached feed has its own identity.
+        activeAttemptID = UUID()
+        let attemptID = activeAttemptID
+        acceptedJobID = jobID
+        activeStreams[jobID] = placeholderID
+        pendingStreamPlaceholders.remove(placeholderID)
+        // The same state a live send shows when its transport drops and it
+        // starts reading again; the first frame moves it to `.streaming`, and
+        // the terminal cases clear it exactly as they do for a live send.
+        streamingPhase = .reconnecting
+        sendPhase = .restoringStream
+        noteStreamingProgress()
+        streamBackgroundedAt = nil
+        if var conv = conversation,
+           let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+            conv.messages[idx].toolActivity = "Restoring response stream…"
+            conversation = conv
+        }
+        appendLog(level: .info, "Reattaching to job \(daemonJobID) after foreground")
+
+        let token = UUID()
+        reattachToken = token
+        reattachTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.reattachToken == token {
+                    self.reattachTask = nil
+                    self.reattachToken = nil
+                }
+            }
+            var state = StreamingContext(
+                attemptID: attemptID,
+                // The outbox record's id is the user row this turn belongs to,
+                // so a terminal frame settles the same item a live send would.
+                clientMessageID: record.clientMessageID,
+                placeholderID: placeholderID,
+                sendStartedAt: .now,
+                // Nothing races this consumer for a watchdog: the terminal
+                // cases are the only progress signal it needs.
+                progressContinuation: nil,
+                acceptedJobID: jobID,
+                needsPollingFallback: true,
+                reasoningStartedAt: nil
+            )
+            let stream = self.heraldClient.resumeStreaming(jobID: daemonJobID)
+            for await update in stream {
+                if Task.isCancelled { break }
+                // A cancel, a retry, or a conversation switch supersedes this
+                // attempt: stop feeding a turn the store no longer owns.
+                if self.activeAttemptID != attemptID { break }
+                if self.conversation?.id != conversationID { break }
+                await self.applyStreamUpdate(update, state: &state)
+            }
+            self.acceptedJobID = state.acceptedJobID
+        }
     }
 
     /// Build 124: count server messages that have no counterpart in the local
