@@ -614,6 +614,11 @@ final class AppContainer {
                     mimoKeyProvider: { apiKeyHolder.get() }
                 )
                 ts.ttsService = tts
+                ts.speechEnginePreference = { [settingsStore] in
+                    SpeechEnginePreference(
+                        rawValue: settingsStore.settings.ttsEnginePreference ?? ""
+                    ) ?? .auto
+                }
                 ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak, autoSpeakDuringStreaming: s.ttsAutoSpeakDuringStreaming, appleVoiceIdentifier: s.ttsAppleVoiceIdentifier) }
                 ts.apiKeyHolder = apiKeyHolder
                 // Gate Talk on connector-side readiness. The MiMo key remains

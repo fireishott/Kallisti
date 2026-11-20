@@ -47,6 +47,10 @@ final class TalkStore {
     /// server has a realtime gateway configured and accepting sessions.
     @ObservationIgnored var talkReadinessProvider: (@MainActor () async -> (ready: Bool, blockedReason: String?))?
 
+    /// Which speech engine the settings selected. Talk asks the same question the
+    /// answer's voice does, instead of assuming the cloud one.
+    @ObservationIgnored var speechEnginePreference: @MainActor () -> SpeechEnginePreference = { .auto }
+
     private let liveActivity = LiveActivityService()
     private var lastSpokenItemID: UUID?
 
@@ -206,13 +210,18 @@ final class TalkStore {
             blockedReason = "Talk coordinator not available"
             return
         }
+        // The key is only the Mimo cloud engine's requirement. The daemon speaks
+        // and hears with whatever provider it is configured for, and demanding a
+        // key here is what kept Talk dark on a daemon that needed none.
         if let apiKeyHolder {
             await apiKeyHolder.refresh()
         }
-        guard let apiKeyHolder, let key = apiKeyHolder.get(), !key.isEmpty else {
-            canStartSession = false
-            blockedReason = "Mimo API key required — add it in Settings → Voice"
-            return
+        if speechEnginePreference() == SpeechEnginePreference.mimo {
+            guard let apiKeyHolder, let key = apiKeyHolder.get(), !key.isEmpty else {
+                canStartSession = false
+                blockedReason = "The cloud voice is selected but no key is set — choose Automatic in Settings → Voice."
+                return
+            }
         }
         // P1-3: gate on server-side readiness.  The realtime Talk backend is
         // a B38 project; until then the server returns configured=false.
@@ -251,12 +260,14 @@ final class TalkStore {
         if let apiKeyHolder {
             await apiKeyHolder.refresh()
         }
-        guard let apiKeyHolder, let key = apiKeyHolder.get(), !key.isEmpty else {
-            blockedReason = "Mimo API key required — add it in Settings → Voice"
-            statusMessage = "API key missing"
-            canStartSession = false
-            onSessionStateChanged?()
-            return
+        if speechEnginePreference() == SpeechEnginePreference.mimo {
+            guard let apiKeyHolder, let key = apiKeyHolder.get(), !key.isEmpty else {
+                blockedReason = "The cloud voice is selected but no key is set — choose Automatic in Settings → Voice."
+                statusMessage = "Voice key missing"
+                canStartSession = false
+                onSessionStateChanged?()
+                return
+            }
         }
         // P1-3: gate on server-side readiness so a failed start surfaces
         // instead of a silent hang in "LISTENING".

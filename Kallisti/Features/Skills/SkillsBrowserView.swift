@@ -33,7 +33,14 @@ struct SkillsBrowserView: View {
                 )
             } else {
                 ForEach(skillsStore.filteredSkills) { skill in
-                    NavigationLink(value: skill) {
+                    // A destination value is resolved by the nearest navigation
+                    // stack, and Settings is pushed inside a split view: the link
+                    // re-rendered the list and pushed the detail only on the way
+                    // back. A view destination cannot be resolved by the wrong
+                    // stack.
+                    NavigationLink {
+                        SkillDetailView(skill: skill)
+                    } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(skill.name)
                                 .font(.headline)
@@ -50,9 +57,6 @@ struct SkillsBrowserView: View {
         }
         .searchable(text: Bindable(skillsStore).searchText, prompt: "Search skills")
         .navigationTitle("Skills")
-        .navigationDestination(for: SkillsStore.HeraldSkill.self) { skill in
-            SkillDetailView(skill: skill)
-        }
         .refreshable { await skillsStore.loadSkills(force: true) }
         .task { await skillsStore.loadSkills() }
     }

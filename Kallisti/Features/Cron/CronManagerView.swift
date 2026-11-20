@@ -35,7 +35,12 @@ struct CronManagerView: View {
                 )
             } else {
                 ForEach(cronStore.jobs) { job in
-                    NavigationLink(value: job) {
+                    // Same reason as the skills list: a value destination is
+                    // resolved by the nearest stack, and this list lives inside
+                    // the settings stack of a split view.
+                    NavigationLink {
+                        CronJobDetailView(job: job)
+                    } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(job.name)
@@ -70,9 +75,6 @@ struct CronManagerView: View {
             }
         }
         .navigationTitle("Cron Jobs")
-        .navigationDestination(for: CronStore.CronJob.self) { job in
-            CronJobDetailView(job: job)
-        }
         .refreshable { await cronStore.loadJobs() }
         .task { await cronStore.loadJobs() }
         .toolbar {
