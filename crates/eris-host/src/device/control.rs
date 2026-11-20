@@ -859,10 +859,7 @@ pub async fn voices(State(service): State<DeviceService>, headers: HeaderMap) ->
 /// model outside the catalogue is still accepted on a `PUT`: the catalogue is
 /// what was probed, not a closed set, and an audio model is usually absent from
 /// it.
-pub async fn speech_get(
-    State(service): State<DeviceService>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn speech_get(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
         Err(error) => return error.into_response(),
@@ -876,8 +873,31 @@ pub async fn speech_get(
         .flatten()
         .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
         .unwrap_or_default();
+    // The engine decides what "configured" means. The classic engine is the
+    // stored base URL; the chat engine is its own override or the provider base
+    // URL it falls back to. A chat model alone names no endpoint, so it does not
+    // count as configured.
+    let engine = crate::speech::engine(db);
+    let configured = match engine {
+        crate::speech::Engine::AudioEndpoint => crate::speech::engine_base(db).is_some(),
+        crate::speech::Engine::ChatAudio => {
+            crate::web::store::settings_get(db, crate::speech::SETTING_CHAT_BASE_URL)
+                .ok()
+                .flatten()
+                .is_some_and(|value| !value.trim().is_empty())
+                || crate::web::chat::turn_config(service.engine())
+                    .ok()
+                    .flatten()
+                    .is_some()
+        }
+    };
     axum::Json(serde_json::json!({
         "ok": true,
+        "engine": engine.as_str(),
+        "engines": crate::speech::ENGINES
+            .iter()
+            .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
+            .collect::<Vec<_>>(),
         "model": crate::speech::model(db),
         "default_model": crate::speech::MODEL,
         "models": models,
@@ -886,9 +906,52 @@ pub async fn speech_get(
             .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
             .collect::<Vec<_>>(),
         "voice": crate::speech::voice(db),
-        "configured": crate::speech::engine_base(db).is_some(),
+        "voice_models": crate::speech::voice_models(db),
+        "configured": configured,
     }))
     .into_response()
+}
+
+/// `PUT /v1/speech/engine` - choose which engine speaks and transcribes.
+///
+/// Administration, because the value decides which endpoint the daemon calls
+/// and with which credentials. A value outside the two the daemon knows is
+/// refused by name rather than stored and discovered on the first answer.
+pub async fn speech_engine_put(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Admin) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let raw = field(&fields, "engine");
+    let Some(engine) = crate::speech::Engine::parse(raw) else {
+        return DeviceError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            "speech_engine_invalid",
+            "engine must be audio-endpoint or chat-audio",
+        )
+        .into_response();
+    };
+    if let Err(error) = crate::web::store::settings_put(
+        service.engine().db(),
+        crate::speech::SETTING_ENGINE,
+        engine.as_str(),
+    ) {
+        return DeviceError::db_unavailable(format!("cannot store the speech engine: {error}"))
+            .into_response();
+    }
+    let _ = audit(&service, token.device_id(), "tts.engine", engine.as_str());
+    axum::Json(serde_json::json!({ "ok": true, "engine": engine.as_str() })).into_response()
 }
 
 /// `PUT /v1/speech` - choose the model the daemon speaks with.
@@ -979,18 +1042,21 @@ pub async fn speak(
             }
             (out, bytes).into_response()
         }
-        Err((status, code)) => DeviceError::new(
-            axum::http::StatusCode::from_u16(status)
+        Err(refusal) => DeviceError::new(
+            axum::http::StatusCode::from_u16(refusal.status)
                 .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
-            code,
-            match code {
-                "tts_disabled" => "speech is switched off on the daemon",
-                "tts_empty" => "there is nothing to say",
-                "tts_not_configured" => {
-                    "no provider is configured with a speech endpoint, so nothing was spoken"
+            refusal.code,
+            refusal.detail.unwrap_or_else(|| {
+                match refusal.code {
+                    "tts_disabled" => "speech is switched off on the daemon",
+                    "tts_empty" => "there is nothing to say",
+                    "tts_not_configured" => {
+                        "no provider is configured with a speech endpoint, so nothing was spoken"
+                    }
+                    _ => "the provider refused the speech request",
                 }
-                _ => "the provider refused the speech request",
-            },
+                .to_owned()
+            }),
         )
         .into_response(),
     }
@@ -1024,7 +1090,10 @@ pub async fn transcribe(
             .into_response();
         }
     };
-    match crate::speech::transcribe(service.engine().db(), &bytes).await {
+    let config = crate::web::chat::turn_config(service.engine())
+        .ok()
+        .flatten();
+    match crate::speech::transcribe(service.engine().db(), config.as_ref(), &bytes).await {
         Ok(heard) => {
             let chars = heard
                 .get("text")
@@ -1038,18 +1107,21 @@ pub async fn transcribe(
             );
             axum::Json(heard).into_response()
         }
-        Err((status, code)) => DeviceError::new(
-            axum::http::StatusCode::from_u16(status)
+        Err(refusal) => DeviceError::new(
+            axum::http::StatusCode::from_u16(refusal.status)
                 .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
-            code,
-            match code {
-                "stt_empty" => "the upload carried no audio",
-                "stt_too_large" => "the upload is past the 32 MB clip cap",
-                "stt_not_configured" => {
-                    "no engine base URL is configured, so nothing was transcribed"
+            refusal.code,
+            refusal.detail.unwrap_or_else(|| {
+                match refusal.code {
+                    "stt_empty" => "the upload carried no audio",
+                    "stt_too_large" => "the upload is past the 32 MB clip cap",
+                    "stt_not_configured" => {
+                        "no engine base URL is configured, so nothing was transcribed"
+                    }
+                    _ => "the engine refused the transcription",
                 }
-                _ => "the engine refused the transcription",
-            },
+                .to_owned()
+            }),
         )
         .into_response(),
     }

@@ -14,7 +14,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use eris_host::auth::{AuthStore, ScopeSet, TokenOrigin, TokenService};
+use eris_host::auth::{AuthStore, Scope, ScopeSet, TokenOrigin, TokenService};
 use eris_host::config::Paths;
 use eris_host::db::{Db, SetupState};
 use eris_host::device::DeviceService;
@@ -66,21 +66,52 @@ impl Lab {
 
     /// A device and a live token, without going through `/v1/pair`.
     fn token(&self) -> String {
+        self.mint(ScopeSet::device_default(), TokenOrigin::Device)
+    }
+
+    /// The same device, paired with the administration box ticked.
+    fn admin_token(&self) -> String {
+        self.mint(
+            ScopeSet::device_default().with(Scope::Admin),
+            TokenOrigin::Loopback,
+        )
+    }
+
+    fn mint(&self, scopes: ScopeSet, origin: TokenOrigin) -> String {
         let db = self.engine.db().clone();
         let device_id = AuthStore::new(db.clone())
             .register_device("voice-lab", "ios")
             .expect("device row");
         TokenService::new(db)
-            .mint_access(&device_id, ScopeSet::device_default(), TokenOrigin::Device)
+            .mint_access(&device_id, scopes, origin)
             .expect("access token")
             .token()
             .to_owned()
     }
 
+    async fn get(&self, path: &str, token: &str) -> Reply {
+        self.send("GET", path, token, "", b"").await
+    }
+
     async fn post(&self, path: &str, token: &str, content_type: &str, body: &[u8]) -> Reply {
+        self.send("POST", path, token, content_type, body).await
+    }
+
+    async fn put(&self, path: &str, token: &str, content_type: &str, body: &[u8]) -> Reply {
+        self.send("PUT", path, token, content_type, body).await
+    }
+
+    async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        token: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Reply {
         let mut stream = TcpStream::connect(self.addr).await.expect("connect");
         let mut head = format!(
-            "POST {path} HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n\
+            "{method} {path} HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n\
              authorization: Bearer {token}\r\ncontent-type: {content_type}\r\n\
              content-length: {}\r\n\r\n",
             body.len()
@@ -249,6 +280,89 @@ async fn a_json_object_with_the_text_field_is_understood() {
         .await;
     assert_eq!(reply.status, 503, "body: {}", reply.body);
     assert_eq!(reply.code(), "tts_not_configured");
+    lab.stop();
+}
+
+// ---------------------------------------------------------------------------
+// The engine row and the speech read
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_speech_read_names_the_engine_and_its_voice_models() {
+    let lab = Lab::start().await;
+    let token = lab.token();
+    let reply = lab.get("/v1/speech", &token).await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert_eq!(reply.json()["engine"], "audio-endpoint");
+    assert_eq!(
+        reply.json()["voice_models"].as_array().map(Vec::len),
+        Some(0),
+        "the classic engine has no chat model to list: {}",
+        reply.body
+    );
+
+    lab.engine
+        .set_setting("speech.engine", "chat-audio")
+        .expect("engine");
+    lab.engine
+        .set_setting("speech.chat_model", "chat-audio-model")
+        .expect("chat model");
+    let reply = lab.get("/v1/speech", &token).await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert_eq!(reply.json()["engine"], "chat-audio");
+    assert_eq!(
+        reply.json()["voice_models"],
+        serde_json::json!(["chat-audio-model"]),
+        "the chat-audio engine lists only its own model: {}",
+        reply.body
+    );
+    lab.stop();
+}
+
+#[tokio::test]
+async fn the_engine_write_is_admin_only_and_validates_the_value() {
+    let lab = Lab::start().await;
+    let token = lab.token();
+    let reply = lab
+        .put(
+            "/v1/speech/engine",
+            &token,
+            JSON,
+            br#"{"engine":"chat-audio"}"#,
+        )
+        .await;
+    assert_eq!(reply.status, 403, "body: {}", reply.body);
+    assert_eq!(reply.code(), "scope_denied");
+
+    let admin = lab.admin_token();
+    let reply = lab
+        .put("/v1/speech/engine", &admin, JSON, br#"{"engine":"pigeon"}"#)
+        .await;
+    assert_eq!(reply.status, 400, "body: {}", reply.body);
+    assert_eq!(reply.code(), "speech_engine_invalid");
+    assert_eq!(
+        lab.engine.setting("speech.engine").expect("read"),
+        None,
+        "a refused value is not stored"
+    );
+
+    let reply = lab
+        .put(
+            "/v1/speech/engine",
+            &admin,
+            JSON,
+            br#"{"engine":"CHAT-AUDIO"}"#,
+        )
+        .await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert_eq!(reply.json()["engine"], "chat-audio");
+    assert_eq!(
+        lab.engine
+            .setting("speech.engine")
+            .expect("read")
+            .as_deref(),
+        Some("chat-audio")
+    );
     lab.stop();
 }
 
