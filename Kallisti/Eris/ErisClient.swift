@@ -653,10 +653,18 @@ actor ErisClient {
     /// finishes it with a thrown error, so a caller can distinguish "the turn
     /// ended" from "the stream broke".
     func events(turnID: String) -> AsyncThrowingStream<ErisFrame, Error> {
+        events(turnID: turnID, lastEventID: nil)
+    }
+
+    /// The same stream, asked to continue after `lastEventID`.
+    ///
+    /// With no id the daemon starts at the tail, which is "watch". With the id of
+    /// the last frame the app saw it replays what was missed, which is "catch up".
+    func events(turnID: String, lastEventID: String?) -> AsyncThrowingStream<ErisFrame, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await self.streamEvents(turnID: turnID, into: continuation)
+                    try await self.streamEvents(turnID: turnID, lastEventID: lastEventID, into: continuation)
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -937,17 +945,21 @@ actor ErisClient {
     /// Open the stream, refresh once on a 401, and feed bytes to the decoder.
     private func streamEvents(
         turnID: String,
+        lastEventID: String?,
         into continuation: AsyncThrowingStream<ErisFrame, Error>.Continuation
     ) async throws {
         let route = ErisRoute.events(turnID: turnID)
-        var (bytes, status) = try await openStream(
-            try await authorizedRequest(route: route, form: nil, accept: "text/event-stream")
-        )
+        func request() async throws -> URLRequest {
+            var request = try await authorizedRequest(route: route, form: nil, accept: "text/event-stream")
+            if let lastEventID, !lastEventID.isEmpty {
+                request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
+            }
+            return request
+        }
+        var (bytes, status) = try await openStream(try await request())
         if status == 401 {
             _ = try await refresh()
-            (bytes, status) = try await openStream(
-                try await authorizedRequest(route: route, form: nil, accept: "text/event-stream")
-            )
+            (bytes, status) = try await openStream(try await request())
         }
         guard (200..<300).contains(status) else {
             let body = await collect(bytes: bytes, limit: Self.maximumErrorBodyBytes)

@@ -586,6 +586,10 @@ struct ErisSSEDecoder {
     private var event: String?
     private var dataLines: [String] = []
 
+    /// The `id:` of the last complete frame. The daemon's events route replays
+    /// strictly after this value, which is the whole of a mid-turn reattach.
+    private(set) var lastEventID: String?
+
     init() {}
 
     /// Feed one chunk of bytes and take whatever frames are now complete.
@@ -640,9 +644,11 @@ struct ErisSSEDecoder {
             event = value
         case "data":
             dataLines.append(value)
+        case "id":
+            if !value.isEmpty { lastEventID = value }
         default:
-            // `id:` (sequence), `retry:` and anything new are not needed: the
-            // four frame kinds carry everything this client renders.
+            // `retry:` and anything new are not needed: the frame kinds carry
+            // everything this client renders.
             break
         }
         return nil
