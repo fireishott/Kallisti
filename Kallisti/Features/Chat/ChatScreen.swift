@@ -457,7 +457,7 @@ struct ChatScreen: View {
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showSubagents) {
-            SubagentPreviewSheet(rows: chatStore.subagents, onDismiss: { showSubagents = false })
+            SubagentPreviewSheet(onDismiss: { showSubagents = false })
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showCanvas) {
