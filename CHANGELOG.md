@@ -10,6 +10,20 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-11-19
+
+### Added
+
+- The event stream can be resumed. The client keeps the `id:` of the last frame
+  it saw and `GET /v1/turns/{id}/events` accepts it as `Last-Event-ID`, which the
+  daemon answers by replaying exactly what was missed and then tailing. This is
+  the mechanism a mid-turn reattach needs; the chat consumer that uses it is not
+  in this build.
+
+### Changed
+
+- Build number 228, version 1.6.2.
+
 ## [1.6.1] - 2026-11-19
 
 ### Added

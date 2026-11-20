@@ -107,8 +107,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti
         PRODUCT_NAME: Kallisti
-        MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "227"
+        MARKETING_VERSION: "1.6.2"
+        CURRENT_PROJECT_VERSION: "228"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
@@ -191,8 +191,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
         PRODUCT_NAME: KallistiWidgets
-        MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "227"
+        MARKETING_VERSION: "1.6.2"
+        CURRENT_PROJECT_VERSION: "228"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
@@ -230,8 +230,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
         PRODUCT_NAME: KallistiNotificationService
-        MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "227"
+        MARKETING_VERSION: "1.6.2"
+        CURRENT_PROJECT_VERSION: "228"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -271,8 +271,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
         PRODUCT_NAME: KallistiIntents
-        MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "227"
+        MARKETING_VERSION: "1.6.2"
+        CURRENT_PROJECT_VERSION: "228"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -299,8 +299,8 @@ targets:
         INFOPLIST_FILE: KallistiControls/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
         PRODUCT_NAME: KallistiControls
-        MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "227"
+        MARKETING_VERSION: "1.6.2"
+        CURRENT_PROJECT_VERSION: "228"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -372,8 +372,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
         PRODUCT_NAME: KallistiWatch
-        MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "227"
+        MARKETING_VERSION: "1.6.2"
+        CURRENT_PROJECT_VERSION: "228"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -403,8 +403,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp.widgets
         PRODUCT_NAME: KallistiWatchWidgets
-        MARKETING_VERSION: "1.6.1"
-        CURRENT_PROJECT_VERSION: "227"
+        MARKETING_VERSION: "1.6.2"
+        CURRENT_PROJECT_VERSION: "228"
         SWIFT_VERSION: "6.2"
         TARGETED_DEVICE_FAMILY: "4"
         SDKROOT: watchos
