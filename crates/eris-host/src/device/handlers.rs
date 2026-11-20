@@ -7835,6 +7835,461 @@ pub async fn inject_talk_transcript(
     .into_response()
 }
 
+/// The `provider/model` a turn asked for, checked against that provider's own
+/// probe. A caller that names a model it cannot have is refused by name rather
+/// than silently run on the default.
+fn resolve_turn_model(engine: &SetupEngine, requested: &str) -> Result<String, DeviceError> {
+    let registry = chat::provider_registry(engine).map_err(|error| {
+        DeviceError::db_unavailable(format!("cannot read the providers: {error}"))
+    })?;
+    let primary = engine
+        .setting(crate::providers::SETTING_PRIMARY)
+        .map_err(|error| {
+            DeviceError::db_unavailable(format!("cannot read the primary provider: {error}"))
+        })?
+        .unwrap_or_default();
+    let choice = chat::split_model_value(requested, &registry, &primary);
+    let known = engine
+        .provider_catalog(&choice.provider_id)
+        .map_err(|error| {
+            DeviceError::db_unavailable(format!("cannot read that provider's catalogue: {error}"))
+        })?;
+    if !known.is_empty() && !known.iter().any(|model| model == &choice.model) {
+        return Err(DeviceError::bad_request(
+            "model_not_in_probe",
+            format!(
+                "`{}` is not in the list {} returned, so no turn would answer",
+                choice.model, choice.provider_id
+            ),
+        ));
+    }
+    Ok(format!("{}/{}", choice.provider_id, choice.model))
+}
+
+/// Everything a turn needs after the client has been authenticated, in one place
+/// so the route and the RPC shim create turns the same way.
+///
+/// The `202` is returned before the provider is called: the worker owns the turn
+/// from that point, and a client that waits for a reply here is waiting for the
+/// wrong thing.
+pub(crate) async fn create_turn_with(
+    service: &DeviceService,
+    token: &crate::auth::VerifiedToken,
+    fields: &std::collections::BTreeMap<String, String>,
+    idempotency_key: Option<&str>,
+    source: &str,
+) -> Response {
+    let text: String = field(fields, "text").to_owned();
+    // Files this turn carries. Ids only: the bytes were uploaded first and are
+    // already rows, so a turn never carries a body that can fail halfway.
+    let attachment_ids = match attachments::parse_ids(field(fields, attachments::ATTACHMENTS_FIELD))
+    {
+        Ok(ids) => ids,
+        Err(message) => {
+            return DeviceError::bad_request("attachments_invalid", message).into_response();
+        }
+    };
+    // A turn that carries files does not need words. The operator who drops a
+    // screenshot and presses send has said everything with the picture, and
+    // refusing it with text_required taught the app nothing: it answered 400 and
+    // nothing reached the host at all.
+    if text.is_empty() && attachment_ids.is_empty() {
+        return DeviceError::bad_request("text_required", "the turn text must not be empty")
+            .into_response();
+    }
+
+    // A conversation is optional. Naming one makes this turn a transcript row
+    // pair, so a client can read history after the stream closes; leaving it out
+    // keeps the turn a session of its own, exactly as before. An id the daemon
+    // does not hold is refused here, before anything is written, so a refused
+    // turn leaves no half a conversation behind.
+    let conversation = {
+        let requested = field(fields, "conversation").to_owned();
+        if requested.is_empty() {
+            None
+        } else {
+            match chat::conversation(service.engine().db(), &requested) {
+                Ok(Some(row)) => Some(row.id),
+                Ok(None) => return DeviceError::conversation_not_found().into_response(),
+                Err(error) => {
+                    return DeviceError::db_unavailable(format!(
+                        "cannot read the conversation: {error}"
+                    ))
+                    .into_response();
+                }
+            }
+        }
+    };
+
+    // A turn with no conversation is streamed but never stored, so the answer
+    // exists only until the socket closes. That is what a phone with a broken bind
+    // does by accident, and the difference is invisible from the phone - it reads
+    // as a reply that appeared and then vanished. A device turn therefore always
+    // lands on a transcript: when the caller names none, this creates one rather
+    // than answering into nowhere.
+    let conversation = match conversation {
+        Some(conversation) => Some(conversation),
+        None => match chat::create_conversation(service.engine().db()) {
+            Ok(created) => {
+                tracing::info!(
+                    device = %token.device_id(),
+                    conversation = %created,
+                    "turn had no conversation: one was created so the answer is stored"
+                );
+                Some(created)
+            }
+            Err(error) => {
+                return DeviceError::db_unavailable(format!(
+                    "cannot open a conversation for the turn: {error}"
+                ))
+                .into_response();
+            }
+        },
+    };
+
+    if conversation.is_none() && !attachment_ids.is_empty() {
+        return DeviceError::bad_request(
+            "conversation_required",
+            "a turn that carries files has to name the conversation they belong to",
+        )
+        .into_response();
+    }
+
+    let store = service.hub().store();
+    if let Some(key) = idempotency_key {
+        match store.find_idempotent(token.device_id(), key) {
+            Ok(Some(job_id)) => {
+                let job = store.job(&job_id).ok().flatten();
+                let session_id = job
+                    .as_ref()
+                    .and_then(|job| job.session_id.clone())
+                    .unwrap_or_default();
+                let state = job
+                    .map(|job| job.status)
+                    .unwrap_or_else(|| "queued".to_owned());
+                return (
+                    StatusCode::ACCEPTED,
+                    axum::Json(serde_json::json!({
+                        "ok": true,
+                        "job_id": job_id,
+                        "session_id": session_id,
+                        "state": state,
+                        "conversation_id": conversation,
+                    })),
+                )
+                    .into_response();
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return DeviceError::db_unavailable(format!("cannot read job state: {error}"))
+                    .into_response();
+            }
+        }
+    }
+
+    // A message that begins with a slash is a command, not a prompt. It is
+    // dispatched here, before a session or a job exists and before the provider
+    // settings are even read: a command has no turn to spend a token on, so the
+    // guarantee is structural rather than a rule somebody has to remember. This
+    // is the same parser and the same answer copy the browser's send handler
+    // uses.
+    let mut goal_prompt: Option<String> = None;
+    if let Some(command) = crate::commands::parse(&text) {
+        // Setting a goal starts the work. A goal that waits for the operator to
+        // type again is a note with extra steps: `/goal <objective>` stores the
+        // objective and then runs the turn that begins it, with the objective in
+        // the prompt and the larger round budget a long job needs.
+        let mut starts_a_turn = false;
+        if command.name == "goal" {
+            let argument = command.argument.trim().to_owned();
+            if !argument.is_empty()
+                && argument != "status"
+                && argument != "stop"
+                && argument != "clear"
+            {
+                if let Err(error) = service.engine().set_setting(GOAL_SETTING, &argument) {
+                    return DeviceError::db_unavailable(format!("cannot store the goal: {error}"))
+                        .into_response();
+                }
+                // The operator's own words stay their row: the transcript keeps
+                // `/goal ...` exactly as typed, and only what the model is given
+                // changes. Rewriting `text` put machine instructions in the
+                // operator's mouth, which read as the app sending messages for them.
+                goal_prompt = Some(format!(
+                    "Objective: {argument}\n\nStart on it now. Work it through with the \
+                     tools available until it is done or you run out of rounds, then say \
+                     exactly what is finished and what is left."
+                ));
+                starts_a_turn = true;
+            }
+        }
+        if !starts_a_turn {
+            return run_command(service, token.device_id(), &text, &command, idempotency_key);
+        }
+    }
+
+    // The writing half of a named conversation: the question and the answer row
+    // are created before the provider is called, so a client that reads history
+    // mid-answer sees the question and a row that says it is still streaming,
+    // rather than a transcript that appears only after the stream closes. The
+    // prompt itself is built by the worker from the same text, so a turn cannot
+    // stream one thing and store another.
+    // The device's own id for the message it just sent, when it sent one. Bounded
+    // and trimmed here rather than trusted: it is a copy of a client's value, and
+    // a device that pastes a kilobyte into it should not grow a transcript row by
+    // a kilobyte. Anything longer is treated as absent rather than truncated, so
+    // the id a client gets back is always the id it sent or nothing at all.
+    let client_message_id = {
+        let raw = field(fields, "client_message_id");
+        if raw.is_empty() || raw.len() > MAX_CLIENT_MESSAGE_ID {
+            None
+        } else {
+            Some(raw.to_owned())
+        }
+    };
+
+    // The vision role, resolved here and carried by the turn rather than called
+    // here: describing a picture is a provider call that takes seconds, and doing
+    // it before the `202` is what made a phone time out with the turn unqueued.
+    let vision = chat::aux_pinned_config(service.engine(), "vision")
+        .ok()
+        .flatten();
+    // A caller that names a model pins this conversation to it for the turn and
+    // every turn after it. The note sync uses this to run enrichment on its own
+    // model without moving the daemon default or the chat picker.
+    if let (Some(conversation_id), requested) = (&conversation, field(fields, "model")) {
+        let requested = requested.trim();
+        if !requested.is_empty() {
+            let qualified = match resolve_turn_model(service.engine(), requested) {
+                Ok(value) => value,
+                Err(error) => return error.into_response(),
+            };
+            // The pin belongs to whichever chat the picker was in. This turn
+            // named its model explicitly, so the pin loses.
+            let _ = service
+                .engine()
+                .clear_setting(crate::device::turns::SETTING_PENDING_MODEL);
+            if let Err(error) =
+                chat::set_conversation_model(service.engine().db(), conversation_id, &qualified)
+            {
+                return DeviceError::db_unavailable(format!(
+                    "cannot store the model for this conversation: {error}"
+                ))
+                .into_response();
+            }
+        }
+    }
+
+    // A background turn can name its conversation. Without this the note sync
+    // would be named from the first line of its instruction block, which is a
+    // header, not a title.
+    if let Some(conversation_id) = &conversation {
+        let requested = field(fields, "title").trim();
+        if !requested.is_empty() {
+            // A titled turn is a background turn. It must not spend the model
+            // pin the phone's picker left for the chat the operator is in.
+            let _ = service
+                .engine()
+                .clear_setting(crate::device::turns::SETTING_PENDING_MODEL);
+            let _ = chat::set_title(service.engine().db(), conversation_id, &text, requested);
+        }
+    }
+
+    let mut attachment_files: Vec<chat::Attachment> = Vec::new();
+    let conversation_turn = match &conversation {
+        None => None,
+        Some(conversation_id) => {
+            let db = service.engine().db();
+            let question_row = match chat::append_identified(
+                db,
+                conversation_id,
+                chat::Role::User,
+                &text,
+                chat::State::Complete,
+                client_message_id.as_deref(),
+            ) {
+                Ok(id) => id,
+                Err(error) => {
+                    return DeviceError::db_unavailable(format!(
+                        "cannot write the question into the conversation: {error}"
+                    ))
+                    .into_response();
+                }
+            };
+            // The files were uploaded against this conversation and are waiting
+            // unclaimed. Claiming them for the row just written is what puts them
+            // in the transcript and takes them out of the sweeper's reach.
+            attachment_files = match attachments::claim_for_turn(
+                db,
+                conversation_id,
+                &question_row,
+                &attachment_ids,
+            ) {
+                Ok(files) => files,
+                Err(message) => {
+                    return DeviceError::bad_request("attachments_invalid", message)
+                        .into_response();
+                }
+            };
+            // The model this conversation is on, and the window that belongs to
+            // the provider serving it. Asking the primary for the window is right
+            // only while the pin is on the primary: a conversation the composer
+            // moved to a second provider would claim the first one's window and
+            // the meter in the client would lie about what the turn can hold.
+            // Resolved for this conversation, not for the daemon: a chat the
+            // operator moved to another provider keeps that model when they come
+            // back to it, and a second chat picking one does not move this one.
+            let turn_provider = store
+                .provider_config_for(Some(conversation_id))
+                .ok()
+                .flatten();
+            let model = turn_provider
+                .as_ref()
+                .map(|config| config.model.clone())
+                .unwrap_or_default();
+            let context_window = turn_provider.as_ref().and_then(|config| {
+                service
+                    .engine()
+                    .provider_contexts_for(&config.provider_id)
+                    .ok()
+                    .and_then(|contexts| contexts.get(&config.model).copied())
+            });
+            let question_id = match chat::question_id(db, conversation_id) {
+                Ok(Some(id)) => id,
+                // Reading back is not allowed to fail the turn: the rows are
+                // already written, and a question id nobody could read means the
+                // job is simply not stamped. A turn that answers is worth more
+                // than a turn whose two rows are labelled.
+                Ok(None) => String::new(),
+                Err(error) => {
+                    return DeviceError::db_unavailable(format!(
+                        "cannot read the question row back: {error}"
+                    ))
+                    .into_response();
+                }
+            };
+            let answer_id = match chat::append_answer(db, conversation_id, &model, context_window) {
+                Ok(answer_id) => answer_id,
+                Err(error) => {
+                    return DeviceError::db_unavailable(format!(
+                        "cannot open the answer row: {error}"
+                    ))
+                    .into_response();
+                }
+            };
+            // The first question names the conversation, the model is recorded on
+            // it, and the rail bumps it to the top, through the same helpers the
+            // browser calls. Recording the model is what lets the picker restore
+            // what this conversation is actually on when the operator comes back
+            // to it, instead of quietly moving it to the global default.
+            let _ = chat::name_from_first_message(db, conversation_id, &text);
+            // Recorded provider-qualified, because that is the shape the next turn
+            // resolves: a bare id would be re-read against whichever provider the
+            // registry happens to offer first, and two providers publishing one
+            // model id is exactly the case this chat is allowed to be on.
+            let recorded = turn_provider
+                .as_ref()
+                .map(|config| format!("{}/{}", config.provider_id, config.model))
+                .unwrap_or_default();
+            let _ = chat::set_conversation_model(db, conversation_id, &recorded);
+            let _ = chat::touch_conversation(db, conversation_id);
+            // The naming role, when the operator pinned one. A role on the primary
+            // is a no-op, so this is `None` on every install that never chose a
+            // naming model.
+            let title = chat::aux_pinned_config(service.engine(), "title_generation")
+                .ok()
+                .flatten()
+                // The role is "primary" by default, and that used to mean no
+                // title call at all: every phone chat kept its truncated first
+                // sentence while the browser's got a real name. The turn's own
+                // provider is the primary config, so a role left on it now
+                // generates a name too.
+                .or_else(|| {
+                    turn_provider.as_ref().map(|config| chat::TurnConfig {
+                        base_url: config.base_url.clone(),
+                        key_ref: config.key_ref.clone(),
+                        model: config.model.clone(),
+                        dialect: config.dialect,
+                        reasoning_split: config.reasoning_split,
+                        direct: config.direct,
+                        project: config.project.clone(),
+                    })
+                });
+            Some(ConversationTurn {
+                conversation: conversation_id.clone(),
+                question_id,
+                answer_id,
+                question: text.to_owned(),
+                title,
+                files: attachment_files.clone(),
+                vision: vision.clone(),
+            })
+        }
+    };
+
+    let session_id = match store.ensure_session(token.device_id()) {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot open a session: {error}"))
+                .into_response();
+        }
+    };
+    // What the worker reads. The operator's words and the files by name; the
+    // picture itself is described later, by the worker, because the model serving
+    // the turn may be one that cannot see and that call takes seconds. The
+    // transcript row keeps the words alone - the description is a prompt, not a
+    // thing that was said.
+    //
+    // The fast half of the prompt: the operator's words and the file list. The
+    // picture itself is described in the worker, because that call takes seconds
+    // and a `202` that waits on it is a `202` the phone gives up on.
+    let model_text = goal_prompt.clone().unwrap_or_else(|| text.clone());
+    let prompt = attachments::prompt_with_attachments(&model_text, &attachment_files);
+    // The job records the transcript it lands on. `create_job` passes `None` for
+    // the conversation, which is why every device turn in this database carried a
+    // null there even when the phone had named one: the transcript row was written
+    // and the job was not told, so nothing could relate a turn to its chat.
+    let job_id = match store.create_job_in(
+        token.device_id(),
+        &session_id,
+        idempotency_key,
+        &prompt,
+        conversation.as_deref(),
+        0,
+        source,
+    ) {
+        Ok(job_id) => job_id,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot queue the turn: {error}"))
+                .into_response();
+        }
+    };
+
+    // The channel exists before the response does, so a client that subscribes
+    // the instant it reads the 202 cannot miss the first frame. The policy is
+    // what the dashboard last saved: the same sandbox, gate, tool and display
+    // settings the browser's turn reads.
+    let sender = service.hub().begin(&job_id);
+    service.hub().spawn(
+        job_id.clone(),
+        sender,
+        TurnPolicy::from_engine(service.engine()),
+        conversation_turn,
+    );
+
+    (
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "job_id": job_id,
+            "session_id": session_id,
+            "state": "queued",
+            "conversation_id": conversation,
+        })),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9737,459 +10192,4 @@ mod tests {
             "cmc/minimax/minimax-m3.1-flash"
         );
     }
-}
-
-/// The `provider/model` a turn asked for, checked against that provider's own
-/// probe. A caller that names a model it cannot have is refused by name rather
-/// than silently run on the default.
-fn resolve_turn_model(engine: &SetupEngine, requested: &str) -> Result<String, DeviceError> {
-    let registry = chat::provider_registry(engine).map_err(|error| {
-        DeviceError::db_unavailable(format!("cannot read the providers: {error}"))
-    })?;
-    let primary = engine
-        .setting(crate::providers::SETTING_PRIMARY)
-        .map_err(|error| {
-            DeviceError::db_unavailable(format!("cannot read the primary provider: {error}"))
-        })?
-        .unwrap_or_default();
-    let choice = chat::split_model_value(requested, &registry, &primary);
-    let known = engine
-        .provider_catalog(&choice.provider_id)
-        .map_err(|error| {
-            DeviceError::db_unavailable(format!("cannot read that provider's catalogue: {error}"))
-        })?;
-    if !known.is_empty() && !known.iter().any(|model| model == &choice.model) {
-        return Err(DeviceError::bad_request(
-            "model_not_in_probe",
-            format!(
-                "`{}` is not in the list {} returned, so no turn would answer",
-                choice.model, choice.provider_id
-            ),
-        ));
-    }
-    Ok(format!("{}/{}", choice.provider_id, choice.model))
-}
-
-/// Everything a turn needs after the client has been authenticated, in one place
-/// so the route and the RPC shim create turns the same way.
-///
-/// The `202` is returned before the provider is called: the worker owns the turn
-/// from that point, and a client that waits for a reply here is waiting for the
-/// wrong thing.
-pub(crate) async fn create_turn_with(
-    service: &DeviceService,
-    token: &crate::auth::VerifiedToken,
-    fields: &std::collections::BTreeMap<String, String>,
-    idempotency_key: Option<&str>,
-    source: &str,
-) -> Response {
-    let text: String = field(fields, "text").to_owned();
-    // Files this turn carries. Ids only: the bytes were uploaded first and are
-    // already rows, so a turn never carries a body that can fail halfway.
-    let attachment_ids = match attachments::parse_ids(field(fields, attachments::ATTACHMENTS_FIELD))
-    {
-        Ok(ids) => ids,
-        Err(message) => {
-            return DeviceError::bad_request("attachments_invalid", message).into_response();
-        }
-    };
-    // A turn that carries files does not need words. The operator who drops a
-    // screenshot and presses send has said everything with the picture, and
-    // refusing it with text_required taught the app nothing: it answered 400 and
-    // nothing reached the host at all.
-    if text.is_empty() && attachment_ids.is_empty() {
-        return DeviceError::bad_request("text_required", "the turn text must not be empty")
-            .into_response();
-    }
-
-    // A conversation is optional. Naming one makes this turn a transcript row
-    // pair, so a client can read history after the stream closes; leaving it out
-    // keeps the turn a session of its own, exactly as before. An id the daemon
-    // does not hold is refused here, before anything is written, so a refused
-    // turn leaves no half a conversation behind.
-    let conversation = {
-        let requested = field(fields, "conversation").to_owned();
-        if requested.is_empty() {
-            None
-        } else {
-            match chat::conversation(service.engine().db(), &requested) {
-                Ok(Some(row)) => Some(row.id),
-                Ok(None) => return DeviceError::conversation_not_found().into_response(),
-                Err(error) => {
-                    return DeviceError::db_unavailable(format!(
-                        "cannot read the conversation: {error}"
-                    ))
-                    .into_response();
-                }
-            }
-        }
-    };
-
-    // A turn with no conversation is streamed but never stored, so the answer
-    // exists only until the socket closes. That is what a phone with a broken bind
-    // does by accident, and the difference is invisible from the phone - it reads
-    // as a reply that appeared and then vanished. A device turn therefore always
-    // lands on a transcript: when the caller names none, this creates one rather
-    // than answering into nowhere.
-    let conversation = match conversation {
-        Some(conversation) => Some(conversation),
-        None => match chat::create_conversation(service.engine().db()) {
-            Ok(created) => {
-                tracing::info!(
-                    device = %token.device_id(),
-                    conversation = %created,
-                    "turn had no conversation: one was created so the answer is stored"
-                );
-                Some(created)
-            }
-            Err(error) => {
-                return DeviceError::db_unavailable(format!(
-                    "cannot open a conversation for the turn: {error}"
-                ))
-                .into_response();
-            }
-        },
-    };
-
-    if conversation.is_none() && !attachment_ids.is_empty() {
-        return DeviceError::bad_request(
-            "conversation_required",
-            "a turn that carries files has to name the conversation they belong to",
-        )
-        .into_response();
-    }
-
-    let store = service.hub().store();
-    if let Some(key) = idempotency_key {
-        match store.find_idempotent(token.device_id(), key) {
-            Ok(Some(job_id)) => {
-                let job = store.job(&job_id).ok().flatten();
-                let session_id = job
-                    .as_ref()
-                    .and_then(|job| job.session_id.clone())
-                    .unwrap_or_default();
-                let state = job
-                    .map(|job| job.status)
-                    .unwrap_or_else(|| "queued".to_owned());
-                return (
-                    StatusCode::ACCEPTED,
-                    axum::Json(serde_json::json!({
-                        "ok": true,
-                        "job_id": job_id,
-                        "session_id": session_id,
-                        "state": state,
-                        "conversation_id": conversation,
-                    })),
-                )
-                    .into_response();
-            }
-            Ok(None) => {}
-            Err(error) => {
-                return DeviceError::db_unavailable(format!("cannot read job state: {error}"))
-                    .into_response();
-            }
-        }
-    }
-
-    // A message that begins with a slash is a command, not a prompt. It is
-    // dispatched here, before a session or a job exists and before the provider
-    // settings are even read: a command has no turn to spend a token on, so the
-    // guarantee is structural rather than a rule somebody has to remember. This
-    // is the same parser and the same answer copy the browser's send handler
-    // uses.
-    let mut goal_prompt: Option<String> = None;
-    if let Some(command) = crate::commands::parse(&text) {
-        // Setting a goal starts the work. A goal that waits for the operator to
-        // type again is a note with extra steps: `/goal <objective>` stores the
-        // objective and then runs the turn that begins it, with the objective in
-        // the prompt and the larger round budget a long job needs.
-        let mut starts_a_turn = false;
-        if command.name == "goal" {
-            let argument = command.argument.trim().to_owned();
-            if !argument.is_empty()
-                && argument != "status"
-                && argument != "stop"
-                && argument != "clear"
-            {
-                if let Err(error) = service.engine().set_setting(GOAL_SETTING, &argument) {
-                    return DeviceError::db_unavailable(format!("cannot store the goal: {error}"))
-                        .into_response();
-                }
-                // The operator's own words stay their row: the transcript keeps
-                // `/goal ...` exactly as typed, and only what the model is given
-                // changes. Rewriting `text` put machine instructions in the
-                // operator's mouth, which read as the app sending messages for them.
-                goal_prompt = Some(format!(
-                    "Objective: {argument}\n\nStart on it now. Work it through with the \
-                     tools available until it is done or you run out of rounds, then say \
-                     exactly what is finished and what is left."
-                ));
-                starts_a_turn = true;
-            }
-        }
-        if !starts_a_turn {
-            return run_command(service, token.device_id(), &text, &command, idempotency_key);
-        }
-    }
-
-    // The writing half of a named conversation: the question and the answer row
-    // are created before the provider is called, so a client that reads history
-    // mid-answer sees the question and a row that says it is still streaming,
-    // rather than a transcript that appears only after the stream closes. The
-    // prompt itself is built by the worker from the same text, so a turn cannot
-    // stream one thing and store another.
-    // The device's own id for the message it just sent, when it sent one. Bounded
-    // and trimmed here rather than trusted: it is a copy of a client's value, and
-    // a device that pastes a kilobyte into it should not grow a transcript row by
-    // a kilobyte. Anything longer is treated as absent rather than truncated, so
-    // the id a client gets back is always the id it sent or nothing at all.
-    let client_message_id = {
-        let raw = field(fields, "client_message_id");
-        if raw.is_empty() || raw.len() > MAX_CLIENT_MESSAGE_ID {
-            None
-        } else {
-            Some(raw.to_owned())
-        }
-    };
-
-    // The vision role, resolved here and carried by the turn rather than called
-    // here: describing a picture is a provider call that takes seconds, and doing
-    // it before the `202` is what made a phone time out with the turn unqueued.
-    let vision = chat::aux_pinned_config(service.engine(), "vision")
-        .ok()
-        .flatten();
-    // A caller that names a model pins this conversation to it for the turn and
-    // every turn after it. The note sync uses this to run enrichment on its own
-    // model without moving the daemon default or the chat picker.
-    if let (Some(conversation_id), requested) = (&conversation, field(fields, "model")) {
-        let requested = requested.trim();
-        if !requested.is_empty() {
-            let qualified = match resolve_turn_model(service.engine(), requested) {
-                Ok(value) => value,
-                Err(error) => return error.into_response(),
-            };
-            // The pin belongs to whichever chat the picker was in. This turn
-            // named its model explicitly, so the pin loses.
-            let _ = service
-                .engine()
-                .clear_setting(crate::device::turns::SETTING_PENDING_MODEL);
-            if let Err(error) =
-                chat::set_conversation_model(service.engine().db(), conversation_id, &qualified)
-            {
-                return DeviceError::db_unavailable(format!(
-                    "cannot store the model for this conversation: {error}"
-                ))
-                .into_response();
-            }
-        }
-    }
-
-    // A background turn can name its conversation. Without this the note sync
-    // would be named from the first line of its instruction block, which is a
-    // header, not a title.
-    if let Some(conversation_id) = &conversation {
-        let requested = field(fields, "title").trim();
-        if !requested.is_empty() {
-            // A titled turn is a background turn. It must not spend the model
-            // pin the phone's picker left for the chat the operator is in.
-            let _ = service
-                .engine()
-                .clear_setting(crate::device::turns::SETTING_PENDING_MODEL);
-            let _ = chat::set_title(service.engine().db(), conversation_id, &text, requested);
-        }
-    }
-
-    let mut attachment_files: Vec<chat::Attachment> = Vec::new();
-    let conversation_turn = match &conversation {
-        None => None,
-        Some(conversation_id) => {
-            let db = service.engine().db();
-            let question_row = match chat::append_identified(
-                db,
-                conversation_id,
-                chat::Role::User,
-                &text,
-                chat::State::Complete,
-                client_message_id.as_deref(),
-            ) {
-                Ok(id) => id,
-                Err(error) => {
-                    return DeviceError::db_unavailable(format!(
-                        "cannot write the question into the conversation: {error}"
-                    ))
-                    .into_response();
-                }
-            };
-            // The files were uploaded against this conversation and are waiting
-            // unclaimed. Claiming them for the row just written is what puts them
-            // in the transcript and takes them out of the sweeper's reach.
-            attachment_files = match attachments::claim_for_turn(
-                db,
-                conversation_id,
-                &question_row,
-                &attachment_ids,
-            ) {
-                Ok(files) => files,
-                Err(message) => {
-                    return DeviceError::bad_request("attachments_invalid", message)
-                        .into_response();
-                }
-            };
-            // The model this conversation is on, and the window that belongs to
-            // the provider serving it. Asking the primary for the window is right
-            // only while the pin is on the primary: a conversation the composer
-            // moved to a second provider would claim the first one's window and
-            // the meter in the client would lie about what the turn can hold.
-            // Resolved for this conversation, not for the daemon: a chat the
-            // operator moved to another provider keeps that model when they come
-            // back to it, and a second chat picking one does not move this one.
-            let turn_provider = store
-                .provider_config_for(Some(conversation_id))
-                .ok()
-                .flatten();
-            let model = turn_provider
-                .as_ref()
-                .map(|config| config.model.clone())
-                .unwrap_or_default();
-            let context_window = turn_provider.as_ref().and_then(|config| {
-                service
-                    .engine()
-                    .provider_contexts_for(&config.provider_id)
-                    .ok()
-                    .and_then(|contexts| contexts.get(&config.model).copied())
-            });
-            let question_id = match chat::question_id(db, conversation_id) {
-                Ok(Some(id)) => id,
-                // Reading back is not allowed to fail the turn: the rows are
-                // already written, and a question id nobody could read means the
-                // job is simply not stamped. A turn that answers is worth more
-                // than a turn whose two rows are labelled.
-                Ok(None) => String::new(),
-                Err(error) => {
-                    return DeviceError::db_unavailable(format!(
-                        "cannot read the question row back: {error}"
-                    ))
-                    .into_response();
-                }
-            };
-            let answer_id = match chat::append_answer(db, conversation_id, &model, context_window) {
-                Ok(answer_id) => answer_id,
-                Err(error) => {
-                    return DeviceError::db_unavailable(format!(
-                        "cannot open the answer row: {error}"
-                    ))
-                    .into_response();
-                }
-            };
-            // The first question names the conversation, the model is recorded on
-            // it, and the rail bumps it to the top, through the same helpers the
-            // browser calls. Recording the model is what lets the picker restore
-            // what this conversation is actually on when the operator comes back
-            // to it, instead of quietly moving it to the global default.
-            let _ = chat::name_from_first_message(db, conversation_id, &text);
-            // Recorded provider-qualified, because that is the shape the next turn
-            // resolves: a bare id would be re-read against whichever provider the
-            // registry happens to offer first, and two providers publishing one
-            // model id is exactly the case this chat is allowed to be on.
-            let recorded = turn_provider
-                .as_ref()
-                .map(|config| format!("{}/{}", config.provider_id, config.model))
-                .unwrap_or_default();
-            let _ = chat::set_conversation_model(db, conversation_id, &recorded);
-            let _ = chat::touch_conversation(db, conversation_id);
-            // The naming role, when the operator pinned one. A role on the primary
-            // is a no-op, so this is `None` on every install that never chose a
-            // naming model.
-            let title = chat::aux_pinned_config(service.engine(), "title_generation")
-                .ok()
-                .flatten()
-                // The role is "primary" by default, and that used to mean no
-                // title call at all: every phone chat kept its truncated first
-                // sentence while the browser's got a real name. The turn's own
-                // provider is the primary config, so a role left on it now
-                // generates a name too.
-                .or_else(|| {
-                    turn_provider.as_ref().map(|config| chat::TurnConfig {
-                        base_url: config.base_url.clone(),
-                        key_ref: config.key_ref.clone(),
-                        model: config.model.clone(),
-                        dialect: config.dialect,
-                        reasoning_split: config.reasoning_split,
-                        direct: config.direct,
-                        project: config.project.clone(),
-                    })
-                });
-            Some(ConversationTurn {
-                conversation: conversation_id.clone(),
-                question_id,
-                answer_id,
-                question: text.to_owned(),
-                title,
-                files: attachment_files.clone(),
-                vision: vision.clone(),
-            })
-        }
-    };
-
-    let session_id = match store.ensure_session(token.device_id()) {
-        Ok(session_id) => session_id,
-        Err(error) => {
-            return DeviceError::db_unavailable(format!("cannot open a session: {error}"))
-                .into_response();
-        }
-    };
-    // What the worker reads. The operator's words and the files by name; the
-    // picture itself is described later, by the worker, because the model serving
-    // the turn may be one that cannot see and that call takes seconds. The
-    // transcript row keeps the words alone - the description is a prompt, not a
-    // thing that was said.
-    //
-    // The fast half of the prompt: the operator's words and the file list. The
-    // picture itself is described in the worker, because that call takes seconds
-    // and a `202` that waits on it is a `202` the phone gives up on.
-    let model_text = goal_prompt.clone().unwrap_or_else(|| text.clone());
-    let prompt = attachments::prompt_with_attachments(&model_text, &attachment_files);
-    // The job records the transcript it lands on. `create_job` passes `None` for
-    // the conversation, which is why every device turn in this database carried a
-    // null there even when the phone had named one: the transcript row was written
-    // and the job was not told, so nothing could relate a turn to its chat.
-    let job_id = match store.create_job_in(
-        token.device_id(),
-        &session_id,
-        idempotency_key,
-        &prompt,
-        conversation.as_deref(),
-        0,
-        source,
-    ) {
-        Ok(job_id) => job_id,
-        Err(error) => {
-            return DeviceError::db_unavailable(format!("cannot queue the turn: {error}"))
-                .into_response();
-        }
-    };
-
-    // The channel exists before the response does, so a client that subscribes
-    // the instant it reads the 202 cannot miss the first frame. The policy is
-    // what the dashboard last saved: the same sandbox, gate, tool and display
-    // settings the browser's turn reads.
-    let sender = service.hub().begin(&job_id);
-    service.hub().spawn(
-        job_id.clone(),
-        sender,
-        TurnPolicy::from_engine(service.engine()),
-        conversation_turn,
-    );
-
-    (
-        StatusCode::ACCEPTED,
-        axum::Json(serde_json::json!({
-            "ok": true,
-            "job_id": job_id,
-            "session_id": session_id,
-            "state": "queued",
-            "conversation_id": conversation,
-        })),
-    )
-        .into_response()
 }

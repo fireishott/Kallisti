@@ -248,9 +248,7 @@ mod tests {
         let refused = stage(&db, "sms", "+15025550100", "hi").expect_err("refused");
         assert!(refused.contains("allowlist"), "{refused}");
         let rows: i64 = db
-            .with_conn(|conn| {
-                Ok(conn.query_row("SELECT count(*) FROM comms_outbox", [], |r| r.get(0))?)
-            })
+            .with_conn(|conn| conn.query_row("SELECT count(*) FROM comms_outbox", [], |r| r.get(0)))
             .expect("count");
         assert_eq!(rows, 0);
     }

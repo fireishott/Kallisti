@@ -3862,12 +3862,12 @@ mod tests {
         let tasks: i64 = store
             .db()
             .with_conn(|conn| {
-                Ok(conn.query_row(
+                conn.query_row(
                     "SELECT count(*) FROM jobs WHERE kind = 'task' AND status = 'queued' \
                       AND conversation_id = ?1",
                     params![conversation],
                     |row| row.get(0),
-                )?)
+                )
             })
             .expect("count");
         assert_eq!(tasks, 1, "only the reclaimable turn was requeued");
