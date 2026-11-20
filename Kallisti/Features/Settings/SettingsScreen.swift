@@ -29,6 +29,24 @@ struct SettingsScreen: View {
     @State private var speechVoiceModels: [String] = []
     @State private var speechError: String?
     @State private var speechModelsLoaded = false
+    /// The daemon's speech engine and the engines it offers. Kept apart from
+    /// the voice model: the engine decides where speech runs, the model decides
+    /// what it claims to be.
+    @State private var speechEngine = ""
+    /// The engine the daemon reported when the list was loaded, so a refused
+    /// change can put the picker back on what the daemon is actually running.
+    @State private var speechCurrentEngine = ""
+    @State private var speechEngines: [String] = []
+    /// The chat endpoint the daemon speaks and transcribes through when its
+    /// engine is `chat-audio`. Held as text because a cleared field has to send
+    /// null rather than an empty string.
+    @State private var speechChatBaseURL = ""
+    @State private var speechChatModel = ""
+    /// The engine rows keep their own line: `speechError` already carries the
+    /// caption under the voice-model picker, which a refused engine change must
+    /// not overwrite.
+    @State private var speechEngineError: String?
+    @State private var isStoringSpeechEngine = false
     @State private var mimoAPIKey: String = ""
     // Build 70: aux service lives on the container (loaded at connection).
     private var auxService: AuxModelService? { container.auxService }
@@ -2113,8 +2131,11 @@ struct SettingsScreen: View {
 
     /// The daemon's current voice model, its default, the optional voice-model
     /// list, and the wider provisioned catalogue.
-    private func loadSpeechModels() async {
-        guard !speechModelsLoaded else { return }
+    ///
+    /// `force` re-asks after a stored engine or endpoint, which would otherwise
+    /// be a no-op on a list this screen has already read once.
+    private func loadSpeechModels(force: Bool = false) async {
+        guard force || !speechModelsLoaded else { return }
         speechModelsLoaded = true
         guard let base = speechBaseURL else {
             speechError = "No daemon is paired, so there is no speech model to list."
@@ -2145,12 +2166,20 @@ struct SettingsScreen: View {
                 let defaultModel: String?
                 let models: [String]
                 let voiceModels: [String]?
+                // The engine fields are optional so a daemon that predates them
+                // still lists its models instead of failing the whole read.
+                let engine: String?
+                let chatBaseURL: String?
+                let chatModel: String?
 
                 enum CodingKeys: String, CodingKey {
                     case model
                     case defaultModel = "default_model"
                     case models
                     case voiceModels = "voice_models"
+                    case engine
+                    case chatBaseURL = "chat_base_url"
+                    case chatModel = "chat_model"
                 }
             }
             let speech = try JSONDecoder().decode(Speech.self, from: data)
@@ -2159,6 +2188,11 @@ struct SettingsScreen: View {
             speechDefaultModel = speech.defaultModel ?? ""
             speechVoiceModels = speech.voiceModels ?? []
             speechModels = speech.models
+            speechEngines = speechEngineNames(from: data)
+            speechEngine = speech.engine ?? ""
+            speechCurrentEngine = speechEngine
+            speechChatBaseURL = speech.chatBaseURL ?? ""
+            speechChatModel = speech.chatModel ?? ""
             speechError = voiceModelOptions.isEmpty
                 ? "The daemon reports no voice model to choose from."
                 : nil
@@ -2193,6 +2227,317 @@ struct SettingsScreen: View {
             ?? pairingStore.pairedRelayConfiguration?.baseURLString, !base.isEmpty
         else { return nil }
         return URL(string: base)
+    }
+
+    // MARK: - Speech engine and chat endpoint
+
+    /// The engine names from a speech read.
+    ///
+    /// Read on its own rather than decoded with the models: an engine list this
+    /// build does not expect must not take the voice-model list down with it. A
+    /// daemon that names an engine as a bare string and one that describes it as
+    /// a record are both read; only the name is shown.
+    private func speechEngineNames(from data: Data) -> [String] {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let entries = object["engines"] as? [Any]
+        else { return [] }
+        var names: [String] = []
+        for entry in entries {
+            if let name = entry as? String, !name.isEmpty {
+                names.append(name)
+            } else if let record = entry as? [String: Any],
+                      let name = record["id"] as? String, !name.isEmpty {
+                names.append(name)
+            }
+        }
+        return names
+    }
+
+    /// The engines the daemon offers, plus the one it is running in case it
+    /// reports an engine outside its own list - the same shape as the voice
+    /// model options, so the picker never shows a selection it cannot render.
+    private var speechEngineOptions: [String] {
+        var options: [String] = []
+        for engine in speechEngines + [speechCurrentEngine]
+        where !engine.isEmpty && !options.contains(engine) {
+            options.append(engine)
+        }
+        return options
+    }
+
+    private var speechEngineBinding: Binding<String> {
+        Binding(
+            get: { speechEngine },
+            set: { chosen in
+                // The picker moves first and the daemon answers second; a
+                // refusal puts it back, so the row never claims an engine the
+                // daemon is not running.
+                guard chosen != speechEngine else { return }
+                speechEngine = chosen
+                Task { await storeSpeechEngine(chosen) }
+            }
+        )
+    }
+
+    private func storeSpeechEngine(_ engine: String) async {
+        guard !engine.isEmpty else { return }
+        isStoringSpeechEngine = true
+        defer { isStoringSpeechEngine = false }
+        let outcome = await putSpeech("/v1/speech/engine", body: ["engine": engine])
+        switch outcome {
+        case .stored:
+            speechEngineError = nil
+            // The daemon stored it, so it is now the engine it reports; the
+            // reload below only fills in the lists that came with it.
+            speechCurrentEngine = engine
+            await loadSpeechModels(force: true)
+        case .refused(let status, let body):
+            speechEngineError = speechRefusalMessage(status: status, body: body)
+            restoreSpeechEngine()
+        case .failed(let reason):
+            speechEngineError = "The engine could not be stored: \(reason)"
+            restoreSpeechEngine()
+        case .offline:
+            speechEngineError = "No daemon is paired, so there is no engine to store."
+            restoreSpeechEngine()
+        }
+    }
+
+    /// Store the endpoint and model the daemon should speak and transcribe
+    /// through. Both keys always travel; a field the person cleared sends null,
+    /// which is how the daemon is told to fall back to its own provider.
+    private func storeSpeechChat() async {
+        let baseURL = speechChatBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = speechChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        isStoringSpeechEngine = true
+        defer { isStoringSpeechEngine = false }
+        let outcome = await putSpeech(
+            "/v1/speech/chat",
+            body: [
+                "base_url": baseURL.isEmpty ? NSNull() : baseURL,
+                "model": model.isEmpty ? NSNull() : model,
+            ]
+        )
+        switch outcome {
+        case .stored:
+            speechEngineError = nil
+            await loadSpeechModels(force: true)
+        case .refused(let status, let body):
+            // The endpoint and model fields keep what the person typed: a
+            // refusal is answerable, and retyping it is not.
+            speechEngineError = speechRefusalMessage(status: status, body: body)
+        case .failed(let reason):
+            speechEngineError = "The endpoint could not be stored: \(reason)"
+        case .offline:
+            speechEngineError = "No daemon is paired, so there is no endpoint to store."
+        }
+    }
+
+    /// Put the picker back on the engine the daemon last reported. Only the
+    /// selection moves; the endpoint and model fields keep their contents.
+    private func restoreSpeechEngine() {
+        guard !speechCurrentEngine.isEmpty else { return }
+        speechEngine = speechCurrentEngine
+    }
+
+    /// What one speech PUT came back with. The body is kept only for a refusal,
+    /// because that is the reply the daemon explains itself in.
+    private enum SpeechPutOutcome {
+        case stored
+        case refused(status: Int, body: Data)
+        case failed(reason: String)
+        case offline
+    }
+
+    /// ONE write against the daemon's speech settings.
+    ///
+    /// A 401 is an expired access token rather than a refusal, so it refreshes
+    /// once and asks again - the same rule the speech list follows - before
+    /// anything is reported. A 403 means this phone was paired without
+    /// administration, which is not something the person can retype their way
+    /// out of, so it gets its own sentence instead of a code.
+    private func putSpeech(_ path: String, body: [String: Any]) async -> SpeechPutOutcome {
+        guard let base = speechBaseURL else { return .offline }
+        var request = URLRequest(url: base.appending(path: path))
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            var (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+                await sessionStore.refreshAccessTokenIfNeeded()
+                if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    (data, response) = try await URLSession.shared.data(for: request)
+                }
+            }
+            guard let http = response as? HTTPURLResponse else {
+                return .failed(reason: "the daemon sent no answer")
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                return .refused(status: http.statusCode, body: data)
+            }
+            return .stored
+        } catch {
+            return .failed(reason: error.localizedDescription)
+        }
+    }
+
+    /// The daemon's refusal in words. 403 is a pairing limit, not a bad value,
+    /// so it says the one thing worth knowing; anything else names the code and
+    /// status the daemon answered with.
+    private func speechRefusalMessage(status: Int, body: Data) -> String {
+        if status == 403 {
+            return "This phone was paired without administration, so the daemon refuses the engine change."
+        }
+        var code = "unknown"
+        var message = ""
+        if let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] {
+            if let raw = object["code"] {
+                code = String(describing: raw)
+            }
+            if let raw = object["message"] as? String, !raw.isEmpty {
+                message = raw
+            }
+        }
+        let refusal = "The daemon refused (\(code), \(status))."
+        return message.isEmpty ? refusal : "\(refusal) \(message)"
+    }
+
+    /// A labelled daemon field: the name above, the daemon's current value
+    /// inside, and the placeholder standing in for "not set".
+    private func speechField(
+        _ label: String,
+        placeholder: String,
+        text: Binding<String>,
+        keyboard: UIKeyboardType
+    ) -> some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
+            Text(label)
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+
+            TextField(placeholder, text: text)
+                .textInputAutocapitalization(.never)
+                .keyboardType(keyboard)
+                .autocorrectionDisabled()
+                .font(Design.Typography.callout)
+                .foregroundStyle(Design.Colors.foreground)
+                .padding(Design.Spacing.md)
+                .background(Design.Colors.background)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                        .stroke(Design.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+        }
+    }
+
+    /// The daemon's engine, and the chat endpoint it uses instead of its own
+    /// provider when that engine is a chat model. The engine list is the
+    /// daemon's own; one that predates the field offers nothing and the picker
+    /// stays inert.
+    private var speechEngineBlock: some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+            HStack(spacing: Design.Spacing.sm) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Design.Brand.accent)
+                    .frame(width: 20, alignment: .center)
+
+                Text("Engine")
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.foreground)
+
+                Spacer()
+
+                Picker("Engine", selection: speechEngineBinding) {
+                    if !speechEngineOptions.contains(speechEngine), !speechEngine.isEmpty {
+                        Text(speechEngine).tag(speechEngine)
+                    }
+                    ForEach(speechEngineOptions, id: \.self) { engine in
+                        Text(engine).tag(engine)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(Design.Colors.secondaryForeground)
+                .disabled(speechEngineOptions.isEmpty || isStoringSpeechEngine)
+                .accessibilityIdentifier("settings.speech.engine")
+            }
+
+            Text("The engine the daemon speaks and transcribes with.")
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if speechEngine == "chat-audio" {
+                VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                    speechField(
+                        "Endpoint",
+                        placeholder: "the daemon's provider",
+                        text: $speechChatBaseURL,
+                        keyboard: .URL
+                    )
+
+                    speechField(
+                        "Model",
+                        placeholder: "the provider's default model",
+                        text: $speechChatModel,
+                        keyboard: .default
+                    )
+
+                    Button {
+                        Task { await storeSpeechChat() }
+                    } label: {
+                        HStack(spacing: Design.Spacing.sm) {
+                            if isStoringSpeechEngine {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(Design.Brand.accent)
+                            } else {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Design.Brand.accent)
+                                    .frame(width: 20, alignment: .center)
+                            }
+
+                            Text(isStoringSpeechEngine ? "Saving…" : "Save")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(
+                                    isStoringSpeechEngine
+                                        ? Design.Colors.secondaryForeground
+                                        : Design.Colors.foreground
+                                )
+
+                            Spacer()
+                        }
+                        .frame(minHeight: Design.Size.minTapTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isStoringSpeechEngine)
+                    .accessibilityIdentifier("settings.speech.engineSave")
+
+                    Text("Spoken and transcribed through this endpoint. Leave it empty to use the daemon's provider.")
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, Design.Spacing.xxs)
+            }
+
+            if let speechEngineError {
+                Text(speechEngineError)
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("settings.speech.engineError")
+            }
+        }
+        .padding(.vertical, Design.Spacing.xs)
     }
 
     private var sttEngineBinding: Binding<SpeechEnginePreference> {
@@ -2284,6 +2629,12 @@ struct SettingsScreen: View {
                             .foregroundStyle(Design.Colors.secondaryForeground)
                     }
                     .padding(.vertical, Design.Spacing.xs)
+
+                    sectionDivider
+
+                    // The daemon's engine, beside the voice model: the two
+                    // choices that decide where speech goes and what it is.
+                    speechEngineBlock
 
                     sectionDivider
 
