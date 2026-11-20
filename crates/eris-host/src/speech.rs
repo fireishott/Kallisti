@@ -89,6 +89,21 @@ pub const CHAT_CHANNELS: u16 = 1;
 /// Sixteen bits per sample, the width the chat engine returns PCM in.
 pub const CHAT_BITS_PER_SAMPLE: u16 = 16;
 
+/// The most characters a `speech.chat_model` value may hold.
+///
+/// Long enough for a provider-qualified id, short enough that a pasted
+/// paragraph is refused before it becomes a row nobody can clear from the
+/// picker.
+pub const MAX_CHAT_MODEL_CHARS: usize = 200;
+
+/// The model name to show when the chat-audio engine runs on the provider's own
+/// model and no provider is configured to name it.
+///
+/// It is not a model id and is never sent anywhere: it is the honest answer to
+/// "which model does this engine use" on a daemon that has not been pointed at
+/// one yet.
+pub const CHAT_MODEL_PROVIDER_DEFAULT: &str = "provider default";
+
 /// Which engine answers a speech or transcription request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Engine {
@@ -162,16 +177,50 @@ pub fn chat_model(db: &crate::db::Db) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// The stored aggregation endpoint for the chat-audio engine, when one is set.
+///
+/// This is the row, not the endpoint in force. The engine falls back to the
+/// configured provider's base URL when the row is absent, and a client editing
+/// the row should see what is stored rather than what the fallback resolves to.
+#[must_use]
+pub fn chat_base_url(db: &crate::db::Db) -> Option<String> {
+    crate::web::store::settings_get(db, SETTING_CHAT_BASE_URL)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// The model the chat-audio engine would actually ask for.
+///
+/// The call path tries `speech.chat_model` first and then the provider's model,
+/// so a read has to try them in the same order: reporting only the stored row
+/// described an engine as voiceless while it was speaking through the provider
+/// model. When neither resolves - a daemon with no provider set up - the answer
+/// names that state instead of handing a client an empty list.
+#[must_use]
+pub fn effective_chat_model(db: &crate::db::Db, provider_model: Option<&str>) -> String {
+    chat_model(db)
+        .or_else(|| {
+            provider_model
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| CHAT_MODEL_PROVIDER_DEFAULT.to_owned())
+}
+
 /// The models `GET /v1/speech` should list for the engine in force.
 ///
 /// The chat catalogue is a chat catalogue, not a voice catalogue, and only the
 /// chat-audio engine is driven by a model name this daemon stores. So that
-/// engine publishes the one row it reads - `speech.chat_model` - and the classic
-/// engine publishes none: its model is already reported by `model`.
+/// engine publishes the one model it would ask for - see
+/// [`effective_chat_model`] - and the classic engine publishes none: its model is
+/// already reported by `model`.
 #[must_use]
-pub fn voice_models(db: &crate::db::Db) -> Vec<String> {
+pub fn voice_models(db: &crate::db::Db, provider_model: Option<&str>) -> Vec<String> {
     match engine(db) {
-        Engine::ChatAudio => chat_model(db).into_iter().collect(),
+        Engine::ChatAudio => vec![effective_chat_model(db, provider_model)],
         Engine::AudioEndpoint => Vec::new(),
     }
 }
@@ -205,6 +254,23 @@ pub fn voice(db: &crate::db::Db) -> String {
 pub fn valid_voice(value: &str) -> bool {
     let value = value.trim().to_ascii_lowercase();
     VOICES.iter().any(|(key, _)| *key == value)
+}
+
+/// Whether a value is an aggregation endpoint this daemon will call.
+///
+/// The engine builds `{base}/chat/completions` and `{base}/responses` from the
+/// value, so anything that is not an absolute `http`/`https` URL with a host
+/// would become a request to a path that does not exist. A store that accepted it
+/// would look configured and fail on the first spoken word.
+#[must_use]
+pub fn valid_chat_base_url(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+    reqwest::Url::parse(value)
+        .map(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
+        .unwrap_or(false)
 }
 
 /// One refusal, with the code the phone keys off.
@@ -387,11 +453,7 @@ fn chat_base(
     db: &crate::db::Db,
     config: Option<&crate::web::chat::TurnConfig>,
 ) -> Result<String, Refusal> {
-    crate::web::store::settings_get(db, SETTING_CHAT_BASE_URL)
-        .ok()
-        .flatten()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+    chat_base_url(db)
         .or_else(|| config.map(|config| config.base_url.trim_end_matches('/').to_owned()))
         .filter(|value| !value.is_empty())
         .ok_or_else(|| Refusal::new(503, "tts_not_configured"))
@@ -832,22 +894,89 @@ mod tests {
     }
 
     #[test]
-    fn the_voice_models_list_only_names_the_chat_model() {
+    fn the_voice_models_list_names_the_effective_chat_model() {
         let db = db();
         assert!(
-            voice_models(&db).is_empty(),
+            voice_models(&db, None).is_empty(),
             "the classic engine lists none"
         );
+        assert!(
+            voice_models(&db, Some("provider-chat-model")).is_empty(),
+            "the classic engine lists none even when a provider model resolves"
+        );
         crate::web::store::settings_put(&db, SETTING_ENGINE, ENGINE_CHAT_AUDIO).expect("store");
-        assert!(voice_models(&db).is_empty(), "no chat model is pinned yet");
+        assert_eq!(
+            voice_models(&db, None),
+            vec![CHAT_MODEL_PROVIDER_DEFAULT.to_owned()],
+            "an unpinned model on a daemon with no provider still names the model it would fall \
+             back to, rather than leaving a working engine voiceless"
+        );
+        assert_eq!(
+            voice_models(&db, Some("  provider-chat-model  ")),
+            vec!["provider-chat-model".to_owned()],
+            "the provider's model is the effective model when none is pinned"
+        );
+        assert_eq!(
+            voice_models(&db, Some("   ")),
+            vec![CHAT_MODEL_PROVIDER_DEFAULT.to_owned()],
+            "a blank provider model names no model"
+        );
         crate::web::store::settings_put(&db, SETTING_CHAT_MODEL, "  chat-audio-model  ")
             .expect("store");
-        assert_eq!(voice_models(&db), vec!["chat-audio-model".to_owned()]);
+        assert_eq!(
+            voice_models(&db, Some("provider-chat-model")),
+            vec!["chat-audio-model".to_owned()],
+            "a pinned model wins over the provider's"
+        );
         crate::web::store::settings_put(&db, SETTING_ENGINE, ENGINE_AUDIO_ENDPOINT).expect("store");
         assert!(
-            voice_models(&db).is_empty(),
+            voice_models(&db, Some("provider-chat-model")).is_empty(),
             "the classic engine still lists none"
         );
+    }
+
+    #[test]
+    fn the_chat_rows_are_read_trimmed_and_absent_until_written() {
+        let db = db();
+        assert_eq!(chat_base_url(&db), None);
+        assert_eq!(chat_model(&db), None);
+        crate::web::store::settings_put(&db, SETTING_CHAT_BASE_URL, "  https://lab.test/v1  ")
+            .expect("store");
+        crate::web::store::settings_put(&db, SETTING_CHAT_MODEL, "  spoken-model  ")
+            .expect("store");
+        assert_eq!(chat_base_url(&db).as_deref(), Some("https://lab.test/v1"));
+        assert_eq!(chat_model(&db).as_deref(), Some("spoken-model"));
+        crate::web::store::settings_put(&db, SETTING_CHAT_BASE_URL, "   ").expect("store");
+        assert_eq!(
+            chat_base_url(&db),
+            None,
+            "a blank row reads as unset, the same answer an absent one gives"
+        );
+    }
+
+    #[test]
+    fn a_chat_base_url_is_http_or_https_and_nothing_else() {
+        for good in [
+            "https://aggregation.test/v1",
+            "http://127.0.0.1:20128/v1",
+            "HTTPS://Aggregation.test/v1",
+            "  https://aggregation.test  ",
+        ] {
+            assert!(valid_chat_base_url(good), "{good} is an endpoint");
+        }
+        for bad in [
+            "ftp://aggregation.test",
+            "aggregation.test",
+            "ws://aggregation.test",
+            "ws://127.0.0.1:20128/v1",
+            "https://",
+            "file:///etc/hosts",
+            "   ",
+        ] {
+            assert!(!valid_chat_base_url(bad), "{bad} is not an http endpoint");
+        }
+        assert_eq!(MAX_CHAT_MODEL_CHARS, 200);
+        assert_eq!(CHAT_MODEL_PROVIDER_DEFAULT, "provider default");
     }
 
     #[tokio::test]

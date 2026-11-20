@@ -181,6 +181,10 @@ pub const ROUTE_SPEECH: &str = "/v1/speech";
 /// `PUT /v1/speech/engine` - which engine speaks and transcribes.
 pub const ROUTE_SPEECH_ENGINE: &str = "/v1/speech/engine";
 
+/// `PUT /v1/speech/chat` - the aggregation endpoint and model the chat-audio
+/// engine uses.
+pub const ROUTE_SPEECH_CHAT: &str = "/v1/speech/chat";
+
 /// `POST /v1/speak` - synthesize one answer.
 pub const ROUTE_SPEAK: &str = "/v1/speak";
 
@@ -1328,6 +1332,7 @@ pub fn router(service: DeviceService) -> Router {
             get(control::speech_get).put(control::speech_put),
         )
         .route(ROUTE_SPEECH_ENGINE, put(control::speech_engine_put))
+        .route(ROUTE_SPEECH_CHAT, put(control::speech_chat_put))
         .route(ROUTE_SPEAK, post(control::speak))
         .route(ROUTE_TRANSCRIBE, post(control::transcribe))
         .route(ROUTE_SEARCH, get(control::search_transcript))
