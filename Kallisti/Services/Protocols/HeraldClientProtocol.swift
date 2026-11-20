@@ -42,6 +42,20 @@ protocol HeraldClientProtocol {
     func disconnect() async
     func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String?) async -> Message
     func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String?) -> AsyncStream<StreamingUpdate>
+    /// Reattach to a turn this device already sent, by the daemon's own job id.
+    ///
+    /// A stream that was live when the app went to the background is not live
+    /// on return: iOS reaps the socket without surfacing an error, so the send
+    /// path's stream neither ends nor yields again. The daemon still holds the
+    /// turn, so a transport that can resume answers its remaining frames here
+    /// and the chat applies them through the same consumer it uses for a live
+    /// send.
+    ///
+    /// A requirement, not an extension-only method: ChatStore holds this as
+    /// `any HeraldClientProtocol`, so an extension-only default would be
+    /// dispatched statically and the transport would silently never be asked -
+    /// the exact defect `loadOlder` above documents.
+    func resumeStreaming(jobID: String) -> AsyncStream<StreamingUpdate>
     /// Send a message to a SPECIFIC conversation/session (used by note-as-session
     /// sync). Default implementation reports the capability is unavailable;
     /// the native gateway client overrides it with a real targeted send.
@@ -251,6 +265,14 @@ extension HeraldClientProtocol {
     /// turn; relay/mock clients return false so the UI falls back to local
     /// teardown only.
     var supportsServerTurnInterrupt: Bool { false }
+
+    /// Default: a transport with no resume route answers an empty stream, not a
+    /// failure. The row on screen keeps what it already has and the existing
+    /// watchdog / polling fallback settles the turn; a transport that cannot
+    /// resume must not write an error onto it.
+    func resumeStreaming(jobID: String) -> AsyncStream<StreamingUpdate> {
+        AsyncStream { $0.finish() }
+    }
 }
 
 

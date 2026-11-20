@@ -305,84 +305,18 @@ final class ErisHeraldClient: HeraldClientProtocol {
             var text = ""
             let stream = await client.events(turnID: turn.jobID)
             for try await frame in stream {
-                switch frame {
-                case .delta(let delta):
-                    text += delta
-                    continuation.yield(.textDelta(delta))
-                case .reasoning(let fragment):
-                    continuation.yield(.reasoningDelta(fragment))
-                case .artifactDiff(let diff):
-                    // One card per turn, drawn by the same view the relay path
-                    // used. No second diff UI.
-                    continuation.yield(.artifactDiff(diff.codeDiff))
-                case .artifactPage(let html, let cap):
-                    continuation.yield(.artifactPage(html: html, heightCap: cap))
-                case .attachment(let file):
-                    continuation.yield(.attachment(Self.messageAttachment(from: file)))
-                case .approval(let approval):
-                    // Visible now; the decide card is its own commit.
-                    continuation.yield(.toolActivity(
-                        "approval needed: " + approval.tool + " " + approval.arguments
-                    ))
-                case .ask(let question, let choices, let requestID, let multi):
-                    // The app already draws a clarify card for this exact shape.
-                    continuation.yield(.clarifyRequest(
-                        question: question,
-                        choices: choices,
-                        requestID: requestID,
-                        multiSelect: multi
-                    ))
-                case .toolStart(let name):
-                    // The daemon sends both a step frame and a tool_start for the
-                    // same call. The tool_start is the one that carries the id
-                    // the output and completion frames match on, so it owns the
-                    // live row.
-                    continuation.yield(.toolStarted(ToolActivity(
-                        label: name,
-                        toolCallID: name,
-                        name: name
-                    )))
-                case .toolFinished(let name, let output, let isError):
-                    continuation.yield(.toolCompleted(
-                        toolCallID: name,
-                        resultPreview: String(output.prefix(1200)),
-                        isError: isError,
-                        durationMs: nil
-                    ))
-                case .toolOutput(let name, let chunk):
-                    continuation.yield(.toolOutput(toolCallID: name, chunk: chunk))
-                case .step(let label, let stepType):
-                    // A tool_call step duplicates the tool_start above. Other
-                    // steps are activity lines, not answer text.
-                    if stepType != "tool_call" {
-                        continuation.yield(.toolActivity(label))
-                    }
-                case .done(let full, let usage):
-                    let content = full.isEmpty ? text : full
-                    let final = Message(
-                        id: clientMessageID,
-                        clientMessageID: clientMessageID,
-                        sender: .herald,
-                        content: content,
-                        jobID: jobID,
-                        status: .sent
-                    )
-                    let tokenUsage = usage.map {
-                        TokenUsage(
-                            promptTokens: $0.inputTokens ?? 0,
-                            completionTokens: $0.outputTokens ?? 0,
-                            totalTokens: ($0.inputTokens ?? 0) + ($0.outputTokens ?? 0)
-                        )
-                    }
-                    continuation.yield(.finished(final, tokenUsage, nil, nil))
-                    continuation.finish()
-                    return
-                case .error(let error):
-                    continuation.yield(.failed(error.errorDescription ?? "turn failed", category: error.code))
-                    continuation.finish()
-                    return
-                case .cancelled:
-                    continuation.yield(.cancelled)
+                // Only the delta frames need accumulating; the terminal frame
+                // carries the assembled answer.
+                if case .delta(let delta) = frame { text += delta }
+                guard let mapped = Self.streamingUpdate(
+                    for: frame,
+                    jobID: jobID,
+                    messageID: clientMessageID,
+                    clientMessageID: clientMessageID,
+                    accumulatedText: text
+                ) else { continue }
+                continuation.yield(mapped.update)
+                if mapped.isTerminal {
                     continuation.finish()
                     return
                 }
@@ -391,6 +325,160 @@ final class ErisHeraldClient: HeraldClientProtocol {
         } catch {
             continuation.yield(.failed((error as? ErisError)?.errorDescription ?? error.localizedDescription))
             continuation.finish()
+        }
+    }
+
+    // MARK: - Reattach
+
+    /// Attach to a turn this device already sent, from the tail of its stream.
+    ///
+    /// The live send's stream dies when iOS reaps the socket; the turn does
+    /// not. `lastEventID` is nil on purpose: there is no sequence to replay
+    /// from (the send path's decoder kept the last id in memory and that
+    /// memory is what the suspension took), so this watches from the tail.
+    /// The terminal frame carries the assembled answer, so nothing that
+    /// arrived while this device was away is missing from the reply that
+    /// settles it - only the intermediate deltas are unseen.
+    func resumeStreaming(jobID: String) -> AsyncStream<StreamingUpdate> {
+        AsyncStream { continuation in
+            let task = Task { @MainActor [weak self] in
+                guard let self else {
+                    continuation.finish()
+                    return
+                }
+                await self.performStreamingResume(jobID: jobID, continuation: continuation)
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func performStreamingResume(
+        jobID: String,
+        continuation: AsyncStream<StreamingUpdate>.Continuation
+    ) async {
+        guard let client = await pairedClient() else {
+            continuation.yield(.failed("No Eris daemon is paired."))
+            continuation.finish()
+            return
+        }
+        // The row the finished update carries: this path never owned the
+        // client message id, so the job's own stable id is the row identity.
+        let turnID = Self.stableUUID(from: jobID)
+        var text = ""
+        do {
+            let stream = await client.events(turnID: jobID, lastEventID: nil)
+            for try await frame in stream {
+                if case .delta(let delta) = frame { text += delta }
+                guard let mapped = Self.streamingUpdate(
+                    for: frame,
+                    jobID: turnID,
+                    messageID: turnID,
+                    clientMessageID: nil,
+                    accumulatedText: text
+                ) else { continue }
+                continuation.yield(mapped.update)
+                if mapped.isTerminal {
+                    continuation.finish()
+                    return
+                }
+            }
+            continuation.finish()
+        } catch {
+            continuation.yield(.failed((error as? ErisError)?.errorDescription ?? error.localizedDescription))
+            continuation.finish()
+        }
+    }
+
+    /// One frame as the chat reads it.
+    ///
+    /// The live send and a reattach read the same `events(...)` stream, so both
+    /// map through this one function: a frame decoded differently on the two
+    /// paths would make a reattached turn disagree with the reply it settles
+    /// into. `messageID` is the row the finished update carries - the client
+    /// message id for a live send (the row it already owns), the job's stable
+    /// id for a reattach (which has no user row of its own).
+    ///
+    /// `nil` means the frame has no chat-facing update (a `tool_call` step,
+    /// which duplicates the tool_start frame above), and `isTerminal` means
+    /// this frame ends the turn and the stream after it.
+    private static func streamingUpdate(
+        for frame: ErisFrame,
+        jobID: UUID,
+        messageID: UUID,
+        clientMessageID: UUID?,
+        accumulatedText: String
+    ) -> (update: StreamingUpdate, isTerminal: Bool)? {
+        switch frame {
+        case .delta(let delta):
+            return (.textDelta(delta), false)
+        case .reasoning(let fragment):
+            return (.reasoningDelta(fragment), false)
+        case .artifactDiff(let diff):
+            // One card per turn, drawn by the same view the relay path used.
+            // No second diff UI.
+            return (.artifactDiff(diff.codeDiff), false)
+        case .artifactPage(let html, let cap):
+            return (.artifactPage(html: html, heightCap: cap), false)
+        case .attachment(let file):
+            return (.attachment(Self.messageAttachment(from: file)), false)
+        case .approval(let approval):
+            // Visible now; the decide card is its own commit.
+            return (.toolActivity(
+                "approval needed: " + approval.tool + " " + approval.arguments
+            ), false)
+        case .ask(let question, let choices, let requestID, let multi):
+            // The app already draws a clarify card for this exact shape.
+            return (.clarifyRequest(
+                question: question,
+                choices: choices,
+                requestID: requestID,
+                multiSelect: multi
+            ), false)
+        case .toolStart(let name):
+            // The daemon sends both a step frame and a tool_start for the same
+            // call. The tool_start is the one that carries the id the output
+            // and completion frames match on, so it owns the live row.
+            return (.toolStarted(ToolActivity(
+                label: name,
+                toolCallID: name,
+                name: name
+            )), false)
+        case .toolFinished(let name, let output, let isError):
+            return (.toolCompleted(
+                toolCallID: name,
+                resultPreview: String(output.prefix(1200)),
+                isError: isError,
+                durationMs: nil
+            ), false)
+        case .toolOutput(let name, let chunk):
+            return (.toolOutput(toolCallID: name, chunk: chunk), false)
+        case .step(let label, let stepType):
+            // A tool_call step duplicates the tool_start above. Other steps are
+            // activity lines, not answer text.
+            if stepType == "tool_call" { return nil }
+            return (.toolActivity(label), false)
+        case .done(let full, let usage):
+            let content = full.isEmpty ? accumulatedText : full
+            let final = Message(
+                id: messageID,
+                clientMessageID: clientMessageID,
+                sender: .herald,
+                content: content,
+                jobID: jobID,
+                status: .sent
+            )
+            let tokenUsage = usage.map {
+                TokenUsage(
+                    promptTokens: $0.inputTokens ?? 0,
+                    completionTokens: $0.outputTokens ?? 0,
+                    totalTokens: ($0.inputTokens ?? 0) + ($0.outputTokens ?? 0)
+                )
+            }
+            return (.finished(final, tokenUsage, nil, nil), true)
+        case .error(let error):
+            return (.failed(error.errorDescription ?? "turn failed", category: error.code), true)
+        case .cancelled:
+            return (.cancelled, true)
         }
     }
 

@@ -49,6 +49,12 @@ final class ResilientHeraldClient: HeraldClientProtocol {
         primary.sendStreaming(message: message, attachments: attachments, clientMessageID: clientMessageID, continuationContext: continuationContext)
     }
 
+    /// Forward the reattach so the wrapper cannot fall through to the protocol's
+    /// empty default and leave the primary's transport unasked.
+    func resumeStreaming(jobID: String) -> AsyncStream<StreamingUpdate> {
+        primary.resumeStreaming(jobID: jobID)
+    }
+
     func loadConversation() async -> Conversation {
         let conversation = await primary.loadConversation()
         if allowsFallback() && primary.connectionStatus == .error {
