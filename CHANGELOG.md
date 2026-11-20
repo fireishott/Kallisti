@@ -67,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The wrist pairs as its own device, through `POST /v1/watch/pair`. Handing it a
   copy of the phone's tokens made the two clients rotate one family, so the
   phone's next refresh failed and it asked to be paired again.
+- The toolbar refresh did nothing while a turn was live. The catch-up returned
+  early whenever `isStreaming` was true, and a stream frozen by a background
+  trip stays true forever, so the one control a person reaches for was disabled
+  by the very condition it exists to resolve. A silent stream is now treated as
+  dead after twenty seconds, the stale phases are reconciled, and the transcript
+  catch-up runs.
 - Talk asked the daemon's Mimo readiness route even when the daemon's own speech
   was selected, so the screen still demanded a Mimo key. That route is only
   consulted when the Mimo engine is chosen.

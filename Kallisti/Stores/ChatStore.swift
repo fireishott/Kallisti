@@ -342,6 +342,10 @@ final class ChatStore {
     /// The continuous watchdog checks this to detect mid-stream stalls.
     private var streamingProgressAt: Date = .now
 
+    /// How long a stream may be silent before a catch-up treats it as dead.
+    /// Shorter than the watchdog: this is a person asking, not a timeout.
+    private static let catchUpStallInterval: TimeInterval = 20
+
     /// Turn-complete notification dedup. Records the terminal `Message.id`
     /// for which a local notification has already been posted so a re-entry
     /// of the `.finished` handler for the same message (retry that re-emits
@@ -4711,8 +4715,21 @@ final class ChatStore {
         // forever (the refresh button did nothing).
         settleStaleTransientState()
         // Don't clobber a local send/stream in flight — those paths own the
-        // conversation and will reconcile on their own.
-        guard !hasPendingMessages, !isStreaming else { return }
+        // conversation and will reconcile on their own. A stream that was
+        // frozen by a background trip is not in flight, though: it is a socket
+        // that will never deliver again, and refusing to catch up because of it
+        // is why the refresh button did nothing while a turn was live.
+        guard !hasPendingMessages else { return }
+        let streamLooksDead = isStreaming
+            && (streamBackgroundedAt != nil
+                || Date.now.timeIntervalSince(streamingProgressAt) > Self.catchUpStallInterval)
+        if isStreaming && !streamLooksDead { return }
+        if streamLooksDead {
+            // Reconcile the frozen phase before the transcript refresh, so a
+            // turn that finished while the phone was asleep is not left with a
+            // spinner and a tool row that never settles.
+            await recoverStalledStream()
+        }
         // A manual refresh supersedes the server-turn backoff loop. Cancel it
         // so this refresh runs immediately; it re-arms below if the server
         // session is still running.
