@@ -371,9 +371,11 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
 .subagents-live { color: var(--warn); }
 .subagents-list {
   position: absolute;
-  right: 0;
+  left: 0;
   z-index: 6;
   width: min(480px, 88vw);
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
   margin-top: 6px;
   padding: 8px;
   display: grid;
