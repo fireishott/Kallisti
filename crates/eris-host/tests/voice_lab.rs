@@ -367,6 +367,262 @@ async fn the_engine_write_is_admin_only_and_validates_the_value() {
 }
 
 // ---------------------------------------------------------------------------
+// The chat-audio rows
+// ---------------------------------------------------------------------------
+
+/// A key the body does not carry is left alone; `null` and whitespace clear.
+///
+/// Those three outcomes are the whole contract of the route, and they are easy to
+/// confuse: a client that omits a key means "keep it", a client that sends `null`
+/// means "forget it", and a naive store of the parsed body would read both as an
+/// empty string.
+#[tokio::test]
+async fn the_chat_write_stores_trims_clears_and_leaves_absent_keys_alone() {
+    let lab = Lab::start().await;
+    let admin = lab.admin_token();
+
+    let reply = lab
+        .put(
+            "/v1/speech/chat",
+            &admin,
+            JSON,
+            br#"{"base_url":"  https://aggregation.test/v1  ","model":"  spoken-model  "}"#,
+        )
+        .await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert_eq!(reply.json()["base_url"], "https://aggregation.test/v1");
+    assert_eq!(reply.json()["model"], "spoken-model");
+    assert_eq!(
+        lab.engine
+            .setting("speech.chat_base_url")
+            .expect("read")
+            .as_deref(),
+        Some("https://aggregation.test/v1"),
+        "the stored row is trimmed"
+    );
+    assert_eq!(
+        lab.engine
+            .setting("speech.chat_model")
+            .expect("read")
+            .as_deref(),
+        Some("spoken-model")
+    );
+
+    // One key present, the other absent: the absent row is untouched.
+    let reply = lab
+        .put(
+            "/v1/speech/chat",
+            &admin,
+            JSON,
+            br#"{"model":"other-model"}"#,
+        )
+        .await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert_eq!(
+        reply.json()["base_url"],
+        "https://aggregation.test/v1",
+        "an absent key is not a clear: {}",
+        reply.body
+    );
+    assert_eq!(reply.json()["model"], "other-model");
+
+    // `null` clears that row, and only that row.
+    let reply = lab
+        .put("/v1/speech/chat", &admin, JSON, br#"{"model":null}"#)
+        .await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert!(reply.json()["model"].is_null(), "body: {}", reply.body);
+    assert_eq!(reply.json()["base_url"], "https://aggregation.test/v1");
+    assert_eq!(
+        lab.engine.setting("speech.chat_model").expect("read"),
+        None,
+        "a cleared row is deleted, not blanked"
+    );
+
+    // A whitespace value clears the same way `null` does.
+    let reply = lab
+        .put("/v1/speech/chat", &admin, JSON, br#"{"base_url":"   "}"#)
+        .await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert!(reply.json()["base_url"].is_null(), "body: {}", reply.body);
+    assert_eq!(
+        lab.engine.setting("speech.chat_base_url").expect("read"),
+        None
+    );
+
+    // A body with no keys changes nothing and still answers the stored state.
+    let reply = lab.put("/v1/speech/chat", &admin, JSON, b"{}").await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert!(reply.json()["base_url"].is_null(), "body: {}", reply.body);
+    assert!(reply.json()["model"].is_null(), "body: {}", reply.body);
+    lab.stop();
+}
+
+#[tokio::test]
+async fn the_chat_write_is_admin_only() {
+    let lab = Lab::start().await;
+    let token = lab.token();
+    let reply = lab
+        .put(
+            "/v1/speech/chat",
+            &token,
+            JSON,
+            br#"{"model":"spoken-model"}"#,
+        )
+        .await;
+    assert_eq!(reply.status, 403, "body: {}", reply.body);
+    assert_eq!(reply.code(), "scope_denied");
+    assert_eq!(
+        lab.engine.setting("speech.chat_model").expect("read"),
+        None,
+        "a refused write stores nothing"
+    );
+    lab.stop();
+}
+
+#[tokio::test]
+async fn the_chat_write_refuses_a_bad_base_url_and_a_long_model_by_name() {
+    let lab = Lab::start().await;
+    let admin = lab.admin_token();
+
+    for bad in [
+        "ftp://aggregation.test/v1",
+        "aggregation.test",
+        "ws://127.0.0.1:20128/v1",
+        "https://",
+    ] {
+        let body = serde_json::json!({ "base_url": bad }).to_string();
+        let reply = lab
+            .put("/v1/speech/chat", &admin, JSON, body.as_bytes())
+            .await;
+        assert_eq!(reply.status, 400, "{bad}: {}", reply.body);
+        assert_eq!(reply.code(), "speech_base_url_invalid", "{bad}");
+        assert_eq!(
+            lab.engine.setting("speech.chat_base_url").expect("read"),
+            None,
+            "a refused value is not stored: {bad}"
+        );
+    }
+
+    // A valid key beside a refused one is not stored either: the body is checked
+    // before any of it lands.
+    let reply = lab
+        .put(
+            "/v1/speech/chat",
+            &admin,
+            JSON,
+            br#"{"base_url":"ftp://aggregation.test","model":"spoken-model"}"#,
+        )
+        .await;
+    assert_eq!(reply.status, 400, "body: {}", reply.body);
+    assert_eq!(reply.code(), "speech_base_url_invalid");
+    assert_eq!(
+        lab.engine.setting("speech.chat_model").expect("read"),
+        None,
+        "no key is stored before the whole body is valid"
+    );
+
+    let max = eris_host::speech::MAX_CHAT_MODEL_CHARS;
+    let long = "m".repeat(max + 1);
+    let body = serde_json::json!({ "model": long }).to_string();
+    let reply = lab
+        .put("/v1/speech/chat", &admin, JSON, body.as_bytes())
+        .await;
+    assert_eq!(reply.status, 400, "body: {}", reply.body);
+    assert_eq!(reply.code(), "speech_model_invalid");
+    assert_eq!(
+        lab.engine.setting("speech.chat_model").expect("read"),
+        None,
+        "an over-long model is not stored"
+    );
+
+    // The cap itself is accepted: the refusal is about longer than, not at.
+    let exact = "m".repeat(max);
+    let body = serde_json::json!({ "model": exact }).to_string();
+    let reply = lab
+        .put("/v1/speech/chat", &admin, JSON, body.as_bytes())
+        .await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert_eq!(reply.json()["model"], exact);
+    lab.stop();
+}
+
+#[tokio::test]
+async fn the_speech_read_reports_the_chat_rows_and_null_when_unset() {
+    let lab = Lab::start().await;
+    let token = lab.token();
+
+    let reply = lab.get("/v1/speech", &token).await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    let body = reply.json();
+    assert!(
+        body.get("chat_base_url").is_some(),
+        "the field is present even when the row is not: {body}"
+    );
+    assert!(
+        body["chat_base_url"].is_null(),
+        "unset reads as null: {body}"
+    );
+    assert!(
+        body.get("chat_model").is_some(),
+        "the field is present even when the row is not: {body}"
+    );
+    assert!(body["chat_model"].is_null(), "unset reads as null: {body}");
+
+    lab.engine
+        .set_setting("speech.chat_base_url", "https://aggregation.test/v1")
+        .expect("base url");
+    lab.engine
+        .set_setting("speech.chat_model", "  spoken-model  ")
+        .expect("model");
+    let reply = lab.get("/v1/speech", &token).await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert_eq!(
+        reply.json()["chat_base_url"],
+        "https://aggregation.test/v1",
+        "body: {}",
+        reply.body
+    );
+    assert_eq!(
+        reply.json()["chat_model"],
+        "spoken-model",
+        "the read trims the row the same way the write does: {}",
+        reply.body
+    );
+    lab.stop();
+}
+
+/// A working chat-audio engine must not look voiceless.
+///
+/// With no `speech.chat_model` the engine speaks through the provider's model.
+/// Reporting only the stored row left `voice_models` empty, which a client draws
+/// as a list with nothing to pick.
+#[tokio::test]
+async fn chat_audio_lists_an_effective_model_when_none_is_stored() {
+    let lab = Lab::start().await;
+    lab.engine
+        .set_setting("speech.engine", "chat-audio")
+        .expect("engine");
+    let token = lab.token();
+
+    let reply = lab.get("/v1/speech", &token).await;
+    assert_eq!(reply.status, 200, "body: {}", reply.body);
+    assert_eq!(
+        reply.json()["chat_model"],
+        serde_json::Value::Null,
+        "nothing is pinned: {}",
+        reply.body
+    );
+    assert_eq!(
+        reply.json()["voice_models"],
+        serde_json::json!(["provider default"]),
+        "the engine's effective model is named rather than left empty: {}",
+        reply.body
+    );
+    lab.stop();
+}
+
+// ---------------------------------------------------------------------------
 // The live case, gated on the unit
 // ---------------------------------------------------------------------------
 

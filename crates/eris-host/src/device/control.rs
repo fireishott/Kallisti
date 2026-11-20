@@ -859,6 +859,11 @@ pub async fn voices(State(service): State<DeviceService>, headers: HeaderMap) ->
 /// model outside the catalogue is still accepted on a `PUT`: the catalogue is
 /// what was probed, not a closed set, and an audio model is usually absent from
 /// it.
+///
+/// `chat_base_url` and `chat_model` are the two rows the chat-audio engine reads,
+/// reported as stored and `null` when unset. `voice_models` reports the model
+/// that engine would actually ask for, not only the stored row, so a client's
+/// voice picker is never empty for an engine that can speak.
 pub async fn speech_get(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
     let token = match authenticate(&service, &headers) {
         Ok(token) => token,
@@ -873,6 +878,11 @@ pub async fn speech_get(State(service): State<DeviceService>, headers: HeaderMap
         .flatten()
         .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
         .unwrap_or_default();
+    // The provider is read once: it decides whether the chat engine is
+    // configured, and its model is the model that engine falls back to.
+    let provider = crate::web::chat::turn_config(service.engine())
+        .ok()
+        .flatten();
     // The engine decides what "configured" means. The classic engine is the
     // stored base URL; the chat engine is its own override or the provider base
     // URL it falls back to. A chat model alone names no endpoint, so it does not
@@ -881,16 +891,11 @@ pub async fn speech_get(State(service): State<DeviceService>, headers: HeaderMap
     let configured = match engine {
         crate::speech::Engine::AudioEndpoint => crate::speech::engine_base(db).is_some(),
         crate::speech::Engine::ChatAudio => {
-            crate::web::store::settings_get(db, crate::speech::SETTING_CHAT_BASE_URL)
-                .ok()
-                .flatten()
-                .is_some_and(|value| !value.trim().is_empty())
-                || crate::web::chat::turn_config(service.engine())
-                    .ok()
-                    .flatten()
-                    .is_some()
+            crate::speech::chat_base_url(db).is_some() || provider.is_some()
         }
     };
+    let voice_models =
+        crate::speech::voice_models(db, provider.as_ref().map(|config| config.model.as_str()));
     axum::Json(serde_json::json!({
         "ok": true,
         "engine": engine.as_str(),
@@ -901,12 +906,14 @@ pub async fn speech_get(State(service): State<DeviceService>, headers: HeaderMap
         "model": crate::speech::model(db),
         "default_model": crate::speech::MODEL,
         "models": models,
+        "chat_base_url": crate::speech::chat_base_url(db),
+        "chat_model": crate::speech::chat_model(db),
         "voices": crate::speech::VOICES
             .iter()
             .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
             .collect::<Vec<_>>(),
         "voice": crate::speech::voice(db),
-        "voice_models": crate::speech::voice_models(db),
+        "voice_models": voice_models,
         "configured": configured,
     }))
     .into_response()
@@ -952,6 +959,119 @@ pub async fn speech_engine_put(
     }
     let _ = audit(&service, token.device_id(), "tts.engine", engine.as_str());
     axum::Json(serde_json::json!({ "ok": true, "engine": engine.as_str() })).into_response()
+}
+
+/// `PUT /v1/speech/chat` - point the chat-audio engine at an aggregation endpoint
+/// and a model.
+///
+/// Both keys are optional and are read independently. A key the body does not
+/// carry leaves its row untouched; a key carried as `null`, as an empty string,
+/// or as whitespace clears it. Clearing is a delete rather than an empty row, so
+/// a read of `/v1/speech` answers the same `null` a never-written row does.
+///
+/// Administration, because the value decides which endpoint the daemon calls and
+/// with which credentials. Every value is checked before anything is stored, so a
+/// refused body cannot leave half a change behind.
+pub async fn speech_chat_put(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Admin) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+
+    // `None` is a key the body did not carry; `Some(None)` clears the row;
+    // `Some(Some(value))` stores the trimmed value.
+    let base_url: Option<Option<String>> = match fields.get("base_url") {
+        None => None,
+        Some(raw) => {
+            let value = raw.trim();
+            if value.is_empty() {
+                Some(None)
+            } else if crate::speech::valid_chat_base_url(value) {
+                Some(Some(value.to_owned()))
+            } else {
+                return DeviceError::new(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "speech_base_url_invalid",
+                    "base_url must be an http:// or https:// URL",
+                )
+                .into_response();
+            }
+        }
+    };
+    let model: Option<Option<String>> = match fields.get("model") {
+        None => None,
+        Some(raw) => {
+            let value = raw.trim();
+            if value.is_empty() {
+                Some(None)
+            } else if value.chars().count() > crate::speech::MAX_CHAT_MODEL_CHARS {
+                return DeviceError::new(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "speech_model_invalid",
+                    format!(
+                        "model must be at most {} characters",
+                        crate::speech::MAX_CHAT_MODEL_CHARS
+                    ),
+                )
+                .into_response();
+            } else {
+                Some(Some(value.to_owned()))
+            }
+        }
+    };
+
+    let db = service.engine().db();
+    let mut changes: Vec<String> = Vec::new();
+    for (key, name, change) in [
+        (crate::speech::SETTING_CHAT_BASE_URL, "base_url", base_url),
+        (crate::speech::SETTING_CHAT_MODEL, "model", model),
+    ] {
+        let Some(change) = change else {
+            continue;
+        };
+        let outcome: Result<String, String> = match change {
+            Some(value) => crate::web::store::settings_put(db, key, &value)
+                .map(|()| format!("{name} stored"))
+                .map_err(|error| error.to_string()),
+            None => service
+                .engine()
+                .clear_setting(key)
+                .map(|()| format!("{name} cleared"))
+                .map_err(|error| error.to_string()),
+        };
+        match outcome {
+            Ok(change) => changes.push(change),
+            Err(error) => {
+                return DeviceError::db_unavailable(format!(
+                    "cannot store the speech {name}: {error}"
+                ))
+                .into_response();
+            }
+        }
+    }
+    let detail = if changes.is_empty() {
+        "no change".to_owned()
+    } else {
+        changes.join(", ")
+    };
+    let _ = audit(&service, token.device_id(), "tts.chat", &detail);
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "base_url": crate::speech::chat_base_url(db),
+        "model": crate::speech::chat_model(db),
+    }))
+    .into_response()
 }
 
 /// `PUT /v1/speech` - choose the model the daemon speaks with.
