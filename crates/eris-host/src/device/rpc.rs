@@ -295,11 +295,11 @@ mod tests {
             "params": {}
         }))
         .map_err(|refusal| refusal.message)
-        .and_then(|(method, params)| {
+        .map(|(method, params)| {
             // The envelope parses; the refusal comes from dispatch, so this test
             // only pins the method's presence in the vocabulary.
             let _ = params;
-            Ok(method)
+            method
         });
         assert_eq!(
             refused.expect("turn.cancel is a method"),

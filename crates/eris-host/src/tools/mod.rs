@@ -2062,6 +2062,6 @@ mod page_payload_tests {
         assert_eq!(page["html"], "<h1>hi</h1>");
         assert_eq!(page["height_cap"], 2000);
         assert!(page_payload("notes.txt", "text").is_null());
-        assert!(page_payload("page.HTM", "<p>x</p>").is_null() == false);
+        assert!(!page_payload("page.HTM", "<p>x</p>").is_null());
     }
 }

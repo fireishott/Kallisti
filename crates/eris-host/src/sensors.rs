@@ -913,7 +913,12 @@ mod batch_tests {
             sensitivity: None,
             recorded_at: "2019-01-01T00:00:00Z".to_owned(),
         };
-        assert_eq!(store.record_batch(&[old.clone()]).expect("seed"), 1);
+        assert_eq!(
+            store
+                .record_batch(std::slice::from_ref(&old))
+                .expect("seed"),
+            1
+        );
         let fresh = BatchRow {
             recorded_at: time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
