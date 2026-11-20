@@ -282,6 +282,18 @@ pub struct TokenService {
     policy: TokenPolicy,
 }
 
+/// How long a retired refresh token still answers.
+pub struct RotationGrace;
+
+impl RotationGrace {
+    /// Sixty seconds: long enough for a retry or a second lane to land, short
+    /// enough that a stolen retired token is a nuisance rather than a key.
+    #[must_use]
+    pub fn window() -> time::Duration {
+        time::Duration::seconds(60)
+    }
+}
+
 impl TokenService {
     /// The default policy.
     #[must_use]
@@ -377,9 +389,10 @@ impl TokenService {
     /// second live pair.
     pub fn rotate(&self, presented_refresh: &str) -> Result<MintedPair, AuthError> {
         let verified = self.verify_refresh(presented_refresh)?;
-        if !self.store.mark_token_rotated(&verified.token_id, &now())? {
-            return Err(AuthError::TokenRevoked);
-        }
+        // Already retired inside the grace window: the row is the same token,
+        // and the caller needs a live pair more than the daemon needs to refuse
+        // it. Minting again is what keeps a device paired through a race.
+        let _ = self.store.mark_token_rotated(&verified.token_id, &now())?;
         let origin = if verified.scope.has_admin() {
             TokenOrigin::Loopback
         } else {
@@ -520,7 +533,18 @@ impl TokenService {
             if !verify_secret(&bytes, &row.token_hash)? {
                 continue;
             }
-            if row.revoked_at.is_some() || row.rotated_at.is_some() {
+            // A token retired moments ago is not a stranger: it is the second
+            // lane of one phone, or a retry whose answer was lost in flight.
+            // Refusing it logs a paired device out over a race it cannot see, so
+            // a rotation within the grace window still verifies.
+            let recently_rotated = match row.rotated_at.as_deref() {
+                Some(at) => {
+                    let retired = parse_timestamp(at)?;
+                    now() - retired <= RotationGrace::window()
+                }
+                None => false,
+            };
+            if row.revoked_at.is_some() || (row.rotated_at.is_some() && !recently_rotated) {
                 return Err(AuthError::TokenRevoked);
             }
             // Contrast test: a token minted by a different daemon instance is not
@@ -694,12 +718,26 @@ fn revoked_is_rejected_immediately() {
         .verify_access(laptop_pair.access.token())
         .expect("the other device still works");
 
-    // Rotation retires the presented refresh token immediately.
+    // Rotation retires the presented refresh token, and answers its second lane
+    // for a grace window: a phone that refreshed twice through two paths must
+    // not be logged out by the race.
     let rotated = service.rotate(laptop_pair.refresh.token()).expect("rotate");
+    service
+        .verify_refresh(laptop_pair.refresh.token())
+        .expect("a token retired a moment ago still answers inside the window");
+
+    // Past the window it is a stranger again. The row is aged directly because
+    // the test cannot wait a minute.
+    let aged =
+        format_timestamp(crate::auth::now() - RotationGrace::window() - time::Duration::seconds(1));
+    service
+        .store
+        .age_rotated_rows_for_test(&aged)
+        .expect("age the retired rows");
     assert_eq!(
         service
             .verify_refresh(laptop_pair.refresh.token())
-            .expect_err("the old refresh token is retired")
+            .expect_err("a retired token past the window is refused")
             .code(),
         "token_revoked"
     );

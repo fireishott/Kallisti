@@ -762,9 +762,11 @@ async fn pair_redeems_a_code_and_refresh_mints_an_access_token() {
         .to_owned();
     assert_ne!(refresh, previous_refresh, "the replacement is a new token");
 
-    // The retired token is refused, and the replacement works. Anything else would
-    // mean a client holding the old copy could still refresh, which is the state the
-    // two lanes kept getting each other into.
+    // The retired token still answers inside the grace window, and the
+    // replacement works too. Refusing it outright is what logged a paired phone
+    // out over a race the phone could not see: two lanes, or one retry whose
+    // answer was lost in flight, both arrive moments apart with the same token.
+    // Past the window the unit test proves it is a stranger again.
     let again = harness
         .request(
             "POST",
@@ -773,7 +775,7 @@ async fn pair_redeems_a_code_and_refresh_mints_an_access_token() {
             Some(&format!(r#"{{"refresh_token":"{previous_refresh}"}}"#)),
         )
         .await;
-    assert_eq!(again.status, 401, "{}", again.body);
+    assert_eq!(again.status, 200, "{}", again.body);
     let rotated_again = harness
         .request(
             "POST",

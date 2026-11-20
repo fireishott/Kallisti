@@ -251,6 +251,19 @@ impl AuthStore {
 
     /// Retire one token by rotation. `false` when it was already retired, which
     /// is what makes a double rotate a refusal rather than a second live pair.
+    /// Ages every retired row, so a test can stand past the grace window without
+    /// waiting a minute. Test-only: it edits history.
+    #[cfg(test)]
+    pub fn age_rotated_rows_for_test(&self, at: &str) -> Result<usize, AuthError> {
+        let changed = self.db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE auth_tokens SET rotated_at = ?1 WHERE rotated_at IS NOT NULL",
+                params![at],
+            )
+        })?;
+        Ok(changed)
+    }
+
     pub fn mark_token_rotated(
         &self,
         token_id: &str,
