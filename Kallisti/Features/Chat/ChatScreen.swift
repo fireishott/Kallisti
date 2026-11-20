@@ -544,6 +544,13 @@ struct ChatScreen: View {
                 isUserScrolling = false
                 scrollToBottom(animate: false, force: true)
                 _ = await (hostRefresh, profileLoad, modelLoad, outboxRecovery, catchUp)
+                // A force-quit kills the app, not the turn: the host keeps
+                // working and the outbox record written when the job was
+                // accepted is still there, with the row and the socket both
+                // gone. Now that the transcript and the outbox are restored,
+                // reattach to that turn once so its answer lands here instead
+                // of only on a later visit.
+                await chatStore.reattachRestoredTurnIfNeeded()
             }
             .task {
                 while !Task.isCancelled {

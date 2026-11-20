@@ -136,6 +136,15 @@ extension ResilientHeraldClient {
         await primary.getJobStatus(jobId)
     }
 
+    /// Forward the daemon-id probe for the same reason `resumeStreaming` is
+    /// forwarded: the wrapper must not fall through to the protocol's nil
+    /// default and leave the primary's transport unasked, or neither settling
+    /// an accepted turn nor reattaching to one after a relaunch can ever reach
+    /// the transport that can answer.
+    func jobState(daemonJobID: String) async -> LiveHeraldClient.JobStatusResponse? {
+        await primary.jobState(daemonJobID: daemonJobID)
+    }
+
     func resumeActiveSessionIfNeeded() async -> Bool {
         await primary.resumeActiveSessionIfNeeded()
     }
