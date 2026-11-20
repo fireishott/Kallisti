@@ -257,8 +257,7 @@ mod tests {
         for role in ROLES {
             let audio = matches!(role.key, "image" | "speech");
             assert_eq!(
-                role.probe_validated,
-                !audio,
+                role.probe_validated, !audio,
                 "{} is validated against the wrong catalogue",
                 role.key
             );

@@ -4669,7 +4669,6 @@ pub type ToolExecute<'a> = dyn FnMut(
 // big the window is, where to report, how to be stopped, and how to ask for the
 // next completion. Bundling them into a struct would move the same eight fields
 // one line up and make the call sites read worse.
-#[allow(clippy::too_many_arguments)]
 /// The longest a turn may spend calling tools before it is made to answer.
 ///
 /// Rounds are not a unit of time: a slow tool makes one round cost minutes. This
@@ -4677,6 +4676,7 @@ pub type ToolExecute<'a> = dyn FnMut(
 /// a busy one to the phone.
 const TURN_WALL_CLOCK: std::time::Duration = std::time::Duration::from_secs(8 * 60);
 
+#[allow(clippy::too_many_arguments)]
 pub fn drive_tool_loop(
     execute: &mut ToolExecute<'_>,
     mut messages: Vec<ChatMessage>,
@@ -4837,10 +4837,7 @@ pub fn drive_tool_loop(
             Err(failure)
                 if tools_allowed && failure.1.contains("never completed into valid JSON") =>
             {
-                match stream(&messages, tools_allowed, &mut *sink) {
-                    Ok(completion) => completion,
-                    Err(failure) => return Err(failure),
-                }
+                stream(&messages, tools_allowed, &mut *sink)?
             }
             Err(failure) => return Err(failure),
         };

@@ -1823,10 +1823,14 @@ pub async fn events(
 
     // `audio=1` asks for the answer as speech, clause by clause. It is opt-in
     // because it changes what the stream carries: a reader that did not ask sees
-    // exactly the frames it saw before, in the same order.
+    // exactly the frames it saw before, in the same order. The provider config is
+    // resolved once here because the chat-audio engine reads its base from it.
+    let speech_config = crate::web::chat::turn_config(service.engine())
+        .ok()
+        .flatten();
     let wants_audio = params.get("audio").is_some_and(|value| value.trim() == "1")
         && crate::speech::enabled(service.engine().db())
-        && crate::speech::engine_healthy(service.engine().db()).await;
+        && crate::speech::engine_healthy(service.engine().db(), speech_config.as_ref()).await;
 
     let base: Pin<Box<dyn Stream<Item = TurnFrame> + Send>> = match (replay_ended, receiver) {
         (false, Some(receiver)) => {
@@ -7523,7 +7527,8 @@ pub async fn talk_readiness(State(service): State<DeviceService>, headers: Heade
     let engine = service.engine();
     let db = engine.db();
     let configured = crate::speech::enabled(db);
-    let reachable = configured && crate::speech::engine_healthy(db).await;
+    let speech_config = crate::web::chat::turn_config(engine).ok().flatten();
+    let reachable = configured && crate::speech::engine_healthy(db, speech_config.as_ref()).await;
     let blocked = if !configured {
         Some("tts_disabled")
     } else if !reachable {
