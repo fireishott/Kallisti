@@ -132,6 +132,11 @@ final class ChatStore {
     /// Identity of the current reattach task, so a task that finishes late
     /// cannot clear a newer one's handle.
     private var reattachToken: UUID?
+    /// The outbox records this process has already tried to reattach, by client
+    /// message id. A launch gets one attempt per record: a resumed feed that
+    /// ends without a terminal frame is settled from the transcript, never
+    /// reattached in a loop.
+    private var launchReattachAttempted: Set<UUID> = []
     /// Build 31 (fix): monotonically-incrementing generation token.  Every new
     /// streaming attempt captures this value; every callback in the consumer task
     /// checks it before mutating global state.  A retry or cancel bumps it, so
@@ -1645,10 +1650,25 @@ final class ChatStore {
                 || heraldClient.connectionStatus == .degraded else { return }
 
         // 1. Accepted jobs: settle against the relay.
-        let accepted = outboxItems.filter { $0.state == .accepted && $0.jobID != nil }
+        let accepted = outboxItems.filter {
+            $0.state == .accepted && ($0.jobID != nil || $0.daemonJobID?.isEmpty == false)
+        }
         for item in accepted {
-            guard let jobID = item.jobID else { continue }
-            guard let status = await heraldClient.getJobStatus(jobID) else {
+            // Ask about the job. `jobID` is a hash of the relay's id, and a
+            // transport that talks to the daemon cannot answer for a hash at
+            // all, so a record carrying the daemon's own id asks with that one
+            // when the hash route has nothing to say. Without this, an accepted
+            // turn that was still running on the host read as "the relay could
+            // not report this message's status" on every relaunch, and the row
+            // was declared unknown while its answer was still coming.
+            var status: LiveHeraldClient.JobStatusResponse?
+            if let jobID = item.jobID {
+                status = await heraldClient.getJobStatus(jobID)
+            }
+            if status == nil, let daemonJobID = item.daemonJobID, !daemonJobID.isEmpty {
+                status = await heraldClient.jobState(daemonJobID: daemonJobID)
+            }
+            guard let status else {
                 // The relay cannot identify the job (unknown or unreachable).
                 // Do NOT resubmit — the original job may still be running and
                 // resubmission could duplicate it. Surface as a manual-only
@@ -4882,6 +4902,12 @@ final class ChatStore {
         if let detachedPlaceholderID, detachedPlaceholderID == streamingMessageID {
             await reattachStreamingTurnIfNeeded()
         }
+        // A turn that was accepted before a force-quit has no row to detach and
+        // no stream to lose, so the path above cannot see it. The outbox record
+        // can, and this is the other moment the app is demonstrably back with
+        // its transcript loaded: a launch that came up offline gets its one
+        // attempt here instead of waiting for the next process.
+        await reattachRestoredTurnIfNeeded()
         // Build 128.46: re-arm the server-turn watch if the session is still
         // running server-side (we cancelled it above to force this refresh).
         await startServerTurnWatchIfNeeded()
@@ -4918,8 +4944,145 @@ final class ChatStore {
         // only an error frame, and writing a failure onto a bubble whose reply
         // is already in the transcript is worse than leaving it alone.
         guard let job = await heraldClient.jobState(daemonJobID: daemonJobID),
-              job.status != "terminal" else { return }
+              !Self.isTerminalJobStatus(job.status) else { return }
 
+        startReattachConsumer(
+            record: record,
+            conversationID: conversationID,
+            placeholderID: placeholderID,
+            jobID: jobID,
+            daemonJobID: daemonJobID,
+            reason: "after foreground"
+        )
+    }
+
+    /// Attach to the turn that was live when the process was force-quit.
+    ///
+    /// A force-quit kills the app, not the turn: the daemon keeps working and
+    /// its frames stay readable. Both things `reattachStreamingTurnIfNeeded`
+    /// needs died with the process - the streaming row is gone and no stream
+    /// owns one - so that path can never fire on launch. What survives is the
+    /// outbox record, written when the job is accepted and carrying the
+    /// conversation id, the client message id and the daemon's own job id, so
+    /// this rebuilds the row and hands the turn to the same consumer a live
+    /// send uses. The daemon's id is what makes the turn addressable at all:
+    /// the local job id is a hash of it and cannot be asked about.
+    ///
+    /// One attempt per record per launch, and only for the conversation on
+    /// screen. A job the daemon reports terminal is never reattached - its
+    /// rows are already in the transcript, so the transcript is refreshed
+    /// instead.
+    func reattachRestoredTurnIfNeeded() async {
+        guard !restartInProgress else { return }
+        guard isPollingEnabled, let currentConversation = conversation else { return }
+        let conversationID = currentConversation.id
+        // A live send, or a reattach already in flight, owns the screen. A
+        // second reader on one turn would apply every frame twice.
+        guard reattachTask == nil, streamingMessageID == nil else { return }
+        // Only a job this device accepted has a daemon id in its outbox
+        // record. A turn started elsewhere is the server-turn watch's problem.
+        guard let record = outboxItems.first(where: {
+            $0.conversationID == conversationID
+                && $0.state == .accepted
+                && ($0.daemonJobID?.isEmpty == false)
+        }), let daemonJobID = record.daemonJobID, !daemonJobID.isEmpty,
+              let jobID = record.jobID else { return }
+        // One attempt per record per launch: a feed that already ended in this
+        // process is settled from the transcript, never reattached again.
+        guard !launchReattachAttempted.contains(record.clientMessageID) else { return }
+        // Ask before attaching. The daemon is the only authority on whether
+        // the turn survived the relaunch, and a job it no longer holds answers
+        // only an error frame.
+        guard let job = await heraldClient.jobState(daemonJobID: daemonJobID) else {
+            // Neither terminal nor refused - the transport could not answer.
+            // Nothing is consumed: the outbox recovery pass settles a job the
+            // relay cannot report, and the next launch may ask again.
+            return
+        }
+        // The probe awaited: the user may have switched threads since.
+        guard conversation?.id == conversationID else { return }
+        if Self.isTerminalJobStatus(job.status) {
+            // The turn ended while the app was gone. Its answer is written to
+            // the transcript, so refresh that instead of attaching to a
+            // finished job.
+            launchReattachAttempted.insert(record.clientMessageID)
+            appendLog(
+                level: .info,
+                "Job \(daemonJobID) is \(job.status) after relaunch - refreshing the transcript instead of reattaching"
+            )
+            await settleReattachFromTranscript(
+                conversationID: conversationID,
+                placeholderID: nil,
+                jobID: nil
+            )
+            return
+        }
+        // The bubble the dead process was streaming into, when the cached
+        // transcript still ends with it; a fresh row otherwise. A second
+        // bubble for one turn would show the answer twice.
+        let cachedPlaceholderID = currentConversation.messages.last.flatMap { last -> UUID? in
+            guard last.sender == .herald,
+                  last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  last.status == .sending else { return nil }
+            return last.id
+        }
+        let placeholderID = cachedPlaceholderID ?? UUID()
+        if cachedPlaceholderID == nil {
+            // Property, not the guard's copy: the row has to land in the
+            // transcript the rest of the store (and the view) reads.
+            self.conversation?.messages.append(Message(
+                id: placeholderID,
+                sender: .herald,
+                content: "",
+                jobID: jobID,
+                status: .sending,
+                isStreaming: true
+            ))
+            if let updated = self.conversation {
+                persistence.saveConversationCache(updated)
+            }
+        }
+        startReattachConsumer(
+            record: record,
+            conversationID: conversationID,
+            placeholderID: placeholderID,
+            jobID: jobID,
+            daemonJobID: daemonJobID,
+            reason: "after relaunch"
+        )
+    }
+
+    /// Whether a job status means the turn is over.
+    ///
+    /// The transports speak two vocabularies: the relay's words
+    /// ("completed", "failed", ...) and the daemon's single normalized
+    /// "terminal". Both mean nothing more will arrive for this job.
+    static func isTerminalJobStatus(_ status: String) -> Bool {
+        switch status.lowercased() {
+        case "completed", "delivered", "succeeded", "success", "terminal",
+             "failed", "cancelled", "canceled", "interrupted", "expired":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Hand a reattached turn's frames to the consumer the live send uses.
+    ///
+    /// Both reattach entry points - a return from the background and a launch
+    /// after a force-quit - end here, so every frame is applied by one
+    /// implementation and the phases settle exactly as they do for a live
+    /// turn.
+    private func startReattachConsumer(
+        record: ChatOutboxRecord,
+        conversationID: UUID,
+        placeholderID: UUID,
+        jobID: UUID,
+        daemonJobID: String,
+        reason: String
+    ) {
+        // Whatever brought us here, this record has had its attempt.
+        launchReattachAttempted.insert(record.clientMessageID)
         // One reader per turn. The suspended consumer is not coming back, and
         // cancelling it releases the send path's watchdog: that reports the
         // stall the existing polling fallback already settles, while this feed
@@ -4943,10 +5106,12 @@ final class ChatStore {
         streamBackgroundedAt = nil
         if var conv = conversation,
            let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+            conv.messages[idx].isStreaming = true
+            conv.messages[idx].jobID = jobID
             conv.messages[idx].toolActivity = "Restoring response stream…"
             conversation = conv
         }
-        appendLog(level: .info, "Reattaching to job \(daemonJobID) after foreground")
+        appendLog(level: .info, "Reattaching to job \(daemonJobID) \(reason)")
 
         let token = UUID()
         reattachToken = token
@@ -4982,6 +5147,71 @@ final class ChatStore {
                 await self.applyStreamUpdate(update, state: &state)
             }
             self.acceptedJobID = state.acceptedJobID
+            // The feed ended without ending the turn. Attaching again in this
+            // launch would spin on the same tail, so the transcript - which is
+            // written when a turn ends - settles the row instead. A record the
+            // terminal frames already moved out of `.accepted` needs none of
+            // this: it settled the way a live turn does.
+            guard !Task.isCancelled,
+                  self.activeAttemptID == attemptID,
+                  self.conversation?.id == conversationID,
+                  self.outboxItems.contains(where: {
+                      $0.clientMessageID == record.clientMessageID && $0.state == .accepted
+                  }) else { return }
+            await self.settleReattachFromTranscript(
+                conversationID: conversationID,
+                placeholderID: placeholderID,
+                jobID: jobID
+            )
+        }
+    }
+
+    /// Settle a turn whose resumed feed ended without a terminal frame.
+    ///
+    /// The transport watches the daemon's tail, so a stream that closes
+    /// without finishing the turn is a feed that will not speak again: the
+    /// daemon finished the turn and dropped the connection, or the socket
+    /// died a second time. The transcript is the authority on how a turn
+    /// ended, so the row stops claiming to be live and one refresh merges the
+    /// result in - the answer appears if the turn did finish, and the row
+    /// reads as interrupted if it did not. No further reattach is attempted
+    /// for this record in this launch.
+    private func settleReattachFromTranscript(
+        conversationID: UUID,
+        placeholderID: UUID?,
+        jobID: UUID?
+    ) async {
+        // Ownership first: a row nothing is streaming into must not keep the
+        // spinner, and the merge below settles only ownerless placeholders.
+        if let jobID { activeStreams.removeValue(forKey: jobID) }
+        if let placeholderID {
+            flushPendingReasoning(placeholderID: placeholderID)
+            flushPendingDeltas(placeholderID: placeholderID)
+            if var conv = conversation,
+               conv.id == conversationID,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].isStreaming = false
+                if conv.messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    conv.messages[idx].status = .failed
+                    conv.messages[idx].errorCategory = "interrupted"
+                }
+                conversation = conv
+            }
+        }
+        streamingPhase = .idle
+        if sendPhase == .restoringStream { sendPhase = .idle }
+        chatLiveActivity.endActivity()
+
+        let generation = conversationGeneration
+        guard let fresh = await refreshActiveConversation() else { return }
+        guard generation == conversationGeneration, conversation?.id == fresh.id else { return }
+        conversation = mergeConversationMetadata(from: conversation, into: fresh)
+        if let conversation {
+            var cacheCopy = conversation
+            cacheCopy.contextPercent = nil
+            cacheCopy.latestUsage = nil
+            persistence.saveConversationCache(cacheCopy)
+            onConversationChanged?()
         }
     }
 
