@@ -16,7 +16,17 @@ struct SettingsScreen: View {
     @Environment(TabRouter.self) private var router
 
     @State private var speechModel = ""
+    /// The model the daemon reported as current when the list was loaded. Kept
+    /// apart from `speechModel` so a pick from the wide catalogue does not
+    /// silently become a "voice model" on the next render.
+    @State private var speechCurrentModel = ""
+    @State private var speechDefaultModel = ""
+    /// The daemon's whole provisioned catalogue. Most of it is chat models,
+    /// which is why it lives behind the disclosure group rather than the picker.
     @State private var speechModels: [String] = []
+    /// The optional `voice_models` field. Daemons that predate it send nothing,
+    /// and the picker then offers only the current and default model.
+    @State private var speechVoiceModels: [String] = []
     @State private var speechError: String?
     @State private var speechModelsLoaded = false
     @State private var mimoAPIKey: String = ""
@@ -2067,6 +2077,30 @@ struct SettingsScreen: View {
 
 
 
+    /// The models this section presents as voice models: the one the daemon is
+    /// speaking with, its own default, and any it reports as voice models. The
+    /// rest of the catalogue is deliberately absent.
+    private var voiceModelOptions: [String] {
+        var options: [String] = []
+        for model in [speechCurrentModel, speechDefaultModel] + speechVoiceModels
+        where !model.isEmpty && !options.contains(model) {
+            options.append(model)
+        }
+        return options
+    }
+
+    /// True when the chosen model came from the wide catalogue rather than the
+    /// short voice list, so the warning under the picker is warranted.
+    private var speechModelIsUnproven: Bool {
+        !speechModel.isEmpty && !voiceModelOptions.contains(speechModel)
+    }
+
+    private func chooseProvisionedModel(_ model: String) {
+        guard model != speechModel else { return }
+        speechModel = model
+        Task { await chooseSpeechModel(model) }
+    }
+
     private var speechModelBinding: Binding<String> {
         Binding(
             get: { speechModel },
@@ -2077,7 +2111,8 @@ struct SettingsScreen: View {
         )
     }
 
-    /// The daemon's speech model, and the models it already has provisioned.
+    /// The daemon's current voice model, its default, the optional voice-model
+    /// list, and the wider provisioned catalogue.
     private func loadSpeechModels() async {
         guard !speechModelsLoaded else { return }
         speechModelsLoaded = true
@@ -2107,12 +2142,26 @@ struct SettingsScreen: View {
             }
             struct Speech: Decodable {
                 let model: String
+                let defaultModel: String?
                 let models: [String]
+                let voiceModels: [String]?
+
+                enum CodingKeys: String, CodingKey {
+                    case model
+                    case defaultModel = "default_model"
+                    case models
+                    case voiceModels = "voice_models"
+                }
             }
             let speech = try JSONDecoder().decode(Speech.self, from: data)
+            speechCurrentModel = speech.model
             speechModel = speech.model
+            speechDefaultModel = speech.defaultModel ?? ""
+            speechVoiceModels = speech.voiceModels ?? []
             speechModels = speech.models
-            speechError = speech.models.isEmpty ? "The daemon has no provisioned models to choose from." : nil
+            speechError = voiceModelOptions.isEmpty
+                ? "The daemon reports no voice model to choose from."
+                : nil
         } catch {
             speechError = "The speech list could not be read: \(error.localizedDescription)"
         }
@@ -2245,22 +2294,80 @@ struct SettingsScreen: View {
                                 .foregroundStyle(.orange)
                                 .frame(width: 20, alignment: .center)
 
-                            Picker("Speech model", selection: speechModelBinding) {
-                                if !speechModels.contains(speechModel), !speechModel.isEmpty {
+                            Text("Voice model")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+
+                            Spacer()
+
+                            Picker("Voice model", selection: speechModelBinding) {
+                                if !voiceModelOptions.contains(speechModel), !speechModel.isEmpty {
                                     Text(speechModel).tag(speechModel)
                                 }
-                                ForEach(speechModels, id: \.self) { model in
+                                ForEach(voiceModelOptions, id: \.self) { model in
                                     Text(model).tag(model)
                                 }
                             }
                             .pickerStyle(.menu)
                             .tint(Design.Colors.secondaryForeground)
-                            .disabled(speechModels.isEmpty)
+                            .disabled(voiceModelOptions.isEmpty)
                         }
 
-                        Text(speechError ?? "The models this daemon already has provisioned. It speaks with the one picked here; a model without audio refuses and says so.")
+                        Text(speechError ?? "The daemon speaks with the model picked here. Only models it reports as voice models are listed; the rest of the catalogue is unproven for speech.")
                             .font(Design.Typography.caption)
                             .foregroundStyle(speechError == nil ? Design.Colors.secondaryForeground : Design.Colors.warning)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if speechModelIsUnproven {
+                            Text("This model is not a known voice model. If it cannot synthesize, speech fails on the next answer.")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.warning)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        if !speechModels.isEmpty {
+                            DisclosureGroup {
+                                ForEach(speechModels, id: \.self) { model in
+                                    Button {
+                                        chooseProvisionedModel(model)
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
+                                            HStack(spacing: Design.Spacing.xs) {
+                                                Text(model)
+                                                    .font(Design.Typography.codeSmall)
+                                                    .foregroundStyle(Design.Colors.foreground)
+
+                                                if model == speechModel {
+                                                    Image(systemName: "checkmark")
+                                                        .font(.system(size: 11, weight: .semibold))
+                                                        .foregroundStyle(Design.Brand.accent)
+                                                }
+                                            }
+
+                                            Text("Chat model. Not known to support speech.")
+                                                .font(Design.Typography.caption2)
+                                                .foregroundStyle(Design.Colors.secondaryForeground)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(.vertical, Design.Spacing.xxs)
+                                }
+                            } label: {
+                                VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
+                                    Text("All provisioned models")
+                                        .font(Design.Typography.callout)
+                                        .foregroundStyle(Design.Colors.foreground)
+
+                                    Text("The daemon's raw model catalogue. These are chat models; none is known to support speech.")
+                                        .font(Design.Typography.caption2)
+                                        .foregroundStyle(Design.Colors.secondaryForeground)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .tint(Design.Colors.secondaryForeground)
+                        }
                     }
                     .padding(.vertical, Design.Spacing.xs)
                     .task { await loadSpeechModels() }
