@@ -2090,9 +2090,19 @@ struct SettingsScreen: View {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            var (data, response) = try await URLSession.shared.data(for: request)
+            // A 401 here is an expired access token, not a refusal: refresh once
+            // and ask again before saying anything about the daemon.
+            if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+                await sessionStore.refreshAccessTokenIfNeeded()
+                if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    (data, response) = try await URLSession.shared.data(for: request)
+                }
+            }
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                speechError = "The daemon refused the speech list."
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                speechError = "The daemon refused the speech list (\(status))."
                 return
             }
             struct Speech: Decodable {
