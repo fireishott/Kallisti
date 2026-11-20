@@ -4630,6 +4630,10 @@ final class ChatStore {
     /// Polled rather than streamed: the daemon's subagent rows are the truth,
     /// and a child can outlive the turn that started it.
     var activeSubagentCount = 0
+
+    /// The daemon's subagent rows for this conversation, active ones first. The
+    /// count alone left the preview with nothing to show.
+    var subagents: [ErisSubagent] = []
     /// Seconds until the daemon's check-in with the children, when a parent
     /// turn is parked. Nil while the turn is working normally.
     var subagentCheckinSeconds: Int?
@@ -4644,6 +4648,10 @@ final class ChatStore {
                 let rows = await self.heraldClient.subagents(for: self.conversation?.id)
                 let activeRows = rows.filter(\.isActive)
                 let active = activeRows.count
+                let ordered = activeRows + rows.filter { !$0.isActive }
+                if self.subagents != ordered {
+                    self.subagents = ordered
+                }
                 if self.activeSubagentCount != active {
                     self.activeSubagentCount = active
                 }

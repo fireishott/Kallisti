@@ -229,6 +229,7 @@ struct ChatScreen: View {
 
     @State private var showAttachmentPicker = false
     @State private var showCanvas = false
+    @State private var showSubagents = false
     /// Build 128.52: queue manager sheet - view/edit/delete queued messages.
     @State private var showQueueManager = false
     /// Build 118: breathing animation state for the chat-switch overlay coin.
@@ -454,6 +455,10 @@ struct ChatScreen: View {
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showSubagents) {
+            SubagentPreviewSheet(rows: chatStore.subagents, onDismiss: { showSubagents = false })
+                .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showCanvas) {
             CanvasView(store: canvasStore, onDismiss: { showCanvas = false })
@@ -769,9 +774,18 @@ struct ChatScreen: View {
     }
 
     /// Canvas action button — shared across all toolbar compositions.
+    ///
+    /// While children are working the same button carries their count, and a
+    /// count that opens an empty canvas is a lie: it opens the subagent list
+    /// instead. Canvas keeps its own door the moment there is nothing to show
+    /// there.
     private var canvasButton: some View {
         Button {
-            showCanvas = true
+            if chatStore.activeSubagentCount > 0 {
+                showSubagents = true
+            } else {
+                showCanvas = true
+            }
         } label: {
             Image(systemName: "rectangle.on.rectangle")
                 .font(.system(size: 16, weight: .medium))
@@ -792,7 +806,7 @@ struct ChatScreen: View {
                     .accessibilityLabel("\(chatStore.activeSubagentCount) subagents running")
             }
         }
-        .accessibilityLabel("Open canvas")
+        .accessibilityLabel(chatStore.activeSubagentCount > 0 ? "Show subagents" : "Open canvas")
     }
 
     /// Build 128.1: visible catch-up affordance. Pull-to-refresh exists
@@ -1688,6 +1702,10 @@ struct ChatScreen: View {
         .padding(.horizontal, Design.Spacing.md)
         .padding(.vertical, Design.Spacing.xs)
         .background(Design.Colors.surface)
+        .contentShape(Rectangle())
+        .onTapGesture { showSubagents = true }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Show subagents")
     }
 
     private var queueStatusBar: some View {
