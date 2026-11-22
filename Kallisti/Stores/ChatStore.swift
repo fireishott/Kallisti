@@ -789,6 +789,10 @@ final class ChatStore {
                 persistence.saveConversationCache(cacheCopy)
                 onConversationChanged?()
             }
+            // The chat is on screen and its transcript is committed: give a
+            // turn this device accepted, and that the host is still running,
+            // its feed back. Opening a chat that is not mid-turn no-ops.
+            await resumeTurnIfNeeded(for: id)
         } catch {
             Self.logger.warning("Failed to load selected conversation \(id): \(error.localizedDescription)")
             // Build 128.46: server fetch failed - keep the restored cache but
@@ -1051,6 +1055,14 @@ final class ChatStore {
         // a streaming attempt holds a lease for its conversation, and the
         // lease acquisition below is the single guard.
         guard activeLeases[targetID] == nil else { return }
+        // An accepted job that outlived its screen - the user switched chats
+        // mid-turn - holds no lease but is still this conversation's live
+        // turn, and it is resumed rather than abandoned. Nothing queued behind
+        // it may be submitted on top of it; the chain re-enters here once that
+        // turn settles.
+        guard !outboxItems.contains(where: {
+            $0.conversationID == targetID && $0.isInFlight
+        }) else { return }
 
         // Retryable failures whose backoff elapsed are promoted back to
         // .queued so the chain can attempt them again — visible attempt
@@ -1392,9 +1404,16 @@ final class ChatStore {
     /// Cancel every in-flight outbox item (leased/submitted/accepted) —
     /// user intent (stop button, archive) means never auto-resubmit. Queued
     /// items are untouched.
-    private func cancelInFlightOutboxItems() {
+    ///
+    /// `includingAccepted` is false for navigation: an accepted job carries
+    /// the daemon's own id, so it can be attached to again when the
+    /// conversation is opened, and cancelling it there is what left a finished
+    /// turn with no answer on screen. A send the daemon has not acknowledged
+    /// yet has no such id, so it is still cancelled - nothing could resume it.
+    private func cancelInFlightOutboxItems(includingAccepted: Bool = true) {
         var changed = false
         for idx in outboxItems.indices where outboxItems[idx].isInFlight {
+            if !includingAccepted && outboxItems[idx].state == .accepted { continue }
             let item = outboxItems[idx]
             failOutboxItem(item, state: .cancelled, error: "Cancelled by user")
             if let messageIdx = conversation?.messages.firstIndex(where: { $0.id == item.clientMessageID }) {
@@ -1807,6 +1826,16 @@ final class ChatStore {
         // polling fallback below; the job is still alive on the relay
         // and may resolve via a later refresh or explicit GET.
         guard case .stalled = terminal else { return }
+
+        // A stall poll paints the conversation this send belongs to - its
+        // phase banner, its rows, its Live Activity - and writes through the
+        // conversation the store holds. A screen switch detached that reader
+        // (which clears this send's phase owner) but left the turn running, so
+        // this pipeline must stand down instead of painting one chat's turn
+        // state onto whichever chat is visible now. The detached turn is
+        // resumed by `resumeTurnIfNeeded(for:)`.
+        guard let owner = sendPhaseOwner,
+              owner.conversationID == conversation?.id else { return }
 
         // — Stream stalled — start parallel polling —
         streamingPhase = .stalled
@@ -3666,6 +3695,14 @@ final class ChatStore {
         // and its output landed later as a confusing ghost reply.
         // Navigation away passes interruptServerTurn: false so New Chat /
         // session switch cancels the watch WITHOUT killing the remote job.
+        //
+        // For the same reason navigation does not end the turn's outbox
+        // record. That record carries the daemon's job id, and it is what lets
+        // the conversation attach to the turn again when it is opened
+        // (`resumeTurnIfNeeded(for:)`). A turn detached into `.cancelled` here
+        // is the reported bug: the host finishes the work, the answer is
+        // written to the transcript, and the screen that comes back to it
+        // never learns either fact. Only an explicit Stop tap ends a turn.
         if activeStreams.isEmpty, isServerTurnActive, interruptServerTurn {
             stopServerTurn()
             return
@@ -3674,7 +3711,7 @@ final class ChatStore {
         // Previously this only did local teardown — the server job kept running
         // to completion, and its output landed in the conversation on the next
         // poll, appearing as a duplicate or ghost reply.
-        let jobIDs = Array(activeStreams.keys)
+        let jobIDs = interruptServerTurn ? Array(activeStreams.keys) : []
         if !jobIDs.isEmpty {
             let client = heraldClient
             Task {
@@ -3703,8 +3740,9 @@ final class ChatStore {
         ttsService?.stop()
         streamingPhase = .idle  // D3: A cancelled stream is not reconnecting
         // Durable outbox: any in-flight item is cancelled by user intent —
-        // never auto-resubmitted.
-        cancelInFlightOutboxItems()
+        // never auto-resubmitted. Navigation is not user intent to cancel, so
+        // an accepted record survives it for the resume on the next visit.
+        cancelInFlightOutboxItems(includingAccepted: interruptServerTurn)
         sendPhase = .idle
         sendPhaseOwner = nil
 
@@ -3726,7 +3764,12 @@ final class ChatStore {
             var changed = false
             for i in conv.messages.indices where conv.messages[i].isStreaming {
                 conv.messages[i].isStreaming = false
-                conv.messages[i].status = .interrupted
+                // A stopped turn is interrupted; a detached one is still
+                // running on the host and keeps its send status, so the row
+                // does not read as a failure the resume is about to undo.
+                if interruptServerTurn {
+                    conv.messages[i].status = .interrupted
+                }
                 for j in conv.messages[i].toolActivities.indices {
                     conv.messages[i].toolActivities[j].isActive = false
                 }
@@ -5049,6 +5092,128 @@ final class ChatStore {
             jobID: jobID,
             daemonJobID: daemonJobID,
             reason: "after relaunch"
+        )
+    }
+
+    /// Attach to the turn a conversation left behind when it went off screen.
+    ///
+    /// A screen switch inside the app is not a turn ending. The host keeps
+    /// working, the outbox keeps the accepted record (navigation detaches
+    /// instead of cancelling), and the rows arrive when the turn ends - but a
+    /// transcript fetch cannot show a turn that has not ended, and the reader
+    /// that was applying the frames belonged to the screen that closed. So a
+    /// conversation opened while its accepted job is still alive attaches the
+    /// same feed a live send reads, for THAT conversation, and every frame
+    /// lands in that conversation's rows.
+    ///
+    /// The feed lives only as long as its conversation is on screen: switching
+    /// away again detaches it (the consumer's own conversation guard drops the
+    /// tail), and the next visit resumes it from the same outbox record. A job
+    /// the daemon already finished is never reattached - its answer is in the
+    /// transcript, so the transcript is refreshed instead.
+    ///
+    /// `conversationID` is the conversation that just became visible.
+    func resumeTurnIfNeeded(for conversationID: UUID) async {
+        guard !restartInProgress, isPollingEnabled else { return }
+        // Only the conversation that just became visible. A turn belongs to the
+        // conversation that sent it, never to whichever chat is open now.
+        guard conversation?.id == conversationID else { return }
+        // A live send, or a reader already running, owns the screen. A second
+        // reader on one turn would apply every frame twice.
+        guard reattachTask == nil, streamingMessageID == nil else { return }
+        // Only a job this device sent carries the daemon's own id; the local
+        // job id is a hash of it and cannot be asked about. A turn started
+        // elsewhere is the server-turn watch's problem, not this one.
+        guard let record = outboxItems.first(where: {
+            $0.conversationID == conversationID
+                && $0.state == .accepted
+                && ($0.daemonJobID?.isEmpty == false)
+        }), let daemonJobID = record.daemonJobID, !daemonJobID.isEmpty,
+            let jobID = record.jobID else { return }
+        // A stream this store already reads for that job is reused, never
+        // duplicated: two readers of one turn would double every frame.
+        guard activeStreams[jobID] == nil else { return }
+        // Ask before attaching. A job the daemon no longer holds would answer
+        // only an error frame, and writing a failure onto a row whose reply is
+        // already in the transcript is worse than leaving it alone.
+        guard let job = await heraldClient.jobState(daemonJobID: daemonJobID) else {
+            // Neither terminal nor refused: the transport could not answer.
+            // The outbox recovery pass settles a job the relay cannot report.
+            return
+        }
+        // The probe awaited: the user may have opened another chat, or a send
+        // may have taken the turn, while it was out.
+        guard conversation?.id == conversationID else { return }
+        guard reattachTask == nil, streamingMessageID == nil, activeStreams[jobID] == nil else { return }
+        if Self.isTerminalJobStatus(job.status) {
+            // The turn ended before this visit. The outbox record leaves
+            // `.accepted` first - the turn is over and a record still claiming
+            // to be in flight would hold this conversation's queue - then the
+            // transcript that already holds the answer is reconciled in.
+            if let terminalMessageID = job.message?.id {
+                terminalizeOutboxItem(
+                    record,
+                    canonicalUserMessageID: record.clientMessageID,
+                    terminalMessageID: terminalMessageID
+                )
+            } else if let idx = outboxItems.firstIndex(where: {
+                $0.clientMessageID == record.clientMessageID
+            }) {
+                // No terminal row id to stamp on the user message, so the
+                // delivered mark stays off (the same line the recovery pass
+                // draws) and only the outbox itself settles.
+                var updated = record
+                updated.state = .terminal
+                updated.lastError = nil
+                updated.nextAttemptAt = nil
+                outboxItems[idx] = updated
+                persistOutbox()
+                outboxStore.removeStagedAttachments(for: updated)
+            }
+            appendLog(level: .info, "Job \(daemonJobID) is \(job.status) on opening the chat - refreshing the transcript")
+            await settleReattachFromTranscript(
+                conversationID: conversationID,
+                placeholderID: nil,
+                jobID: nil
+            )
+            // That record was holding this conversation's queue; drain it now
+            // instead of leaving the next message waiting for another visit.
+            await submitNextEligible(for: conversationID)
+            return
+        }
+        // The row the feed draws on: the one the transcript already carries for
+        // this turn, or a fresh one. A second bubble for one turn would show
+        // the answer twice.
+        let existingRowID = conversation?.messages.last(where: {
+            $0.jobID == jobID && $0.sender == .herald
+        })?.id ?? conversation?.messages.last(where: {
+            $0.sender == .herald
+                && $0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && $0.status == .sending
+        })?.id
+        let placeholderID = existingRowID ?? UUID()
+        if existingRowID == nil {
+            // Property, not the guard's copy: the row has to land in the
+            // transcript the rest of the store (and the view) reads.
+            self.conversation?.messages.append(Message(
+                id: placeholderID,
+                sender: .herald,
+                content: "",
+                jobID: jobID,
+                status: .sending,
+                isStreaming: true
+            ))
+            if let updated = conversation {
+                persistence.saveConversationCache(updated)
+            }
+        }
+        startReattachConsumer(
+            record: record,
+            conversationID: conversationID,
+            placeholderID: placeholderID,
+            jobID: jobID,
+            daemonJobID: daemonJobID,
+            reason: "after switching back to the chat"
         )
     }
 
