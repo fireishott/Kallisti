@@ -4350,6 +4350,15 @@ pub fn run_turn_with_key(
                         let refused_history = spec.name == crate::search::TOOL && search.is_none();
                         !(refused_write || refused_notes || refused_history)
                     });
+                    // Delegating real code work to the operator's coding harness.
+                    // Offered only where a command may run at all and only when a
+                    // harness is configured, because a tool the daemon would
+                    // refuse must never reach the model's list. Pushed after the
+                    // index shape so the sentence about returning the harness's
+                    // own report is never compressed away.
+                    if let Some(spec) = crate::tools::harness::offered(sandbox) {
+                        offered.push(spec);
+                    }
                     if let Some(pool) = mcp {
                         offered.extend(pool.specs());
                     }
