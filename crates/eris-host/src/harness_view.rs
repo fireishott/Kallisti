@@ -39,15 +39,45 @@ pub struct Row {
     pub stalled: bool,
 }
 
-/// The runs a page should draw, newest first.
-///
-/// Empty on this branch by design: the registry that knows about runs is not
-/// here yet, and a page that guessed at one would be a page showing work that
-/// never happened. The function stays public and alone so the registry can be
-/// wired in without touching a template.
+// Pages read the registry through here. Under test it answers empty unless the
+// test asked for runs: the registry is process-wide and several suites run in
+// one process, so a run seeded in one test would otherwise appear in every
+// later page render and turn page-shape assertions into ordering luck.
+#[cfg(test)]
+thread_local! {
+    static SHOW_RUNS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub fn show_runs_for_test() {
+    SHOW_RUNS.with(|cell| cell.set(true));
+}
+
+/// The runs a page should draw, newest first, from the daemon's registry.
 #[must_use]
 pub fn rows() -> Vec<Row> {
-    Vec::new()
+    #[cfg(test)]
+    if !SHOW_RUNS.with(std::cell::Cell::get) {
+        return Vec::new();
+    }
+    crate::harness_runs::snapshot()
+        .into_iter()
+        .map(|run| {
+            let item = run.list_item();
+            Row {
+                id: run.id.clone(),
+                harness: run.harness.clone(),
+                status: run.status.as_str().to_owned(),
+                task: run.task.clone(),
+                started_at: run.started_at.clone(),
+                finished_at: run.finished_at.clone(),
+                elapsed_ms: item["elapsed_ms"].as_i64().unwrap_or(0),
+                silent_ms: item["silent_ms"].as_i64().unwrap_or(0),
+                exit_code: run.exit_code,
+                stalled: run.status == crate::harness_runs::RunStatus::Stalled,
+            }
+        })
+        .collect()
 }
 
 /// The status spelling the bar draws, and therefore also its class name.

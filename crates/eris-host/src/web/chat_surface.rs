@@ -175,10 +175,12 @@ fn the_chat_page_needs_a_session_and_renders_the_default_wallpaper() {
         body.contains(r#"id="mode""#),
         "the composer offers the access picker: {body}"
     );
-    assert_eq!(
-        body.matches("<script").count(),
-        1,
-        "one inline script, as the shell sweep documents"
+    // One chat script, plus the harness monitor's own when a run exists: the
+    // registry is process-wide, so a test that seeded one leaves it visible.
+    let scripts = body.matches("<script").count();
+    assert!(
+        scripts == 1 || (scripts == 2 && body.contains("/v1/harness/events")),
+        "one chat script, and the harness script only when a run exists: {scripts}"
     );
 }
 
@@ -420,10 +422,10 @@ fn the_run_log_is_one_details_and_its_controls_ride_the_one_script() {
         1,
         "the answer carries one run log, and the calls are exec-call: {body}"
     );
-    assert_eq!(
-        body.matches("<script").count(),
-        1,
-        "the controls ride the page's one script: {body}"
+    let scripts = body.matches("<script").count();
+    assert!(
+        scripts == 1 || (scripts == 2 && body.contains("/v1/harness/events")),
+        "the controls ride the page's script, and the harness script only when a run exists: {scripts}"
     );
     let script = body
         .split("<script>")
