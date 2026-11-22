@@ -2791,6 +2791,7 @@ mod tests {
             dirs: Vec::new(),
             home: None,
             oauth_token: None,
+            stored_token: None,
             platform,
         }
     }
@@ -2808,6 +2809,42 @@ mod tests {
         let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&path, permissions).expect("chmod");
+    }
+
+    /// A token pasted from the host is a credential: only an administrator may
+    /// store it, and it is never echoed back.
+    #[tokio::test]
+    async fn the_harness_sign_in_token_is_admin_only_and_never_echoed() {
+        let fx = routing_fixture();
+        let _gate = crate::harness_tools::testing::GATE.lock().await;
+        let _fixture = crate::harness_tools::testing::install(empty_env(
+            crate::harness_tools::Platform::Linux,
+        ));
+
+        // A chat token cannot store a credential.
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/harness/tools/claude-code/auth",
+            &fx.chat,
+            r#"{"token":"sk-ant-oat-secret"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
+
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/harness/tools/claude-code/auth",
+            &fx.admin,
+            r#"{"token":"sk-ant-oat-secret"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert!(
+            !body.to_string().contains("sk-ant-oat-secret"),
+            "the token is stored, never echoed: {body}"
+        );
     }
 
     /// `GET /v1/harness/tools` answers the documented shape: one row per harness,
@@ -3632,8 +3669,20 @@ const AUDIT_HARNESS_INSTALL: &str = "harness.install";
 ///
 /// Detection spawns up to three `--version` checks and, on macOS, a keychain read:
 /// a second each at worst, which is not time to hold a request's own thread.
-async fn detect_harnesses() -> Result<crate::harness_tools::ToolsReport, DeviceError> {
-    tokio::task::spawn_blocking(crate::harness_tools::detect)
+async fn detect_harnesses(
+    db: &crate::db::Db,
+) -> Result<crate::harness_tools::ToolsReport, DeviceError> {
+    // A token saved through this route is the one the person meant; the
+    // environment belongs to whatever started the service.
+    let saved = crate::web::store::settings_get(db, SETTING_CLAUDE_TOKEN)
+        .ok()
+        .flatten()
+        .filter(|token| !token.trim().is_empty());
+    // The environment is read here, on the caller's thread, because a test's
+    // fixture is thread-local and would be invisible inside the blocking pool.
+    let mut env = crate::harness_tools::detect_env();
+    env.stored_token = saved;
+    tokio::task::spawn_blocking(move || crate::harness_tools::detect_in(&env))
         .await
         .map_err(|error| {
             DeviceError::new(
@@ -3649,6 +3698,53 @@ async fn detect_harnesses() -> Result<crate::harness_tools::ToolsReport, DeviceE
 /// Chat scope: this is what a composer needs in order to offer a harness, and a
 /// binary, a version, a path and an account email are not credentials. The token
 /// the sign-in was checked with never appears here, in any form.
+/// Where a token pasted into the app is kept.
+const SETTING_CLAUDE_TOKEN: &str = "harness.claude.token";
+
+/// `PUT /v1/harness/tools/claude-code/auth` - store a sign-in token.
+///
+/// Administration: the value is a credential, so only a paired administrator may
+/// set it. It is stored as the daemon's own settings row and read back only as a
+/// boolean by the tools report.
+pub async fn harness_tool_auth_put(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Admin) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let value = fields
+        .get("token")
+        .map(|raw| raw.trim().to_owned())
+        .unwrap_or_default();
+    if value.chars().count() > 4096 {
+        return DeviceError::new(
+            StatusCode::BAD_REQUEST,
+            "harness_auth_token_invalid",
+            "the token must be 4096 characters or fewer",
+        )
+        .into_response();
+    }
+    let db = service.engine().db();
+    if let Err(error) = crate::web::store::settings_put(db, SETTING_CLAUDE_TOKEN, &value) {
+        return DeviceError::db_unavailable(format!("cannot store the harness token: {error}"))
+            .into_response();
+    }
+    match detect_harnesses(db).await {
+        Ok(report) => axum::Json(report.json()).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
 pub async fn harness_tool_list(
     State(service): State<DeviceService>,
     headers: HeaderMap,
@@ -3660,7 +3756,7 @@ pub async fn harness_tool_list(
     if let Err(error) = require_scope(&token, Scope::Chat) {
         return error.into_response();
     }
-    match detect_harnesses().await {
+    match detect_harnesses(service.engine().db()).await {
         Ok(report) => axum::Json(report.json()).into_response(),
         Err(error) => error.into_response(),
     }
@@ -3691,7 +3787,7 @@ pub async fn harness_tool_install(
     // The id names a row in the report, and the run's harness field takes the
     // canonical spelling rather than whatever spacing arrived in the path.
     let id = id.trim().to_owned();
-    let report = match detect_harnesses().await {
+    let report = match detect_harnesses(service.engine().db()).await {
         Ok(report) => report,
         Err(error) => return error.into_response(),
     };

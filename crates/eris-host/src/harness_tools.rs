@@ -91,6 +91,8 @@ const PIPE_GRACE: Duration = Duration::from_millis(500);
 
 /// Where a coding harness's OAuth sign-in came from.
 pub const SOURCE_ENVIRONMENT: &str = "environment";
+/// A token saved through this daemon's own route.
+pub const SOURCE_DAEMON: &str = "saved here";
 /// See [`SOURCE_ENVIRONMENT`].
 pub const SOURCE_CREDENTIALS_FILE: &str = "credentials file";
 /// See [`SOURCE_ENVIRONMENT`].
@@ -365,6 +367,9 @@ pub struct Env {
     pub home: Option<PathBuf>,
     /// `CLAUDE_CODE_OAUTH_TOKEN`, when it is set.
     pub oauth_token: Option<String>,
+    /// A token saved through the daemon's own route. It outranks the
+    /// environment because it is the one a person deliberately stored.
+    pub stored_token: Option<String>,
     /// The platform to decide the search and the install hint for.
     pub platform: Platform,
 }
@@ -381,6 +386,7 @@ impl Env {
             oauth_token: std::env::var("CLAUDE_CODE_OAUTH_TOKEN")
                 .ok()
                 .filter(|token| !token.trim().is_empty()),
+            stored_token: None,
             platform: Platform::current(),
         }
     }
@@ -417,6 +423,12 @@ impl Env {
         }
         dirs
     }
+}
+
+/// The environment detection reads, fixture-aware under test.
+#[must_use]
+pub fn detect_env() -> Env {
+    search_env()
 }
 
 /// Detect every harness on this host.
@@ -753,11 +765,19 @@ struct Look {
 fn claude_auth(env: &Env) -> Auth {
     let now = now_ms();
     let mut looks: Vec<Look> = Vec::new();
-    if let Some(token) = env.oauth_token.as_deref() {
+    let first = env
+        .stored_token
+        .as_deref()
+        .map(|token| (SOURCE_DAEMON, token))
+        .or(env
+            .oauth_token
+            .as_deref()
+            .map(|token| (SOURCE_ENVIRONMENT, token)));
+    if let Some((source, token)) = first {
         let token = token.trim();
         if !token.is_empty() {
             looks.push(Look {
-                source: SOURCE_ENVIRONMENT,
+                source,
                 found: true,
                 // A value that is not a JWT, or is a JWT with no `exp`, cannot be
                 // judged here and is taken as still valid: refusing it would make
@@ -1022,6 +1042,7 @@ mod tests {
             dirs: dirs.to_vec(),
             home: None,
             oauth_token: None,
+            stored_token: None,
             platform: Platform::Linux,
         }
     }
@@ -1384,6 +1405,7 @@ mod tests {
             dirs: vec![dir.path().to_path_buf()],
             home: Some(home.path().to_path_buf()),
             oauth_token: None,
+            stored_token: None,
             platform: Platform::MacOs,
         };
         let seconds = now_ms() / 1_000;

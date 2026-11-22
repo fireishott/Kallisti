@@ -164,6 +164,12 @@ struct RoutingSettingsSection: View {
     @State private var routingModels: [RoutingModel] = []
     /// Which field's sheet is open, if any. One sheet serves all four.
     @State private var pickingModelFor: ModelField?
+    /// The Claude sign-in sheet: a token pasted from the host, or the command to
+    /// produce one there.
+    @State private var showingClaudeSignIn = false
+    @State private var claudeTokenInput = ""
+    @State private var claudeSignInError: String?
+    @State private var isSavingClaudeToken = false
     /// `none`, or one of the daemon's harness ids.
     @State private var harness = "none"
     /// The harness ids the daemon offers, in its own order.
@@ -237,9 +243,15 @@ struct RoutingSettingsSection: View {
                 selection: binding(for: field).wrappedValue
             ) { id in
                 binding(for: field).wrappedValue = id
+                // A pick is the end of the question: close the sheet instead of
+                // making the person dismiss a window they are done with.
+                pickingModelFor = nil
             } onDismiss: {
                 pickingModelFor = nil
             }
+        }
+        .sheet(isPresented: $showingClaudeSignIn) {
+            claudeSignInSheet
         }
         .sheet(isPresented: $showHarnessMonitor) {
             HarnessMonitorSheet(onDismiss: { showHarnessMonitor = false })
@@ -439,6 +451,104 @@ struct RoutingSettingsSection: View {
         selectedHarnessTool?.models ?? []
     }
 
+    /// Signing Claude Code in from the phone.
+    ///
+    /// The tool wants a browser, and the daemon is a service with no display, so
+    /// the honest path is: run the command that prints a token on the host, paste
+    /// it here, and the daemon stores it as the credential it checks first.
+    private var claudeSignInSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("The daemon checks Claude Code's credential in this order: a token saved here, then the host's environment, then its credential file or Keychain. A token saved here wins.")
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                }
+
+                Section("Get a token on the host") {
+                    Text("claude setup-token")
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                    Button {
+                        UIPasteboard.general.string = "claude setup-token"
+                    } label: {
+                        Label("Copy command", systemImage: "doc.on.doc")
+                    }
+                }
+
+                Section("Paste the token") {
+                    SecureField("sk-ant-oat…", text: $claudeTokenInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.callout, design: .monospaced))
+                }
+
+                if let claudeSignInError {
+                    Section {
+                        Text(claudeSignInError)
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.warning)
+                    }
+                }
+
+                Section {
+                    Button {
+                        Task { await saveClaudeToken() }
+                    } label: {
+                        HStack {
+                            if isSavingClaudeToken { ProgressView().controlSize(.small) }
+                            Text(isSavingClaudeToken ? "Checking…" : "Save and verify")
+                        }
+                    }
+                    .disabled(claudeTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSavingClaudeToken)
+                }
+            }
+            .navigationTitle("Claude Code sign-in")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { showingClaudeSignIn = false }
+                }
+            }
+        }
+    }
+
+    private func saveClaudeToken() async {
+        guard !isSavingClaudeToken else { return }
+        isSavingClaudeToken = true
+        defer { isSavingClaudeToken = false }
+        claudeSignInError = nil
+        guard let url = daemonURL("/v1/harness/tools/claude-code/auth") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "token": claudeTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        ])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if status == 403 {
+                claudeSignInError = "This phone was paired without administration, so the daemon refuses the token."
+                return
+            }
+            guard (200..<300).contains(status) else {
+                let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                claudeSignInError = "The daemon refused (\((body?["code"] as? String) ?? "unknown"), \(status))."
+                return
+            }
+            try? JSONSerialization.jsonObject(with: data)
+            claudeTokenInput = ""
+            showingClaudeSignIn = false
+            await loadHarnessTools()
+        } catch {
+            claudeSignInError = "The token could not be sent: \(error.localizedDescription)"
+        }
+    }
+
     /// The provider that publishes a chosen id, when the catalogue still lists it.
     private func providerLabel(for id: String) -> String? {
         guard !id.isEmpty else { return nil }
@@ -560,6 +670,20 @@ struct RoutingSettingsSection: View {
                 .disabled(installingToolID != nil || isSaving)
                 .accessibilityIdentifier("settings.routing.tools.\(tool.id).install")
             } else if tool.installed && tool.id == "claude-code" {
+                if tool.auth?.verified != true {
+                    Button {
+                        claudeSignInError = nil
+                        showingClaudeSignIn = true
+                    } label: {
+                        Text("Sign in")
+                            .font(Design.Typography.caption)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(Design.Brand.accent)
+                    .disabled(isSaving)
+                    .accessibilityIdentifier("settings.routing.tools.\(tool.id).signin")
+                }
                 Button {
                     Task { await verifyHarnessTools() }
                 } label: {

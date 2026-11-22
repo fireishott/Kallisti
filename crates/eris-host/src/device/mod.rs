@@ -171,6 +171,8 @@ pub const ROUTE_HARNESS_EVENTS: &str = "/v1/harness/events";
 
 /// `GET /v1/harness/tools` - which coding harnesses this host has installed.
 pub const ROUTE_HARNESS_TOOLS: &str = "/v1/harness/tools";
+/// Where a sign-in token is stored for the Claude harness.
+pub const ROUTE_HARNESS_TOOL_AUTH: &str = "/v1/harness/tools/claude-code/auth";
 
 /// `POST /v1/harness/tools/{id}/install` - install one that is missing.
 pub const ROUTE_HARNESS_TOOL_INSTALL: &str = "/v1/harness/tools/{id}/install";
@@ -1256,6 +1258,7 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_HARNESS_RUN_KILL, post(control::harness_run_kill))
         .route(ROUTE_HARNESS_EVENTS, get(control::harness_run_events))
         .route(ROUTE_HARNESS_TOOLS, get(control::harness_tool_list))
+        .route(ROUTE_HARNESS_TOOL_AUTH, put(control::harness_tool_auth_put))
         .route(
             ROUTE_HARNESS_TOOL_INSTALL,
             post(control::harness_tool_install),
@@ -1573,6 +1576,7 @@ mod tests {
             ROUTE_HARNESS_RUN_KILL,
             ROUTE_HARNESS_EVENTS,
             ROUTE_HARNESS_TOOLS,
+            ROUTE_HARNESS_TOOL_AUTH,
             ROUTE_HARNESS_TOOL_INSTALL,
             ROUTE_PUSH_REGISTER,
             ROUTE_PUSH_DEACTIVATE,
