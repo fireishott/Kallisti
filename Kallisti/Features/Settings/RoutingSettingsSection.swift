@@ -4,6 +4,22 @@ import SwiftUI
 /// What the daemon serves at `/v1/routing`, read for the parts the Routing card
 /// draws. `ok` and `provider_model` travel too and are deliberately not decoded:
 /// nothing here renders them.
+/// Which of the four model rows a pick applies to.
+enum ModelField: String, Identifiable {
+    case coding, heavy, general, harness
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .coding: "Coding model"
+        case .heavy: "Heavy model"
+        case .general: "General model"
+        case .harness: "Harness model"
+        }
+    }
+}
+
 private struct RoutingPayload: Decodable {
     let auto: Bool
     let codingModel: String?
@@ -12,7 +28,7 @@ private struct RoutingPayload: Decodable {
     let harness: String?
     let harnesses: [String]?
     let harnessModel: String?
-    let models: [String]?
+    let models: [RoutingModel]?
 
     enum CodingKeys: String, CodingKey {
         case auto
@@ -56,7 +72,9 @@ struct RoutingSettingsSection: View {
     @State private var harnessModel = ""
     /// The daemon's configured model ids. The fields are pickers over this, so a
     /// value that no provider holds cannot be typed in and then silently fail.
-    @State private var routingModels: [String] = []
+    @State private var routingModels: [RoutingModel] = []
+    /// Which field's sheet is open, if any. One sheet serves all four.
+    @State private var pickingModelFor: ModelField?
     /// `none`, or one of the daemon's harness ids.
     @State private var harness = "none"
     /// The harness ids the daemon offers, in its own order.
@@ -107,6 +125,17 @@ struct RoutingSettingsSection: View {
             // One read on appearance is enough for the count here; the monitor
             // sheet it opens owns the two-second poll while it is on screen.
             await harnessMonitor.refreshList(daemon: harnessDaemon())
+        }
+        .sheet(item: $pickingModelFor) { field in
+            ModelPickerSheet(
+                title: field.title,
+                models: routingModels,
+                selection: binding(for: field).wrappedValue
+            ) { id in
+                binding(for: field).wrappedValue = id
+            } onDismiss: {
+                pickingModelFor = nil
+            }
         }
         .sheet(isPresented: $showHarnessMonitor) {
             HarnessMonitorSheet(onDismiss: { showHarnessMonitor = false })
@@ -167,11 +196,11 @@ struct RoutingSettingsSection: View {
     /// leave the other two untouched and the row would lie about what it stored.
     private var modelFields: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.sm) {
-            modelField("Coding model", text: $codingModel)
-            modelField("Heavy model", text: $heavyModel)
-            modelField("General model", text: $generalModel)
+            modelField("Coding model", field: .coding, text: $codingModel)
+            modelField("Heavy model", field: .heavy, text: $heavyModel)
+            modelField("General model", field: .general, text: $generalModel)
             if harness != "none" {
-                modelField("Harness model", text: $harnessModel)
+                modelField("Harness model", field: .harness, text: $harnessModel)
             }
 
             Button {
@@ -214,43 +243,64 @@ struct RoutingSettingsSection: View {
         .padding(.vertical, Design.Spacing.xs)
     }
 
-    private func modelField(_ label: String, text: Binding<String>) -> some View {
+    private func modelField(_ label: String, field: ModelField, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
             Text(label)
                 .font(Design.Typography.caption)
                 .foregroundStyle(Design.Colors.secondaryForeground)
 
-            // A menu, not free text: the daemon can only route to a model its
-            // own provider publishes, so the list it reported is the list to
-            // choose from. "The daemon's own" is the empty value.
-            Picker(label, selection: text) {
-                Text("The daemon's own").tag("")
-                ForEach(modelOptions(including: text.wrappedValue), id: \.self) { model in
-                    Text(model).tag(model)
+            // A row that opens a searchable, provider-grouped sheet. A menu of
+            // several hundred ids named the model and hid where it runs.
+            Button {
+                pickingModelFor = field
+            } label: {
+                HStack(spacing: Design.Spacing.sm) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(text.wrappedValue.isEmpty ? "The daemon's own" : text.wrappedValue)
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(
+                                text.wrappedValue.isEmpty
+                                    ? Design.Colors.secondaryForeground
+                                    : Design.Colors.foreground
+                            )
+                            .lineLimit(1)
+                        if let provider = providerLabel(for: text.wrappedValue) {
+                            Text(provider)
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Design.Colors.secondaryForeground)
                 }
+                .padding(Design.Spacing.md)
+                .background(Design.Colors.background)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                        .stroke(Design.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Design.Spacing.md)
-            .background(Design.Colors.background)
-            .overlay(
-                RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
-                    .stroke(Design.Colors.border, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+            .buttonStyle(.plain)
             .disabled(!hasLoaded || isSaving || routingModels.isEmpty)
         }
     }
 
-    /// The catalogue plus whatever the row already holds, so opening the card on
-    /// a daemon that has since dropped a model never blanks the stored value.
-    private func modelOptions(including current: String) -> [String] {
-        var options = routingModels
-        if !current.isEmpty && !options.contains(current) {
-            options.insert(current, at: 0)
+    /// The provider that publishes a chosen id, when the catalogue still lists it.
+    private func providerLabel(for id: String) -> String? {
+        guard !id.isEmpty else { return nil }
+        return routingModels.first { $0.id == id }?.providerLabel
+    }
+
+    private func binding(for field: ModelField) -> Binding<String> {
+        switch field {
+        case .coding: $codingModel
+        case .heavy: $heavyModel
+        case .general: $generalModel
+        case .harness: $harnessModel
         }
-        return options
     }
 
     /// The harness a coding turn is handed to. The list is the daemon's; `none`

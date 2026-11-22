@@ -1164,16 +1164,19 @@ fn routing_json(db: &crate::db::Db, provider_model: Option<&str>) -> serde_json:
 ///
 /// Empty when the catalogue cannot be read: a picker that offered nothing is
 /// better than a request that failed because a provider was briefly unreachable.
-fn routing_catalogue(engine: &SetupEngine) -> Vec<String> {
+fn routing_catalogue(engine: &SetupEngine) -> Vec<serde_json::Value> {
     let Ok(body) = read_models(engine) else {
         return Vec::new();
     };
-    let mut ids: Vec<String> = Vec::new();
+    let mut ids: Vec<serde_json::Value> = Vec::new();
     for row in body["models"].as_array().into_iter().flatten() {
         if let Some(id) = row["id"].as_str() {
-            let unseen = !id.is_empty() && !ids.iter().any(|seen| seen == id);
+            let unseen = !id.is_empty() && !ids.iter().any(|seen| seen["id"] == id);
             if unseen {
-                ids.push(id.to_owned());
+                ids.push(serde_json::json!({
+                    "id": id,
+                    "provider": row["provider"].as_str().unwrap_or(""),
+                }));
             }
         }
     }
