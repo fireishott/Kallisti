@@ -169,6 +169,12 @@ pub const ROUTE_HARNESS_RUN_KILL: &str = "/v1/harness/runs/{id}/kill";
 /// `GET /v1/harness/events` - the SSE stream of run state changes.
 pub const ROUTE_HARNESS_EVENTS: &str = "/v1/harness/events";
 
+/// `GET /v1/harness/tools` - which coding harnesses this host has installed.
+pub const ROUTE_HARNESS_TOOLS: &str = "/v1/harness/tools";
+
+/// `POST /v1/harness/tools/{id}/install` - install one that is missing.
+pub const ROUTE_HARNESS_TOOL_INSTALL: &str = "/v1/harness/tools/{id}/install";
+
 /// `GET /v1/turns/{id}/events` - the SSE stream for one job.
 pub const ROUTE_EVENTS: &str = "/v1/turns/{id}/events";
 
@@ -1249,6 +1255,11 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_HARNESS_RUN, get(control::harness_run_detail))
         .route(ROUTE_HARNESS_RUN_KILL, post(control::harness_run_kill))
         .route(ROUTE_HARNESS_EVENTS, get(control::harness_run_events))
+        .route(ROUTE_HARNESS_TOOLS, get(control::harness_tool_list))
+        .route(
+            ROUTE_HARNESS_TOOL_INSTALL,
+            post(control::harness_tool_install),
+        )
         .route(ROUTE_EVENTS, get(handlers::events))
         .route(ROUTE_CANCEL, post(handlers::cancel))
         .route(ROUTE_ACK, post(handlers::ack_turn))
@@ -1561,6 +1572,8 @@ mod tests {
             ROUTE_HARNESS_RUN,
             ROUTE_HARNESS_RUN_KILL,
             ROUTE_HARNESS_EVENTS,
+            ROUTE_HARNESS_TOOLS,
+            ROUTE_HARNESS_TOOL_INSTALL,
             ROUTE_PUSH_REGISTER,
             ROUTE_PUSH_DEACTIVATE,
             ROUTE_PUSH_SEND,

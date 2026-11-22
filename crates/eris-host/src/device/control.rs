@@ -1278,8 +1278,15 @@ pub async fn routing_put(
     };
 
     // The harness's own model is a free string only because a harness may name
-    // a model the daemon's provider catalogue has never heard of. Empty clears
-    // it, so the harness keeps its own default.
+    // a model the daemon's provider catalogue has never heard of. What it may not
+    // name is a model the chosen harness does not accept: a coding tool handed a
+    // catalogue id fails at run time, long after this write looked fine. The
+    // harness this body leaves stored is the one the model has to fit, so a body
+    // that carries no `harness` is checked against the stored one.
+    let db = service.engine().db();
+    let stored_harness = harness
+        .clone()
+        .unwrap_or_else(|| crate::routing::harness_setting(db));
     let harness_model = match fields.get("harness_model") {
         None => None,
         Some(raw) => {
@@ -1292,11 +1299,27 @@ pub async fn routing_put(
                 )
                 .into_response();
             }
+            // Empty clears the row back to the harness's own default, which every
+            // harness supports. `none` is no harness at all, so there is nothing to
+            // check a name against until one is chosen.
+            if !value.is_empty()
+                && stored_harness != crate::routing::HARNESS_NONE
+                && !crate::harness_tools::supports_model(&stored_harness, value)
+            {
+                return DeviceError::bad_request(
+                    "routing_harness_model_invalid",
+                    format!(
+                        "`{stored_harness}` does not accept the model `{value}`; it accepts {}. \
+                         Send an empty string to use the harness's own default.",
+                        crate::harness_tools::allowed_models(&stored_harness).join(", ")
+                    ),
+                )
+                .into_response();
+            }
             Some(value.to_owned())
         }
     };
 
-    let db = service.engine().db();
     let mut changes: Vec<String> = Vec::new();
     if let Some(auto) = auto {
         let value = if auto { "true" } else { "false" };
@@ -2760,6 +2783,346 @@ mod tests {
         assert_eq!(body["reason"], "automatic routing is off");
         assert_eq!(body["harness"], serde_json::Value::Null);
     }
+
+    /// A search environment with nothing installed, so a route test never reads
+    /// this host's own harnesses.
+    fn empty_env(platform: crate::harness_tools::Platform) -> crate::harness_tools::Env {
+        crate::harness_tools::Env {
+            dirs: Vec::new(),
+            home: None,
+            oauth_token: None,
+            platform,
+        }
+    }
+
+    /// A stub binary in `dir` that answers `--version` with `line`.
+    fn write_stub(dir: &std::path::Path, name: &str, line: &str) {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = dir.join(name);
+        let mut file = std::fs::File::create(&path).expect("stub");
+        file.write_all(format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n").as_bytes())
+            .expect("write stub");
+        drop(file);
+        let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).expect("chmod");
+    }
+
+    /// `GET /v1/harness/tools` answers the documented shape: one row per harness,
+    /// the models that harness accepts, and a sign-in object only where there is
+    /// a sign-in to report.
+    #[tokio::test]
+    async fn the_harness_tool_list_answers_its_documented_shape() {
+        let fx = routing_fixture();
+        let _gate = crate::harness_tools::testing::GATE.lock().await;
+        let _fixture = crate::harness_tools::testing::install(empty_env(
+            crate::harness_tools::Platform::Linux,
+        ));
+
+        let (status, body) = send(&fx.service, "GET", "/v1/harness/tools", &fx.chat, "").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["platform"], "linux");
+        let tools = body["tools"].as_array().expect("tools is an array");
+        assert_eq!(tools.len(), 3);
+
+        for (index, (id, name, binary, hint, models)) in [
+            (
+                "dsh",
+                "DeepSeek Harness",
+                "dsh",
+                "npm install -g @deepseek-ai/dsh",
+                vec!["default"],
+            ),
+            (
+                "claude-code",
+                "Claude Code",
+                "claude",
+                "npm install -g @anthropic-ai/claude-code",
+                vec!["sonnet", "opus", "haiku", "default"],
+            ),
+            (
+                "antigravity",
+                "Antigravity",
+                "antigravity",
+                "npm install -g antigravity",
+                vec!["gemini-3-pro", "gemini-3-flash", "default"],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tool = &tools[index];
+            assert_eq!(tool["id"], id);
+            assert_eq!(tool["name"], name);
+            assert_eq!(tool["binary"], binary);
+            assert_eq!(tool["installed"], false);
+            assert_eq!(tool["version"], serde_json::Value::Null);
+            assert_eq!(tool["path"], serde_json::Value::Null);
+            assert_eq!(tool["installable"], false);
+            assert_eq!(tool["install_hint"], hint);
+            let offered: Vec<&str> = tool["models"]
+                .as_array()
+                .expect("models is an array")
+                .iter()
+                .map(|model| model["id"].as_str().expect("a model id"))
+                .collect();
+            assert_eq!(offered, models, "{id} offers its own models");
+        }
+
+        // The sign-in is described only for the harness that has one, and it
+        // carries no token at all.
+        assert_eq!(tools[0]["auth"], serde_json::Value::Null);
+        assert_eq!(tools[2]["auth"], serde_json::Value::Null);
+        assert_eq!(tools[1]["auth"]["kind"], "oauth");
+        assert_eq!(tools[1]["auth"]["verified"], false);
+        assert_eq!(tools[1]["auth"]["account"], serde_json::Value::Null);
+        assert_eq!(tools[1]["auth"]["source"], "none");
+
+        let (status, body) = send(&fx.service, "GET", "/v1/harness/tools", "", "").await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::UNAUTHORIZED,
+            "the list needs a token: {body}"
+        );
+    }
+
+    /// An id outside the three is refused by name, and starting a package
+    /// manager is an administrative act rather than a chat one.
+    #[tokio::test]
+    async fn an_unknown_harness_tool_cannot_be_installed() {
+        let fx = routing_fixture();
+        let _gate = crate::harness_tools::testing::GATE.lock().await;
+        let _fixture = crate::harness_tools::testing::install(empty_env(
+            crate::harness_tools::Platform::Linux,
+        ));
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/harness/tools/some-other-tool/install",
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::FORBIDDEN,
+            "a chat token cannot install anything: {body}"
+        );
+        assert_eq!(body["code"], "scope_denied");
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/harness/tools/some-other-tool/install",
+            &fx.admin,
+            "",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "harness_tool_unknown");
+        assert!(
+            body["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("claude-code")),
+            "the refusal names what this build does know: {body}"
+        );
+    }
+
+    /// A tool that is already on the path is a conflict, not a second install.
+    #[tokio::test]
+    async fn installing_a_harness_tool_that_is_present_is_a_conflict() {
+        let fx = routing_fixture();
+        let dir = tempfile::tempdir().expect("stub dir");
+        write_stub(dir.path(), "claude", "1.9.1 (Claude Code)");
+        let _gate = crate::harness_tools::testing::GATE.lock().await;
+        let _fixture = crate::harness_tools::testing::install(crate::harness_tools::Env {
+            dirs: vec![dir.path().to_path_buf()],
+            ..empty_env(crate::harness_tools::Platform::Linux)
+        });
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/harness/tools/claude-code/install",
+            &fx.admin,
+            "",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], "harness_tool_installed");
+        assert!(
+            body.get("run").is_none(),
+            "nothing was started, so there is no run to report: {body}"
+        );
+    }
+
+    /// A platform this build does not install on is refused, and the message is
+    /// the command an operator can run by hand.
+    #[tokio::test]
+    async fn installing_on_an_unsupported_platform_names_the_hint() {
+        let fx = routing_fixture();
+        let _gate = crate::harness_tools::testing::GATE.lock().await;
+        let _windows = crate::harness_tools::testing::install(empty_env(
+            crate::harness_tools::Platform::Windows,
+        ));
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/harness/tools/claude-code/install",
+            &fx.admin,
+            "",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "harness_tool_unsupported");
+        let message = body["message"].as_str().unwrap_or_default();
+        assert!(message.contains("windows"), "{message}");
+        assert!(
+            message.contains("npm install -g @anthropic-ai/claude-code"),
+            "the refusal names the hint: {message}"
+        );
+
+        // The same answer when the platform is supported but the package manager
+        // is missing: "not here" and "cannot be put here" are one refusal.
+        let _linux = crate::harness_tools::testing::install(empty_env(
+            crate::harness_tools::Platform::Linux,
+        ));
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/harness/tools/claude-code/install",
+            &fx.admin,
+            "",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "harness_tool_unsupported");
+        assert!(
+            body["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("linux")),
+            "the refusal names the platform it looked at: {body}"
+        );
+    }
+
+    /// A harness model the chosen harness does not accept is refused, naming the
+    /// ids it does accept. This is the case a real install hit: a coding tool is
+    /// not the daemon's model catalogue.
+    #[tokio::test]
+    async fn a_harness_model_the_chosen_harness_does_not_accept_is_refused() {
+        let fx = routing_fixture();
+
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"harness":"claude-code","harness_model":"deepseek-flash"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "routing_harness_model_invalid");
+        let message = body["message"].as_str().unwrap_or_default().to_owned();
+        for allowed in ["sonnet", "opus", "haiku", "default"] {
+            assert!(
+                message.contains(allowed),
+                "the refusal names {allowed}: {message}"
+            );
+        }
+        // Nothing in the refused body was stored, not even the harness beside it.
+        let (_, read) = send(&fx.service, "GET", "/v1/routing", &fx.admin, "").await;
+        assert_eq!(read["harness"], "none");
+        assert_eq!(read["harness_model"], "");
+
+        // A model the harness does accept is stored.
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"harness":"claude-code","harness_model":"sonnet"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["harness"], "claude-code");
+        assert_eq!(body["harness_model"], "sonnet");
+
+        // A body with no `harness` is checked against the harness already stored.
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"harness_model":"haiku"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["harness_model"], "haiku");
+
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"harness_model":"deepseek-flash"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "routing_harness_model_invalid");
+        // The refused write left the accepted model in place.
+        let (_, read) = send(&fx.service, "GET", "/v1/routing", &fx.admin, "").await;
+        assert_eq!(read["harness_model"], "haiku");
+
+        // Empty is always allowed: it means the tool's own default.
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"harness_model":""}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["harness_model"], "");
+
+        // A different harness accepts a different list.
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"harness":"dsh","harness_model":"sonnet"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "routing_harness_model_invalid");
+        assert!(
+            body["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("default")),
+            "the refusal names the one id it does accept: {body}"
+        );
+        // The refused body stored nothing, so the harness is still the accepted
+        // one: a model is never checked against a harness that was refused.
+        let (_, read) = send(&fx.service, "GET", "/v1/routing", &fx.admin, "").await;
+        assert_eq!(read["harness"], "claude-code");
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"harness":"dsh","harness_model":"default"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["harness"], "dsh");
+        assert_eq!(body["harness_model"], "default");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3247,4 +3610,139 @@ pub async fn harness_run_events(
                 .text("keep-alive"),
         )
         .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// The coding harnesses themselves
+// ---------------------------------------------------------------------------
+//
+// A delegated run needs a tool that exists. These two routes answer whether the
+// three this daemon can drive are on this host, and start the documented install
+// for one that is not.
+//
+// The install is a harness run, not a second kind of work: registered before its
+// process exists, streaming into the same tail a delegated task fills, bounded by
+// the same 600 second watchdog, so an operator watches a package manager install
+// on the monitor they already have.
+
+/// The audit action an install records.
+const AUDIT_HARNESS_INSTALL: &str = "harness.install";
+
+/// Detect the harnesses off the reactor.
+///
+/// Detection spawns up to three `--version` checks and, on macOS, a keychain read:
+/// a second each at worst, which is not time to hold a request's own thread.
+async fn detect_harnesses() -> Result<crate::harness_tools::ToolsReport, DeviceError> {
+    tokio::task::spawn_blocking(crate::harness_tools::detect)
+        .await
+        .map_err(|error| {
+            DeviceError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "harness_tools_unavailable",
+                format!("the coding harness list could not be read: {error}"),
+            )
+        })
+}
+
+/// `GET /v1/harness/tools` - which coding harnesses are installed, and as whom.
+///
+/// Chat scope: this is what a composer needs in order to offer a harness, and a
+/// binary, a version, a path and an account email are not credentials. The token
+/// the sign-in was checked with never appears here, in any form.
+pub async fn harness_tool_list(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    match detect_harnesses().await {
+        Ok(report) => axum::Json(report.json()).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+/// `POST /v1/harness/tools/{id}/install` - install one that is missing.
+///
+/// Administrative, because it changes the host: it runs a package manager as this
+/// daemon's user. Four answers, each naming its reason:
+///
+/// - `400 harness_tool_unknown` for an id this build cannot drive;
+/// - `409 harness_tool_installed` when the binary is already on the path;
+/// - `400 harness_tool_unsupported` when the platform or the package manager is
+///   missing, with the command that would do it by hand;
+/// - `200` with the run, once the install has been started and registered.
+pub async fn harness_tool_install(
+    State(service): State<DeviceService>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    // The id names a row in the report, and the run's harness field takes the
+    // canonical spelling rather than whatever spacing arrived in the path.
+    let id = id.trim().to_owned();
+    let report = match detect_harnesses().await {
+        Ok(report) => report,
+        Err(error) => return error.into_response(),
+    };
+    match crate::harness_tools::install_plan(&report, &id) {
+        crate::harness_tools::InstallPlan::Unknown => DeviceError::bad_request(
+            "harness_tool_unknown",
+            format!(
+                "`{id}` is not a coding harness this build can drive; it knows {}",
+                crate::harness_tools::IDS.join(", ")
+            ),
+        )
+        .into_response(),
+        crate::harness_tools::InstallPlan::Installed => DeviceError::new(
+            StatusCode::CONFLICT,
+            "harness_tool_installed",
+            format!("`{id}` is already installed on this host; there is nothing to install"),
+        )
+        .into_response(),
+        crate::harness_tools::InstallPlan::Unsupported(hint) => DeviceError::bad_request(
+            "harness_tool_unsupported",
+            format!(
+                "`{id}` cannot be installed on this {} host; run `{hint}` by hand",
+                report.platform.as_str()
+            ),
+        )
+        .into_response(),
+        crate::harness_tools::InstallPlan::Start(command) => {
+            match crate::harness_tools::start_install(&id, &command) {
+                Ok(run) => {
+                    // Best-effort: the install is already running, and a refusal
+                    // here would report a failure that did not happen.
+                    if let Err(error) = audit(
+                        &service,
+                        token.device_id(),
+                        AUDIT_HARNESS_INSTALL,
+                        &format!("{id}: {command}"),
+                    ) {
+                        tracing::warn!(
+                            code = error.code(),
+                            "the install started but its audit row could not be written"
+                        );
+                    }
+                    axum::Json(serde_json::json!({ "ok": true, "run": run })).into_response()
+                }
+                Err(error) => DeviceError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "harness_tool_spawn_failed",
+                    error,
+                )
+                .into_response(),
+            }
+        }
+    }
 }
