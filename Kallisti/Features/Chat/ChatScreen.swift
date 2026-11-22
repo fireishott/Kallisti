@@ -230,6 +230,10 @@ struct ChatScreen: View {
     @State private var showAttachmentPicker = false
     @State private var showCanvas = false
     @State private var showSubagents = false
+    /// The daemon's harness runs. The banner above the composer and the sheet
+    /// it opens read the same model, so one two-second poll feeds both.
+    @State private var showHarnessMonitor = false
+    @State private var harnessMonitor = HarnessMonitorModel()
     /// Build 128.52: queue manager sheet - view/edit/delete queued messages.
     @State private var showQueueManager = false
     /// Build 118: breathing animation state for the chat-switch overlay coin.
@@ -311,6 +315,9 @@ struct ChatScreen: View {
                 }
                 if chatStore.activeSubagentCount > 0 {
                     subagentWaitBar
+                }
+                if harnessMonitor.runningCount > 0 {
+                    harnessMonitorBar
                 }
                 // Build 128.78: in TUI mode the terminal view owns input - the iOS
                 // composer is hidden entirely.
@@ -460,6 +467,12 @@ struct ChatScreen: View {
             SubagentPreviewSheet(onDismiss: { showSubagents = false })
                 .presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $showHarnessMonitor) {
+            HarnessMonitorSheet(onDismiss: { showHarnessMonitor = false })
+                .environment(harnessMonitor)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $showCanvas) {
             CanvasView(store: canvasStore, onDismiss: { showCanvas = false })
                 .presentationDetents([.medium, .large])
@@ -559,8 +572,22 @@ struct ChatScreen: View {
                     await hostStore.refresh()
                 }
             }
+            .task {
+                // The harness banner only exists while something is running, so
+                // the count has to be polled even before the sheet is opened.
+                // The sheet joins this same loop while it is on screen.
+                harnessMonitor.startListPolling(
+                    daemon: .current(
+                        settingsStore: settingsStore,
+                        pairingStore: pairingStore,
+                        sessionStore: sessionStore
+                    ),
+                    for: .chat
+                )
+            }
             .onDisappear {
                 chatStore.setPollingEnabled(false)
+                harnessMonitor.stopListPolling(for: .chat)
             }
             .onChange(of: chatStore.conversation?.id.uuidString ?? "") { _, _ in
                 // Build 103: entering a different thread must clear scroll ownership
@@ -1713,6 +1740,37 @@ struct ChatScreen: View {
         .onTapGesture { showSubagents = true }
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("Show subagents")
+    }
+
+    /// The daemon's own harness runs, above the composer. This is the one line
+    /// that says work is in flight; the sheet it opens is the monitor. It stays
+    /// out of the way entirely when nothing is running, and when the daemon has
+    /// no harness monitor the count is zero so it never appears.
+    private var harnessMonitorBar: some View {
+        let count = harnessMonitor.runningCount
+        return Button {
+            showHarnessMonitor = true
+        } label: {
+            HStack(spacing: Design.Spacing.sm) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Design.Brand.accent)
+                Text(count == 1 ? "1 harness run in flight" : "\(count) harness runs in flight")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.foreground)
+                    .lineLimit(1)
+                Spacer(minLength: Design.Spacing.sm)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+            .padding(.horizontal, Design.Spacing.md)
+            .padding(.vertical, Design.Spacing.xs)
+            .background(Design.Brand.accent.opacity(0.08))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show harness runs")
     }
 
     private var queueStatusBar: some View {

@@ -57,6 +57,11 @@ struct RoutingSettingsSection: View {
     @State private var hasLoaded = false
     @State private var isSaving = false
     @State private var isStoringHarness = false
+    /// The daemon's harness runs behind the monitor row. This card owns its own
+    /// instance of the shared model: Settings and the chat banner are never on
+    /// screen together, so one poller per presentation site is enough.
+    @State private var harnessMonitor = HarnessMonitorModel()
+    @State private var showHarnessMonitor = false
 
     var body: some View {
         SettingsSectionView(title: "Routing") {
@@ -75,6 +80,10 @@ struct RoutingSettingsSection: View {
 
                 caption
 
+                sectionDivider
+
+                harnessMonitorRow
+
                 if let routingError {
                     Text(routingError)
                         .font(Design.Typography.caption)
@@ -86,6 +95,17 @@ struct RoutingSettingsSection: View {
             }
         }
         .task { await loadRouting() }
+        .task {
+            // One read on appearance is enough for the count here; the monitor
+            // sheet it opens owns the two-second poll while it is on screen.
+            await harnessMonitor.refreshList(daemon: harnessDaemon())
+        }
+        .sheet(isPresented: $showHarnessMonitor) {
+            HarnessMonitorSheet(onDismiss: { showHarnessMonitor = false })
+                .environment(harnessMonitor)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
     }
 
     // MARK: - Rows
@@ -246,6 +266,43 @@ struct RoutingSettingsSection: View {
             .padding(.vertical, Design.Spacing.xs)
     }
 
+    /// The harness monitor, under the picker that chooses the harness. The count
+    /// is the daemon's own `running`, so the row says "1 running" only when one
+    /// is, and stays quiet otherwise.
+    private var harnessMonitorRow: some View {
+        Button {
+            showHarnessMonitor = true
+        } label: {
+            HStack(spacing: Design.Spacing.sm) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Design.Brand.accent)
+                    .frame(width: 20, alignment: .center)
+
+                Text("Harness")
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.foreground)
+
+                Spacer(minLength: Design.Spacing.sm)
+
+                if harnessMonitor.runningCount > 0 {
+                    Text(harnessMonitor.runningCount == 1 ? "1 running" : "\(harnessMonitor.runningCount) running")
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Brand.accent)
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+            .frame(minHeight: Design.Size.minTapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.harness.monitor")
+        .accessibilityLabel("Harness monitor")
+    }
+
     private var sectionDivider: some View {
         Divider()
             .overlay(Design.Colors.divider)
@@ -294,6 +351,16 @@ struct RoutingSettingsSection: View {
         while base.hasSuffix("/") { base.removeLast() }
         if base.hasSuffix("/v1") { base.removeLast(3) }
         return URL(string: base + "/v1/routing")
+    }
+
+    /// The same base URL and token source the rest of this card uses, wrapped
+    /// for the harness model.
+    private func harnessDaemon() -> HarnessMonitorDaemon {
+        HarnessMonitorDaemon.current(
+            settingsStore: settingsStore,
+            pairingStore: pairingStore,
+            sessionStore: sessionStore
+        )
     }
 
     private func loadRouting() async {
