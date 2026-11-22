@@ -339,7 +339,8 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
 /* Dispatched work, reported where the app talks about itself. The control is a
    `details` element so it opens with no script, and it is not rendered at all
    when there is nothing to report, so the row keeps its width. */
-.subagents {
+.subagents,
+.harness {
   position: relative;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
@@ -347,7 +348,8 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   font-size: 12.5px;
   color: var(--muted);
 }
-.subagents summary {
+.subagents > summary,
+.harness > summary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -355,10 +357,14 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   cursor: pointer;
   list-style: none;
 }
-.subagents summary::-webkit-details-marker { display: none; }
-.subagents summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; border-radius: 999px; }
-.subagents[open] summary { color: var(--text); }
-.subagents-count {
+.subagents > summary::-webkit-details-marker,
+.harness > summary::-webkit-details-marker { display: none; }
+.subagents > summary:focus-visible,
+.harness > summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; border-radius: 999px; }
+.subagents[open] > summary,
+.harness[open] > summary { color: var(--text); }
+.subagents-count,
+.harness-count {
   min-width: 18px;
   padding: 0 5px;
   border-radius: 999px;
@@ -368,8 +374,11 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   font-weight: 620;
   text-align: center;
 }
+.subagents-count[hidden],
+.harness-count[hidden] { display: none; }
 .subagents-live { color: var(--warn); }
-.subagents-list {
+.subagents-list,
+.harness-list {
   position: absolute;
   left: 0;
   z-index: 6;
@@ -424,6 +433,109 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   background: var(--bg);
   border-radius: 8px;
 }
+
+/* The harness control ---------------------------------------------------- */
+
+/* Coding-harness runs use the subagents pill and popover above, and add only
+   what a run needs below its one-line summary. The popover is anchored at
+   `left: 0` and its height is bounded: a panel that grew past the viewport's
+   left edge is the bug this pins. A run's output belongs in its own bounded
+   scroller, never in a popover that grows to fit it. */
+.harness-live {
+  display: inline-flex;
+  align-items: center;
+  color: var(--warn);
+}
+.harness-live[hidden] { display: none; }
+.harness-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px rgba(134, 199, 160, 0.18);
+  animation: harness-pulse 2s ease-in-out infinite;
+}
+@keyframes harness-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .harness-dot { animation: none; box-shadow: none; }
+}
+.harness-run {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raise);
+  font-size: 12px;
+  color: var(--muted);
+}
+.harness-run > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  list-style: none;
+  overflow: hidden;
+}
+.harness-run > summary::-webkit-details-marker { display: none; }
+.harness-run > summary:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: -2px;
+  border-radius: 9px;
+}
+.harness-run[open] > summary { border-bottom: 1px solid var(--line); }
+.harness-name { flex: 0 0 auto; color: var(--text); font-weight: 560; }
+.harness-status { flex: 0 0 auto; font-size: 11.5px; }
+.harness-status.running,
+.harness-status.stalled { color: var(--warn); }
+.harness-status.succeeded { color: var(--ok); }
+.harness-status.failed,
+.harness-status.timed_out,
+.harness-status.killed { color: var(--bad); }
+.harness-elapsed { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.harness-task {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.harness-detail { padding: 0 10px 10px; }
+.harness-watch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 8px 0 0;
+}
+.harness-watchdog,
+.harness-timeout { font-variant-numeric: tabular-nums; }
+.harness-timeout:empty { display: none; }
+.harness-stdout,
+.harness-stderr {
+  margin: 6px 0 0;
+  padding: 7px 9px;
+  max-height: 168px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 8px;
+}
+.harness-stderr { color: var(--bad); }
+.harness-stdout:empty,
+.harness-stderr:empty,
+.harness-stderr[hidden] { display: none; }
+.harness-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.harness-kill { padding: 5px 11px; font-size: 11.5px; }
+.harness-kill[hidden] { display: none; }
+.harness-note { margin: 6px 0 0; font-size: 11.5px; }
+.harness-note:empty { display: none; }
 
 /* The rail: new chat, the conversations, the cog -------------------------- */
 
@@ -3011,6 +3123,19 @@ mod tests {
         &rest[..end]
     }
 
+    /// One rule, by a selector that may be part of a group. Read from the
+    /// selector to the next closing brace, so a grouped `.harness-list` is still
+    /// read as one rule.
+    fn selector_block(selector: &str) -> &'static str {
+        let start = APP_CSS
+            .find(selector)
+            .unwrap_or_else(|| panic!("the {selector} rule exists"));
+        let rest = &APP_CSS[start..];
+        let open = rest.find('{').expect("the rule opens");
+        let end = rest[open..].find('}').expect("the rule closes");
+        &rest[..open + end]
+    }
+
     /// One rule, from its selector to the closing brace. The selector is matched
     /// at the start of a line, so `.composer` never picks up
     /// `.chat-shell.new-chat > .composer`. Panics when the selector is absent, so
@@ -3883,5 +4008,36 @@ mod tests {
             }
             index += 1;
         }
+    }
+    /// The harness popover is the subagents popover, and the two properties
+    /// that matter are the ones a regressed panel gets wrong: it is anchored
+    /// at the row's left edge rather than growing off the viewport, and its
+    /// height is bounded with its own scroller. The output block is a
+    /// monospace scroller inside it.
+    #[test]
+    fn the_harness_popover_is_anchored_left_and_bounded() {
+        let list = selector_block(".harness-list");
+        assert!(list.contains("position: absolute"), "{list}");
+        assert!(
+            list.contains("left: 0"),
+            "the popover is anchored at the control's left edge: {list}"
+        );
+        assert!(
+            list.contains("max-height: min(60vh, 520px)"),
+            "the popover stops at the viewport: {list}"
+        );
+        assert!(
+            list.contains("overflow-y: auto"),
+            "a long list scrolls inside the popover: {list}"
+        );
+        let output = selector_block(".harness-stdout");
+        assert!(
+            output.contains("font-family: ui-monospace"),
+            "the run's output is monospace: {output}"
+        );
+        assert!(
+            output.contains("max-height") && output.contains("overflow: auto"),
+            "the output block caps itself and scrolls: {output}"
+        );
     }
 }

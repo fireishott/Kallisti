@@ -345,6 +345,133 @@ fn the_control_reads_only_the_rows_it_is_given() {
     );
 }
 
+/// One harness run, filled with the fields the bar reads.
+fn harness_row(id: &str, status: &str, started_at: &str) -> crate::harness_view::Row {
+    crate::harness_view::Row {
+        id: id.to_owned(),
+        harness: "dsh".to_owned(),
+        status: status.to_owned(),
+        task: "fix the failing build".to_owned(),
+        started_at: started_at.to_owned(),
+        finished_at: None,
+        elapsed_ms: 65_000,
+        silent_ms: 130_000,
+        exit_code: None,
+        stalled: false,
+    }
+}
+
+/// The harness control is the subagents control's neighbour, and it is empty
+/// for the same reason: no rows, no control. A running run brings the count,
+/// the live dot, the one-line summary and the output block the script fills.
+#[test]
+fn the_harness_control_renders_a_running_run_and_nothing_without_one() {
+    let none = super::templates::harness_control(&Chrome::default(), true).into_string();
+    assert!(none.is_empty(), "no runs, no control: {none}");
+
+    let running = harness_row("run-1", "running", "2026-10-19T12:00:02Z");
+    let mut stalled = harness_row("run-2", "stalled", "2026-10-19T12:00:01Z");
+    stalled.stalled = true;
+    let chrome = Chrome {
+        harness_runs: vec![running, stalled],
+        ..Chrome::default()
+    };
+    let markup = super::templates::harness_control(&chrome, true).into_string();
+    assert!(
+        markup.contains(r#"<details class="harness""#),
+        "the control is a disclosure: {markup}"
+    );
+    assert!(markup.contains(">Harness<"), "{markup}");
+    assert!(
+        markup.contains(r#"<span class="harness-count">1</span>"#),
+        "the badge counts the run in the running state: {markup}"
+    );
+    assert!(
+        markup.contains(r#"class="harness-live""#),
+        "a live run keeps the dot: {markup}"
+    );
+    assert!(markup.contains(">dsh<"), "{markup}");
+    assert!(markup.contains(">running<"), "{markup}");
+    assert!(markup.contains(">stalled<"), "{markup}");
+    assert!(
+        markup.contains(">1m 05s<"),
+        "elapsed is the run's: {markup}"
+    );
+    assert!(markup.contains(">fix the failing build<"), "{markup}");
+    assert!(
+        markup.contains("silent 2m 10s"),
+        "the watchdog state is in the expanded line: {markup}"
+    );
+    assert!(
+        markup.contains(r#"<pre class="harness-stdout""#)
+            && markup.contains(r#"<pre class="harness-stderr""#),
+        "stdout and stderr have their own blocks: {markup}"
+    );
+    assert!(
+        markup.contains(">Kill<"),
+        "an admin can stop a run: {markup}"
+    );
+    assert!(
+        !markup.contains("<a "),
+        "a run expands in place, it does not link: {markup}"
+    );
+
+    let reader = super::templates::harness_control(&chrome, false).into_string();
+    assert!(
+        !reader.contains(">Kill<"),
+        "only an admin gets the kill control: {reader}"
+    );
+}
+
+/// The shell decides whether the row exists, so the page a browser receives
+/// already carries the control and its script: the first paint does not wait
+/// for a fetch, and a daemon with no runs renders neither.
+#[test]
+fn the_top_bar_carries_the_harness_control_only_when_a_run_exists() {
+    let empty = Chrome::default();
+    let page = crate::web::templates::shell(
+        "Dashboard",
+        crate::db::SetupState::Ready,
+        Some(Nav::Dashboard),
+        maud::Markup::default(),
+        &empty,
+    )
+    .into_string();
+    assert!(
+        !page.contains(r#"<details class="harness""#),
+        "an empty list renders no harness control: {page}"
+    );
+
+    let chrome = Chrome {
+        harness_runs: vec![harness_row("run-1", "running", "2026-10-19T12:00:00Z")],
+        ..Chrome::default()
+    };
+    let page = crate::web::templates::shell(
+        "Dashboard",
+        crate::db::SetupState::Ready,
+        Some(Nav::Dashboard),
+        maud::Markup::default(),
+        &chrome,
+    )
+    .into_string();
+    let row = page.find(r#"class="top-nav""#).expect("the top row");
+    let control = page
+        .find(r#"<details class="harness""#)
+        .unwrap_or_else(|| panic!("the control is in the row: {page}"));
+    assert!(
+        control > row,
+        "the control sits in the top row rather than in the page body: {page}"
+    );
+    assert!(
+        page.contains(r#"<span class="harness-count">1</span>"#),
+        "the browser gets the count without a request: {page}"
+    );
+    assert!(
+        page.contains("/v1/harness/events"),
+        "the live half is part of the control: {page}"
+    );
+}
+
 /// The id and the label a state change carries are what the stream sends, so a
 /// live page can recount without reading a result.
 #[test]
