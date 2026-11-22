@@ -4702,6 +4702,81 @@ pub type ToolExecute<'a> = dyn FnMut(
 /// a busy one to the phone.
 const TURN_WALL_CLOCK: std::time::Duration = std::time::Duration::from_secs(8 * 60);
 
+/// How many times one turn re-streams a round whose tool call the provider cut
+/// off before its JSON closed.
+///
+/// Two, and each attempt carries a different correction. The first asks for the
+/// same call again; the second says the work has to be split, because a model
+/// that replayed the same oversized call unchanged will replay it a third time.
+/// A third attempt would buy the same truncation at the same byte.
+const MAX_TRUNCATED_TOOL_RETRIES: usize = 2;
+
+/// The first correction for a tool call the provider cut off.
+///
+/// Short on purpose. The failure is mechanical, so the instruction is the three
+/// facts that change what the model does next: nothing ran, re-issue it, and a
+/// large payload has to be split.
+const TRUNCATED_TOOL_NUDGE: &str = "Your last tool call was cut off before its JSON closed, \
+     so it never ran and nothing happened. Re-issue that call now. If what you were writing \
+     is large, write it in smaller parts instead of one call.";
+
+/// The second correction: the re-issue was cut off too, so size is the problem
+/// and repeating the call is not a strategy.
+const TRUNCATED_TOOL_NUDGE_AGAIN: &str = "The retried tool call was cut off again before its \
+     JSON closed, so nothing ran. Split the content into separate calls: one file per call, \
+     and each call smaller than the output limit. Do not resend the large call.";
+
+/// The correction for the attempt that just failed, counting from one.
+fn truncated_tool_nudge(attempt: usize) -> &'static str {
+    if attempt <= 1 {
+        TRUNCATED_TOOL_NUDGE
+    } else {
+        TRUNCATED_TOOL_NUDGE_AGAIN
+    }
+}
+
+/// Whether a stream failure is a provider cutting a tool call off mid-JSON.
+///
+/// The parser's own words, produced in exactly one place: the arguments buffer
+/// never became a JSON object. A dropped socket, a rejected request and an
+/// answer cut short do not contain the phrase, so this never retries a failure
+/// it cannot correct.
+fn tool_call_was_cut_off(message: &str) -> bool {
+    message.contains("never completed into valid JSON")
+}
+
+/// The `finish_reason` a stream error carried, or `none`.
+///
+/// The parser writes it as a parenthetical suffix. Reading it back lets the
+/// operator-facing failure name the same fact without repeating the parser's
+/// whole sentence.
+fn reported_finish_reason(message: &str) -> &str {
+    message
+        .rsplit_once("finish_reason=")
+        .map(|(_, tail)| tail.trim_end_matches(')').trim())
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("none")
+}
+
+/// What the turn fails with when the provider keeps cutting the call off.
+///
+/// The operator's next move is in the text: the request was cut before the call
+/// closed, the model was told to split it, and it still did not. The sentence is
+/// not the parser's, so a failed row says what happened and what to do rather
+/// than `protocol failure`.
+fn truncated_tool_failure(failure: &TurnFailure) -> TurnFailure {
+    (
+        failure.0.clone(),
+        format!(
+            "the request was cut by the provider before the tool call's JSON closed, so \
+             nothing ran. The model was asked to split the work into smaller calls and did \
+             not close one after {MAX_TRUNCATED_TOOL_RETRIES} retries \
+             (finish_reason={}). Send the turn again, or ask for the content in smaller parts.",
+            reported_finish_reason(&failure.1)
+        ),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn drive_tool_loop(
     execute: &mut ToolExecute<'_>,
@@ -4755,7 +4830,11 @@ pub fn drive_tool_loop(
     // tools go away and the model answers with what it has.
     let started = std::time::Instant::now();
     let mut deadline_told = false;
-    let mut text = loop {
+    // Corrective retries spent so far, across the whole turn rather than per
+    // round: the budget is a property of the failure, and a turn that spent both
+    // on one round has already learned what replaying costs.
+    let mut truncated_retries = 0usize;
+    let mut text = 'turn: loop {
         // The first boundary: nothing has been sent for this round yet, so a stop
         // here costs nothing and a steer joins the prompt before it is billed.
         match poll() {
@@ -4843,29 +4922,44 @@ pub fn drive_tool_loop(
             max_rounds,
             tools_allowed,
         });
-        let mut completion = match stream(&messages, tools_allowed, &mut *sink) {
-            Ok(completion) => completion,
-            // The answer round exists to write, not to discover. A provider fault
-            // there - a dropped socket, a 5xx, a timeout after a long turn - must
-            // not turn a turn that already did work into a failure with nothing to
-            // read. Fall out of the loop with no text; the forced-answer round and
-            // the recorded summary below are the fallback.
-            Err(_failure) if !tools_allowed => {
-                capped = true;
-                wrapped_up = false;
-                break String::new();
+        let mut completion = loop {
+            match stream(&messages, tools_allowed, &mut *sink) {
+                Ok(completion) => break completion,
+                // The answer round exists to write, not to discover. A provider
+                // fault there - a dropped socket, a 5xx, a timeout after a long
+                // turn - must not turn a turn that already did work into a
+                // failure with nothing to read. Fall out of the loop with no
+                // text; the forced-answer round and the recorded summary below
+                // are the fallback.
+                Err(_failure) if !tools_allowed => {
+                    capped = true;
+                    wrapped_up = false;
+                    break 'turn String::new();
+                }
+                // A stream cut in the middle of a tool call is the provider's
+                // socket, not the model's decision, but replaying the same
+                // messages unchanged is what the phone's Retry already did: the
+                // model re-emits the same oversized call and truncates at the
+                // same byte. So the round is retried with a correction appended
+                // to the working list: nothing ran, re-issue the call, and split
+                // content that does not fit. The second failure proves size is
+                // the cause and the correction names the shape that works.
+                Err(failure) if tools_allowed && tool_call_was_cut_off(&failure.1) => {
+                    if truncated_retries >= MAX_TRUNCATED_TOOL_RETRIES {
+                        return Err(truncated_tool_failure(&failure));
+                    }
+                    truncated_retries += 1;
+                    // Appended after the last turn, as a system instruction the
+                    // model is steered by rather than an answer it wrote. It
+                    // lives in this turn's working list only: the caller's
+                    // transcript is a separate row and never receives it.
+                    messages.push(ChatMessage::text(
+                        ChatRole::System,
+                        truncated_tool_nudge(truncated_retries),
+                    ));
+                }
+                Err(failure) => return Err(failure),
             }
-            // A stream cut in the middle of a tool call is the provider's
-            // sockets, not the model's decision. One retry of the same round
-            // costs one round trip and saves the turn: Retry on the phone was
-            // the only way forward before this, and it replayed the truncated
-            // turn back into the provider.
-            Err(failure)
-                if tools_allowed && failure.1.contains("never completed into valid JSON") =>
-            {
-                stream(&messages, tools_allowed, &mut *sink)?
-            }
-            Err(failure) => return Err(failure),
         };
 
         // A route that fails to lift calls into the structured array passes the

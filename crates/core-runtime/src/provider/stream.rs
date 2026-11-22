@@ -176,7 +176,13 @@ impl ToolAccumulator {
     ///
     /// This is the only place a tool call is built, and it refuses to build one
     /// whose argument buffer never became valid JSON.
-    fn finish(mut self) -> Result<Option<ToolCall>, LlmError> {
+    ///
+    /// `finish_reason` is the provider's own account of why the stream ended,
+    /// passed in by the parser because this type never sees a frame. It appears
+    /// in the refusal so a caller can tell an output limit (`length`) from a
+    /// transport that was cut (`none` or `stop`); the sentence itself is
+    /// unchanged.
+    fn finish(mut self, finish_reason: Option<&str>) -> Result<Option<ToolCall>, LlmError> {
         if self.is_empty() {
             return Ok(None);
         }
@@ -233,8 +239,14 @@ impl ToolAccumulator {
                             } else {
                                 ""
                             };
+                            // Appended to the sentence rather than woven into
+                            // it: a reader of the old message still sees it
+                            // word for word, and the reason is the one fact
+                            // that separates an output limit from a dropped
+                            // socket.
+                            let reason = finish_reason.unwrap_or("none");
                             return Err(classify::protocol(format!(
-                                "tool call `{}` arguments never completed into valid JSON after {} byte(s): {error}{hint}",
+                                "tool call `{}` arguments never completed into valid JSON after {} byte(s): {error}{hint} (finish_reason={reason})",
                                 self.name,
                                 buffered.len()
                             )));
@@ -643,8 +655,11 @@ impl ChatStreamParser {
     /// Calling this twice is safe; the second call returns an empty, already
     /// flushed result.
     pub fn finish(&mut self) -> Result<Completion, LlmError> {
+        // Copied before the accumulators are drained, because a refusal is
+        // built from both and the borrow cannot be held across the loop.
+        let finish_reason = self.finish_reason.clone();
         for accumulator in std::mem::take(&mut self.tools) {
-            if let Some(call) = accumulator.finish()? {
+            if let Some(call) = accumulator.finish(finish_reason.as_deref())? {
                 self.completed.push(call);
             }
         }
@@ -707,8 +722,12 @@ impl ChatStreamParser {
         let Some(position) = self.tools.iter().position(|tool| tool.index == index) else {
             return Ok(Vec::new());
         };
+        // Cloned rather than borrowed: removing the accumulator needs the whole
+        // parser mutably, and the reason is a short string that is only read on
+        // the refusal path.
+        let finish_reason = self.finish_reason.clone();
         let accumulator = self.tools.remove(position);
-        let Some(call) = accumulator.finish()? else {
+        let Some(call) = accumulator.finish(finish_reason.as_deref())? else {
             return Ok(Vec::new());
         };
         self.completed.push(call.clone());
@@ -1242,7 +1261,7 @@ mod argument_assembly_tests {
     #[test]
     fn plain_fragments_append() {
         let acc = accumulator(&[r#"{"title":"#, r#""deck","#, r#""questions":"#, r#"[]}"#]);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(call.arguments["title"], "deck");
     }
 
@@ -1255,7 +1274,7 @@ mod argument_assembly_tests {
             r#"{"title":"deck","questions":[]}"#,
             r#"{"questions":[],"title":"deck for Cheyne"}"#,
         ]);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(
             call.arguments["title"], "deck for Cheyne",
             "the newest whole object is the one the sender meant"
@@ -1274,7 +1293,7 @@ mod argument_assembly_tests {
         // classify, which is exactly the case recovery is for.
         acc.arguments
             .push_str(r#"{"title":"first"}{"title":"second","questions":[]}"#);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(call.arguments["title"], "second");
     }
 
@@ -1294,13 +1313,35 @@ mod argument_assembly_tests {
     #[test]
     fn a_real_truncation_is_still_refused() {
         let acc = accumulator(&[r#"{"title":"deck","questions":[{"question":"which form"#]);
-        let error = acc.finish().expect_err("a refusal");
+        let error = acc.finish(None).expect_err("a refusal");
         let text = error.to_string();
         assert!(
             text.contains("never completed into valid JSON"),
             "the refusal keeps its message: {text}"
         );
         assert!(text.contains("clarify"), "and names the tool: {text}");
+        assert!(
+            text.contains("finish_reason=none"),
+            "a stream that reported nothing says so: {text}"
+        );
+    }
+
+    /// The reason is carried into the refusal, and it is the provider's own
+    /// word: `length` means the output limit, which is a different corrective
+    /// from a transport that was cut.
+    #[test]
+    fn the_refusal_carries_the_provider_finish_reason() {
+        let acc = accumulator(&[r#"{"title":"deck","questions":[{"question":"which form"#]);
+        let error = acc.finish(Some("length")).expect_err("a refusal");
+        let text = error.to_string();
+        assert!(
+            text.contains("never completed into valid JSON"),
+            "the sentence is unchanged: {text}"
+        );
+        assert!(
+            text.contains("finish_reason=length"),
+            "the output limit is named: {text}"
+        );
     }
 
     /// A fragment that is a complete value but not a continuation must not
@@ -1327,7 +1368,7 @@ mod argument_assembly_tests {
             r#"{"title":"deck","quest"#,
             r#"{"title":"deck","questions":[{"question":"which deck"}]}"#,
         ]);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(call.arguments["title"], "deck");
         assert_eq!(call.arguments["questions"][0]["question"], "which deck");
     }
@@ -1339,7 +1380,7 @@ mod argument_assembly_tests {
     #[test]
     fn a_restarted_serialisation_that_ends_early_is_still_refused() {
         let acc = accumulator(&[r#"{"questions":[]}"#, r#"{"title":"deck","quest"#]);
-        let error = acc.finish().expect_err("a refusal");
+        let error = acc.finish(None).expect_err("a refusal");
         assert!(
             error
                 .to_string()
@@ -1363,7 +1404,7 @@ mod argument_assembly_tests {
             r#""question": "Which one?", "choices": [{"label": "A"}, {"label": "B"}]"#,
             r#"}]}"#,
         ]);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(call.arguments["questions"][0]["question"], "Which one?");
         assert_eq!(call.arguments["questions"][0]["choices"][1]["label"], "B");
     }
@@ -1375,7 +1416,7 @@ mod argument_assembly_tests {
         let one = r#"{"title":"deck","questions":[]}"#;
         let acc = accumulator(&[one, one, one]);
         assert_eq!(acc.arguments, one, "one copy, not three");
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(call.arguments["title"], "deck");
     }
 
@@ -1384,7 +1425,7 @@ mod argument_assembly_tests {
     #[test]
     fn trailing_whitespace_does_not_replace_the_buffer() {
         let acc = accumulator(&[r#"{"title":"deck","questions":[]}"#, "\n", "  "]);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(call.arguments["title"], "deck");
     }
 
@@ -1399,7 +1440,7 @@ mod argument_assembly_tests {
             "    ",
             r#"return value"}"#,
         ]);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(
             call.arguments["command"], "def decode(value):\n    return value",
             "the indentation is part of the command, not a frame to throw away"
@@ -1429,7 +1470,7 @@ mod argument_assembly_tests {
     #[test]
     fn a_buffer_with_no_opener_says_so() {
         let acc = accumulator(&[r#"command":"ls -la"}"#]);
-        let text = acc.finish().expect_err("a refusal").to_string();
+        let text = acc.finish(None).expect_err("a refusal").to_string();
         assert!(
             text.contains("the opening brace never arrived"),
             "the refusal has to name the lost opener: {text}"
@@ -1445,7 +1486,7 @@ mod argument_assembly_tests {
     fn a_continuation_after_a_whole_call_keeps_the_call() {
         let whole = r#"{"command":"ls -la"}"#;
         let acc = accumulator(&[whole, "command", r#": "cat /etc/hosts""#]);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(
             call.arguments["command"], "ls -la",
             "the whole call in the buffer is the one that survives"
@@ -1466,7 +1507,7 @@ mod argument_assembly_tests {
             r#"{\"query\":\"horses\"}"#,
             r#"' | head"}"#,
         ]);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         let command = call.arguments["command"]
             .as_str()
             .expect("the command survives as a string");
@@ -1496,7 +1537,7 @@ mod argument_assembly_tests {
         let cut = r#"{"title":"deck","quest"#;
         let glued = format!("{whole}{cut}");
         let acc = accumulator(&[&glued]);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(call.arguments["title"], "deck");
         assert!(call.arguments["questions"].is_array());
     }
@@ -1507,7 +1548,7 @@ mod argument_assembly_tests {
         let first = r#"{"title":"old"}"#;
         let second = r#"{"title":"new"}"#;
         let acc = accumulator(&[&format!("{first}{second}")]);
-        let call = acc.finish().expect("a call").expect("a tool call");
+        let call = acc.finish(None).expect("a call").expect("a tool call");
         assert_eq!(call.arguments["title"], "new");
     }
 }
