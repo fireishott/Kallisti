@@ -157,6 +157,18 @@ pub const ROUTE_PROCESSES: &str = "/v1/processes";
 /// `POST /v1/processes/{id}/kill` - stop one, politely and then not.
 pub const ROUTE_PROCESS_KILL: &str = "/v1/processes/{id}/kill";
 
+/// `GET /v1/harness/runs` - every delegated coding-harness run this process has.
+pub const ROUTE_HARNESS_RUNS: &str = "/v1/harness/runs";
+
+/// `GET /v1/harness/runs/{id}` - one run, with the tails of its two streams.
+pub const ROUTE_HARNESS_RUN: &str = "/v1/harness/runs/{id}";
+
+/// `POST /v1/harness/runs/{id}/kill` - ask one run to stop.
+pub const ROUTE_HARNESS_RUN_KILL: &str = "/v1/harness/runs/{id}/kill";
+
+/// `GET /v1/harness/events` - the SSE stream of run state changes.
+pub const ROUTE_HARNESS_EVENTS: &str = "/v1/harness/events";
+
 /// `GET /v1/turns/{id}/events` - the SSE stream for one job.
 pub const ROUTE_EVENTS: &str = "/v1/turns/{id}/events";
 
@@ -1233,6 +1245,10 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_METRICS, get(control::metrics))
         .route(ROUTE_PROCESSES, get(control::processes))
         .route(ROUTE_PROCESS_KILL, post(control::kill_process))
+        .route(ROUTE_HARNESS_RUNS, get(control::harness_run_list))
+        .route(ROUTE_HARNESS_RUN, get(control::harness_run_detail))
+        .route(ROUTE_HARNESS_RUN_KILL, post(control::harness_run_kill))
+        .route(ROUTE_HARNESS_EVENTS, get(control::harness_run_events))
         .route(ROUTE_EVENTS, get(handlers::events))
         .route(ROUTE_CANCEL, post(handlers::cancel))
         .route(ROUTE_ACK, post(handlers::ack_turn))
@@ -1541,6 +1557,10 @@ mod tests {
             ROUTE_NOTE_RUN,
             ROUTE_NOTE_RUN_EVENTS,
             ROUTE_NOTE_RUN_CANCEL,
+            ROUTE_HARNESS_RUNS,
+            ROUTE_HARNESS_RUN,
+            ROUTE_HARNESS_RUN_KILL,
+            ROUTE_HARNESS_EVENTS,
             ROUTE_PUSH_REGISTER,
             ROUTE_PUSH_DEACTIVATE,
             ROUTE_PUSH_SEND,

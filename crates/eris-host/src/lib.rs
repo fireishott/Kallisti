@@ -54,6 +54,7 @@ pub mod doctor;
 pub mod error;
 pub mod goal;
 pub mod greeting;
+pub mod harness_runs;
 pub mod inbox;
 pub mod learning;
 pub mod learning_worker;

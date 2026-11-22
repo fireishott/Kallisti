@@ -61,7 +61,7 @@ const MAX_CLIENT_MESSAGE_ID: usize = 128;
 const LAST_EVENT_ID_HEADER: &str = "last-event-id";
 
 /// How often an idle stream sends a comment, so a dead peer is noticed.
-const KEEP_ALIVE_SECONDS: u64 = 15;
+pub(crate) const KEEP_ALIVE_SECONDS: u64 = 15;
 
 // ---------------------------------------------------------------------------
 // Shared plumbing
@@ -8270,12 +8270,17 @@ pub(crate) async fn create_turn_with(
     // what the dashboard last saved: the same sandbox, gate, tool and display
     // settings the browser's turn reads.
     let sender = service.hub().begin(&job_id);
-    service.hub().spawn(
-        job_id.clone(),
-        sender,
-        TurnPolicy::from_engine(service.engine()),
-        conversation_turn,
-    );
+    // The policy is built from the settings, then told which conversation and
+    // turn it is running for: a delegated run started from this turn carries the
+    // same link the browser's turn does.
+    let mut policy = TurnPolicy::from_engine(service.engine());
+    policy.sandbox = policy
+        .sandbox
+        .clone()
+        .with_turn_context(conversation.clone(), Some(job_id.clone()));
+    service
+        .hub()
+        .spawn(job_id.clone(), sender, policy, conversation_turn);
 
     (
         StatusCode::ACCEPTED,
@@ -10190,6 +10195,266 @@ mod tests {
         assert_eq!(
             resolve_model_value(engine, "cmc/minimax/minimax-m3.1-flash").expect("pins"),
             "cmc/minimax/minimax-m3.1-flash"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Harness runs
+    // -----------------------------------------------------------------------
+
+    /// Send one request and return the status and the response headers, without
+    /// reading the body. The SSE route never ends its body, so a test that read
+    /// it would wait for a disconnect that is not going to come.
+    async fn send_head(
+        service: &DeviceService,
+        method: &str,
+        path: &str,
+        token: &str,
+    ) -> (StatusCode, axum::http::HeaderMap) {
+        let mut builder = axum::http::Request::builder().method(method).uri(path);
+        if !token.is_empty() {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        let request = builder.body(Body::from(String::new())).expect("request");
+        let response = service.router().oneshot(request).await.expect("router");
+        (response.status(), response.headers().clone())
+    }
+
+    /// Register one run in the process-wide registry and return its id.
+    ///
+    /// The route tests read the same table the daemon reads, so the record is
+    /// made the way the tool makes one rather than fabricated.
+    fn a_registered_run(marker: &str, finish_as: Option<crate::harness_runs::RunStatus>) -> String {
+        let id = crate::harness_runs::start(
+            "dsh",
+            &format!("route test {marker}"),
+            Some("conversation-route".to_owned()),
+            Some("turn-route".to_owned()),
+            600,
+        );
+        crate::harness_runs::append_stdout(&id, b"compiling\n");
+        crate::harness_runs::append_stderr(&id, b"a warning\n");
+        if let Some(status) = finish_as {
+            crate::harness_runs::finish(&id, status, Some(0));
+        }
+        id
+    }
+
+    /// The list route answers the documented shape: one item per run, newest
+    /// first, with `running` counting the runs that have not ended.
+    #[tokio::test]
+    async fn the_harness_run_list_answers_its_documented_shape() {
+        let fx = fixture();
+        let marker = "list-shape-marker";
+        let id = a_registered_run(marker, None);
+
+        let (status, body) = send(&fx.service, "GET", "/v1/harness/runs", &fx.chat, "").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], serde_json::json!(true));
+
+        let runs = body["runs"].as_array().expect("runs is an array");
+        let item = runs
+            .iter()
+            .find(|run| run["id"] == serde_json::json!(id))
+            .unwrap_or_else(|| panic!("the registered run is listed: {body}"));
+
+        let mut keys: Vec<&str> = item
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "elapsed_ms",
+                "exit_code",
+                "finished_at",
+                "harness",
+                "id",
+                "silent_ms",
+                "stalled",
+                "started_at",
+                "status",
+                "task",
+            ],
+            "the list item carries exactly the documented fields"
+        );
+        assert_eq!(item["status"], serde_json::json!("queued"));
+        assert_eq!(item["harness"], serde_json::json!("dsh"));
+        assert_eq!(item["stalled"], serde_json::json!(false));
+        assert!(
+            item["task"]
+                .as_str()
+                .is_some_and(|task| task.contains(marker))
+        );
+
+        // Newest first. Other tests register runs in the same process while this
+        // one runs, so the order is asserted over the whole list rather than by
+        // assuming this run is the head of it.
+        let stamps: Vec<&str> = runs
+            .iter()
+            .map(|run| run["started_at"].as_str().unwrap_or_default())
+            .collect();
+        let mut descending = stamps.clone();
+        descending.sort_unstable_by(|left, right| right.cmp(left));
+        assert_eq!(stamps, descending, "the list is newest first: {body}");
+
+        // `running` is the number of listed runs that have not ended.
+        let live = runs
+            .iter()
+            .filter(|run| {
+                !matches!(
+                    run["status"].as_str().unwrap_or_default(),
+                    "succeeded" | "failed" | "timed_out" | "killed"
+                )
+            })
+            .count();
+        assert_eq!(body["running"], serde_json::json!(live));
+
+        crate::harness_runs::finish(&id, crate::harness_runs::RunStatus::Succeeded, Some(0));
+    }
+
+    /// The detail route carries the two tails and the deadline as well.
+    #[tokio::test]
+    async fn the_harness_run_detail_carries_the_tails_and_the_deadline() {
+        let fx = fixture();
+        let id = a_registered_run("detail-shape-marker", None);
+
+        let (status, body) = send(
+            &fx.service,
+            "GET",
+            &format!("/v1/harness/runs/{id}"),
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], serde_json::json!(true));
+        let run = &body["run"];
+        assert_eq!(run["id"], serde_json::json!(id));
+        assert_eq!(run["stdout"], serde_json::json!("compiling\n"));
+        assert_eq!(run["stderr"], serde_json::json!("a warning\n"));
+        assert_eq!(run["timeout_secs"], serde_json::json!(600));
+        assert_eq!(
+            run["conversation_id"],
+            serde_json::json!("conversation-route")
+        );
+        assert_eq!(run["turn_id"], serde_json::json!("turn-route"));
+        assert!(run["started_at"].as_str().is_some());
+
+        crate::harness_runs::finish(&id, crate::harness_runs::RunStatus::Succeeded, Some(0));
+    }
+
+    /// An id the registry never held is a named 404, not an empty body.
+    #[tokio::test]
+    async fn an_unknown_harness_run_is_a_named_404() {
+        let fx = fixture();
+        let (status, body) = send(
+            &fx.service,
+            "GET",
+            "/v1/harness/runs/no-such-run",
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["code"], serde_json::json!("harness_run_unknown"));
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/harness/runs/no-such-run/kill",
+            &fx.admin,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["code"], serde_json::json!("harness_run_unknown"));
+    }
+
+    /// A finished run cannot be killed, and the refusal says it already ended.
+    #[tokio::test]
+    async fn killing_a_finished_harness_run_is_a_conflict() {
+        let fx = fixture();
+        let id = a_registered_run(
+            "finished-kill-marker",
+            Some(crate::harness_runs::RunStatus::Succeeded),
+        );
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            &format!("/v1/harness/runs/{id}/kill"),
+            &fx.admin,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], serde_json::json!("harness_run_finished"));
+        assert!(
+            body["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("succeeded")),
+            "the refusal names how it ended: {body}"
+        );
+    }
+
+    /// Killing a live run records the intent and answers the run as it stands.
+    /// A chat token cannot do it: stopping work is an administrative act.
+    #[tokio::test]
+    async fn killing_a_live_harness_run_answers_the_snapshot() {
+        let fx = fixture();
+        let id = a_registered_run("live-kill-marker", None);
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            &format!("/v1/harness/runs/{id}/kill"),
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "a chat-only device cannot stop work: {body}"
+        );
+        assert_eq!(body["code"], serde_json::json!("scope_denied"));
+
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            &format!("/v1/harness/runs/{id}/kill"),
+            &fx.admin,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["run"]["id"], serde_json::json!(id));
+        assert_eq!(body["run"]["status"], serde_json::json!("killed"));
+        assert!(body["run"]["finished_at"].as_str().is_some());
+    }
+
+    /// The event stream speaks the framing the turn stream speaks, and refuses
+    /// a caller with no token before any of it is opened.
+    #[tokio::test]
+    async fn the_harness_event_stream_is_an_authenticated_sse_route() {
+        let fx = fixture();
+
+        let (status, _) = send_head(&fx.service, "GET", "/v1/harness/events", "").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, headers) = send_head(&fx.service, "GET", "/v1/harness/events", &fx.chat).await;
+        assert_eq!(status, StatusCode::OK);
+        let content_type = headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            content_type.starts_with("text/event-stream"),
+            "the stream is an event stream: {content_type}"
         );
     }
 }
