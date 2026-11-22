@@ -281,11 +281,19 @@ struct RoutingSettingsSection: View {
 
     // MARK: - Network
 
+    /// The daemon's device base, with or without its `/v1` suffix already on it.
+    ///
+    /// The paired base is stored twice in this app, once with the API prefix and
+    /// once without, and a URL built from the wrong one asks for `/v1/v1/routing`
+    /// - which the daemon answers with a 404 that reads like the route is
+    /// missing. Joining here removes the guess.
     private var routingBaseURL: URL? {
-        guard let base = settingsStore.settings.relayConfiguration.activeBaseURLString
+        guard var base = settingsStore.settings.relayConfiguration.activeBaseURLString
             ?? pairingStore.pairedRelayConfiguration?.baseURLString, !base.isEmpty
         else { return nil }
-        return URL(string: base)
+        while base.hasSuffix("/") { base.removeLast() }
+        if base.hasSuffix("/v1") { base.removeLast(3) }
+        return URL(string: base + "/v1/routing")
     }
 
     private func loadRouting() async {
@@ -295,7 +303,7 @@ struct RoutingSettingsSection: View {
             hasLoaded = true
             return
         }
-        var request = URLRequest(url: base.appending(path: "/v1/routing"))
+        var request = URLRequest(url: base)
         if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -331,7 +339,7 @@ struct RoutingSettingsSection: View {
     /// wording exist once.
     private func putRouting(_ payload: [String: Any]) async -> RoutingPutOutcome {
         guard let base = routingBaseURL else { return .offline }
-        var request = URLRequest(url: base.appending(path: "/v1/routing"))
+        var request = URLRequest(url: base)
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token = await sessionStore.currentAccessToken(), !token.isEmpty {

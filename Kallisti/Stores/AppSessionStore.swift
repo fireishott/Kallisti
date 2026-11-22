@@ -144,7 +144,21 @@ final class AppSessionStore {
         return await secureStore.retrieve(key: SecureKeys.refreshToken)
     }
 
+    /// Refreshes through the transport that owns the live pair, when there is one.
+    ///
+    /// Set by the container at launch. This method used to rotate the very token
+    /// the transport was rotating - `currentRefreshToken` reads the live pair now
+    /// - so two lanes traded one token: the loser was answered `token_invalid`,
+    /// the app read that as "pair me again", and the pair was lost for good.
+    @ObservationIgnored var liveRefresh: (@MainActor () async -> Bool)?
+
     func refreshAccessTokenIfNeeded() async {
+        if let liveRefresh {
+            let refreshed = await liveRefresh()
+            if refreshed { return }
+            // Fall through to the older lane only when the pair itself could not
+            // refresh: a pre-pairing install has nothing else.
+        }
         guard let refreshToken = await currentRefreshToken() else { return }
 
         do {

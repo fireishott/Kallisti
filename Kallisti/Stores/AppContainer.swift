@@ -583,6 +583,12 @@ final class AppContainer {
             }
         }
 
+        // The transport owns the live pair; one refresher for it.
+        sessionStore.liveRefresh = { [erisHeraldClient] in
+            guard let client = await erisHeraldClient.client() else { return false }
+            return (try? await client.refresh()) != nil
+        }
+
         let container = AppContainer(
             sessionStore: sessionStore,
             pairingStore: runtimePairingStore,
