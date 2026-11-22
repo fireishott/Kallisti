@@ -345,12 +345,14 @@ final class SessionListStore {
                 chatStore.isSwitchingConversation = false
                 chatStore.switchStatus = nil
             }
-            // Cancel any in-flight streaming from the previous session.
+            // Stop reading the previous session's in-flight stream.
             // Without this, switching sessions mid-stream leaves the stop
             // button visible on the new chat (activeStreams survives the
             // conversation swap and makes isStreaming return true).
             // Build 128.50: navigation must not interrupt a server-side turn
             // running on another device - only the composer Stop tap does.
+            // The turn itself also survives: its accepted outbox record is
+            // what the resume below attaches to when the chat is opened again.
             chatStore.cancelStreaming(interruptServerTurn: false)
 
             // Clear stale context metrics from the previous session so the
@@ -376,6 +378,11 @@ final class SessionListStore {
             // Build 33 WSB: queued outbox items are preserved across switches;
             // switching back to a conversation submits its queued items.
             await chatStore.submitNextEligible(for: conversation.id)
+            // The chat is on screen and its transcript is committed. If this
+            // conversation left a turn running on the host, attach to it now:
+            // the answer arrives here instead of waiting for the next send to
+            // nudge the thread.
+            await chatStore.resumeTurnIfNeeded(for: conversation.id)
         } catch {
             // Build 53: a session that no longer exists on the host (reaped
             // by a gateway restart, or purgatory rows from old test builds)
