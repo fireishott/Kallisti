@@ -1115,6 +1115,229 @@ pub async fn speech_put(
     axum::Json(serde_json::json!({ "ok": true, "model": model })).into_response()
 }
 
+/// The audit action a routing write records.
+///
+/// One action for the whole write, with the detail naming each row that moved:
+/// the trail answers "who turned routing on, and where did they point it", which
+/// is one question and not five.
+const AUDIT_ROUTING: &str = "routing.write";
+
+/// The model fields `PUT /v1/routing` accepts, and the intent each one is for.
+///
+/// The field names are the wire's, the rows are this daemon's. Keeping the pair
+/// in one table means the body this route validates and the rows it writes cannot
+/// disagree about which intent a field belongs to; a new intent is one row here
+/// and one line in [`routing_json`].
+const ROUTING_MODEL_FIELDS: [(&str, crate::routing::Intent); 3] = [
+    ("coding_model", crate::routing::Intent::Coding),
+    ("heavy_model", crate::routing::Intent::Heavy),
+    ("general_model", crate::routing::Intent::General),
+];
+
+/// The routing settings as a client reads them.
+///
+/// `provider_model` is the model a turn would inherit with no routing row
+/// pinned, reported as `null` on a daemon that has no provider configured yet.
+/// Every model field is the empty string when it inherits, which is the same
+/// value a client sends back to clear it.
+fn routing_json(db: &crate::db::Db, provider_model: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "auto": crate::routing::auto_enabled(db),
+        "coding_model": crate::routing::model_setting(db, crate::routing::Intent::Coding),
+        "heavy_model": crate::routing::model_setting(db, crate::routing::Intent::Heavy),
+        "general_model": crate::routing::model_setting(db, crate::routing::Intent::General),
+        "harness": crate::routing::harness_setting(db),
+        "harnesses": crate::routing::HARNESSES,
+        "provider_model": provider_model,
+    })
+}
+
+/// The model a turn would inherit, when this daemon has one.
+fn routing_provider_model(engine: &SetupEngine) -> Option<String> {
+    crate::web::chat::turn_config(engine)
+        .ok()
+        .flatten()
+        .map(|config| config.model)
+}
+
+/// `GET /v1/routing` - the routing settings and what they inherit from.
+///
+/// A chat-scope read: a client showing a composer needs to know which model each
+/// kind of work would run on, and none of these values is a credential. The
+/// harness list rides along so a picker cannot offer a name this daemon refuses.
+pub async fn routing_get(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let provider_model = routing_provider_model(service.engine());
+    axum::Json(routing_json(
+        service.engine().db(),
+        provider_model.as_deref(),
+    ))
+    .into_response()
+}
+
+/// `PUT /v1/routing` - choose the models and the harness routing may use.
+///
+/// Administration, because each row decides which model a turn spends on and
+/// which external tool code work may name. Every value is checked before any is
+/// stored, so a refused body cannot leave half a change behind.
+///
+/// A key the body does not carry leaves its row untouched, and an empty model
+/// string clears the row back to "inherit the daemon's model". Clearing deletes
+/// the row rather than storing an empty one, so a read of `/v1/routing` answers
+/// the same empty string a never-written row does.
+pub async fn routing_put(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Admin) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+
+    let auto = match fields.get("auto") {
+        None => None,
+        Some(raw) => match parse_flag("auto", raw) {
+            Ok(auto) => Some(auto),
+            Err(error) => return error.into_response(),
+        },
+    };
+    // `None` is a key the body did not carry; `Some(None)` clears the row;
+    // `Some(Some(value))` stores the trimmed value.
+    let mut models: Vec<(crate::routing::Intent, Option<String>)> = Vec::new();
+    for (name, intent) in ROUTING_MODEL_FIELDS {
+        let Some(raw) = fields.get(name) else {
+            continue;
+        };
+        let value = raw.trim();
+        models.push((intent, (!value.is_empty()).then(|| value.to_owned())));
+    }
+    // The harness is a closed set, so an unknown name is refused by name rather
+    // than stored and discovered by a client that cannot act on it. An empty
+    // string is not "none": none is a harness value, and clearing is spelled by
+    // sending it.
+    let harness = match fields.get("harness") {
+        None => None,
+        Some(raw) => {
+            let value = raw.trim();
+            if !crate::routing::valid_harness(value) {
+                return DeviceError::new(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "routing_harness_invalid",
+                    format!(
+                        "harness must be one of: {}",
+                        crate::routing::HARNESSES.join(", ")
+                    ),
+                )
+                .into_response();
+            }
+            Some(value.to_owned())
+        }
+    };
+
+    let db = service.engine().db();
+    let mut changes: Vec<String> = Vec::new();
+    if let Some(auto) = auto {
+        let value = if auto { "true" } else { "false" };
+        if let Err(error) = crate::web::store::settings_put(db, crate::routing::SETTING_AUTO, value)
+        {
+            return DeviceError::db_unavailable(format!(
+                "cannot store whether routing is automatic: {error}"
+            ))
+            .into_response();
+        }
+        changes.push(format!("auto={value}"));
+    }
+    for (intent, change) in models {
+        let key = intent.setting_key();
+        let outcome: Result<String, String> = match change {
+            Some(value) => crate::web::store::settings_put(db, key, &value)
+                .map(|()| format!("{}={value}", intent.as_str()))
+                .map_err(|error| error.to_string()),
+            None => service
+                .engine()
+                .clear_setting(key)
+                .map(|()| format!("{} cleared", intent.as_str()))
+                .map_err(|error| error.to_string()),
+        };
+        match outcome {
+            Ok(change) => changes.push(change),
+            Err(error) => {
+                return DeviceError::db_unavailable(format!(
+                    "cannot store the {} routing model: {error}",
+                    intent.as_str()
+                ))
+                .into_response();
+            }
+        }
+    }
+    if let Some(harness) = &harness {
+        if let Err(error) =
+            crate::web::store::settings_put(db, crate::routing::SETTING_HARNESS, harness)
+        {
+            return DeviceError::db_unavailable(format!("cannot store the harness: {error}"))
+                .into_response();
+        }
+        changes.push(format!("harness={harness}"));
+    }
+    let detail = if changes.is_empty() {
+        "no change".to_owned()
+    } else {
+        changes.join(", ")
+    };
+    if let Err(error) = audit(&service, token.device_id(), AUDIT_ROUTING, &detail) {
+        return error.into_response();
+    }
+    let provider_model = routing_provider_model(service.engine());
+    axum::Json(routing_json(db, provider_model.as_deref())).into_response()
+}
+
+/// `POST /v1/routing/preview` - what routing would do with one message.
+///
+/// Chat scope, because it sends nothing: it answers the same decision a turn
+/// would make, from the same settings and the same pure classifier, so a client
+/// can show "this will run on the coding model" before the operator commits. A
+/// preview that called a provider would be a turn by another name.
+pub async fn routing_preview(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let message = field(&fields, "message");
+    let provider_model = routing_provider_model(service.engine());
+    let route = crate::routing::route(service.engine().db(), message, provider_model.as_deref());
+    let mut answer = route.json();
+    if let Some(object) = answer.as_object_mut() {
+        object.insert("ok".to_owned(), serde_json::Value::Bool(true));
+    }
+    axum::Json(answer).into_response()
+}
+
 /// `POST /v1/speak` - synthesize one answer, as audio bytes.
 ///
 /// The same aux path vision takes: the base URL, key and model come from the
@@ -2206,6 +2429,279 @@ mod tests {
         let rows = rows.as_array().expect("an array");
         assert_eq!(rows[0]["primary"], false);
         assert_eq!(rows[1]["primary"], true);
+    }
+
+    // -----------------------------------------------------------------------
+    // /v1/routing - the model each kind of work runs on
+    // -----------------------------------------------------------------------
+
+    use crate::auth::{ScopeSet, TokenOrigin, TokenService};
+    use tower::ServiceExt;
+
+    /// A ready device service plus a chat token and an admin token, on a scratch
+    /// root so nothing touches the operator's state directory.
+    struct RoutingFixture {
+        _dir: tempfile::TempDir,
+        service: DeviceService,
+        chat: String,
+        admin: String,
+    }
+
+    fn routing_fixture() -> RoutingFixture {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = crate::config::Paths::for_root(dir.path());
+        let db = crate::db::Db::open(&paths.db_file).expect("db");
+        let engine = crate::onboarding::SetupEngine::new(db.clone(), paths);
+        let service = DeviceService::new(engine, 32);
+        let tokens = TokenService::new(db);
+        let device_id = tokens.register_device("routing", "ios").expect("device");
+        let chat = tokens
+            .mint_access(&device_id, ScopeSet::device_default(), TokenOrigin::Device)
+            .expect("chat token");
+        let admin = tokens
+            .mint_access(
+                &device_id,
+                ScopeSet::device_default().with(Scope::Admin),
+                TokenOrigin::Loopback,
+            )
+            .expect("admin token");
+        RoutingFixture {
+            _dir: dir,
+            service,
+            chat: chat.token().to_owned(),
+            admin: admin.token().to_owned(),
+        }
+    }
+
+    /// Send one request to the device router and return status + parsed JSON.
+    async fn send(
+        service: &DeviceService,
+        method: &str,
+        path: &str,
+        token: &str,
+        body: &str,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let mut builder = axum::http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json");
+        if !token.is_empty() {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        let request = builder.body(Body::from(body.to_owned())).expect("request");
+        let response = service.router().oneshot(request).await.expect("router");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        let value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, value)
+    }
+
+    #[tokio::test]
+    async fn the_routing_read_names_every_field_a_client_draws() {
+        let fx = routing_fixture();
+        let (status, body) = send(&fx.service, "GET", "/v1/routing", &fx.chat, "").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["auto"], true, "routing ships armed: {body}");
+        assert_eq!(body["coding_model"], "");
+        assert_eq!(body["heavy_model"], "");
+        assert_eq!(body["general_model"], "");
+        assert_eq!(body["harness"], "none");
+        assert_eq!(
+            body["harnesses"],
+            serde_json::json!(["none", "dsh", "claude-code", "antigravity"])
+        );
+        assert_eq!(
+            body["provider_model"],
+            serde_json::Value::Null,
+            "an unconfigured daemon inherits nothing: {body}"
+        );
+
+        // With a provider configured, the inherited model is named, because
+        // that is what a turn with no routing row would run on.
+        let engine = fx.service.engine();
+        engine
+            .set_setting(
+                crate::providers::SETTING_REGISTRY,
+                r#"[{"id":"alpha","name":"Alpha","base_url":"https://alpha.test/v1","key_ref":"env:ALPHA"}]"#,
+            )
+            .expect("registry");
+        engine
+            .set_setting(crate::providers::SETTING_PRIMARY, "alpha")
+            .expect("primary");
+        engine
+            .set_setting(crate::onboarding::SETTING_MODEL, "alpha/m1")
+            .expect("pin");
+        let (status, body) = send(&fx.service, "GET", "/v1/routing", &fx.chat, "").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["provider_model"], "m1");
+    }
+
+    #[tokio::test]
+    async fn a_routing_write_lands_reads_back_and_leaves_absent_keys_alone() {
+        let fx = routing_fixture();
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"auto":false,"coding_model":"coder","heavy_model":"thinker",
+                "general_model":"talker","harness":"dsh"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["auto"], false);
+        assert_eq!(body["coding_model"], "coder");
+        assert_eq!(body["heavy_model"], "thinker");
+        assert_eq!(body["general_model"], "talker");
+        assert_eq!(body["harness"], "dsh");
+
+        // A second body carries one key: the other rows keep what they held.
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"coding_model":"coder-2"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["coding_model"], "coder-2");
+        assert_eq!(body["heavy_model"], "thinker");
+        assert_eq!(body["general_model"], "talker");
+        assert_eq!(body["harness"], "dsh");
+        assert_eq!(body["auto"], false);
+
+        // An empty model string clears the row back to inherit, which reads as
+        // the same empty string a never-written row answers.
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"coding_model":""}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["coding_model"], "");
+        let (_, read) = send(&fx.service, "GET", "/v1/routing", &fx.admin, "").await;
+        assert_eq!(read["coding_model"], "");
+        assert_eq!(read["heavy_model"], "thinker");
+    }
+
+    #[tokio::test]
+    async fn a_routing_write_needs_administration() {
+        let fx = routing_fixture();
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.chat,
+            r#"{"auto":false}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
+        // The refusal is a refusal, not a write that was reported as one.
+        let (_, read) = send(&fx.service, "GET", "/v1/routing", &fx.chat, "").await;
+        assert_eq!(read["auto"], true);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_harness_is_refused_and_the_rest_of_the_body_with_it() {
+        let fx = routing_fixture();
+        let (status, body) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"auto":false,"harness":"some-other-tool"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "routing_harness_invalid");
+        // Nothing in the refused body was stored, including the flag that would
+        // have turned routing off.
+        let (_, read) = send(&fx.service, "GET", "/v1/routing", &fx.admin, "").await;
+        assert_eq!(read["harness"], "none");
+        assert_eq!(read["auto"], true);
+    }
+
+    #[tokio::test]
+    async fn the_preview_answers_the_decision_without_sending_a_turn() {
+        let fx = routing_fixture();
+        // Nothing pinned yet: code work, and no model to name.
+        let (status, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/routing/preview",
+            &fx.chat,
+            r#"{"message":"please implement a parser"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["intent"], "coding");
+        assert_eq!(body["model"], serde_json::Value::Null);
+        assert_eq!(body["harness"], serde_json::Value::Null);
+        assert_eq!(body["reason"], "asks to implement");
+
+        // Pinned: the preview reports the model and the harness a turn would get.
+        let (status, _) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"coding_model":"coder","harness":"claude-code"}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (_, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/routing/preview",
+            &fx.chat,
+            r#"{"message":"please implement a parser"}"#,
+        )
+        .await;
+        assert_eq!(body["intent"], "coding");
+        assert_eq!(body["model"], "coder");
+        assert_eq!(body["harness"], "claude-code");
+
+        // A heavy ask is not code work, so it carries no harness.
+        let (_, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/routing/preview",
+            &fx.chat,
+            r#"{"message":"please research the market"}"#,
+        )
+        .await;
+        assert_eq!(body["intent"], "heavy");
+        assert_eq!(body["harness"], serde_json::Value::Null);
+
+        // Switched off, the preview says so and promises the daemon's own model.
+        let (status, _) = send(
+            &fx.service,
+            "PUT",
+            "/v1/routing",
+            &fx.admin,
+            r#"{"auto":false}"#,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (_, body) = send(
+            &fx.service,
+            "POST",
+            "/v1/routing/preview",
+            &fx.chat,
+            r#"{"message":"please implement a parser"}"#,
+        )
+        .await;
+        assert_eq!(body["intent"], "general");
+        assert_eq!(body["reason"], "automatic routing is off");
+        assert_eq!(body["harness"], serde_json::Value::Null);
     }
 }
 

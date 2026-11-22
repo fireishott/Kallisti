@@ -10484,6 +10484,30 @@ async fn chat_send(
         Ok(model) => model,
         Err(error) => return fail_dashboard(&state, wants_html(&headers), error),
     };
+    // Automatic routing may point this turn at a different model for the kind of
+    // work the message is. It refines the model resolved above and never
+    // replaces an explicit pick: a model chosen in the composer is a decision,
+    // and only the default - the conversation's record, or the stored pin - is
+    // open to the routing layer. With nothing pinned for the intent, the route
+    // hands back the model it was given, so an install that never touches the
+    // routing settings answers exactly as it did before.
+    let model = if requested.is_empty() {
+        let route = chat::routed_turn(state.engine.db(), &body_text, &model);
+        match route.model {
+            Some(model) => {
+                tracing::debug!(
+                    intent = route.intent.as_str(),
+                    reason = %route.reason,
+                    model = %model,
+                    "automatic routing chose this turn's model"
+                );
+                model
+            }
+            None => model,
+        }
+    } else {
+        model
+    };
     // The window belongs to the provider that serves the chosen model, not to
     // the primary: a `provider/model` pick on a second provider must claim that
     // provider's window, or the context meter lies about what the turn can hold.

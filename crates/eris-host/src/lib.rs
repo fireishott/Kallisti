@@ -80,6 +80,7 @@ pub mod release;
 pub mod room_tools;
 pub mod rooms;
 pub mod roster;
+pub mod routing;
 pub mod scheduler;
 pub mod scheduler_tools;
 pub mod search;

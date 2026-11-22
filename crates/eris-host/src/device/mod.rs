@@ -215,6 +215,17 @@ pub const ROUTE_STEWARD_DUTY_ANSWER: &str = "/v1/steward/duties/{id}/answer";
 /// `GET /v1/steward/notes` - field notes, newest first.
 pub const ROUTE_STEWARD_NOTES: &str = "/v1/steward/notes";
 
+/// `GET` and `PUT /v1/routing` - which model each kind of work runs on.
+///
+/// A read is chat scope, because a client showing a composer needs to know what
+/// a message will run on. A write is administration, because each row decides
+/// where a turn spends and which external tool code work may name.
+pub const ROUTE_ROUTING: &str = "/v1/routing";
+
+/// `POST /v1/routing/preview` - the routing decision for one message, with no
+/// turn sent.
+pub const ROUTE_ROUTING_PREVIEW: &str = "/v1/routing/preview";
+
 /// `POST /v1/steward/seed` - seed duties from the stored charter.
 pub const ROUTE_STEWARD_SEED: &str = "/v1/steward/seed";
 
@@ -1364,6 +1375,11 @@ pub fn router(service: DeviceService) -> Router {
                 .delete(control::skill_delete),
         )
         .route(ROUTE_AUX, get(control::aux_roles).post(control::set_aux))
+        .route(
+            ROUTE_ROUTING,
+            get(control::routing_get).put(control::routing_put),
+        )
+        .route(ROUTE_ROUTING_PREVIEW, post(control::routing_preview))
         .route(ROUTE_GW_HEALTH, get(gateway::gw_health))
         .route(ROUTE_GW_PREFLIGHT, get(gateway::gw_restart_preflight))
         .route(ROUTE_GW_RESTART, post(gateway::gw_restart))
@@ -1542,6 +1558,8 @@ mod tests {
             ROUTE_SKILLS,
             ROUTE_SKILL_ITEM,
             ROUTE_AUX,
+            ROUTE_ROUTING,
+            ROUTE_ROUTING_PREVIEW,
             ROUTE_GW_HEALTH,
             ROUTE_GW_PREFLIGHT,
             ROUTE_GW_RESTART,

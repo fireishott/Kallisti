@@ -2243,7 +2243,7 @@ impl TurnHub {
             })
             .await
         };
-        let config = match config {
+        let mut config = match config {
             Ok(Ok(Some(config))) => config,
             _ => {
                 let _ = self
@@ -2259,6 +2259,24 @@ impl TurnHub {
             }
         };
 
+        // Which model this turn actually runs on. The conversation decided the
+        // default above; the routing layer may point the turn at the model the
+        // operator pinned for the intent the prompt falls into. With nothing
+        // pinned it hands the same model back, so a turn keeps its
+        // conversation's model unless routing was deliberately configured.
+        //
+        // The prompt is read from the job row rather than from anything the
+        // client sent a second time, so a turn claimed after a restart is routed
+        // on the same words it was queued with.
+        let route = crate::web::chat::routed_turn(
+            store.db(),
+            job.request_text.as_deref().unwrap_or_default(),
+            &config.model,
+        );
+        if let Some(model) = &route.model {
+            config.model.clone_from(model);
+        }
+
         // Which endpoint and model this turn resolved to, and for which chat.
         // One line per turn, and the only record that answers "why did it go
         // there" without a second round trip: a model that lands on the wrong
@@ -2267,17 +2285,22 @@ impl TurnHub {
         tracing::info!(
             provider = %config.provider_id,
             model = %config.model,
+            intent = route.intent.as_str(),
+            route_reason = %route.reason,
             conversation = turn_conversation.as_deref().unwrap_or("-"),
             "device turn resolved its provider"
         );
 
         // The turn announces itself before the model is called, so the phone
         // draws the header from the stream rather than from the next delta.
-        // Additive: a client that does not know `turn.start` ignores it.
+        // Additive: a client that does not know `turn.start` ignores it, and a
+        // client that does not know `route` still reads the model and profile it
+        // always did.
         let opening = serde_json::json!({
             "model": config.model,
             "profile": config.provider_id,
             "source": store.job_source(&job_id),
+            "route": route.json(),
         });
         if let Ok(Some(seq)) = store.append(&job_id, FrameKind::Start, &opening) {
             publish(&sender, seq, FrameKind::Start, opening);
