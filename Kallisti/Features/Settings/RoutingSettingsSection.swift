@@ -11,6 +11,8 @@ private struct RoutingPayload: Decodable {
     let generalModel: String?
     let harness: String?
     let harnesses: [String]?
+    let harnessModel: String?
+    let models: [String]?
 
     enum CodingKeys: String, CodingKey {
         case auto
@@ -19,6 +21,8 @@ private struct RoutingPayload: Decodable {
         case generalModel = "general_model"
         case harness
         case harnesses
+        case harnessModel = "harness_model"
+        case models
     }
 }
 
@@ -49,6 +53,10 @@ struct RoutingSettingsSection: View {
     @State private var codingModel = ""
     @State private var heavyModel = ""
     @State private var generalModel = ""
+    @State private var harnessModel = ""
+    /// The daemon's configured model ids. The fields are pickers over this, so a
+    /// value that no provider holds cannot be typed in and then silently fail.
+    @State private var routingModels: [String] = []
     /// `none`, or one of the daemon's harness ids.
     @State private var harness = "none"
     /// The harness ids the daemon offers, in its own order.
@@ -162,6 +170,9 @@ struct RoutingSettingsSection: View {
             modelField("Coding model", text: $codingModel)
             modelField("Heavy model", text: $heavyModel)
             modelField("General model", text: $generalModel)
+            if harness != "none" {
+                modelField("Harness model", text: $harnessModel)
+            }
 
             Button {
                 Task { await saveModels() }
@@ -209,20 +220,37 @@ struct RoutingSettingsSection: View {
                 .font(Design.Typography.caption)
                 .foregroundStyle(Design.Colors.secondaryForeground)
 
-            TextField("the daemon's own", text: text)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(Design.Typography.callout)
-                .foregroundStyle(Design.Colors.foreground)
-                .padding(Design.Spacing.md)
-                .background(Design.Colors.background)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
-                        .stroke(Design.Colors.border, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
-                .disabled(!hasLoaded || isSaving)
+            // A menu, not free text: the daemon can only route to a model its
+            // own provider publishes, so the list it reported is the list to
+            // choose from. "The daemon's own" is the empty value.
+            Picker(label, selection: text) {
+                Text("The daemon's own").tag("")
+                ForEach(modelOptions(including: text.wrappedValue), id: \.self) { model in
+                    Text(model).tag(model)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Design.Spacing.md)
+            .background(Design.Colors.background)
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                    .stroke(Design.Colors.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+            .disabled(!hasLoaded || isSaving || routingModels.isEmpty)
         }
+    }
+
+    /// The catalogue plus whatever the row already holds, so opening the card on
+    /// a daemon that has since dropped a model never blanks the stored value.
+    private func modelOptions(including current: String) -> [String] {
+        var options = routingModels
+        if !current.isEmpty && !options.contains(current) {
+            options.insert(current, at: 0)
+        }
+        return options
     }
 
     /// The harness a coding turn is handed to. The list is the daemon's; `none`
@@ -445,6 +473,7 @@ struct RoutingSettingsSection: View {
             "coding_model": trimmed(codingModel),
             "heavy_model": trimmed(heavyModel),
             "general_model": trimmed(generalModel),
+            "harness_model": trimmed(harnessModel),
         ]
         let outcome = await putRouting(payload)
         switch outcome {
@@ -528,6 +557,10 @@ struct RoutingSettingsSection: View {
         codingModel = routing.codingModel ?? ""
         heavyModel = routing.heavyModel ?? ""
         generalModel = routing.generalModel ?? ""
+        harnessModel = routing.harnessModel ?? ""
+        if let models = routing.models {
+            routingModels = models
+        }
     }
 
     /// `none` first, then the daemon's own list, so clearing a harness is

@@ -1155,8 +1155,29 @@ fn routing_json(db: &crate::db::Db, provider_model: Option<&str>) -> serde_json:
         "general_model": crate::routing::model_setting(db, crate::routing::Intent::General),
         "harness": crate::routing::harness_setting(db),
         "harnesses": crate::routing::HARNESSES,
+        "harness_model": crate::routing::harness_model_setting(db),
         "provider_model": provider_model,
     })
+}
+
+/// The ids a model picker may offer, from the same catalogue `/v1/models` reads.
+///
+/// Empty when the catalogue cannot be read: a picker that offered nothing is
+/// better than a request that failed because a provider was briefly unreachable.
+fn routing_catalogue(engine: &SetupEngine) -> Vec<String> {
+    let Ok(body) = read_models(engine) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = Vec::new();
+    for row in body["models"].as_array().into_iter().flatten() {
+        if let Some(id) = row["id"].as_str() {
+            let unseen = !id.is_empty() && !ids.iter().any(|seen| seen == id);
+            if unseen {
+                ids.push(id.to_owned());
+            }
+        }
+    }
+    ids
 }
 
 /// The model a turn would inherit, when this daemon has one.
@@ -1181,11 +1202,9 @@ pub async fn routing_get(State(service): State<DeviceService>, headers: HeaderMa
         return error.into_response();
     }
     let provider_model = routing_provider_model(service.engine());
-    axum::Json(routing_json(
-        service.engine().db(),
-        provider_model.as_deref(),
-    ))
-    .into_response()
+    let mut body = routing_json(service.engine().db(), provider_model.as_deref());
+    body["models"] = serde_json::json!(routing_catalogue(service.engine()));
+    axum::Json(body).into_response()
 }
 
 /// `PUT /v1/routing` - choose the models and the harness routing may use.
@@ -1255,6 +1274,25 @@ pub async fn routing_put(
         }
     };
 
+    // The harness's own model is a free string only because a harness may name
+    // a model the daemon's provider catalogue has never heard of. Empty clears
+    // it, so the harness keeps its own default.
+    let harness_model = match fields.get("harness_model") {
+        None => None,
+        Some(raw) => {
+            let value = raw.trim();
+            if value.chars().count() > 200 {
+                return DeviceError::new(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "routing_harness_model_invalid",
+                    "harness_model must be 200 characters or fewer",
+                )
+                .into_response();
+            }
+            Some(value.to_owned())
+        }
+    };
+
     let db = service.engine().db();
     let mut changes: Vec<String> = Vec::new();
     if let Some(auto) = auto {
@@ -1267,6 +1305,16 @@ pub async fn routing_put(
             .into_response();
         }
         changes.push(format!("auto={value}"));
+    }
+    if let Some(value) = harness_model {
+        let outcome =
+            crate::web::store::settings_put(db, crate::routing::SETTING_HARNESS_MODEL, &value)
+                .map(|()| format!("harness_model={value}"))
+                .map_err(|error| error.to_string());
+        match outcome {
+            Ok(change) => changes.push(change),
+            Err(error) => return DeviceError::db_unavailable(error).into_response(),
+        }
     }
     for (intent, change) in models {
         let key = intent.setting_key();

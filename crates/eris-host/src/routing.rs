@@ -63,6 +63,8 @@ pub const HARNESS_NONE: &str = "none";
 ///
 /// A closed set on purpose: a stored name no client knows is a name nothing can
 /// act on, so the write route refuses anything outside this list by name.
+pub const SETTING_HARNESS_MODEL: &str = "routing.harness.model";
+
 pub const HARNESSES: [&str; 4] = [HARNESS_NONE, "dsh", "claude-code", "antigravity"];
 
 /// How long a message has to be before it counts as heavy work.
@@ -320,6 +322,19 @@ pub fn harness_setting(db: &Db) -> String {
         .map(|raw| raw.trim().to_owned())
         .filter(|value| valid_harness(value))
         .unwrap_or_else(|| HARNESS_NONE.to_owned())
+}
+
+/// The model the chosen harness should run on, when one is pinned.
+///
+/// Empty means the harness's own default, which is what an unconfigured install
+/// wants: the tool exists and its model choice is the tool's.
+#[must_use]
+pub fn harness_model_setting(db: &Db) -> String {
+    settings_get(db, SETTING_HARNESS_MODEL)
+        .ok()
+        .flatten()
+        .map(|raw| raw.trim().to_owned())
+        .unwrap_or_default()
 }
 
 /// Choose the model and the harness for one message.
