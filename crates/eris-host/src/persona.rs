@@ -282,6 +282,20 @@ The path is relative to the workspace and must be one a tool result named; do no
 invent a path and do not paste base64. Use at most a few per answer, each next to \
 the sentence that explains it.";
 
+    /// Reaching for the coding harness without being asked.
+    ///
+    /// The tool is offered only when a harness is configured, so this note can
+    /// speak plainly: when it is there, code work goes to it. Without this the
+    /// model read the tool as one option among many and did the work itself,
+    /// which is the opposite of what configuring a harness means.
+    pub const DELEGATION: &'static str = "\
+When a `delegate_to_harness` tool is offered, it is the tool for code work: \
+implementing, refactoring, debugging, fixing a build or a test, migrating, or \
+changing several files. Hand it the whole task in one call, with enough context \
+to start, and do not do that work yourself in parallel. Do not ask whether to use \
+it: a configured harness is the standing answer. Report what it produced, and only \
+re-do its work yourself if it failed and said why.";
+
     /// How a turn asks instead of guessing.
     ///
     /// This is the 1.0 form of the old `clarify` card. There is no callback and no
@@ -315,10 +329,11 @@ answer needs a fact you do not have, not to open a conversation or to look busy.
     #[must_use]
     pub fn with_capabilities(text: Option<String>) -> Option<String> {
         let notes = format!(
-            "{}\n\n{}\n\n{}",
+            "{}\n\n{}\n\n{}\n\n{}",
             Self::CAPABILITIES,
             Self::ASKING,
-            Self::PROPORTION
+            Self::PROPORTION,
+            Self::DELEGATION
         );
         Some(match text {
             Some(text) if !text.trim().is_empty() => format!("{text}\n\n{notes}"),
@@ -440,6 +455,10 @@ mod tests {
     #[test]
     fn every_turn_is_told_that_it_may_ask_and_how_the_answer_arrives() {
         let notes = PersonaConfig::with_capabilities(None).expect("notes");
+        assert!(
+            notes.contains("delegate_to_harness"),
+            "the harness note is in the prompt"
+        );
         assert!(
             notes.contains("do not stall on needless questions"),
             "{notes}"
