@@ -150,6 +150,7 @@
 		4AFA0430E2507E486AE28D37 /* Line.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F91F1701E7CD3DD63093E3D /* Line.swift */; };
 		4B444DB4DCE280386F2B57A6 /* RestartGatewayControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = D42B3C7C70C179403C6BFD63 /* RestartGatewayControl.swift */; };
 		4BB1FB5590ED2D43D21CB7CF /* SettingsSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945CB9419B2D507FB763BCFE /* SettingsSectionView.swift */; };
+		A7C4E21B9F0D4E6A8B1C3D5F /* RoutingSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8D5F32C0A1E5F7B9C2D4E60 /* RoutingSettingsSection.swift */; };
 		4BF7000DD799943B45A67AC0 /* SixelDcsHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2D47923CF53938ABF4A7470 /* SixelDcsHandler.swift */; };
 		4C5021068C883BBB707E2784 /* ColorBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28F2CA393F2C1C6DC7BD4AFD /* ColorBridge.swift */; };
 		4D8DD30F6A930238D20D24B8 /* WatchNotificationPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FCE930622E015B0CEE0E3E7 /* WatchNotificationPayload.swift */; };
@@ -947,6 +948,7 @@
 		93825A9936091F93682C6B1F /* DashboardLogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardLogService.swift; sourceTree = "<group>"; };
 		943D4F5608570F3E882B91C4 /* AppTemplateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTemplateTests.swift; sourceTree = "<group>"; };
 		945CB9419B2D507FB763BCFE /* SettingsSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSectionView.swift; sourceTree = "<group>"; };
+		B8D5F32C0A1E5F7B9C2D4E60 /* RoutingSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutingSettingsSection.swift; sourceTree = "<group>"; };
 		947C791D6E0104B61344C06D /* SetupCodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupCodeScannerView.swift; sourceTree = "<group>"; };
 		95AB66C03C96B6F79BE8D76D /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
 		975E8D1429101956B8109AAD /* UserSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSettings.swift; sourceTree = "<group>"; };
@@ -1414,6 +1416,7 @@
 				FCBFCB50C0F6394201AB567B /* ConnectHeraldHostScreen.swift */,
 				BA6893DA021ABB5D85A93F44 /* GatewayLogsScreen.swift */,
 				1AAE97D95E2D442E0C9CEFB1 /* GatewayStatusScreen.swift */,
+				B8D5F32C0A1E5F7B9C2D4E60 /* RoutingSettingsSection.swift */,
 				B3A1E9B33F7319E44F32378A /* SettingsScreen.swift */,
 				945CB9419B2D507FB763BCFE /* SettingsSectionView.swift */,
 				F103E0443CD4AFBE40AF8E85 /* WallpaperPickerSheet.swift */,
@@ -3018,6 +3021,7 @@
 				A0244607AE964EC7A67E319B /* ResilientInboxService.swift in Sources */,
 				244180E0B0FEC965719B0689 /* ResilientSessionBootstrapService.swift in Sources */,
 				A9B4CC8103EEB5E447B20BF3 /* Router.swift in Sources */,
+				A7C4E21B9F0D4E6A8B1C3D5F /* RoutingSettingsSection.swift in Sources */,
 				3E11E88DF60FF8A298AED8BA /* SSEEvent.swift in Sources */,
 				32453DC8F171347113FC26D8 /* SafariView.swift in Sources */,
 				5A14B013330B65605DD723E2 /* SearchEngine.swift in Sources */,

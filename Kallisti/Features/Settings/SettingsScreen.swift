@@ -1928,64 +1928,73 @@ struct SettingsScreen: View {
     /// Cron + Skills moved into Settings and wired to their real views.
     /// Previously only reachable from the iPad sidebar; now every platform
     /// reaches them from Settings (and they actually navigate).
+    ///
+    /// Routing sits at the top of this group, above Skills: the harness a
+    /// coding turn is handed to is the same kind of agent choice as the tools
+    /// below it. It keeps its own `Routing` card rather than a row inside this
+    /// one, because it reads and writes the daemon itself.
     private var agentToolsSection: some View {
-        SettingsSectionView(title: "Agent Tools") {
-            VStack(spacing: 0) {
-                NavigationLink {
-                    SkillsBrowserView()
-                } label: {
-                    HStack(spacing: Design.Spacing.sm) {
-                        Image(systemName: "wrench.and.screwdriver")
-                            .font(.system(size: Design.Size.iconSmall))
-                            .foregroundStyle(Design.Colors.secondaryForeground)
-                            .frame(width: 24)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Skills")
-                                .font(Design.Typography.body)
-                                .foregroundStyle(Design.Colors.foreground)
-                            Text("Browse and manage agent skills")
-                                .font(Design.Typography.footnote)
+        VStack(spacing: Design.Spacing.lg) {
+            RoutingSettingsSection()
+
+            SettingsSectionView(title: "Agent Tools") {
+                VStack(spacing: 0) {
+                    NavigationLink {
+                        SkillsBrowserView()
+                    } label: {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "wrench.and.screwdriver")
+                                .font(.system(size: Design.Size.iconSmall))
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Skills")
+                                    .font(Design.Typography.body)
+                                    .foregroundStyle(Design.Colors.foreground)
+                                Text("Browse and manage agent skills")
+                                    .font(Design.Typography.footnote)
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(Design.Colors.secondaryForeground)
                         }
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Design.Colors.secondaryForeground)
+                        .padding(.horizontal, Design.Spacing.lg)
+                        .padding(.vertical, Design.Spacing.md)
+                        .contentShape(Rectangle())
                     }
-                    .padding(.horizontal, Design.Spacing.lg)
-                    .padding(.vertical, Design.Spacing.md)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                    .buttonStyle(.plain)
 
-                sectionDivider
+                    sectionDivider
 
-                NavigationLink {
-                    CronManagerView()
-                } label: {
-                    HStack(spacing: Design.Spacing.sm) {
-                        Image(systemName: "clock.badge")
-                            .font(.system(size: Design.Size.iconSmall))
-                            .foregroundStyle(Design.Colors.secondaryForeground)
-                            .frame(width: 24)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Cron Jobs")
-                                .font(Design.Typography.body)
-                                .foregroundStyle(Design.Colors.foreground)
-                            Text("Scheduled automations and recurring tasks")
-                                .font(Design.Typography.footnote)
+                    NavigationLink {
+                        CronManagerView()
+                    } label: {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "clock.badge")
+                                .font(.system(size: Design.Size.iconSmall))
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Cron Jobs")
+                                    .font(Design.Typography.body)
+                                    .foregroundStyle(Design.Colors.foreground)
+                                Text("Scheduled automations and recurring tasks")
+                                    .font(Design.Typography.footnote)
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(Design.Colors.secondaryForeground)
                         }
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Design.Colors.secondaryForeground)
+                        .padding(.horizontal, Design.Spacing.lg)
+                        .padding(.vertical, Design.Spacing.md)
+                        .contentShape(Rectangle())
                     }
-                    .padding(.horizontal, Design.Spacing.lg)
-                    .padding(.vertical, Design.Spacing.md)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
     }
