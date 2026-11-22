@@ -51,8 +51,42 @@ reaches it over Tailscale, your LAN, or your own TLS endpoint.
   phone, and install an update from the phone, with a confirmation before it restarts.
 - **Model choice.** Point the daemon at the model you want, including local and
   OpenAI-compatible providers, and change it per conversation.
+- **Routing that names itself.** Coding, heavy and general turns each go to the
+  model you pick for them, and a finished message says which route it took.
+- **A coding tool where one belongs.** Hand code work to dsh, Claude Code or
+  Antigravity, watch it work in a live monitor, and install or sign it in from
+  the phone when it is missing.
 - **Everywhere else.** Widgets, Control Center controls, Live Activities, and a watchOS
   companion.
+
+## Routing and coding harnesses
+
+Two questions decide where a turn runs: what kind of work it is, and whether a
+coding tool should do it.
+
+- **Classification is explicit.** A message is coding when it carries a code
+  block, a source-file extension or a verb like implement, refactor or debug;
+  heavy when it is long or asks for research, a plan or a design; general
+  otherwise. The reason is shown, not guessed at, and `POST
+  /v1/routing/preview` answers what a message would do without running it.
+- **A model per intent.** Coding, heavy and general each have a model. An empty
+  field inherits the daemon's own, and the pickers offer the daemon's catalogue
+  grouped by the provider that publishes each id, so the choice names where it
+  runs.
+- **A coding tool does the code work.** With a harness configured, a coding turn
+  is offered `delegate_to_harness`: the task goes to `dsh`, Claude Code or
+  Antigravity as one argument, the tool works with its own tools in the
+  configured directory, and its report comes back. The tool's model is one of the
+  ones it actually ships (Sonnet, Opus, Haiku for Claude Code), never an id from
+  the chat catalogue.
+- **Installed, or installable.** The daemon reports whether each tool is present,
+  its version, and, for Claude Code, the account it is signed in as. A missing
+  tool can be installed from the phone, and a signing-in flow opens the tool's
+  own authorization page and takes the code back, so the daemon needs no browser.
+- **Watched while it works.** Each run is recorded with its status and the tail
+  of its output. A run silent for ninety seconds shows as stalled without being
+  killed, the deadline still ends it, and the monitor in the web UI and in the
+  app shows the live tail with a Kill for an administrator.
 
 ## Privacy by design
 

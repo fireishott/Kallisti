@@ -10,6 +10,108 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.5] - 2026-11-22
+
+### Changed
+
+- Signing Claude Code in is two steps in the app instead of a terminal command.
+  The daemon opens the tool's own sign-in, the phone shows the link and takes the
+  code back, and the daemon stores the credential it receives. A pasted token is
+  kept behind an advanced control for a host that cannot run the flow.
+- Build number 241.
+
+## [1.7.4] - 2026-11-22
+
+### Added
+
+- A sign-in sheet for Claude Code, reachable from the Claude row whenever the
+  credential is not verified. A token saved from the phone is checked before the
+  host's environment, credential file or Keychain, because it is the one someone
+  deliberately set.
+
+### Changed
+
+- Choosing a model closes the picker. A pick is the end of the question.
+
+### Fixed
+
+- The harness tools read ran on the blocking pool, where a test's fixture was
+  invisible, so an empty fixture reported this host's own harnesses.
+
+- Build number 240.
+
+## [1.7.3] - 2026-11-22
+
+### Added
+
+- Each coding harness reports whether it is installed, its version, and, for
+  Claude Code, the account it is signed in as. A missing tool offers Install,
+  which runs as a bounded job and streams into the monitor; Antigravity is
+  reported and installed the same way.
+- A harness model the chosen tool does not accept is refused by name, and the
+  card offers only that tool's models.
+
+### Fixed
+
+- The daemon searched a service's bare `PATH`, so `dsh` in `~/.local/bin` and a
+  Homebrew binary read as missing on a host that had both.
+
+- Build number 239.
+
+## [1.7.2] - 2026-11-22
+
+### Changed
+
+- The routing model fields are pickers over the daemon's own catalogue rather
+  than free text, so a model no provider publishes cannot be stored.
+- The picker is searchable and grouped by the provider that publishes each id,
+  with the provider named under the chosen model. The catalogue carries the
+  provider per row, so the grouping is reported rather than guessed.
+
+- Build number 238. Build 237 shipped the same release with a flat picker.
+
+## [1.7.1] - 2026-11-22
+
+### Added
+
+- A harness monitor. Every delegated run is recorded with its status and the
+  last of its output, a watchdog marks a run that has been silent for ninety
+  seconds as stalled without killing it, and the deadline still ends it. The
+  monitor reads it as a popover in the web UI and a sheet in the app, with Kill
+  for an administrator.
+- A tool call the provider cuts before its JSON closes is retried with a
+  correction that says so and asks for smaller parts, twice at most, and the
+  failure names the provider's finish reason instead of a bare protocol error.
+
+### Fixed
+
+- The routing card asked for `/v1/v1/routing`, because the paired base is stored
+  with and without the `/v1` prefix. The daemon's 404 read as a missing route,
+  which left automatic routing untouchable.
+- Switching chats abandoned the running turn: navigation was treated as an
+  interrupt, cancelling the record and asking a transport that cannot cancel to
+  stop a host job that kept running. A switch is a detach now, and returning
+  reattaches.
+
+- Build number 236.
+
+## [1.7.0] - 2026-11-21
+
+### Added
+
+- Smart routing. A turn is classified as coding, heavy or general from named
+  signals, sent to the model configured for that intent when one is set, and a
+  coding turn carries the configured coding harness. The finished message says
+  how it was routed.
+- Coding harnesses. A `delegate_to_harness` tool hands code work to the tool
+  chosen in Settings, with the task as one argument and bounded time and output,
+  and returns that tool's own report. The prompt says to use it for code work
+  rather than doing the work in parallel.
+- A Routing card in Settings: automatic routing, a coding model, a heavy model, a
+  general model, and the harness.
+
+- Build number 235.
+
 ## [1.6.2] - 2026-11-19
 
 ### Added
@@ -23,6 +125,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Build number 228, version 1.6.2.
+
+### Fixed
+
+- The phone asked to be paired again every few hours. The pre-pairing refresh
+  lane read the live refresh token, so it rotated the same token the transport
+  was rotating; the loser was answered `token_invalid` and the app read that as
+  "pair me again". Both lanes go through the transport that owns the pair now,
+  and the daemon answers a token retired within sixty seconds, so a retry whose
+  answer was lost in flight cannot end a pairing either.
+- The toolbar refresh did nothing while a turn was live: the catch-up refused to
+  run while `isStreaming` was true, and a stream frozen by a background trip
+  stays true forever.
+- Backgrounding a turn dropped its live feed. The stream-update consumer moved
+  into one method so the live send and a reattach drive the same code, and a
+  turn that was live is reattached on return.
+- A turn now survives a force-quit: the outbox already persisted the accepted
+  job, so a relaunch asks the daemon whether it is still running and reattaches.
+- The subagent count opened the Canvas sheet, which answered "No artifact open".
+  It opens the subagents, with rows that expand and follow the poll.
 
 ## [1.6.1] - 2026-11-19
 
@@ -258,6 +379,39 @@ observe; commit history carries the detail.
 
 ## 1.10.0
 
+- **A turn is routed to the model that suits it.** `routing.rs` classifies a
+  message as coding, heavy or general from named signals, picks the model stored
+  for that intent or the provider's own, and carries the coding harness on the
+  route. `turn.start` announces it, `POST /v1/routing/preview` answers what
+  would happen, and `PUT /v1/routing` stores the choices. `build 206`.
+- **Code work can be delegated to a coding harness.** `delegate_to_harness` runs
+  the configured tool with the task as one argument, never shell-split, bounded
+  by a deadline and an output cap, and returns that tool's own report. It is
+  offered only when a harness is configured and the sandbox may write. The
+  prompt says it is the tool for code work. `build 206`.
+- **Harness runs are recorded and watched.** A registry keeps status, tails and
+  the turn for each run, a watchdog marks ninety seconds of silence as stalled
+  and enforces the deadline, and four routes read it with one SSE stream for
+  changes. `build 207`.
+- **The daemon knows which coding tools exist.** Detection reports installed,
+  version, path, whether it can be installed here, and, for Claude Code, the
+  credential's source and account without surfacing the token. A missing tool can
+  be installed as a bounded run. A harness model the chosen tool does not accept
+  is refused by name. `build 212`.
+- **A coding harness can be signed in from the phone.** A token pasted in the app
+  is stored and checked before the host's environment; the tool's own sign-in can
+  also be opened and finished with the code it shows. `build 214`.
+- **A second speech engine, off by default.** `speech.engine` selects the
+  original audio endpoint or a chat-audio engine that synthesizes through the
+  audio modality and transcribes through the input-audio one. `build 203`.
+- **The speech model is settable and named.** `GET /v1/speech` reports the engine,
+  the endpoint and model rows, and the model the engine will actually use;
+  `PUT /v1/speech/chat` stores or clears them. `build 204`.
+- **The event stream can be resumed.** `GET /v1/turns/{id}/events` honours
+  `Last-Event-ID`, replaying exactly what was missed and then tailing. `build 202`.
+- **Retired refresh tokens answer for a minute.** A token retired within the
+  grace window still verifies, so a second lane or a lost answer cannot log a
+  paired device out. `build 205`.
 - **A truncated tool call retries instead of failing the turn.** A stream that
   ended mid-arguments failed the round with a protocol error, and the only way
   forward was the phone's Retry, which replayed the same truncated turn. One
