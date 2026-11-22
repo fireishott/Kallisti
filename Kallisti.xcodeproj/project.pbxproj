@@ -84,6 +84,7 @@
 		2BCDB9CB208E87CBD7D1B655 /* ToolCallBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C59D7F86DA21DD37834CCB6 /* ToolCallBubbleView.swift */; };
 		2BE3CDA06B68AD52D65B9F17 /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = CE4BF2895FAF35372C5577C7 /* AppIcon.png */; };
 		2C27D93577D478170568DC9C /* Build114RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B99E4D0B0F9E4382B47935B /* Build114RegressionTests.swift */; };
+		2CE000A800D6D86B58704763 /* HarnessMonitorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD4D25E1DB780EB0B954841 /* HarnessMonitorSheet.swift */; };
 		2CF5A1573C46A61429C9EF27 /* HeraldHostStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F671B2C2EC2405FB33580BF /* HeraldHostStatus.swift */; };
 		2D88FEC18754969CC7AB23B1 /* TokenBatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8AAD7F64F0FDA6FBEF11FE0 /* TokenBatcher.swift */; };
 		2DB7BBC0B321C15436203D8C /* SharedCredentialProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 738B79D308EBB3295A459E16 /* SharedCredentialProvider.swift */; };
@@ -150,7 +151,6 @@
 		4AFA0430E2507E486AE28D37 /* Line.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F91F1701E7CD3DD63093E3D /* Line.swift */; };
 		4B444DB4DCE280386F2B57A6 /* RestartGatewayControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = D42B3C7C70C179403C6BFD63 /* RestartGatewayControl.swift */; };
 		4BB1FB5590ED2D43D21CB7CF /* SettingsSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945CB9419B2D507FB763BCFE /* SettingsSectionView.swift */; };
-		A7C4E21B9F0D4E6A8B1C3D5F /* RoutingSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8D5F32C0A1E5F7B9C2D4E60 /* RoutingSettingsSection.swift */; };
 		4BF7000DD799943B45A67AC0 /* SixelDcsHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2D47923CF53938ABF4A7470 /* SixelDcsHandler.swift */; };
 		4C5021068C883BBB707E2784 /* ColorBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28F2CA393F2C1C6DC7BD4AFD /* ColorBridge.swift */; };
 		4D8DD30F6A930238D20D24B8 /* WatchNotificationPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FCE930622E015B0CEE0E3E7 /* WatchNotificationPayload.swift */; };
@@ -271,6 +271,7 @@
 		8A06A8312B31C400C0D73C40 /* HeraldThemeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CE5867B89F5017C8A8D28B0 /* HeraldThemeTests.swift */; };
 		8A8A4860EB6528B09950E7D9 /* HeraldSelectorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA79EC6C5A1795F2650BC442 /* HeraldSelectorSheet.swift */; };
 		8AD0A0FE2F9DBD64594945FF /* ToolActivityRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6D239C586BA9ABDB9FBA5E7 /* ToolActivityRail.swift */; };
+		8BE7A4628E250F51A1522831 /* RoutingSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8B614699402A26733BC7098 /* RoutingSettingsSection.swift */; };
 		8BF2739BBF5726C7749CE113 /* TTSServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D5F9737060E056667861DED /* TTSServiceProtocol.swift */; };
 		8C338C4DEBA9DCD2419CBA39 /* LiveNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 876378CFE226E0674DB1CE99 /* LiveNotificationService.swift */; };
 		8C36AD4E6BCF99F26D57E931 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9E9645611E62F24666ED4C71 /* Assets.xcassets */; };
@@ -426,6 +427,7 @@
 		D480184BCA8B2AFC629B5D71 /* KittyGraphics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17DBE897B460BB87A09D64F1 /* KittyGraphics.swift */; };
 		D541CE2C5521349C378BE886 /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED6FEB4B96479459A42BFD2D /* Message.swift */; };
 		D546C13118A8A05CC890C7AE /* WatchConnectivityCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C52C1BF3A2CF9F997EE49F89 /* WatchConnectivityCoordinator.swift */; };
+		D698B9ABB4C88273E1194755 /* ModelPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7193111C34A7C55685A477B3 /* ModelPickerSheet.swift */; };
 		D6D41565A48F353CD8AA7586 /* Utilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2650DA6AD8FA051F0FA30FD /* Utilities.swift */; };
 		D75C023E8D04B8B4BA1C458D /* B23DeliveryStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D92D1D78E8B03CFE2C443425 /* B23DeliveryStateTests.swift */; };
 		D82ECC1EB6BE4071BA69EFC5 /* ASRRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C08A5CC3BD1CDFCA6C647DDF /* ASRRouter.swift */; };
@@ -865,6 +867,7 @@
 		70A4AF70BFFCFA91C265B030 /* SyncDebug.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncDebug.swift; sourceTree = "<group>"; };
 		70A6F449B7666130EF459FDC /* StatusCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusCardView.swift; sourceTree = "<group>"; };
 		717B543ACE34FE411A0053F0 /* stream_v2_error.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_error.json; sourceTree = "<group>"; };
+		7193111C34A7C55685A477B3 /* ModelPickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPickerSheet.swift; sourceTree = "<group>"; };
 		72ABBCEF370B07F5B30C3F11 /* EscapeSequences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EscapeSequences.swift; sourceTree = "<group>"; };
 		731100388C3CE73F477E4B66 /* AuthenticatedAsyncImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticatedAsyncImage.swift; sourceTree = "<group>"; };
 		73156DB2039ED532F4351586 /* Conversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Conversation.swift; sourceTree = "<group>"; };
@@ -948,7 +951,6 @@
 		93825A9936091F93682C6B1F /* DashboardLogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardLogService.swift; sourceTree = "<group>"; };
 		943D4F5608570F3E882B91C4 /* AppTemplateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTemplateTests.swift; sourceTree = "<group>"; };
 		945CB9419B2D507FB763BCFE /* SettingsSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSectionView.swift; sourceTree = "<group>"; };
-		B8D5F32C0A1E5F7B9C2D4E60 /* RoutingSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutingSettingsSection.swift; sourceTree = "<group>"; };
 		947C791D6E0104B61344C06D /* SetupCodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupCodeScannerView.swift; sourceTree = "<group>"; };
 		95AB66C03C96B6F79BE8D76D /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
 		975E8D1429101956B8109AAD /* UserSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSettings.swift; sourceTree = "<group>"; };
@@ -1059,6 +1061,7 @@
 		CC08DD39952AE7CF561BEDD4 /* iPadSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadSidebarView.swift; sourceTree = "<group>"; };
 		CC4BEC789F2B582A2DDDFD51 /* MessageStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageStatus.swift; sourceTree = "<group>"; };
 		CCA99BDAE41CBB598DC682F8 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		CCD4D25E1DB780EB0B954841 /* HarnessMonitorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessMonitorSheet.swift; sourceTree = "<group>"; };
 		CDBE98AD2748BA11ECF158BF /* PermissionsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsScreen.swift; sourceTree = "<group>"; };
 		CE4BF2895FAF35372C5577C7 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon.png; sourceTree = "<group>"; };
 		CEADD6221AD28EBBA4B899FE /* WatchStateSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchStateSnapshot.swift; sourceTree = "<group>"; };
@@ -1081,6 +1084,7 @@
 		D764708AF60651BEEEA4C667 /* GatewayControlService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayControlService.swift; sourceTree = "<group>"; };
 		D8036A0E3C804B3391C7AFB0 /* PushRegistrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistrationTests.swift; sourceTree = "<group>"; };
 		D8590C9797736698A0ECC265 /* LiveNotesClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveNotesClient.swift; sourceTree = "<group>"; };
+		D8B614699402A26733BC7098 /* RoutingSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutingSettingsSection.swift; sourceTree = "<group>"; };
 		D92D1D78E8B03CFE2C443425 /* B23DeliveryStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = B23DeliveryStateTests.swift; sourceTree = "<group>"; };
 		D9411BDED9EC2B35EC437B64 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		D9BC3D38A92366970ECDBF09 /* NoteRecognitionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteRecognitionCoordinator.swift; sourceTree = "<group>"; };
@@ -1416,7 +1420,8 @@
 				FCBFCB50C0F6394201AB567B /* ConnectHeraldHostScreen.swift */,
 				BA6893DA021ABB5D85A93F44 /* GatewayLogsScreen.swift */,
 				1AAE97D95E2D442E0C9CEFB1 /* GatewayStatusScreen.swift */,
-				B8D5F32C0A1E5F7B9C2D4E60 /* RoutingSettingsSection.swift */,
+				7193111C34A7C55685A477B3 /* ModelPickerSheet.swift */,
+				D8B614699402A26733BC7098 /* RoutingSettingsSection.swift */,
 				B3A1E9B33F7319E44F32378A /* SettingsScreen.swift */,
 				945CB9419B2D507FB763BCFE /* SettingsSectionView.swift */,
 				F103E0443CD4AFBE40AF8E85 /* WallpaperPickerSheet.swift */,
@@ -1697,6 +1702,14 @@
 			path = Fixtures;
 			sourceTree = "<group>";
 		};
+		7F244BB7970C8EF4FA7B0E0C /* Harness */ = {
+			isa = PBXGroup;
+			children = (
+				CCD4D25E1DB780EB0B954841 /* HarnessMonitorSheet.swift */,
+			);
+			path = Harness;
+			sourceTree = "<group>";
+		};
 		847F3C0DD9592EF2EFD82890 /* Models */ = {
 			isa = PBXGroup;
 			children = (
@@ -1943,6 +1956,7 @@
 				69BFFF7B63BA1603F332D91C /* Canvas */,
 				475FD6E21C7DFE0521C8E341 /* Chat */,
 				2D8334AF43BAEEB9AFC4AAB1 /* Cron */,
+				7F244BB7970C8EF4FA7B0E0C /* Harness */,
 				2BAD855D959C4C29EB9DEABC /* Inbox */,
 				F366092EDBA19D7FBD220BAA /* Notes */,
 				0E5B845093175BB3410154AB /* Onboarding */,
@@ -2869,6 +2883,7 @@
 				2E4B12DC3CE381E4F2DACF55 /* HandwritingRecognizing.swift in Sources */,
 				A03EA2788A3922CA559B9155 /* HangulInput.swift in Sources */,
 				C1BEC0A3285F6536930D2F4B /* HapticEngine.swift in Sources */,
+				2CE000A800D6D86B58704763 /* HarnessMonitorSheet.swift in Sources */,
 				C330864EEED3A4EAA1E9E6B7 /* HeadlessTerminal.swift in Sources */,
 				FBDDB11348F081BCBE30FF55 /* HealthServiceProtocol.swift in Sources */,
 				09E015D5C1891A8A058CCD72 /* HeraldArtifact.swift in Sources */,
@@ -2968,6 +2983,7 @@
 				CDA3907C410492ABC6485642 /* MockSyncCoordinator.swift in Sources */,
 				93CE74EAF559FFE21940BA01 /* MockVoiceSessionService.swift in Sources */,
 				A5F04C490BC140280AABF16A /* ModelNamePretty.swift in Sources */,
+				D698B9ABB4C88273E1194755 /* ModelPickerSheet.swift in Sources */,
 				1427D293A2519391A5A94FF0 /* ModelStore.swift in Sources */,
 				C6DFCA01FD5C947BC999C425 /* NativeAuthCoordinator.swift in Sources */,
 				FE7F9387497617AAF7ED000D /* NativeGatewayClient.swift in Sources */,
@@ -3021,7 +3037,7 @@
 				A0244607AE964EC7A67E319B /* ResilientInboxService.swift in Sources */,
 				244180E0B0FEC965719B0689 /* ResilientSessionBootstrapService.swift in Sources */,
 				A9B4CC8103EEB5E447B20BF3 /* Router.swift in Sources */,
-				A7C4E21B9F0D4E6A8B1C3D5F /* RoutingSettingsSection.swift in Sources */,
+				8BE7A4628E250F51A1522831 /* RoutingSettingsSection.swift in Sources */,
 				3E11E88DF60FF8A298AED8BA /* SSEEvent.swift in Sources */,
 				32453DC8F171347113FC26D8 /* SafariView.swift in Sources */,
 				5A14B013330B65605DD723E2 /* SearchEngine.swift in Sources */,
@@ -3210,7 +3226,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3218,7 +3234,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3256,7 +3272,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3264,7 +3280,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3284,10 +3300,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
 				SDKROOT = watchos;
@@ -3305,7 +3321,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -3314,7 +3330,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3335,7 +3351,7 @@
 				CODE_SIGN_ENTITLEMENTS = Kallisti/Kallisti.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Kallisti/Resources/Info.plist;
@@ -3344,7 +3360,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3385,7 +3401,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3393,7 +3409,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3477,14 +3493,14 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiWatchWidgets/KallistiWatchWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				INFOPLIST_FILE = KallistiWatchWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp.widgets;
 				PRODUCT_NAME = KallistiWatchWidgets;
 				SDKROOT = watchos;
@@ -3523,7 +3539,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3531,7 +3547,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3637,7 +3653,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3645,7 +3661,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3684,7 +3700,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3692,7 +3708,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3752,10 +3768,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
 				SDKROOT = watchos;
@@ -3772,14 +3788,14 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiWatchWidgets/KallistiWatchWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				INFOPLIST_FILE = KallistiWatchWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp.widgets;
 				PRODUCT_NAME = KallistiWatchWidgets;
 				SDKROOT = watchos;
@@ -3869,7 +3885,7 @@
 				CODE_SIGN_ENTITLEMENTS = Kallisti/Kallisti.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Kallisti/Resources/Info.plist;
@@ -3878,7 +3894,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -3897,7 +3913,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 233;
+				CURRENT_PROJECT_VERSION = 241;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -3906,7 +3922,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.2;
+				MARKETING_VERSION = 1.7.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
