@@ -55,6 +55,7 @@ pub mod error;
 pub mod goal;
 pub mod greeting;
 pub mod harness_runs;
+pub mod harness_tools;
 pub mod harness_view;
 pub mod inbox;
 pub mod learning;
