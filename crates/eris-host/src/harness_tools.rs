@@ -374,9 +374,7 @@ impl Env {
     #[must_use]
     pub fn process() -> Self {
         Self {
-            dirs: std::env::var_os("PATH")
-                .map(|path| std::env::split_paths(&path).collect())
-                .unwrap_or_default(),
+            dirs: Self::search_dirs(),
             home: std::env::var_os("HOME")
                 .filter(|home| !home.is_empty())
                 .map(PathBuf::from),
@@ -385,6 +383,39 @@ impl Env {
                 .filter(|token| !token.trim().is_empty()),
             platform: Platform::current(),
         }
+    }
+
+    /// The daemon's `PATH` plus the places a user's tools actually live.
+    ///
+    /// A systemd user service starts with a bare `PATH`, so `dsh` in
+    /// `~/.local/bin` and a Homebrew binary in `/opt/homebrew/bin` read as
+    /// missing on a host that has both. Guessing these few is the difference
+    /// between an honest report and a false one.
+    fn search_dirs() -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect())
+            .unwrap_or_default();
+        let home = std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from);
+        let mut extra: Vec<PathBuf> = vec![
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/bin"),
+        ];
+        if let Some(home) = home {
+            extra.push(home.join(".local/bin"));
+            extra.push(home.join(".npm-global/bin"));
+            extra.push(home.join(".cargo/bin"));
+            extra.push(home.join(".dsh/bin"));
+            extra.push(home.join(".claude/local"));
+        }
+        for dir in extra {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        dirs
     }
 }
 
