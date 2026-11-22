@@ -2781,6 +2781,23 @@ pub fn turn_config(engine: &SetupEngine) -> Result<Option<TurnConfig>, Onboardin
     }))
 }
 
+/// What the routing layer says this turn should run on.
+///
+/// Both surfaces that run a turn call this after they have resolved their own
+/// model - the browser from the composer and the conversation's record, the
+/// device from the conversation and the stored pin - and before the turn starts.
+/// The route is a refinement over that decision, not a replacement for it: with
+/// nothing pinned for the intent, `route.model` is the model it was handed, so
+/// every rule that already decided a turn's model still decides it.
+///
+/// The whole [`crate::routing::Route`] comes back, not only the model, because
+/// the caller reports the decision: the device frame carries it, and the browser
+/// logs it, so "why did this turn go there" has an answer before the first token.
+#[must_use]
+pub fn routed_turn(db: &Db, message: &str, resolved: &str) -> crate::routing::Route {
+    crate::routing::route(db, message, Some(resolved))
+}
+
 /// The provider and the model a turn runs on, which are one decision.
 ///
 /// Stored as one row, `provider/model`, because a model id belongs to the
