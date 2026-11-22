@@ -245,6 +245,14 @@ pub struct Sandbox {
     /// Not part of the boundary identity for the same reason the desk is not: it
     /// says what this turn can hand work to, not where it may write.
     harness: Option<harness::Config>,
+    /// The conversation this turn belongs to, when the caller knows it.
+    ///
+    /// Carried so a delegated run can be related back to the chat that asked for
+    /// it. A test that builds a sandbox by hand leaves it absent, which is the
+    /// shipped state for a turn with no transcript.
+    conversation_id: Option<String>,
+    /// The turn this sandbox belongs to, when the caller knows it.
+    turn_id: Option<String>,
 }
 
 impl std::fmt::Debug for Sandbox {
@@ -255,6 +263,7 @@ impl std::fmt::Debug for Sandbox {
             .field("processes", &self.processes.is_some())
             .field("memory", &self.memory.is_some())
             .field("harness", &self.harness)
+            .field("turn", &self.turn_id.is_some())
             .finish()
     }
 }
@@ -277,6 +286,8 @@ impl Sandbox {
             processes: None,
             memory: None,
             harness: None,
+            conversation_id: None,
+            turn_id: None,
         }
     }
 
@@ -323,6 +334,34 @@ impl Sandbox {
     #[must_use]
     pub fn harness(&self) -> Option<&harness::Config> {
         self.harness.as_ref()
+    }
+
+    /// Say which conversation and turn this sandbox belongs to.
+    ///
+    /// Not part of the boundary, and not required: a delegated run started from
+    /// a turn that could not name itself still runs, its record just carries no
+    /// conversation to hang it on.
+    #[must_use]
+    pub fn with_turn_context(
+        mut self,
+        conversation_id: Option<String>,
+        turn_id: Option<String>,
+    ) -> Self {
+        self.conversation_id = conversation_id;
+        self.turn_id = turn_id;
+        self
+    }
+
+    /// The conversation this turn belongs to, when it was named.
+    #[must_use]
+    pub fn conversation_id(&self) -> Option<&str> {
+        self.conversation_id.as_deref()
+    }
+
+    /// The turn this sandbox belongs to, when it was named.
+    #[must_use]
+    pub fn turn_id(&self) -> Option<&str> {
+        self.turn_id.as_deref()
     }
 
     /// The directory every path resolves against.

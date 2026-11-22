@@ -11510,6 +11510,9 @@ fn spawn_turn(
             // The coding harness the operator pointed at, when one is set. The
             // tool is offered and callable only when this resolves.
             .with_harness(crate::tools::harness::config(&db))
+            // A delegated run is related back to the conversation and turn that
+            // asked for it, so the monitor can say whose work it is.
+            .with_turn_context(Some(conversation.clone()), Some(answer_id.clone()))
     };
     let mcp = state.mcp.clone();
     let approval_policy = state

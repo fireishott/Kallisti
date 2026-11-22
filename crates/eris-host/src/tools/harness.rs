@@ -27,6 +27,7 @@ use super::{
     MAX_COMMAND_OUTPUT_BYTES, Sandbox, SandboxMode, ToolResult, string_arg, truncate_bytes,
 };
 use crate::db::Db;
+use crate::harness_runs::{self, RunStatus};
 
 /// The tool's name, as the model calls it.
 pub const TOOL: &str = "delegate_to_harness";
@@ -363,6 +364,17 @@ pub fn run(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
             "the configured harness command is empty, so there was no binary to start".to_owned(),
         );
     };
+    // The run is registered before its process exists, so a spawn failure is a
+    // recorded ending rather than a silence on the monitor's screen. It is
+    // `queued` until the pid is attached below.
+    let run_id = harness_runs::start(
+        config.harness.as_str(),
+        task,
+        sandbox.conversation_id().map(str::to_owned),
+        sandbox.turn_id().map(str::to_owned),
+        config.timeout_secs,
+    );
+
     let mut command = std::process::Command::new(&program);
     command
         .args(&argv[1..])
@@ -387,6 +399,7 @@ pub fn run(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
         // program, and the environment it would have inherited is not the
         // operator's business to read back out of a tool result.
         Err(error) => {
+            harness_runs::finish(&run_id, RunStatus::Failed, None);
             return refusal(
                 "harness_spawn_failed",
                 format!("cannot start the harness binary {program}: {error}"),
@@ -395,8 +408,12 @@ pub fn run(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
     };
 
     let pid = child.id();
-    let stdout = stream(child.stdout.take());
-    let stderr = stream(child.stderr.take());
+    harness_runs::attach_pid(&run_id, pid);
+    // The same readers that fill the tool result also feed the registry: one
+    // drain per stream, two consumers, so a monitor never costs the harness a
+    // second read of its pipe.
+    let stdout = stream(child.stdout.take(), run_id.clone(), Sink::Stdout);
+    let stderr = stream(child.stderr.take(), run_id.clone(), Sink::Stderr);
 
     let timeout = config.timeout();
     let started = Instant::now();
@@ -407,15 +424,17 @@ pub fn run(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
             Ok(None) => {
                 if started.elapsed() >= timeout {
                     timed_out = true;
+                    harness_runs::finish(&run_id, RunStatus::TimedOut, None);
                     let _ = child.kill();
-                    kill_group(pid);
+                    harness_runs::terminate_group(pid);
                     break child.wait().ok();
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
             Err(error) => {
+                harness_runs::finish(&run_id, RunStatus::Failed, None);
                 let _ = child.kill();
-                kill_group(pid);
+                harness_runs::terminate_group(pid);
                 let _ = child.wait();
                 return ToolResult::error(format!("cannot collect the harness process: {error}"));
             }
@@ -430,6 +449,17 @@ pub fn run(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
     let stderr = stderr.finish();
 
     let exit_code = status.and_then(|status| status.code());
+    // The run ended on its own. A run an operator killed, or one the watchdog
+    // already ended, keeps the ending it was given: the first terminal status is
+    // the true one.
+    let ending = if timed_out {
+        RunStatus::TimedOut
+    } else if exit_code == Some(0) {
+        RunStatus::Succeeded
+    } else {
+        RunStatus::Failed
+    };
+    harness_runs::finish(&run_id, ending, exit_code);
     let body = serde_json::json!({
         "harness": config.harness.as_str(),
         "exit_code": exit_code,
@@ -443,27 +473,6 @@ pub fn run(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
         is_error: failed,
     }
 }
-
-/// Kill whatever is left of the harness's process group.
-///
-/// The signal goes to `kill`, not to a shell, and a host without that command
-/// simply leaves the top process killed by [`std::process::Child::kill`]: the
-/// result is still a timeout, and the thread that reads the pipe is bounded by
-/// the same grace period either way.
-#[cfg(unix)]
-fn kill_group(pid: u32) {
-    let _ = std::process::Command::new("kill")
-        .arg("-KILL")
-        .arg("--")
-        .arg(format!("-{pid}"))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-}
-
-#[cfg(not(unix))]
-fn kill_group(_pid: u32) {}
 
 /// One stream, as much as the cap allowed plus how much it dropped.
 #[derive(Debug, Default, Clone)]
@@ -495,12 +504,32 @@ impl Stream {
     }
 }
 
+/// Which stream one reader is draining.
+///
+/// The reader does two things with the same bytes and neither is a second read:
+/// it fills the tool's capped buffer, and it feeds the run's tail.
+#[derive(Debug, Clone, Copy)]
+enum Sink {
+    Stdout,
+    Stderr,
+}
+
+impl Sink {
+    /// Hand one chunk to the registry.
+    fn feed(self, run_id: &str, chunk: &[u8]) {
+        match self {
+            Self::Stdout => harness_runs::append_stdout(run_id, chunk),
+            Self::Stderr => harness_runs::append_stderr(run_id, chunk),
+        }
+    }
+}
+
 /// Start draining one stream to its cap.
 ///
 /// The pipe keeps being read after the cap, because a harness that prints past
 /// it must not be stopped by a full pipe: the omission is a fact about the
 /// report, not a reason to hang the task.
-fn stream(pipe: Option<impl std::io::Read + Send + 'static>) -> Stream {
+fn stream(pipe: Option<impl std::io::Read + Send + 'static>, run_id: String, sink: Sink) -> Stream {
     let snapshot = std::sync::Arc::new(std::sync::Mutex::new(Captured::default()));
     let (sender, finished) = std::sync::mpsc::channel();
     let shared = std::sync::Arc::clone(&snapshot);
@@ -514,6 +543,7 @@ fn stream(pipe: Option<impl std::io::Read + Send + 'static>) -> Stream {
             match pipe.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(count) => {
+                    sink.feed(&run_id, &buffer[..count]);
                     let mut captured = shared
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -887,6 +917,99 @@ mod tests {
         assert_eq!(timeout_secs(Some("junk")), DEFAULT_TIMEOUT_SECS);
         assert_eq!(timeout_secs(Some("30")), 30);
         assert_eq!(timeout_secs(Some(" 3600 ")), 3600);
+    }
+
+    /// The registry sees the run the tool started, fed by the same reader that
+    /// fills the tool result, and the ending is recorded with the exit code.
+    #[test]
+    fn a_delegated_run_is_recorded_in_the_live_registry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let command = stub(
+            dir.path(),
+            "recorded.sh",
+            "#!/bin/sh\nprintf 'started\\n'\nprintf 'a warning\\n' >&2\nexit 3\n",
+        );
+        let config = stub_config(&command, Harness::Dsh);
+        let sandbox = full_sandbox(dir.path()).with_harness(Some(config));
+        let marker = "registry-record-marker";
+        let task = format!("record this run {marker}");
+
+        let result = super::super::execute(TOOL, &serde_json::json!({"task": task}), &sandbox);
+        assert!(result.is_error, "{result:?}");
+
+        let run = crate::harness_runs::snapshot()
+            .into_iter()
+            .find(|run| run.task.contains(marker))
+            .expect("the run is in the registry");
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(run.exit_code, Some(3));
+        assert_eq!(run.harness, "dsh");
+        assert_eq!(run.timeout_secs, DEFAULT_TIMEOUT_SECS);
+        assert!(
+            run.stdout_tail.contains("started"),
+            "stdout reached the registry: {:?}",
+            run.stdout_tail
+        );
+        assert!(
+            run.stderr_tail.contains("a warning"),
+            "stderr reached the registry: {:?}",
+            run.stderr_tail
+        );
+        assert!(run.finished_at.is_some(), "the ending is recorded");
+        assert!(run.conversation_id.is_none(), "this sandbox named no turn");
+    }
+
+    /// A deadline ends the run in the registry as well as in the result.
+    #[test]
+    fn a_timed_out_run_is_recorded_as_timed_out() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let command = stub(dir.path(), "slow.sh", "#!/bin/sh\nsleep 30\n");
+        let mut config = stub_config(&command, Harness::Dsh);
+        config.timeout_secs = 1;
+        let sandbox = full_sandbox(dir.path()).with_harness(Some(config));
+        let marker = "registry-timeout-marker";
+
+        let result = super::super::execute(
+            TOOL,
+            &serde_json::json!({"task": format!("wait forever {marker}")}),
+            &sandbox,
+        );
+        assert!(result.is_error, "{result:?}");
+
+        let run = crate::harness_runs::snapshot()
+            .into_iter()
+            .find(|run| run.task.contains(marker))
+            .expect("the run is in the registry");
+        assert_eq!(run.status, RunStatus::TimedOut);
+        assert_eq!(run.exit_code, None);
+        assert_eq!(run.timeout_secs, 1);
+    }
+
+    /// A sandbox that names its turn puts the ids on the record.
+    #[test]
+    fn a_run_carries_the_turn_that_delegated_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let command = stub(dir.path(), "quick.sh", "#!/bin/sh\nexit 0\n");
+        let config = stub_config(&command, Harness::Dsh);
+        let sandbox = full_sandbox(dir.path())
+            .with_harness(Some(config))
+            .with_turn_context(Some("conversation-9".to_owned()), Some("turn-9".to_owned()));
+        let marker = "registry-turn-marker";
+
+        let result = super::super::execute(
+            TOOL,
+            &serde_json::json!({"task": format!("a named turn {marker}")}),
+            &sandbox,
+        );
+        assert!(!result.is_error, "{result:?}");
+
+        let run = crate::harness_runs::snapshot()
+            .into_iter()
+            .find(|run| run.task.contains(marker))
+            .expect("the run is in the registry");
+        assert_eq!(run.status, RunStatus::Succeeded);
+        assert_eq!(run.conversation_id.as_deref(), Some("conversation-9"));
+        assert_eq!(run.turn_id.as_deref(), Some("turn-9"));
     }
 
     /// Output past the cap is kept up to the cap, and the payload states how much

@@ -28,14 +28,20 @@
 //! value it was handed before it stores any of them, and a refusal names the field
 //! and what it would have accepted.
 
+use std::convert::Infallible;
+
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth::Scope;
 use crate::aux;
 use crate::device::{DeviceError, DeviceService};
+use crate::harness_runs::{self, HarnessRun, KillOutcome};
 use crate::onboarding::SetupEngine;
 use crate::providers::Provider;
 use crate::scheduler::{self, Schedule};
@@ -43,8 +49,8 @@ use crate::skills;
 use crate::web::{chat, store};
 
 use super::handlers::{
-    authenticate, field, model_write_refusal, read_fields, refuse_value, require_admin,
-    require_scope, resolve_model_value, settings_unavailable,
+    KEEP_ALIVE_SECONDS, authenticate, field, model_write_refusal, read_fields, refuse_value,
+    require_admin, require_scope, resolve_model_value, settings_unavailable,
 };
 
 // ---------------------------------------------------------------------------
@@ -3036,4 +3042,158 @@ pub async fn steward_seed(State(service): State<DeviceService>, headers: HeaderM
         .into_response(),
         Err(error) => steward_refusal(error).into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Harness runs
+// ---------------------------------------------------------------------------
+//
+// A delegated coding task runs as its own process, sometimes for ten minutes.
+// The tool's result is only readable by the turn that started it, so a monitor
+// had nothing to show between the call and the answer. These four routes read the
+// registry the tool reports into: a list, one run with its tails, a kill, and the
+// state changes as they happen.
+//
+// Nothing here starts or ends work on its own account: the kill calls the same
+// function the tool's own deadline calls, so an operator and a timeout end a run
+// the same way.
+
+/// 404 for a run the registry does not have.
+fn harness_run_unknown(id: &str) -> DeviceError {
+    DeviceError::new(
+        StatusCode::NOT_FOUND,
+        "harness_run_unknown",
+        format!("no harness run with the id `{id}` is in this daemon's registry"),
+    )
+}
+
+/// `GET /v1/harness/runs` - every delegated run this process knows, newest first.
+///
+/// `running` counts the runs that have not ended, which includes a stalled one:
+/// stalled is a live run that has gone quiet, not a finished one.
+///
+/// The list is the daemon's, not one device's. A harness is configured once for
+/// the host (`routing.harness`), so every delegated task on this daemon is the
+/// same operator's work, and hiding another paired phone's run would hide a
+/// process that is still spending the host's time.
+pub async fn harness_run_list(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let runs = harness_runs::snapshot();
+    let running = runs.iter().filter(|run| !run.status.is_terminal()).count();
+    let items: Vec<serde_json::Value> = runs.iter().map(HarnessRun::list_item).collect();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "running": running,
+        "runs": items,
+    }))
+    .into_response()
+}
+
+/// `GET /v1/harness/runs/{id}` - one run, with the tails of its two streams.
+pub async fn harness_run_detail(
+    State(service): State<DeviceService>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    match harness_runs::get(&id) {
+        Some(run) => axum::Json(serde_json::json!({
+            "ok": true,
+            "run": run.detail(),
+        }))
+        .into_response(),
+        None => harness_run_unknown(&id).into_response(),
+    }
+}
+
+/// `POST /v1/harness/runs/{id}/kill` - ask one run to stop.
+///
+/// Administrative, like stopping a background process: seeing the work is a
+/// read, ending it is an act. The answer is the run as it now stands, so a
+/// caller does not have to follow a 200 with a read to learn what happened.
+pub async fn harness_run_kill(
+    State(service): State<DeviceService>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    match harness_runs::kill_requested(&id) {
+        KillOutcome::Unknown => harness_run_unknown(&id).into_response(),
+        KillOutcome::Finished(run) => DeviceError::new(
+            StatusCode::CONFLICT,
+            "harness_run_finished",
+            format!(
+                "harness run `{id}` already ended as {}; there was nothing left to stop",
+                run.status.as_str()
+            ),
+        )
+        .into_response(),
+        KillOutcome::Requested(run) => axum::Json(serde_json::json!({
+            "ok": true,
+            "run": run.detail(),
+        }))
+        .into_response(),
+    }
+}
+
+/// `GET /v1/harness/events` - the state changes of the runs, as they happen.
+///
+/// One `event: run` frame per change, whose data is exactly the list item
+/// `GET /v1/harness/runs` carries for that run. A monitor that connects here and
+/// never reads the list still sees every transition; one that reconnects reads
+/// the list for the state it missed, because this stream does not replay.
+///
+/// The stream has no ending of its own: the daemon's registry outlives every
+/// client, so the only thing that closes it is the client going away.
+pub async fn harness_run_events(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    // Subscribe before anything else so a change that lands between this line
+    // and the first poll is delivered rather than missed.
+    let receiver = harness_runs::events_sender().subscribe();
+    let stream = BroadcastStream::new(receiver).filter_map(|item| match item {
+        Ok(event) => Some(Ok::<Event, Infallible>(
+            Event::default().event("run").data(event.item.to_string()),
+        )),
+        // A lagged reader missed changes in this process. Sending it a gap it
+        // cannot see would be worse than silence: the list route is where the
+        // current state is read again.
+        Err(_) => None,
+    });
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(KEEP_ALIVE_SECONDS))
+                .text("keep-alive"),
+        )
+        .into_response()
 }
