@@ -425,6 +425,143 @@ impl Env {
     }
 }
 
+/// A sign-in in flight: the Claude CLI the daemon opened, and the URL it printed.
+///
+/// The CLI's own flow is the flow: it prints an authorization URL, a person signs
+/// in, and it takes the code back on standard input. Driving it from the daemon
+/// means the phone shows a button and a code field instead of a terminal command.
+pub struct LoginSession {
+    child: std::process::Child,
+    stdout: std::sync::mpsc::Receiver<String>,
+    pub id: String,
+    pub url: String,
+    started: std::time::Instant,
+}
+
+/// Every sign-in the daemon has open, newest last. Bounded by the sweep below.
+static LOGINS: std::sync::OnceLock<std::sync::Mutex<Vec<LoginSession>>> =
+    std::sync::OnceLock::new();
+
+fn logins() -> &'static std::sync::Mutex<Vec<LoginSession>> {
+    LOGINS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Start `claude setup-token` and read the URL it prints.
+///
+/// # Errors
+///
+/// A string naming why no sign-in could be opened: the binary is missing, it did
+/// not print a URL within ten seconds, or the registry could not be locked.
+pub fn start_login(env: &Env) -> Result<(String, String), String> {
+    let Some(claude) = find_on_path(&env.dirs, "claude") else {
+        return Err("Claude Code is not installed on this host".to_owned());
+    };
+    let mut child = std::process::Command::new(&claude)
+        .arg("setup-token")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Claude Code could not be started: {error}"))?;
+    let stdout = child.stdout.take().ok_or("no output pipe")?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut url: Option<String> = None;
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(line) => {
+                if let Some(found) = line
+                    .split_whitespace()
+                    .find(|word| word.starts_with("https://"))
+                {
+                    url = Some(found.trim_end_matches([',', ')']).to_owned());
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let Some(url) = url else {
+        let _ = child.kill();
+        return Err("Claude Code did not print a sign-in link".to_owned());
+    };
+    let id = uuid::Uuid::now_v7().to_string();
+    // A sign-in nobody finishes is not worth keeping.
+    if let Ok(mut open) = logins().lock() {
+        open.retain(|session| session.started.elapsed() < std::time::Duration::from_secs(600));
+    }
+    logins()
+        .lock()
+        .map_err(|_| "the sign-in list is unavailable".to_owned())?
+        .push(LoginSession {
+            child,
+            stdout: rx,
+            id: id.clone(),
+            url: url.clone(),
+            started: std::time::Instant::now(),
+        });
+    Ok((id, url))
+}
+
+/// Hand the code back to the CLI and take the token it prints.
+///
+/// # Errors
+///
+/// A string naming why the sign-in did not complete.
+pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
+    use std::io::Write;
+    let mut open = logins()
+        .lock()
+        .map_err(|_| "the sign-in list is unavailable".to_owned())?;
+    let Some(index) = open.iter().position(|session| session.id == id) else {
+        return Err("no sign-in with that id is open; start one again".to_owned());
+    };
+    let mut session = open.remove(index);
+    let stdin = session
+        .child
+        .stdin
+        .as_mut()
+        .ok_or("the sign-in has no input pipe")?;
+    writeln!(stdin, "{}", code.trim())
+        .map_err(|error| format!("the code could not be sent: {error}"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let mut token: Option<String> = None;
+    while std::time::Instant::now() < deadline {
+        match session
+            .stdout
+            .recv_timeout(std::time::Duration::from_millis(250))
+        {
+            Ok(line) => {
+                if let Some(found) = line
+                    .split_whitespace()
+                    .find(|word| word.starts_with("sk-ant-"))
+                {
+                    token = Some(found.trim().to_owned());
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if session.child.try_wait().ok().flatten().is_some() {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = session.child.kill();
+    token.ok_or_else(|| "Claude Code did not print a token; the code may have expired".to_owned())
+}
+
 /// The environment detection reads, fixture-aware under test.
 #[must_use]
 pub fn detect_env() -> Env {

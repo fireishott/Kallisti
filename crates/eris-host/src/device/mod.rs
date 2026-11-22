@@ -173,6 +173,10 @@ pub const ROUTE_HARNESS_EVENTS: &str = "/v1/harness/events";
 pub const ROUTE_HARNESS_TOOLS: &str = "/v1/harness/tools";
 /// Where a sign-in token is stored for the Claude harness.
 pub const ROUTE_HARNESS_TOOL_AUTH: &str = "/v1/harness/tools/claude-code/auth";
+/// The CLI's own sign-in, opened and finished by the app.
+pub const ROUTE_HARNESS_LOGIN_START: &str = "/v1/harness/tools/claude-code/login/start";
+/// The same sign-in, completed with the code the person was shown.
+pub const ROUTE_HARNESS_LOGIN_COMPLETE: &str = "/v1/harness/tools/claude-code/login/complete";
 
 /// `POST /v1/harness/tools/{id}/install` - install one that is missing.
 pub const ROUTE_HARNESS_TOOL_INSTALL: &str = "/v1/harness/tools/{id}/install";
@@ -1260,6 +1264,14 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_HARNESS_TOOLS, get(control::harness_tool_list))
         .route(ROUTE_HARNESS_TOOL_AUTH, put(control::harness_tool_auth_put))
         .route(
+            ROUTE_HARNESS_LOGIN_START,
+            post(control::harness_tool_login_start),
+        )
+        .route(
+            ROUTE_HARNESS_LOGIN_COMPLETE,
+            post(control::harness_tool_login_complete),
+        )
+        .route(
             ROUTE_HARNESS_TOOL_INSTALL,
             post(control::harness_tool_install),
         )
@@ -1577,6 +1589,8 @@ mod tests {
             ROUTE_HARNESS_EVENTS,
             ROUTE_HARNESS_TOOLS,
             ROUTE_HARNESS_TOOL_AUTH,
+            ROUTE_HARNESS_LOGIN_START,
+            ROUTE_HARNESS_LOGIN_COMPLETE,
             ROUTE_HARNESS_TOOL_INSTALL,
             ROUTE_PUSH_REGISTER,
             ROUTE_PUSH_DEACTIVATE,

@@ -170,6 +170,10 @@ struct RoutingSettingsSection: View {
     @State private var claudeTokenInput = ""
     @State private var claudeSignInError: String?
     @State private var isSavingClaudeToken = false
+    @State private var claudeLoginID = ""
+    @State private var claudeLoginCode = ""
+    @State private var isStartingClaudeLogin = false
+    @Environment(\.openURL) private var openURL
     /// `none`, or one of the daemon's harness ids.
     @State private var harness = "none"
     /// The harness ids the daemon offers, in its own order.
@@ -460,27 +464,51 @@ struct RoutingSettingsSection: View {
         NavigationStack {
             Form {
                 Section {
-                    Text("The daemon checks Claude Code's credential in this order: a token saved here, then the host's environment, then its credential file or Keychain. A token saved here wins.")
-                        .font(Design.Typography.caption)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                }
-
-                Section("Get a token on the host") {
-                    Text("claude setup-token")
-                        .font(.system(.callout, design: .monospaced))
-                        .textSelection(.enabled)
-                    Button {
-                        UIPasteboard.general.string = "claude setup-token"
-                    } label: {
-                        Label("Copy command", systemImage: "doc.on.doc")
+                    if claudeLoginID.isEmpty {
+                        Text("Sign in with the account Claude Code runs as. The daemon opens the same sign-in the tool uses, and takes the code back.")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    } else {
+                        Text("Finish in the browser that just opened, then paste the code it shows.")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
                     }
                 }
 
-                Section("Paste the token") {
-                    SecureField("sk-ant-oat…", text: $claudeTokenInput)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.callout, design: .monospaced))
+                if claudeLoginID.isEmpty {
+                    Section {
+                        Button {
+                            Task { await startClaudeLogin() }
+                        } label: {
+                            HStack {
+                                if isStartingClaudeLogin {
+                                    ProgressView().controlSize(.small)
+                                }
+                                Text(isStartingClaudeLogin ? "Opening…" : "Sign in with Claude")
+                            }
+                        }
+                        .disabled(isStartingClaudeLogin)
+                        .accessibilityIdentifier("settings.routing.claude.signin.start")
+                    }
+                } else {
+                    Section("Code") {
+                        TextField("Paste the code", text: $claudeLoginCode)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.system(.callout, design: .monospaced))
+                        Button {
+                            Task { await finishClaudeLogin() }
+                        } label: {
+                            HStack {
+                                if isSavingClaudeToken {
+                                    ProgressView().controlSize(.small)
+                                }
+                                Text(isSavingClaudeToken ? "Checking…" : "Finish sign-in")
+                            }
+                        }
+                        .disabled(claudeLoginCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSavingClaudeToken)
+                        .accessibilityIdentifier("settings.routing.claude.signin.finish")
+                    }
                 }
 
                 if let claudeSignInError {
@@ -492,24 +520,101 @@ struct RoutingSettingsSection: View {
                 }
 
                 Section {
-                    Button {
-                        Task { await saveClaudeToken() }
-                    } label: {
-                        HStack {
-                            if isSavingClaudeToken { ProgressView().controlSize(.small) }
-                            Text(isSavingClaudeToken ? "Checking…" : "Save and verify")
+                    DisclosureGroup("Use a token instead") {
+                        SecureField("sk-ant-oat…", text: $claudeTokenInput)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.system(.callout, design: .monospaced))
+                        Button("Save token") {
+                            Task { await saveClaudeToken() }
                         }
+                        .disabled(claudeTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSavingClaudeToken)
                     }
-                    .disabled(claudeTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSavingClaudeToken)
+                    .font(Design.Typography.caption)
                 }
             }
             .navigationTitle("Claude Code sign-in")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { showingClaudeSignIn = false }
+                    Button("Close") {
+                        showingClaudeSignIn = false
+                        claudeLoginID = ""
+                        claudeLoginCode = ""
+                    }
                 }
             }
+        }
+    }
+
+    private func startClaudeLogin() async {
+        guard !isStartingClaudeLogin else { return }
+        isStartingClaudeLogin = true
+        defer { isStartingClaudeLogin = false }
+        claudeSignInError = nil
+        guard let url = daemonURL("/v1/harness/tools/claude-code/login/start") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if status == 403 {
+                claudeSignInError = "This phone was paired without administration, so the daemon refuses the sign-in."
+                return
+            }
+            let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard (200..<300).contains(status),
+                  let id = body?["id"] as? String,
+                  let link = body?["url"] as? String,
+                  let linkURL = URL(string: link)
+            else {
+                let code = (body?["code"] as? String) ?? "unknown"
+                let message = (body?["message"] as? String) ?? ""
+                claudeSignInError = "The daemon refused (\(code), \(status)). \(message)"
+                return
+            }
+            claudeLoginID = id
+            openURL(linkURL)
+        } catch {
+            claudeSignInError = "The sign-in could not open: \(error.localizedDescription)"
+        }
+    }
+
+    private func finishClaudeLogin() async {
+        guard !isSavingClaudeToken, !claudeLoginID.isEmpty else { return }
+        isSavingClaudeToken = true
+        defer { isSavingClaudeToken = false }
+        claudeSignInError = nil
+        guard let url = daemonURL("/v1/harness/tools/claude-code/login/complete") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "id": claudeLoginID,
+            "code": claudeLoginCode.trimmingCharacters(in: .whitespacesAndNewlines),
+        ])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard (200..<300).contains(status) else {
+                let code = (body?["code"] as? String) ?? "unknown"
+                let message = (body?["message"] as? String) ?? ""
+                claudeSignInError = "The daemon refused (\(code), \(status)). \(message)"
+                return
+            }
+            claudeLoginCode = ""
+            claudeLoginID = ""
+            showingClaudeSignIn = false
+            await loadHarnessTools()
+        } catch {
+            claudeSignInError = "The code could not be sent: \(error.localizedDescription)"
         }
     }
 

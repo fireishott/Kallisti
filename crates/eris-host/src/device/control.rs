@@ -57,6 +57,91 @@ use super::handlers::{
 // Shared plumbing
 // ---------------------------------------------------------------------------
 
+/// `POST /v1/harness/tools/claude-code/login/start` - open the CLI's own sign-in.
+///
+/// Administration, because finishing it stores a credential. The answer carries
+/// the URL the CLI printed and the id that the code comes back with.
+pub async fn harness_tool_login_start(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Admin) {
+        return error.into_response();
+    }
+    let env = crate::harness_tools::detect_env();
+    let started = tokio::task::spawn_blocking(move || crate::harness_tools::start_login(&env))
+        .await
+        .unwrap_or_else(|error| Err(format!("the sign-in could not start: {error}")));
+    match started {
+        Ok((id, url)) => {
+            axum::Json(serde_json::json!({ "ok": true, "id": id, "url": url })).into_response()
+        }
+        Err(reason) => {
+            DeviceError::new(StatusCode::BAD_REQUEST, "harness_login_unavailable", reason)
+                .into_response()
+        }
+    }
+}
+
+/// `POST /v1/harness/tools/claude-code/login/complete` - take the code back.
+pub async fn harness_tool_login_complete(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Admin) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let id = fields
+        .get("id")
+        .map(|raw| raw.trim().to_owned())
+        .unwrap_or_default();
+    let code = fields
+        .get("code")
+        .map(|raw| raw.trim().to_owned())
+        .unwrap_or_default();
+    if id.is_empty() || code.is_empty() {
+        return DeviceError::new(
+            StatusCode::BAD_REQUEST,
+            "harness_login_code_required",
+            "the sign-in id and the code are both required",
+        )
+        .into_response();
+    }
+    let finished =
+        tokio::task::spawn_blocking(move || crate::harness_tools::complete_login(&id, &code))
+            .await
+            .unwrap_or_else(|error| Err(format!("the sign-in could not finish: {error}")));
+    let token_value = match finished {
+        Ok(token_value) => token_value,
+        Err(reason) => {
+            return DeviceError::new(StatusCode::BAD_REQUEST, "harness_login_failed", reason)
+                .into_response();
+        }
+    };
+    let db = service.engine().db();
+    if let Err(error) = crate::web::store::settings_put(db, SETTING_CLAUDE_TOKEN, &token_value) {
+        return DeviceError::db_unavailable(format!("cannot store the harness token: {error}"))
+            .into_response();
+    }
+    match detect_harnesses(db).await {
+        Ok(report) => axum::Json(report.json()).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
 /// The audit action a phone's model write records.
 ///
 /// The dashboard writes `settings.models`. A device write carries its own
