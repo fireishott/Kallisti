@@ -303,17 +303,23 @@ final class ErisHeraldClient: HeraldClientProtocol {
             continuation.yield(.messageSent(jobID: jobID, daemonJobID: turn.jobID))
 
             var text = ""
+            // The turn announces its route once, on the opening frame, so the
+            // finished row is what carries it: a delta stream has no other
+            // place to keep it.
+            var turnRoute: TurnRoute?
             let stream = await client.events(turnID: turn.jobID)
             for try await frame in stream {
                 // Only the delta frames need accumulating; the terminal frame
                 // carries the assembled answer.
                 if case .delta(let delta) = frame { text += delta }
+                if case .turnStarted(_, let announced) = frame { turnRoute = announced }
                 guard let mapped = Self.streamingUpdate(
                     for: frame,
                     jobID: jobID,
                     messageID: clientMessageID,
                     clientMessageID: clientMessageID,
-                    accumulatedText: text
+                    accumulatedText: text,
+                    route: turnRoute
                 ) else { continue }
                 continuation.yield(mapped.update)
                 if mapped.isTerminal {
@@ -365,16 +371,22 @@ final class ErisHeraldClient: HeraldClientProtocol {
         // client message id, so the job's own stable id is the row identity.
         let turnID = Self.stableUUID(from: jobID)
         var text = ""
+        // Attaching from the tail usually misses the opening frame, so a
+        // reattached turn has no route to show. That is honest: the badge is
+        // absent rather than guessed.
+        var turnRoute: TurnRoute?
         do {
             let stream = await client.events(turnID: jobID, lastEventID: nil)
             for try await frame in stream {
                 if case .delta(let delta) = frame { text += delta }
+                if case .turnStarted(_, let announced) = frame { turnRoute = announced }
                 guard let mapped = Self.streamingUpdate(
                     for: frame,
                     jobID: turnID,
                     messageID: turnID,
                     clientMessageID: nil,
-                    accumulatedText: text
+                    accumulatedText: text,
+                    route: turnRoute
                 ) else { continue }
                 continuation.yield(mapped.update)
                 if mapped.isTerminal {
@@ -406,9 +418,15 @@ final class ErisHeraldClient: HeraldClientProtocol {
         jobID: UUID,
         messageID: UUID,
         clientMessageID: UUID?,
-        accumulatedText: String
+        accumulatedText: String,
+        route: TurnRoute?
     ) -> (update: StreamingUpdate, isTerminal: Bool)? {
         switch frame {
+        case .turnStarted:
+            // No chat-facing update of its own: the route rides on the finished
+            // row (the caller threads it in), and the model name the frame
+            // carries already has the toolbar's own source.
+            return nil
         case .delta(let delta):
             return (.textDelta(delta), false)
         case .reasoning(let fragment):
@@ -465,7 +483,8 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 sender: .herald,
                 content: content,
                 jobID: jobID,
-                status: .sent
+                status: .sent,
+                route: route
             )
             let tokenUsage = usage.map {
                 TokenUsage(

@@ -417,6 +417,17 @@ struct MessageBubble: View, Equatable {
                     HStack(spacing: Design.Spacing.xs) {
                         Text(message.timestamp, style: .time)
                             .brandEyebrow()
+                        // Which way the daemon routed this turn. Compact on
+                        // purpose: it shares the line with the clock and the
+                        // menu, and a general turn with no harness has nothing
+                        // worth saying here.
+                        if let route = message.route?.badgeText {
+                            Text(route)
+                                .font(Design.Typography.eyebrow)
+                                .tracking(1.2)
+                                .foregroundStyle(Design.Colors.tertiaryForeground)
+                                .lineLimit(1)
+                        }
                         bubbleMenu
                     }
                 }

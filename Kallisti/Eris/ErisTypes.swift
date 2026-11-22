@@ -298,12 +298,20 @@ enum ErisFrame: Equatable, Sendable {
     case ask(question: String, choices: [String]?, requestID: String, multi: Bool)
     /// A command is parked until a person allows or denies it: turn.approval.
     case approval(ErisApproval)
+    /// The turn opened: `{"model":"...","route":{...}}`.
+    ///
+    /// The first frame of a turn, and the only one that says which way the
+    /// daemon routed it. Both payload fields are optional on purpose: a daemon
+    /// that does not route sends the frame with no `route`, and one that routes
+    /// may still leave the model unnamed.
+    case turnStarted(model: String?, route: TurnRoute?)
 
     /// Whether this frame ends the stream. Matches `FrameKind::is_terminal`.
     var isTerminal: Bool {
         switch self {
         case .delta, .reasoning, .toolStart, .toolFinished, .toolOutput, .step,
-             .artifactDiff, .artifactPage, .attachment, .ask, .approval: return false
+             .artifactDiff, .artifactPage, .attachment, .ask, .approval,
+             .turnStarted: return false
         case .done, .error, .cancelled: return true
         }
     }
@@ -314,8 +322,8 @@ enum ErisFrame: Equatable, Sendable {
         case .delta(let text): return text
         case .done(let text, _): return text
         case .reasoning, .toolStart, .toolFinished, .toolOutput, .step,
-             .artifactDiff, .artifactPage, .attachment, .ask, .approval, .error,
-             .cancelled: return nil
+             .artifactDiff, .artifactPage, .attachment, .ask, .approval,
+             .turnStarted, .error, .cancelled: return nil
         }
     }
 
@@ -375,6 +383,16 @@ enum ErisFrame: Equatable, Sendable {
             let object = try ErisJSON.object(data)
             let label = (object["label"] as? String) ?? (object["step_type"] as? String) ?? "step"
             return .step(label: label, stepType: object["step_type"] as? String)
+        case "turn.start":
+            // The opening frame: the model about to answer, and - on a daemon
+            // that routes turns - which way this one went. Read separately so a
+            // route this build cannot parse never costs the frame its model.
+            let object = (try? ErisJSON.object(data)) ?? [:]
+            let model = (object["model"] as? String) ?? ""
+            return .turnStarted(
+                model: model.isEmpty ? nil : model,
+                route: TurnRoute(json: object["route"])
+            )
         case "turn.artifact.diff":
             let object = try ErisJSON.object(data)
             return .artifactDiff(ErisDiff(json: object))

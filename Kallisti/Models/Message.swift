@@ -63,6 +63,74 @@ struct MessageAttachment: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// Which way the daemon sent a turn, as its `turn.start` frame reports it.
+///
+/// Every field is optional except the intent, and the whole route is optional
+/// on the row: a daemon that does not route turns sends no `route` at all, and
+/// one that routes may name only the intent. A `route` object with nothing a
+/// badge could show decodes to `nil`, so a bubble never draws an empty chip.
+struct TurnRoute: Equatable, Hashable, Sendable, Codable {
+    /// `general`, `coding` or `heavy`. Empty when the daemon sent only a
+    /// harness, which is still a route worth showing.
+    let intent: String
+    /// The harness the turn was handed to, when one was chosen.
+    let harness: String?
+    /// The model the turn resolved to, when the daemon named one.
+    let model: String?
+    /// Why the daemon routed it there, for a reader who taps through.
+    let reason: String?
+
+    init(intent: String = "", harness: String? = nil, model: String? = nil, reason: String? = nil) {
+        self.intent = intent
+        self.harness = harness
+        self.model = model
+        self.reason = reason
+    }
+
+    /// Read one `route` object off a `turn.start` frame.
+    ///
+    /// The frame is additive on the daemon's side, so this reads the keys it
+    /// knows and ignores the rest rather than failing a turn over a field this
+    /// build has not heard of.
+    init?(json: Any?) {
+        guard let object = json as? [String: Any] else { return nil }
+        let intent = Self.text(object["intent"]) ?? ""
+        let harness = Self.text(object["harness"])
+        let model = Self.text(object["model"])
+        let reason = Self.text(object["reason"])
+        // With neither an intent nor a harness there is nothing to put on the
+        // badge, which makes this "no route" rather than an empty one.
+        guard !intent.isEmpty || harness != nil else { return nil }
+        self.init(intent: intent, harness: harness, model: model, reason: reason)
+    }
+
+    private static func text(_ raw: Any?) -> String? {
+        guard let value = raw as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// The compact badge: `CODING · dsh`, `HEAVY`, or `dsh` for a general turn
+    /// the daemon still sent through a harness.
+    ///
+    /// A general turn with no harness is nothing at all - the general model is
+    /// the story there, and it already has its own line in Settings.
+    var badgeText: String? {
+        let intentTag: String?
+        switch intent {
+        case "coding": intentTag = "CODING"
+        case "heavy": intentTag = "HEAVY"
+        default: intentTag = nil
+        }
+        switch (intentTag, harness) {
+        case (.some(let tag), .some(let harness)): return "\(tag) · \(harness)"
+        case (.some(let tag), .none): return tag
+        case (.none, .some(let harness)): return harness
+        case (.none, .none): return nil
+        }
+    }
+}
+
 struct Message: Codable, Identifiable, Hashable, Sendable {
     /// Mutable so a transcript refresh can keep the id of the live streaming
     /// placeholder it matched by jobID. The stream targets that id on every
@@ -105,6 +173,11 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     /// Error category from the connector (e.g. "context_exceeded", "timeout").
     /// Non-persisted — only set for in-memory failed messages.
     var errorCategory: String?
+    /// Which way the daemon routed this turn, from its `turn.start` frame.
+    /// Absent for a daemon that does not route, for a turn this device only
+    /// reattached to (the frame is behind the tail), and for every row the
+    /// transcript alone can describe.
+    var route: TurnRoute?
 
     /// Whether this message was transcribed from a voice session.
     var isVoiceTranscript: Bool {
@@ -138,7 +211,8 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         reasoning: String = "",
         reasoningDuration: TimeInterval? = nil,
         errorCategory: String? = nil,
-        erisID: String? = nil
+        erisID: String? = nil,
+        route: TurnRoute? = nil
     ) {
         self.id = id
         self.clientMessageID = clientMessageID
@@ -157,6 +231,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         self.reasoningDuration = reasoningDuration
         self.errorCategory = errorCategory
         self.erisID = erisID
+        self.route = route
     }
 
     enum CodingKeys: String, CodingKey {
@@ -164,6 +239,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         case reasoning, reasoningDuration
         case toolActivities
         case codeDiff
+        case route
     }
 
     init(from decoder: Decoder) throws {
@@ -181,6 +257,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         toolActivities = try container.decodeIfPresent([ToolActivity].self, forKey: .toolActivities) ?? []
         toolActivity = nil
         codeDiff = try container.decodeIfPresent(CodeDiff.self, forKey: .codeDiff)
+        route = try container.decodeIfPresent(TurnRoute.self, forKey: .route)
         isStreaming = false
         voiceSessionDuration = nil
         errorCategory = nil
@@ -208,5 +285,6 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         if let codeDiff {
             try container.encode(codeDiff, forKey: .codeDiff)
         }
+        try container.encodeIfPresent(route, forKey: .route)
     }
 }

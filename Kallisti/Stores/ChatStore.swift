@@ -5414,6 +5414,13 @@ final class ChatStore {
                 refreshedConversation.messages[index].codeDiff = diff
             }
 
+            // The route arrived on the turn's opening frame, not on the row the
+            // daemon stores, so a transcript refresh arrives without one. Keep
+            // the local copy or the badge disappears on the next poll.
+            if let route = local.route, refreshedConversation.messages[index].route == nil {
+                refreshedConversation.messages[index].route = route
+            }
+
             if !local.reasoning.isEmpty {
                 if refreshedConversation.messages[index].reasoning.isEmpty {
                     Self.logger.info("REASON_DBG merge COPY_LOCAL_TO_REFRESHED idx=\(index) localLen=\(local.reasoning.count) remoteLen=\(refreshedConversation.messages[index].reasoning.count)")
