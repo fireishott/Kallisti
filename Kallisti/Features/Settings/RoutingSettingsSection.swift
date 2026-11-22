@@ -4,9 +4,11 @@ import SwiftUI
 /// What the daemon serves at `/v1/routing`, read for the parts the Routing card
 /// draws. `ok` and `provider_model` travel too and are deliberately not decoded:
 /// nothing here renders them.
-/// Which of the four model rows a pick applies to.
+/// Which of the three catalogue model rows a pick applies to. The harness model
+/// is not one of them: its choices come from the selected harness, not from the
+/// daemon's catalogue.
 enum ModelField: String, Identifiable {
-    case coding, heavy, general, harness
+    case coding, heavy, general
 
     var id: String { rawValue }
 
@@ -15,7 +17,6 @@ enum ModelField: String, Identifiable {
         case .coding: "Coding model"
         case .heavy: "Heavy model"
         case .general: "General model"
-        case .harness: "Harness model"
         }
     }
 }
@@ -40,6 +41,94 @@ private struct RoutingPayload: Decodable {
         case harnessModel = "harness_model"
         case models
     }
+}
+
+/// One model a harness says it supports. `label` is what the picker prints and
+/// `id` is what `PUT /v1/routing` stores, so the two never have to be the same
+/// string.
+struct HarnessToolModel: Decodable, Identifiable, Hashable, Sendable {
+    let id: String
+    let label: String
+
+    private enum CodingKeys: String, CodingKey { case id, label }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        label = (try? container.decode(String.self, forKey: .label)) ?? id
+    }
+}
+
+/// What a harness reports about its sign-in.
+///
+/// `source` is decoded because the contract carries it, but nothing here draws
+/// it: where the credential was found is the daemon's business. The token is
+/// never named at all.
+struct HarnessToolAuth: Decodable, Sendable {
+    let kind: String
+    let verified: Bool
+    let account: String?
+    let source: String?
+
+    private enum CodingKeys: String, CodingKey { case kind, verified, account, source }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = (try? container.decode(String.self, forKey: .kind)) ?? ""
+        verified = (try? container.decode(Bool.self, forKey: .verified)) ?? false
+        account = try? container.decodeIfPresent(String.self, forKey: .account)
+        source = try? container.decodeIfPresent(String.self, forKey: .source)
+    }
+}
+
+/// One row of `GET /v1/harness/tools`.
+///
+/// Every field the contract names is decoded; only `name`, `version`,
+/// `installed`, `installable`, `install_hint`, `auth` and `models` are drawn.
+/// `path` is deliberately not rendered: a filesystem path is daemon detail, not
+/// something the person choosing a harness needs.
+struct HarnessTool: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let binary: String
+    let installed: Bool
+    let version: String?
+    let path: String?
+    let installable: Bool
+    let installHint: String
+    let auth: HarnessToolAuth?
+    let models: [HarnessToolModel]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case binary
+        case installed
+        case version
+        case path
+        case installable
+        case auth
+        case models
+        case installHint = "install_hint"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = (try? container.decode(String.self, forKey: .name)) ?? id
+        binary = (try? container.decode(String.self, forKey: .binary)) ?? ""
+        installed = (try? container.decode(Bool.self, forKey: .installed)) ?? false
+        version = try? container.decodeIfPresent(String.self, forKey: .version)
+        path = try? container.decodeIfPresent(String.self, forKey: .path)
+        installable = (try? container.decode(Bool.self, forKey: .installable)) ?? false
+        installHint = (try? container.decode(String.self, forKey: .installHint)) ?? ""
+        auth = try? container.decodeIfPresent(HarnessToolAuth.self, forKey: .auth)
+        models = (try? container.decode([HarnessToolModel].self, forKey: .models)) ?? []
+    }
+}
+
+private struct HarnessToolsPayload: Decodable {
+    let tools: [HarnessTool]
 }
 
 /// What one routing PUT came back with. The body is kept for a refusal because
@@ -79,6 +168,14 @@ struct RoutingSettingsSection: View {
     @State private var harness = "none"
     /// The harness ids the daemon offers, in its own order.
     @State private var harnesses: [String] = []
+    /// What `GET /v1/harness/tools` reports, one row per harness. Empty means
+    /// the daemon does not serve the read (404) or could not be asked, and the
+    /// rows stay hidden rather than inventing a state the daemon did not send.
+    @State private var harnessTools: [HarnessTool] = []
+    /// The tool whose install POST is in flight, if any.
+    @State private var installingToolID: String?
+    /// A Verify tap is re-reading the tools.
+    @State private var isVerifyingTools = false
     @State private var routingError: String?
     @State private var hasLoaded = false
     @State private var isSaving = false
@@ -102,6 +199,12 @@ struct RoutingSettingsSection: View {
 
                 harnessRow
 
+                if !harnessTools.isEmpty {
+                    sectionDivider
+
+                    harnessToolsSection
+                }
+
                 sectionDivider
 
                 caption
@@ -121,6 +224,7 @@ struct RoutingSettingsSection: View {
             }
         }
         .task { await loadRouting() }
+        .task { await loadHarnessTools() }
         .task {
             // One read on appearance is enough for the count here; the monitor
             // sheet it opens owns the two-second poll while it is on screen.
@@ -200,7 +304,7 @@ struct RoutingSettingsSection: View {
             modelField("Heavy model", field: .heavy, text: $heavyModel)
             modelField("General model", field: .general, text: $generalModel)
             if harness != "none" {
-                modelField("Harness model", field: .harness, text: $harnessModel)
+                harnessModelField
             }
 
             Button {
@@ -288,6 +392,53 @@ struct RoutingSettingsSection: View {
         }
     }
 
+    /// The harness model is not a daemon-catalogue pick.
+    ///
+    /// Each harness supports its own set, so the menu is built from the selected
+    /// tool's `models` and the empty tag means "let the tool decide". A value the
+    /// rows do not list is kept as a tag of its own so the stored value is not
+    /// silently hidden before `Save` gets a chance to clear it.
+    private var harnessModelField: some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
+            Text("Harness model")
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+
+            Picker("Harness model", selection: $harnessModel) {
+                Text("The tool's own default").tag("")
+                ForEach(selectedHarnessModels) { model in
+                    Text(model.label.isEmpty ? model.id : model.label).tag(model.id)
+                }
+                if !harnessModel.isEmpty,
+                   !selectedHarnessModels.contains(where: { $0.id == harnessModel }) {
+                    Text(harnessModel).tag(harnessModel)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .tint(Design.Colors.foreground)
+            .padding(Design.Spacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Design.Colors.background)
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                    .stroke(Design.Colors.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+            .disabled(!hasLoaded || isSaving)
+            .accessibilityIdentifier("settings.routing.harnessModel")
+        }
+    }
+
+    /// The tool the harness picker names, when the tools read has answered.
+    private var selectedHarnessTool: HarnessTool? {
+        harnessTools.first { $0.id == harness }
+    }
+
+    private var selectedHarnessModels: [HarnessToolModel] {
+        selectedHarnessTool?.models ?? []
+    }
+
     /// The provider that publishes a chosen id, when the catalogue still lists it.
     private func providerLabel(for id: String) -> String? {
         guard !id.isEmpty else { return nil }
@@ -299,7 +450,6 @@ struct RoutingSettingsSection: View {
         case .coding: $codingModel
         case .heavy: $heavyModel
         case .general: $generalModel
-        case .harness: $harnessModel
         }
     }
 
@@ -334,6 +484,115 @@ struct RoutingSettingsSection: View {
         }
         .frame(minHeight: Design.Size.minTapTarget)
         .padding(.vertical, Design.Spacing.xs)
+    }
+
+    /// One row per harness the daemon reported: whether it is on this host and,
+    /// for Claude Code, whether its sign-in verified. The section is drawn only
+    /// when the tools read answered with rows.
+    private var harnessToolsSection: some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+            ForEach(harnessTools) { tool in
+                harnessToolRow(tool)
+            }
+        }
+        .padding(.vertical, Design.Spacing.xs)
+    }
+
+    private func harnessToolRow(_ tool: HarnessTool) -> some View {
+        HStack(alignment: .top, spacing: Design.Spacing.sm) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 8))
+                .foregroundStyle(tool.installed ? Design.Colors.success : Design.Colors.warning)
+                .padding(.top, 6)
+                .accessibilityLabel(tool.installed ? "Installed" : "Missing")
+
+            VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
+                HStack(spacing: Design.Spacing.xs) {
+                    Text(tool.name)
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                    if let version = tool.version, !version.isEmpty {
+                        Text(version)
+                            .font(Design.Typography.caption2)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .lineLimit(1)
+                    }
+                }
+
+                if tool.id == "claude-code" {
+                    Text(authLine(tool.auth))
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(
+                            tool.auth?.verified == true
+                                ? Design.Colors.secondaryForeground
+                                : Design.Colors.warning
+                        )
+                }
+
+                if !tool.installed && !tool.installable && !tool.installHint.isEmpty {
+                    // The daemon cannot install this one, so the row says how a
+                    // person would. Monospaced because it is a command, not prose.
+                    Text(tool.installHint)
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: Design.Spacing.sm)
+
+            if !tool.installed && tool.installable {
+                Button {
+                    Task { await install(tool) }
+                } label: {
+                    if installingToolID == tool.id {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(Design.Brand.accent)
+                    } else {
+                        Text("Install")
+                            .font(Design.Typography.caption)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(Design.Brand.accent)
+                .disabled(installingToolID != nil || isSaving)
+                .accessibilityIdentifier("settings.routing.tools.\(tool.id).install")
+            } else if tool.installed && tool.id == "claude-code" {
+                Button {
+                    Task { await verifyHarnessTools() }
+                } label: {
+                    if isVerifyingTools {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(Design.Brand.accent)
+                    } else {
+                        Text("Verify")
+                            .font(Design.Typography.caption)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(Design.Brand.accent)
+                .disabled(isVerifyingTools)
+                .accessibilityIdentifier("settings.routing.tools.\(tool.id).verify")
+            }
+        }
+        .frame(minHeight: Design.Size.minTapTarget)
+        .accessibilityIdentifier("settings.routing.tools.\(tool.id)")
+    }
+
+    /// What the Claude Code row says about its sign-in. The account is the only
+    /// detail ever printed; a verified credential without one is a token, and
+    /// nothing about where it came from is drawn.
+    private func authLine(_ auth: HarnessToolAuth?) -> String {
+        guard let auth, auth.verified else { return "Not signed in" }
+        if let account = auth.account?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !account.isEmpty {
+            return "Signed in as \(account)"
+        }
+        return "Signed in (token present)"
     }
 
     private var caption: some View {
@@ -422,13 +681,26 @@ struct RoutingSettingsSection: View {
     /// once without, and a URL built from the wrong one asks for `/v1/v1/routing`
     /// - which the daemon answers with a 404 that reads like the route is
     /// missing. Joining here removes the guess.
-    private var routingBaseURL: URL? {
+    private var daemonBaseURLString: String? {
         guard var base = settingsStore.settings.relayConfiguration.activeBaseURLString
             ?? pairingStore.pairedRelayConfiguration?.baseURLString, !base.isEmpty
         else { return nil }
+        base = base.trimmingCharacters(in: .whitespacesAndNewlines)
         while base.hasSuffix("/") { base.removeLast() }
         if base.hasSuffix("/v1") { base.removeLast(3) }
-        return URL(string: base + "/v1/routing")
+        return base.isEmpty ? nil : base
+    }
+
+    private var routingBaseURL: URL? {
+        daemonURL("/v1/routing")
+    }
+
+    /// Join a `/v1/...` route onto the same stripped base `routingBaseURL` uses,
+    /// so the routing read, the tools read and the install POST cannot disagree
+    /// about whether the paired URL already ends in `/v1`.
+    private func daemonURL(_ route: String) -> URL? {
+        guard let base = daemonBaseURLString else { return nil }
+        return URL(string: base + route)
     }
 
     /// The same base URL and token source the rest of this card uses, wrapped
@@ -479,6 +751,98 @@ struct RoutingSettingsSection: View {
         }
     }
 
+    /// One read of `GET /v1/harness/tools`.
+    ///
+    /// A 404 is the daemon saying it does not serve the read: that is a state,
+    /// not a failure, and it leaves the rows hidden. Any other failure hides
+    /// them too, because a status dot that no answer backs would be a guess.
+    private func loadHarnessTools() async {
+        guard let url = daemonURL("/v1/harness/tools") else {
+            harnessTools = []
+            return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            var (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+                await sessionStore.refreshAccessTokenIfNeeded()
+                if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    (data, response) = try await URLSession.shared.data(for: request)
+                }
+            }
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                harnessTools = []
+                return
+            }
+            harnessTools = try JSONDecoder().decode(HarnessToolsPayload.self, from: data).tools
+        } catch {
+            harnessTools = []
+        }
+    }
+
+    /// `POST /v1/harness/tools/{id}/install`.
+    ///
+    /// The daemon owns what "install" means; this only reports what it said. A
+    /// 400 or 409 carries the refusal text, including the hint when the tool
+    /// cannot be installed here. Either way the rows are re-read, because an
+    /// install can take a moment and the next row should draw what is true now.
+    private func install(_ tool: HarnessTool) async {
+        guard installingToolID == nil else { return }
+        installingToolID = tool.id
+        defer { installingToolID = nil }
+        guard let url = daemonURL("/v1/harness/tools/\(Self.pathComponent(tool.id))/install") else {
+            routingError = "No daemon is paired, so there is no harness to install."
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            var (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+                await sessionStore.refreshAccessTokenIfNeeded()
+                if let token = await sessionStore.currentAccessToken(), !token.isEmpty {
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    (data, response) = try await URLSession.shared.data(for: request)
+                }
+            }
+            guard let http = response as? HTTPURLResponse else {
+                routingError = "The harness could not be installed: the daemon sent no answer."
+                return
+            }
+            if (200..<300).contains(http.statusCode) {
+                routingError = nil
+            } else {
+                routingError = refusal(status: http.statusCode, body: data)
+            }
+            await loadHarnessTools()
+        } catch {
+            routingError = "The harness could not be installed: \(error.localizedDescription)"
+        }
+    }
+
+    /// The Verify row action: no write, only the read the row already draws.
+    private func verifyHarnessTools() async {
+        guard !isVerifyingTools else { return }
+        isVerifyingTools = true
+        defer { isVerifyingTools = false }
+        await loadHarnessTools()
+    }
+
+    private static func pathComponent(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
     /// One PUT against `/v1/routing`. Both the full save and the two
     /// single-field writes go through here, so the 401 rule and the refusal
     /// wording exist once.
@@ -518,6 +882,20 @@ struct RoutingSettingsSection: View {
         guard !isSaving else { return }
         isSaving = true
         defer { isSaving = false }
+        // A model the chosen harness does not list is refused by the daemon. The
+        // tools read is what knows the list, so when it has answered for this
+        // harness, clear the value here and say why instead of sending a body
+        // that is already a 400. When the read has not answered (404, offline)
+        // nothing is known, so the value is left for the daemon to judge.
+        var harnessModelNote: String?
+        if harness != "none",
+           let tool = harnessTools.first(where: { $0.id == harness }) {
+            let chosen = trimmed(harnessModel)
+            if !chosen.isEmpty, !tool.models.contains(where: { $0.id == chosen }) {
+                harnessModelNote = "The chosen harness does not support \(chosen), so it was cleared."
+                harnessModel = ""
+            }
+        }
         let payload: [String: Any] = [
             "auto": isAutomatic,
             "coding_model": trimmed(codingModel),
@@ -528,7 +906,9 @@ struct RoutingSettingsSection: View {
         let outcome = await putRouting(payload)
         switch outcome {
         case .stored(let routing):
-            routingError = nil
+            // A cleared model keeps its explanation in the same line a refusal
+            // would use, so the row does not look as if nothing happened.
+            routingError = harnessModelNote
             // The echoed record is what the daemon actually stored, so the
             // fields settle on it instead of on what was typed.
             if let routing {
