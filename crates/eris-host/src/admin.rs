@@ -831,6 +831,7 @@ impl AppState {
             current_conversation: None,
             rail_hidden: self.rail_hidden(),
             subagents: self.bar_subagents(),
+            harness_runs: crate::harness_view::rows(),
         }
     }
 

@@ -376,6 +376,13 @@ pub struct Chrome {
     /// The rows themselves rather than a copy, so the bar and a page that queries
     /// the table cannot disagree about a status or an elapsed time.
     pub subagents: Vec<crate::subagents::Subagent>,
+    /// The coding-harness runs worth reporting, newest first. Empty means no
+    /// control is rendered at all.
+    ///
+    /// Server-rendered from the same snapshot the page would fetch, so the bar
+    /// exists before the first request and a reader with no script sees the
+    /// same rows; the script only updates what is already there.
+    pub harness_runs: Vec<crate::harness_view::Row>,
 }
 
 /// One calendar day of the rail's list, as a heading and the rows under it.
@@ -426,6 +433,7 @@ impl Default for Chrome {
             rail_days: Vec::new(),
             rail_hidden: false,
             subagents: Vec::new(),
+            harness_runs: Vec::new(),
         }
     }
 }
@@ -730,12 +738,17 @@ pub fn shell(
                            carries the row, and the cog in the rail reaches
                            settings from chat. */
                         @let sections = nav.is_some_and(|current| current != Nav::Chat);
-                        @if sections || !chrome.subagents.is_empty() {
+                        @if sections
+                            || !chrome.subagents.is_empty()
+                            || !chrome.harness_runs.is_empty()
+                        {
                             /* The subagents control sits in this row because that is
                                where the app talks about itself, and on the
                                conversation it is the only thing in the row: a
                                dispatch from a chat turn is exactly when the operator
-                               needs to see it. */
+                               needs to see it. The harness control is its
+                               neighbour for the same reason: both report work the
+                               daemon started on the operator's behalf. */
                             div .top-nav {
                                 @if sections {
                                     @if let Some(current) = nav {
@@ -743,6 +756,7 @@ pub fn shell(
                                     }
                                 }
                                 (subagents_control(chrome))
+                                (harness_control(chrome, nav.is_some()))
                             }
                         }
                         (body)
@@ -1067,6 +1081,506 @@ fn subagent_entry(row: &crate::subagents::Subagent) -> Markup {
         }
     }
 }
+
+/// The top-bar control that reports coding-harness runs.
+///
+/// It is the subagents control's neighbour and its twin: a `details` element so
+/// the disclosure opens with no script, server-rendered rows so a browser with
+/// JavaScript blocked still reads the list, and nothing at all when there is
+/// nothing to report. What differs is that a run has more to say than one line:
+/// its output is only fetched when the operator asks for it, because a page that
+/// carried every run's stdout would be a page that grows without bound.
+///
+/// The one script here is the live half, and it is inside the control rather
+/// than in the shell: a daemon with no runs renders no control, so it renders
+/// no script either.
+pub(crate) fn harness_control(chrome: &Chrome, admin: bool) -> Markup {
+    use crate::harness_view;
+    if chrome.harness_runs.is_empty() {
+        return Markup::default();
+    }
+    let running = harness_view::running_count(&chrome.harness_runs);
+    let live = chrome.harness_runs.iter().any(harness_view::live);
+    html! {
+        details .harness data-admin=(if admin { "1" } else { "0" }) {
+            summary title="Coding harness runs, newest first" {
+                span .harness-word { "Harness" }
+                /* Both live parts are drawn even when they are off, because the
+                   script can only turn a node it already has back on: a run
+                   that starts while the popover is open must not need a
+                   reload to raise its count or light the dot. */
+                @if running > 0 {
+                    span .harness-count { (running) }
+                } @else {
+                    span .harness-count hidden { "0" }
+                }
+                @if live {
+                    span .harness-live title="a run is live" {
+                        span .harness-dot aria-hidden="true" {}
+                        span .sr-only { "live" }
+                    }
+                } @else {
+                    span .harness-live title="a run is live" hidden {
+                        span .harness-dot aria-hidden="true" {}
+                        span .sr-only { "live" }
+                    }
+                }
+            }
+            div .harness-list aria-label="Harness runs" {
+                @for row in &chrome.harness_runs {
+                    (harness_entry(row, admin))
+                }
+            }
+            script { (PreEscaped(HARNESS_JS)) }
+        }
+    }
+}
+
+/// One harness run: the line the popover shows, and the place its output lands.
+///
+/// The row is itself a `details`, so opening it is the same gesture as opening
+/// the popover and needs no script. It carries no link: a run has no page in
+/// this UI, so "open" means "expand here" and the fetch behind that gesture is
+/// the script's only other job.
+fn harness_entry(row: &crate::harness_view::Row, admin: bool) -> Markup {
+    use crate::harness_view;
+    let status = harness_view::status(&row.status);
+    html! {
+        details .harness-run data-run=(row.id.as_str()) {
+            summary title="Open this harness run" {
+                span .harness-name { (row.harness) }
+                span class=(format!("harness-status {status}")) {
+                    (status)
+                }
+                span .harness-elapsed { (harness_view::elapsed_label(row.elapsed_ms)) }
+                span .harness-task { (harness_view::task_preview(&row.task)) }
+            }
+            div .harness-detail {
+                p .harness-watch {
+                    span class=(format!("harness-status {status}")) { (status) }
+                    span .harness-watchdog { (harness_view::watchdog(row)) }
+                    span .harness-timeout {}
+                }
+                pre .harness-stdout aria-label="last standard output" {}
+                pre .harness-stderr aria-label="standard error" hidden {}
+                @if admin {
+                    div .harness-actions {
+                        button type="button" class="harness-kill danger" hidden
+                            data-run=(row.id.as_str()) { "Kill" }
+                    }
+                }
+                p .harness-note role="status" aria-live="polite" {}
+            }
+        }
+    }
+}
+
+/// The live half of the harness control.
+///
+/// Everything it draws is already on the page: opening the popover fetches the
+/// same list the server rendered, and the event stream only replaces fields a
+/// row already has. A daemon that does not serve these routes answers 404, and
+/// that is not an error to show: the server-rendered rows stay exactly as they
+/// are, with no invented row and no banner about a feature that is not there.
+///
+/// The stream is opened only while the popover is open, closed on toggle and on
+/// unload, and reopened with a backoff that doubles from a second to fifteen.
+/// `EventSource` reconnects by itself, but its own retry has no backoff and no
+/// stop, so this script owns both.
+const HARNESS_JS: &str = r##"(function () {
+  "use strict";
+  var script = document.currentScript;
+  var box = script === null ? null : script.closest("details.harness");
+  if (box === null) { return; }
+  var list = box.querySelector(".harness-list");
+  var countNode = box.querySelector(".harness-count");
+  var liveNode = box.querySelector(".harness-live");
+  if (list === null) { return; }
+
+  // The kill control is rendered hidden: with no script it would be a button
+  // that promises a stop and cannot make one. The live half turns it on.
+  (function revealKill() {
+    var buttons = list.querySelectorAll("button.harness-kill");
+    for (var index = 0; index < buttons.length; index += 1) {
+      buttons[index].hidden = false;
+    }
+  })();
+
+  var source = null;
+  var retry = null;
+  var backoff = 1000;
+  var runs = [];
+  var byId = {};
+  var openId = "";
+  var detailTimer = null;
+  var lastDetail = 0;
+  var OUTPUT_CAP = 4000;
+
+  function secondsLabel(milliseconds) {
+    var total = Math.floor(Math.max(0, Number(milliseconds) || 0) / 1000);
+    if (total < 60) { return total + "s"; }
+    var rest = total % 60;
+    return Math.floor(total / 60) + "m " + (rest < 10 ? "0" : "") + rest + "s";
+  }
+
+  function known(run) {
+    var names = ["running", "succeeded", "failed", "timed_out", "killed", "stalled"];
+    return names.indexOf(run.status) >= 0 ? run.status : "unknown";
+  }
+
+  function isLive(run) {
+    return run.stalled === true || run.status === "running" || run.status === "stalled";
+  }
+
+  function watchdog(run) {
+    if (run.stalled === true || run.status === "stalled") { return "stalled"; }
+    if (run.status === "running") { return "silent " + secondsLabel(run.silent_ms); }
+    return "settled";
+  }
+
+  function preview(task) {
+    if (typeof task === "string") {
+      var flat = task.replace(/\s+/g, " ").trim();
+      var chars = Array.from(flat);
+      if (chars.length > 80) { return chars.slice(0, 80).join("") + "..."; }
+      return flat;
+    }
+    return "";
+  }
+
+  function tail(text) {
+    if (typeof text === "string") {
+      if (text.length > OUTPUT_CAP) { return text.slice(text.length - OUTPUT_CAP); }
+      return text;
+    }
+    return "";
+  }
+
+  function remember(run) {
+    var found = -1;
+    for (var index = 0; index < runs.length; index += 1) {
+      if (runs[index].id === run.id) { found = index; }
+    }
+    if (found < 0) { runs.push(run); } else { runs[found] = run; }
+    runs.sort(function (left, right) {
+      var a = typeof left.started_at === "string" ? left.started_at : "";
+      var b = typeof right.started_at === "string" ? right.started_at : "";
+      if (a === b) { return 0; }
+      return a < b ? 1 : -1;
+    });
+    byId[run.id] = run;
+  }
+
+  function makeSpan(className, text) {
+    var node = document.createElement("span");
+    node.className = className;
+    node.textContent = text;
+    return node;
+  }
+
+  function paintSummary() {
+    if (countNode !== null) {
+      var running = 0;
+      runs.forEach(function (run) { if (run.status === "running") { running += 1; } });
+      countNode.textContent = String(running);
+      countNode.hidden = running === 0;
+    }
+    if (liveNode !== null) {
+      liveNode.hidden = runs.some(isLive) === false;
+    }
+  }
+
+  function writeWatch(detail, run) {
+    var status = detail.querySelector(".harness-status");
+    if (status !== null) {
+      status.className = "harness-status " + known(run);
+      status.textContent = known(run);
+    }
+    var dog = detail.querySelector(".harness-watchdog");
+    if (dog !== null) { dog.textContent = watchdog(run); }
+  }
+
+  function updateRow(details, run) {
+    var summary = details.querySelector("summary");
+    if (summary === null) { return; }
+    var name = summary.querySelector(".harness-name");
+    if (name !== null) { name.textContent = run.harness; }
+    var status = summary.querySelector(".harness-status");
+    if (status !== null) {
+      status.className = "harness-status " + known(run);
+      status.textContent = known(run);
+    }
+    var elapsed = summary.querySelector(".harness-elapsed");
+    if (elapsed !== null) { elapsed.textContent = secondsLabel(run.elapsed_ms); }
+    var task = summary.querySelector(".harness-task");
+    if (task !== null) { task.textContent = preview(run.task); }
+    var detail = details.querySelector(".harness-detail");
+    if (detail !== null) { writeWatch(detail, run); }
+  }
+
+  function fill(details, run, force) {
+    var detail = details.querySelector(".harness-detail");
+    if (detail === null) { return; }
+    writeWatch(detail, run);
+    if (force === false && detail.getAttribute("data-filled") === "1") { return; }
+    var first = detail.getAttribute("data-filled") === "1" ? false : true;
+    detail.setAttribute("data-filled", "1");
+    var note = detail.querySelector(".harness-note");
+    if (first === true && note !== null) { note.textContent = "reading the run..."; }
+    fetch("/v1/harness/runs/" + encodeURIComponent(run.id), {
+      headers: { accept: "application/json" }
+    })
+      .then(function (response) {
+        if (response.ok === false) { throw response.status; }
+        return response.json();
+      })
+      .then(function (body) {
+        var full = body === null || body.run === undefined ? null : body.run;
+        if (full === null || typeof full.id !== "string") { throw "no run"; }
+        remember(full);
+        writeWatch(detail, full);
+        var timeout = detail.querySelector(".harness-timeout");
+        if (timeout !== null) {
+          var secs = Number(full.timeout_secs) || 0;
+          timeout.textContent = secs > 0 ? "timeout " + secs + "s" : "";
+        }
+        var out = detail.querySelector(".harness-stdout");
+        if (out !== null) { out.textContent = tail(full.stdout); }
+        var err = detail.querySelector(".harness-stderr");
+        if (err !== null) {
+          var text = tail(full.stderr);
+          err.textContent = text;
+          err.hidden = text.length === 0;
+        }
+        if (note !== null) { note.textContent = ""; }
+        updateRow(details, full);
+        paintSummary();
+      })
+      .catch(function () {
+        if (note !== null) { note.textContent = ""; }
+        detail.setAttribute("data-filled", "");
+      });
+  }
+
+  function rowFor(run, open) {
+    var details = document.createElement("details");
+    details.className = "harness-run";
+    details.setAttribute("data-run", run.id);
+
+    var summary = document.createElement("summary");
+    summary.appendChild(makeSpan("harness-name", run.harness));
+    summary.appendChild(makeSpan("harness-status " + known(run), known(run)));
+    summary.appendChild(makeSpan("harness-elapsed", secondsLabel(run.elapsed_ms)));
+    summary.appendChild(makeSpan("harness-task", preview(run.task)));
+    details.appendChild(summary);
+
+    var detail = document.createElement("div");
+    detail.className = "harness-detail";
+    var watch = document.createElement("p");
+    watch.className = "harness-watch";
+    watch.appendChild(makeSpan("harness-status " + known(run), known(run)));
+    watch.appendChild(makeSpan("harness-watchdog", watchdog(run)));
+    watch.appendChild(makeSpan("harness-timeout", ""));
+    detail.appendChild(watch);
+
+    var out = document.createElement("pre");
+    out.className = "harness-stdout";
+    out.setAttribute("aria-label", "last standard output");
+    detail.appendChild(out);
+
+    var err = document.createElement("pre");
+    err.className = "harness-stderr";
+    err.setAttribute("aria-label", "standard error");
+    err.hidden = true;
+    detail.appendChild(err);
+
+    if (box.getAttribute("data-admin") === "1") {
+      var actions = document.createElement("div");
+      actions.className = "harness-actions";
+      var kill = document.createElement("button");
+      kill.type = "button";
+      kill.className = "harness-kill danger";
+      kill.textContent = "Kill";
+      kill.setAttribute("data-run", run.id);
+      actions.appendChild(kill);
+      detail.appendChild(actions);
+    }
+
+    var note = document.createElement("p");
+    note.className = "harness-note";
+    note.setAttribute("role", "status");
+    detail.appendChild(note);
+    details.appendChild(detail);
+
+    details.addEventListener("toggle", function () {
+      if (details.open === false) {
+        if (openId === run.id) { openId = ""; }
+        return;
+      }
+      openId = run.id;
+      fill(details, byId[run.id], false);
+    });
+    if (open === true) {
+      details.open = true;
+      openId = run.id;
+      fill(details, byId[run.id], false);
+    }
+    return details;
+  }
+
+  function paint() {
+    if (runs.length === 0) {
+      closeSource();
+      box.remove();
+      return;
+    }
+    var keep = openId;
+    openId = "";
+    list.textContent = "";
+    runs.forEach(function (run) {
+      list.appendChild(rowFor(run, run.id === keep));
+    });
+    paintSummary();
+  }
+
+  function load() {
+    fetch("/v1/harness/runs", { headers: { accept: "application/json" } })
+      .then(function (response) {
+        if (response.ok === false) { throw response.status; }
+        return response.json();
+      })
+      .then(function (body) {
+        if (body === null || body.ok === false || Array.isArray(body.runs) === false) {
+          throw "no runs";
+        }
+        if (box.open === false) { return; }
+        runs = [];
+        byId = {};
+        body.runs.forEach(function (run) {
+          if (run !== null && typeof run.id === "string") { remember(run); }
+        });
+        paint();
+        openSource();
+      })
+      .catch(function () {
+        // The routes may not be deployed yet. The server-rendered rows are the
+        // whole report until they are, and nothing here invents one.
+      });
+  }
+
+  function refreshDetail(row, run) {
+    if (detailTimer !== null) { return; }
+    var wait = Math.max(0, 1000 - (Date.now() - lastDetail));
+    detailTimer = window.setTimeout(function () {
+      detailTimer = null;
+      lastDetail = Date.now();
+      if (row.open === true) { fill(row, run, true); }
+    }, wait);
+  }
+
+  function apply(run) {
+    var row = null;
+    var rows = list.querySelectorAll("details.harness-run");
+    for (var index = 0; index < rows.length; index += 1) {
+      if (rows[index].getAttribute("data-run") === run.id) { row = rows[index]; }
+    }
+    if (row === null) { paint(); return; }
+    updateRow(row, run);
+    if (row.open === true) { refreshDetail(row, run); }
+    paintSummary();
+  }
+
+  function openSource() {
+    if (source !== null || box.isConnected === false) { return; }
+    try {
+      source = new EventSource("/v1/harness/events");
+    } catch (error) {
+      source = null;
+      schedule();
+      return;
+    }
+    source.addEventListener("run", function (event) {
+      var run = null;
+      try { run = JSON.parse(event.data); } catch (error) { run = null; }
+      if (run === null || typeof run.id !== "string") { return; }
+      remember(run);
+      apply(run);
+    });
+    source.addEventListener("open", function () { backoff = 1000; });
+    source.addEventListener("error", function () {
+      if (source === null) { return; }
+      source.close();
+      source = null;
+      schedule();
+    });
+  }
+
+  function schedule() {
+    if (retry !== null || box.isConnected === false || box.open === false) { return; }
+    retry = window.setTimeout(function () {
+      retry = null;
+      if (box.open === true) { openSource(); }
+    }, backoff);
+    backoff = Math.min(backoff * 2, 15000);
+  }
+
+  function closeSource() {
+    if (source !== null) {
+      source.close();
+      source = null;
+    }
+    if (retry !== null) {
+      window.clearTimeout(retry);
+      retry = null;
+    }
+    if (detailTimer !== null) {
+      window.clearTimeout(detailTimer);
+      detailTimer = null;
+    }
+    backoff = 1000;
+  }
+
+  list.addEventListener("click", function (event) {
+    var target = event.target;
+    var button = target === null ? null : target.closest("button.harness-kill");
+    if (button === null) { return; }
+    var id = button.getAttribute("data-run");
+    if (id === null) { return; }
+    button.disabled = true;
+    fetch("/v1/harness/runs/" + encodeURIComponent(id) + "/kill", {
+      method: "POST",
+      headers: { accept: "application/json" }
+    })
+      .then(function (response) {
+        if (response.ok === false) { throw response.status; }
+        return response.json();
+      })
+      .then(function (body) {
+        var full = body === null ? null : (body.run === undefined ? body : body.run);
+        if (full !== null && typeof full.id === "string") { remember(full); }
+        load();
+      })
+      .catch(function () {
+        button.disabled = false;
+        var row = button.closest("details.harness-run");
+        var note = row === null ? null : row.querySelector(".harness-note");
+        if (note !== null) { note.textContent = "the daemon did not stop this run"; }
+      });
+  });
+
+  box.addEventListener("toggle", function () {
+    if (box.open === false) {
+      closeSource();
+      return;
+    }
+    load();
+  });
+
+  window.addEventListener("pagehide", closeSource);
+  window.addEventListener("beforeunload", closeSource);
+
+  if (box.open === true) { load(); }
+})();"##;
 
 /// The step rail. Completed steps are marked in text, not only in colour.
 fn rail(wizard: &Wizard) -> Markup {
