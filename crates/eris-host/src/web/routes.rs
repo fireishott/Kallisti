@@ -11483,6 +11483,9 @@ fn spawn_turn(
         crate::tools::Sandbox::new(workspace, mode)
             .with_processes(desk)
             .with_memory(std::sync::Arc::clone(&memory))
+            // The coding harness the operator pointed at, when one is set. The
+            // tool is offered and callable only when this resolves.
+            .with_harness(crate::tools::harness::config(&db))
     };
     let mcp = state.mcp.clone();
     let approval_policy = state

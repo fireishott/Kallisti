@@ -18,6 +18,8 @@ use std::path::{Component, Path, PathBuf};
 pub use crate::onboarding::permissions::SandboxMode;
 use core_runtime::provider::ToolSpec;
 
+pub mod harness;
+
 /// The largest file a turn may read in one call.
 ///
 /// A model that pages through a 2 GB file is not reading it, it is burning a
@@ -237,6 +239,12 @@ pub struct Sandbox {
     processes: Option<std::sync::Arc<crate::process::Desk>>,
     /// The assistant's own bounded notes, when the caller wired them up.
     memory: Option<std::sync::Arc<crate::selfmemory::Access>>,
+    /// The external coding harness this turn may delegate to, when the operator
+    /// configured one.
+    ///
+    /// Not part of the boundary identity for the same reason the desk is not: it
+    /// says what this turn can hand work to, not where it may write.
+    harness: Option<harness::Config>,
 }
 
 impl std::fmt::Debug for Sandbox {
@@ -246,6 +254,7 @@ impl std::fmt::Debug for Sandbox {
             .field("mode", &self.mode)
             .field("processes", &self.processes.is_some())
             .field("memory", &self.memory.is_some())
+            .field("harness", &self.harness)
             .finish()
     }
 }
@@ -267,6 +276,7 @@ impl Sandbox {
             mode,
             processes: None,
             memory: None,
+            harness: None,
         }
     }
 
@@ -297,6 +307,22 @@ impl Sandbox {
     #[must_use]
     pub fn memory(&self) -> Option<&std::sync::Arc<crate::selfmemory::Access>> {
         self.memory.as_ref()
+    }
+
+    /// Give this sandbox the harness a turn may delegate to.
+    ///
+    /// `None` is the shipped state: no harness row configured, so the tool is
+    /// neither offered nor callable.
+    #[must_use]
+    pub fn with_harness(mut self, harness: Option<harness::Config>) -> Self {
+        self.harness = harness;
+        self
+    }
+
+    /// The configured harness, when this turn was given one.
+    #[must_use]
+    pub fn harness(&self) -> Option<&harness::Config> {
+        self.harness.as_ref()
     }
 
     /// The directory every path resolves against.
@@ -667,6 +693,10 @@ pub fn execute_streaming(
         "read_file" => read_file(arguments, sandbox),
         "write_file" => write_file(arguments, sandbox),
         "run_command" => run_command(arguments, sandbox, sink),
+        // Delegating a coding task to the operator's harness. It is a process
+        // spawn like `run_command`, under the same write gate, and it answers
+        // itself here rather than needing the turn.
+        "delegate_to_harness" => harness::run(arguments, sandbox),
         "fetch_url" => fetch_url(arguments, sandbox),
         "memory_manage" => match sandbox.memory() {
             Some(access) => access.call(arguments),

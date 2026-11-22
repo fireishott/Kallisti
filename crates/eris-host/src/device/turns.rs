@@ -641,7 +641,10 @@ impl TurnPolicy {
         Self {
             sandbox: crate::tools::Sandbox::new(workspace, mode)
                 .with_processes(desk)
-                .with_memory(memory),
+                .with_memory(memory)
+                // A phone turn delegates to the same configured harness the
+                // browser does.
+                .with_harness(crate::tools::harness::config(engine.db())),
             approval_policy,
             tools: crate::tools::enabled(setting(crate::tools::SETTING_TOOLS_ENABLED).as_deref()),
             max_rounds: crate::tools::max_rounds(
