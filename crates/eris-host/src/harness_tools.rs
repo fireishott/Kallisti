@@ -1408,7 +1408,6 @@ mod tests {
     /// Every harness found on the fixture path reports where it is and the first
     /// line of its own version.
     #[test]
-    #[test]
     fn a_hyperlink_wrapped_value_is_lifted_once() {
         // The CLI prints an OSC-8 wrapper: the value appears in the escape
         // payload, then again as the visible text with a BOM between. Returning
@@ -1437,6 +1436,7 @@ mod tests {
         assert!(joined.contains("expired"));
     }
 
+    #[test]
     fn a_fixture_path_reports_each_tool_with_its_version() {
         let dir = tempfile::tempdir().expect("temp dir");
         stub(

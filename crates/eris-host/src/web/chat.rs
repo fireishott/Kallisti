@@ -3264,6 +3264,9 @@ pub struct TurnSettings {
     pub tools: bool,
     /// How many tool rounds it may take before the last one is forced to answer.
     pub max_rounds: usize,
+    /// How long the turn may run before it is forced to answer. The round budget
+    /// is the real bound; this is the backstop.
+    pub wall_clock: std::time::Duration,
     /// Whether the turn may dispatch subagents.
     ///
     /// Separate from `tools` because dispatching is not a tool the sandbox runs:
@@ -4315,6 +4318,7 @@ pub fn run_turn_with_key(
         gate,
         agents,
         settings.max_rounds,
+        settings.wall_clock,
         settings.context_budget,
         sink,
         poll,
@@ -4700,8 +4704,6 @@ pub type ToolExecute<'a> = dyn FnMut(
 /// Rounds are not a unit of time: a slow tool makes one round cost minutes. This
 /// is the second limit, and it exists because a stalled turn looks exactly like
 /// a busy one to the phone.
-const TURN_WALL_CLOCK: std::time::Duration = std::time::Duration::from_secs(8 * 60);
-
 /// How many times one turn re-streams a round whose tool call the provider cut
 /// off before its JSON closed.
 ///
@@ -4784,6 +4786,8 @@ pub fn drive_tool_loop(
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     agents: Option<&crate::subagents::Desk>,
     max_rounds: usize,
+    // How long the turn may run before tools are taken away and it must answer.
+    wall_clock: std::time::Duration,
     budget: Option<u64>,
     sink: &mut dyn FnMut(StreamPart<'_>),
     poll: &mut TurnPoll<'_>,
@@ -4863,7 +4867,7 @@ pub fn drive_tool_loop(
         // better than one round with the tools the operator gave it. Those budgets
         // behave exactly as they did before.
         let last_action = max_rounds > 2 && rounds == max_rounds.saturating_sub(2);
-        let out_of_time = started.elapsed() >= TURN_WALL_CLOCK;
+        let out_of_time = started.elapsed() >= wall_clock;
         let answering = (max_rounds > 2 && rounds >= max_rounds.saturating_sub(1)) || out_of_time;
         let tools_allowed = rounds < max_rounds && !answering;
         // One coherent sentence, not two. The action round is told to finish, the
@@ -5871,6 +5875,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -5999,6 +6004,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || lease.signal(),
@@ -6052,6 +6058,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || lease.signal(),
@@ -6090,6 +6097,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || lease.signal(),
@@ -6136,6 +6144,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || lease.signal(),
@@ -7401,6 +7410,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -7471,6 +7481,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -7565,6 +7576,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             1,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -7620,6 +7632,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -7670,6 +7683,7 @@ mod tests {
             },
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -7747,6 +7761,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             4,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -8032,6 +8047,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -8105,6 +8121,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             4,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -8151,6 +8168,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -8197,6 +8215,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             4,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -8263,6 +8282,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             4,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -8305,6 +8325,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             4,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,
@@ -8343,6 +8364,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             None,
             1,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             None,
             &mut |_part| {},
             &mut || TurnSignal::Continue,

@@ -156,7 +156,7 @@ pub const SETTING_TOOLS_ENABLED: &str = "tools.enabled";
 pub const SETTING_TOOL_ROUNDS: &str = "tools.max_rounds";
 
 /// The default tool-round budget.
-pub const DEFAULT_TOOL_ROUNDS: usize = 12;
+pub const DEFAULT_TOOL_ROUNDS: usize = 40;
 
 /// The most rounds an operator may configure.
 ///
@@ -196,6 +196,29 @@ pub const MAX_GOAL_ROUNDS_CEILING: u32 = 120;
 #[must_use]
 pub fn enabled(stored: Option<&str>) -> bool {
     !matches!(stored.map(str::trim), Some("false"))
+}
+
+/// The setting behind the per-turn wall clock.
+pub const SETTING_TURN_WALL_CLOCK: &str = "tools.turn_wall_clock_secs";
+/// Half an hour. The round budget is the real bound; this is the backstop for a
+/// provider that answers forever, and eight minutes cut real work in half.
+pub const DEFAULT_TURN_WALL_CLOCK_SECS: u64 = 1800;
+/// The widest clock the form accepts, so a typo cannot pin a turn for a day.
+pub const MAX_TURN_WALL_CLOCK_SECS: u64 = 7200;
+
+/// The wall clock for one turn, clamped, defaulting to half an hour.
+///
+/// A turn that runs past this stops being offered tools and has to answer, which
+/// is what "it did not finish and needs a nudge" looked like from the outside
+/// when the ceiling was eight minutes.
+#[must_use]
+pub fn turn_wall_clock(stored: Option<&str>) -> std::time::Duration {
+    let secs = stored
+        .map(str::trim)
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|secs| *secs >= 60 && *secs <= MAX_TURN_WALL_CLOCK_SECS)
+        .unwrap_or(DEFAULT_TURN_WALL_CLOCK_SECS);
+    std::time::Duration::from_secs(secs)
 }
 
 /// The tool-round budget, clamped to something a turn can actually finish.

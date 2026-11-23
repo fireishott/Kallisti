@@ -734,6 +734,7 @@ pub fn child_settings() -> TurnSettings {
         tools: true,
         // Enough rounds to read, run, and then answer with what it found.
         max_rounds: 8,
+        wall_clock: std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
         agents: false,
         index: true,
         // A child turn carries one prompt and no history, so its prompt cannot
@@ -761,6 +762,7 @@ pub fn agent_settings() -> TurnSettings {
         // Bounded because each round is a provider call; the watchdog is the
         // backstop for the whole child.
         max_rounds: 8,
+        wall_clock: std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
         agents: false,
         index: true,
         context_budget: None,

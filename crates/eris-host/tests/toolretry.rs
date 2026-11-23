@@ -241,6 +241,9 @@ async fn run(
             TurnSettings {
                 tools: true,
                 max_rounds,
+                wall_clock: std::time::Duration::from_secs(
+                    eris_host::tools::DEFAULT_TURN_WALL_CLOCK_SECS,
+                ),
                 agents: false,
                 index: false,
                 context_budget: None,

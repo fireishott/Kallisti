@@ -3141,9 +3141,16 @@ impl TurnHub {
                 .map(str::trim),
                 Some("false")
             );
+            let wall_clock = crate::tools::turn_wall_clock(
+                crate::web::store::settings_get(&budget_db, crate::tools::SETTING_TURN_WALL_CLOCK)
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+            );
             let settings = crate::web::chat::TurnSettings {
                 tools,
                 max_rounds,
+                wall_clock,
                 // Dispatch is offered when this turn has somewhere to put a child:
                 // the operator's switch is on, the sandbox is Full, and there is
                 // an answer row to count the child against. The tool is offered

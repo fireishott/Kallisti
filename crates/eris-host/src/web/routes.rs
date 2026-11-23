@@ -12233,6 +12233,9 @@ fn spawn_turn(
             chat::TurnSettings {
                 tools: tools_enabled,
                 max_rounds: tool_rounds,
+                wall_clock: std::time::Duration::from_secs(
+                    crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS,
+                ),
                 agents: agents_enabled,
                 index: index_enabled,
                 // The same window this route already sized the history against,

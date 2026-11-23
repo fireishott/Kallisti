@@ -133,6 +133,9 @@ async fn run(
             TurnSettings {
                 tools: false,
                 max_rounds: 1,
+                wall_clock: std::time::Duration::from_secs(
+                    eris_host::tools::DEFAULT_TURN_WALL_CLOCK_SECS,
+                ),
                 agents: false,
                 index: false,
                 // No window in this suite: the fallback path is about retries,

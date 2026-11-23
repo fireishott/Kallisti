@@ -645,6 +645,7 @@ fn production_runner(
         crate::web::chat::TurnSettings {
             tools: allow_read,
             max_rounds: if allow_read { 6 } else { 1 },
+            wall_clock: std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             agents: false,
             index: true,
             // One note, one prompt, no history: nothing here can grow past a

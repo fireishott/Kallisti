@@ -733,6 +733,7 @@ fn production_runner(request: &WorkRequest) -> Result<WorkOutput, (String, Strin
         chat::TurnSettings {
             tools: false,
             max_rounds: 1,
+            wall_clock: std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
             agents: false,
             index: true,
             context_budget: None,
