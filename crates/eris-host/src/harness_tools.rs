@@ -504,7 +504,10 @@ fn first_field_with(line: &str, prefix: &str) -> Option<String> {
     let tail = &clean[start..];
     let end = tail
         .find(|character: char| {
-            character.is_whitespace() || character.is_control() || character == ')' || character == ','
+            character.is_whitespace()
+                || character.is_control()
+                || character == ')'
+                || character == ','
         })
         .unwrap_or(tail.len());
     Some(tail[..end].to_owned())
@@ -645,6 +648,20 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
     }
     let _ = session.child.kill();
     token.ok_or_else(|| "Claude Code did not print a token; the code may have expired".to_owned())
+}
+
+/// Kill every sign-in the daemon still has open.
+///
+/// `claude setup-token` waits on a terminal that will never answer once the
+/// daemon is stopping, and a live child holds the service's cgroup open.
+pub fn terminate_open_logins() {
+    let Ok(mut open) = logins().lock() else {
+        return;
+    };
+    for session in open.iter_mut() {
+        let _ = session.child.kill();
+    }
+    open.clear();
 }
 
 /// The environment detection reads, fixture-aware under test.
@@ -1818,8 +1835,11 @@ mod tests {
     /// A plain pipe has no escapes and still parses.
     #[test]
     fn a_url_without_escapes_still_parses() {
-        let found = first_field_with("Use the url below https://claude.com/x, then wait", "https://")
-            .expect("a url");
+        let found = first_field_with(
+            "Use the url below https://claude.com/x, then wait",
+            "https://",
+        )
+        .expect("a url");
         assert_eq!(found, "https://claude.com/x");
     }
 

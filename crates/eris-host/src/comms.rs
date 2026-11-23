@@ -438,8 +438,8 @@ fn status_tool(db: &Db) -> crate::tools::ToolResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        SETTING_ALLOWLIST, SETTING_BLUEBUBBLES_PASSWORD, SETTING_BLUEBUBBLES_URL, bluebubbles_ready,
-        confirm, encoded, is_text, stage,
+        SETTING_ALLOWLIST, SETTING_BLUEBUBBLES_PASSWORD, SETTING_BLUEBUBBLES_URL,
+        bluebubbles_ready, confirm, encoded, is_text, stage,
     };
     use crate::db::Db;
 
@@ -534,7 +534,10 @@ mod tests {
         let ok = confirm(&db, &id, "+15025550100").expect("confirmed");
         assert_eq!(ok["delivered"], false);
         assert!(
-            ok["note"].as_str().unwrap_or_default().contains("transport"),
+            ok["note"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("transport"),
             "{ok}"
         );
     }

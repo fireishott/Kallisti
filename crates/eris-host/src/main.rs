@@ -1168,6 +1168,12 @@ fn run_serve(
         served
     });
 
+    // Children first. A harness run and an open sign-in are processes in this
+    // unit's cgroup, and systemd does not consider the unit stopped while one
+    // is alive, no matter how promptly the daemon's own runtime drains.
+    eris_host::harness_runs::terminate_live();
+    eris_host::harness_tools::terminate_open_logins();
+
     // The listeners have stopped, by a signal or by a failure. What is left is
     // the runtime, and dropping a multi-thread runtime blocks until every
     // `spawn_blocking` task has finished. A device turn is one blocking task for

@@ -149,7 +149,7 @@ pub struct HarnessRun {
     ///
     /// Private on purpose: it is how this module ends a run, not a thing a route
     /// should name. A client that wants a run stopped asks for that.
-    pid: Option<u32>,
+    pub(crate) pid: Option<u32>,
     /// The monotonic instant the run was registered.
     started: Instant,
     /// The monotonic instant output last arrived.
@@ -603,6 +603,24 @@ enum Stream {
 /// The signal goes to `kill`, not to a shell. A host without that command leaves
 /// the process where it is, which is the same partial ending the tool had before
 /// this module existed.
+/// Kill every live run's process group.
+///
+/// Bounding the runtime is not enough at shutdown: systemd waits for the whole
+/// cgroup, and a delegated harness that spawned its own children held the unit
+/// in `final-sigterm` until `TimeoutStopSec` expired and it was SIGKILLed. The
+/// next start then raced a half-dead process for the listener ports. A run that
+/// is already terminal is left alone, because its group is gone.
+pub fn terminate_live() {
+    for run in snapshot() {
+        if run.status.is_terminal() {
+            continue;
+        }
+        if let Some(pid) = run.pid {
+            terminate_group(pid);
+        }
+    }
+}
+
 pub fn terminate_group(pid: u32) {
     // Pid zero is not a harness: to `kill` it means this process's own group,
     // which is the one group a monitor must never signal. No child has ever had
