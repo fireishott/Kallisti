@@ -1529,6 +1529,23 @@ pub async fn conversation(
                 "created_at": message.created_at,
                 "reasoning": message.reasoning,
                 "tools": message.tools,
+                // What the turn cost, as one object rather than six loose keys.
+                //
+                // The footer the phone draws under an answer wants the round
+                // count, the wall time and the token split, and none of those
+                // three were on this payload: only `tools` was, so a reopened
+                // chat could say what ran and nothing about what it cost. Each
+                // value is `null` when the row never recorded it, which is the
+                // honest answer for a row written before the column existed -
+                // a client omits a null field rather than printing a zero.
+                "accounting": {
+                    "prompt_tokens": message.prompt_tokens,
+                    "completion_tokens": message.completion_tokens,
+                    "cached_tokens": message.cached_tokens,
+                    "duration_ms": message.duration_ms,
+                    "rounds": message.rounds,
+                    "context_tokens": message.context_tokens,
+                },
                 // The two handles a device needs to recognise its own rows. Sent
                 // as explicit nulls rather than omitted, so a client can tell
                 // "this row predates the column" from "the daemon forgot".

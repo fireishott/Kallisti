@@ -306,12 +306,22 @@ enum ErisFrame: Equatable, Sendable {
     /// may still leave the model unnamed.
     case turnStarted(model: String?, route: TurnRoute?)
 
+    /// A round is starting, before the model has said anything:
+    /// `{"round":1,"max_rounds":100,"tools_allowed":true}`.
+    ///
+    /// The turn loop writes one of these before every tool round. This client
+    /// skipped the frame as unknown, so a long turn showed a spinner and no
+    /// progress at all. `count` is one-based and `total` is the turn's tool
+    /// budget; `toolsAllowed` false means the loop has taken the tools away and
+    /// the reply is the next thing to arrive.
+    case round(count: Int, total: Int, toolsAllowed: Bool)
+
     /// Whether this frame ends the stream. Matches `FrameKind::is_terminal`.
     var isTerminal: Bool {
         switch self {
         case .delta, .reasoning, .toolStart, .toolFinished, .toolOutput, .step,
              .artifactDiff, .artifactPage, .attachment, .ask, .approval,
-             .turnStarted: return false
+             .turnStarted, .round: return false
         case .done, .error, .cancelled: return true
         }
     }
@@ -323,7 +333,7 @@ enum ErisFrame: Equatable, Sendable {
         case .done(let text, _): return text
         case .reasoning, .toolStart, .toolFinished, .toolOutput, .step,
              .artifactDiff, .artifactPage, .attachment, .ask, .approval,
-             .turnStarted, .error, .cancelled: return nil
+             .turnStarted, .round, .error, .cancelled: return nil
         }
     }
 
@@ -362,6 +372,16 @@ enum ErisFrame: Equatable, Sendable {
             return .done(
                 text: object["text"] as? String ?? "",
                 usage: ErisUsage(json: object["usage"])
+            )
+        case "round":
+            // Read separately from every other optional key: a daemon that
+            // omits one of these must still produce a usable frame, so each
+            // falls back rather than throwing the turn away.
+            let object = (try? ErisJSON.object(data)) ?? [:]
+            return .round(
+                count: object["round"] as? Int ?? 0,
+                total: object["max_rounds"] as? Int ?? 0,
+                toolsAllowed: object["tools_allowed"] as? Bool ?? true
             )
         case "attachment":
             let object = (try? ErisJSON.object(data)) ?? [:]

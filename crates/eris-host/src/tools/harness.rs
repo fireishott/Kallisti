@@ -107,18 +107,30 @@ impl Harness {
     }
 
     /// The words between the binary and the prompt in the built-in command.
+    ///
+    /// `dsh` names its profile before anything else, and the profile is not
+    /// optional: the launcher answers `error: --profile <name> is required` and
+    /// starts nothing, so every delegated task failed at the spawn before this
+    /// named one. `headless` is the profile that answers one task and exits, which
+    /// is what a delegated coding task is.
     fn prefix(self) -> &'static [&'static str] {
         match self {
-            Self::Dsh | Self::ClaudeCode => &[],
+            Self::Dsh => &["--profile", "headless"],
+            Self::ClaudeCode => &[],
             Self::Antigravity => &["run"],
         }
     }
 
     /// The flag that introduces the prompt, when the harness takes one.
+    ///
+    /// Not `dsh`: `headless` takes the task as a positional argument and rejects
+    /// `-p` as an unknown option, so a prompt flag here would also fail before
+    /// the model was reached. The dsh command line is therefore
+    /// `dsh --profile headless <task>`.
     fn prompt_flag(self) -> &'static [&'static str] {
         match self {
-            Self::Dsh | Self::ClaudeCode => &["-p"],
-            Self::Antigravity => &[],
+            Self::Dsh | Self::Antigravity => &[],
+            Self::ClaudeCode => &["-p"],
         }
     }
 }
@@ -713,9 +725,18 @@ mod tests {
             cwd: None,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
         };
+        // dsh names its profile first, then the model, and the task is
+        // positional: `-p` is not an option the launcher accepts.
         assert_eq!(
             argv(&config, "do it"),
-            vec!["dsh", "--model", "a-model", "-p", "do it"]
+            vec![
+                "dsh",
+                "--profile",
+                "headless",
+                "--model",
+                "a-model",
+                "do it"
+            ]
         );
 
         config.harness = Harness::ClaudeCode;

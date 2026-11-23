@@ -4592,12 +4592,75 @@ pub const MAX_TOOL_ROUNDS: usize = 12;
 /// short on purpose: it is a fact about this turn, not a lecture.
 #[must_use]
 pub fn budget_notice(max_rounds: usize) -> String {
+    // The number is a ceiling, and saying only that turned it into a target.
+    //
+    // The operator watched a 100-round budget spend 100 rounds on a question that
+    // needed four. The notice named the size of the budget and nothing about what
+    // an ordinary turn costs, so the only quantity in the prompt was the maximum:
+    // a model that finishes in three rounds and a model that finishes in ninety
+    // both read "100" and the cheap answer was never named. Every round is a full
+    // provider round trip over the whole transcript, so a turn that spends the
+    // budget it was given costs twenty times what the question was worth and gets
+    // there no faster.
+    //
+    // So the notice states three numbers rather than one: the ceiling, what a
+    // normal turn costs, and the rule that ending early is the successful
+    // outcome. It is the same fact the loop enforces at the end, said at the
+    // start, where it can still change how the work is planned.
+    let ordinary = ordinary_rounds(max_rounds);
     format!(
-        "Tool budget for this turn: {max_rounds} rounds. The last round has no tools and is \
-         where you answer. Plan the work to fit: do the highest-value part first, verify it, \
-         and if the job is bigger than the budget, hand the remainder to the next turn with \
-         queue_task before you answer. Never end a turn on a question that a tool could \
-         answer."
+        "Tool budget for this turn: {max_rounds} rounds. That is a ceiling, not a target: an \
+         ordinary turn finishes in 2 to {ordinary} rounds and the best turn is the shortest \
+         one that answers the question. Stop calling tools as soon as you have what the \
+         question needs, answer from what is already in hand, and never re-run a command \
+         or re-read a file whose result is already in front of you. Unused rounds are the \
+         goal, not the waste. The last round has no tools and is where you answer. Plan the \
+         work to fit: do the highest-value part first, verify it, and if the job is bigger \
+         than the budget, hand the remainder to the next turn with queue_task before you \
+         answer. Never end a turn on a question that a tool could answer."
+    )
+}
+
+/// The round count at which an ordinary turn has done what it came to do.
+///
+/// Six rounds is the number the prompt tells the model an ordinary turn costs,
+/// and this is the same number read by the loop rather than by the model, so the
+/// checkpoint and the notice cannot drift into two different claims about what a
+/// normal turn is. A budget smaller than that checkpoints at the budget, which
+/// means a tight turn is never interrupted by advice about a budget it does not
+/// have; a very large one checkpoints six rounds in and not a round later.
+#[must_use]
+pub fn ordinary_rounds(max_rounds: usize) -> usize {
+    const ORDINARY: usize = 6;
+    if max_rounds > ORDINARY {
+        ORDINARY
+    } else {
+        max_rounds
+    }
+}
+
+/// The instruction the mid-turn efficiency checkpoint opens with.
+///
+/// Not a closing notice: the tools are still there and the budget is still
+/// mostly unspent. It exists because the only quantity a turn was ever given was
+/// its ceiling, and a number stated as a budget is spent like a budget. The
+/// operator's report was exact - give it thirty rounds and it takes thirty, give
+/// it a hundred and it takes a hundred - and the answer to that is not a smaller
+/// ceiling, because the same turn sometimes needs fifty.
+///
+/// So this asks the question the loop cannot answer for it. Continuing is
+/// explicitly allowed, which is what keeps a real migration on its own legs;
+/// what it removes is the version where the turn keeps working because nobody
+/// told it that stopping early was allowed.
+#[must_use]
+pub fn efficiency_checkpoint(rounds: usize, max_rounds: usize) -> String {
+    format!(
+        "Checkpoint: {rounds} rounds spent of {max_rounds}. An ordinary turn has finished by \
+         now. Do you already hold what the question asked for? If yes, stop calling tools and \
+         answer in this round from the results you have - do not make one more verification \
+         call, do not re-read anything already read, and do not summarise work into a list of \
+         next steps. If the job genuinely needs more rounds, continue, but name in your next \
+         tool call what the extra rounds will produce that is not already in this turn."
     )
 }
 
@@ -4713,6 +4776,33 @@ pub type ToolExecute<'a> = dyn FnMut(
 /// A third attempt would buy the same truncation at the same byte.
 const MAX_TRUNCATED_TOOL_RETRIES: usize = 2;
 
+/// Consecutive rounds made only of calls this turn has already run before the
+/// loop takes the tools away.
+///
+/// Two, so the first repeat buys a correction rather than a stop: a real job
+/// does re-run a check after a fix, and cutting a turn off for that would be the
+/// same class of bug as a budget that stops work in half. Two in a row with
+/// identical arguments is not that - nothing between them changed the world, so
+/// the second round cannot return anything the first did not.
+const MAX_REDUNDANT_ROUNDS: usize = 2;
+
+/// The one correction a repeated round earns.
+///
+/// It names the two facts the model cannot see: the results are already in the
+/// conversation it is reading, and the second call cannot change them.
+const REPEATED_CALL_NUDGE: &str = "That round repeated calls this turn has already run, \
+     with the same arguments. Those results are already in the conversation above, and \
+     running them again returns the same bytes. Use what you already have: answer from \
+     the existing results, or make a different call that produces something new.";
+
+/// What the round after a second consecutive repeat is told.
+///
+/// The tools are withdrawn on the next boundary, so this has to make the answer
+/// the only way forward rather than another request for restraint.
+const REPEATED_CALL_STOP: &str = "This turn has now spent two rounds re-running calls whose \
+     results it already has. The tools are being withdrawn. Answer now from the results in \
+     this conversation, in short bullets, and say what you did and what it proves.";
+
 /// The first correction for a tool call the provider cut off.
 ///
 /// Short on purpose. The failure is mechanical, so the instruction is the three
@@ -4806,6 +4896,18 @@ pub fn drive_tool_loop(
     // Whether the tool-free round has already been introduced. Pushed once, so a
     // steer arrives as the operator's own words rather than behind two notices.
     let mut budget_told = false;
+    // Whether the efficiency checkpoint has been pushed. Separate from the
+    // closing notices because it is not one: it arrives in the middle of the
+    // budget, while there is still room to answer, and its whole job is to make
+    // the model look at how much of the ceiling it has spent.
+    let mut checkpoint_told = false;
+    // Rounds in a row that asked only for calls this turn has already run, with
+    // the same arguments. A turn that re-reads the file it read three rounds ago
+    // is not exploring, it is spending the budget to avoid admitting it is done,
+    // and the transcript it is re-reading is already in the prompt in front of
+    // it. One redundant round earns a correction; two in a row end the tool
+    // rounds and let the model answer from what it has.
+    let mut redundant_rounds = 0usize;
     // Whether the model has been told this is its last round with tools, and
     // whether it has been told the tools are gone and the answer is due. They are
     // two different sentences because they are two different rounds: the action
@@ -4868,7 +4970,9 @@ pub fn drive_tool_loop(
         // behave exactly as they did before.
         let last_action = max_rounds > 2 && rounds == max_rounds.saturating_sub(2);
         let out_of_time = started.elapsed() >= wall_clock;
-        let answering = (max_rounds > 2 && rounds >= max_rounds.saturating_sub(1)) || out_of_time;
+        let answering = (max_rounds > 2 && rounds >= max_rounds.saturating_sub(1))
+            || out_of_time
+            || redundant_rounds >= MAX_REDUNDANT_ROUNDS;
         let tools_allowed = rounds < max_rounds && !answering;
         // One coherent sentence, not two. The action round is told to finish, the
         // answer round is told to write, and a turn whose tools ran out with no
@@ -4892,6 +4996,26 @@ pub fn drive_tool_loop(
             deadline_told = true;
             answer_shape = answer_budget(rounds, &records);
             messages.push(ChatMessage::text(ChatRole::User, wrap_up(answer_shape)));
+        } else if tools_allowed && !checkpoint_told && rounds >= ordinary_rounds(max_rounds) {
+            // The efficiency checkpoint.
+            //
+            // A budget with nothing but a maximum in it is spent to the maximum:
+            // the operator watched a 100-round turn call a hundred tools for a
+            // question four rounds could answer, because nothing in the loop ever
+            // asked whether it was done. The closing notices are too late for
+            // that - by the time they arrive the work is behind the turn and the
+            // only thing left is prose.
+            //
+            // This fires once, at the point where an ordinary turn has finished
+            // its work, and asks the one question the loop could not ask: do you
+            // already have the answer. Continuing is allowed and named, so a turn
+            // that genuinely needs fifty rounds for a migration is not cut off;
+            // it just has to say so to itself before spending the next one.
+            checkpoint_told = true;
+            messages.push(ChatMessage::text(
+                ChatRole::User,
+                efficiency_checkpoint(rounds, max_rounds),
+            ));
         } else if !tools_allowed && !budget_told && !last_action_told && !answer_told {
             budget_told = true;
             answer_shape = answer_budget(rounds, &records);
@@ -5097,6 +5221,43 @@ pub fn drive_tool_loop(
         }
 
         rounds += 1;
+        // Whether every call this round is one this turn has already run, with
+        // identical arguments. Measured before they run, against the record of
+        // what has already run, which is why it can only be answered here.
+        //
+        // Not a refusal. A repeated call still runs - a test really does get run
+        // again after a fix - but a round made of nothing else is the shape of a
+        // turn that has stopped making progress and is spending budget to look
+        // busy. One such round earns a correction; a second, consecutive one ends
+        // the tool rounds and the model answers from what it already has.
+        let all_repeated = completion.tool_calls.iter().all(|call| {
+            let arguments = call.arguments.to_string();
+            records
+                .iter()
+                .any(|done| done.name == call.name && done.arguments == arguments)
+        });
+        if all_repeated && !records.is_empty() {
+            redundant_rounds += 1;
+        } else {
+            redundant_rounds = 0;
+        }
+        // The repeat that reaches the limit is not run.
+        //
+        // It used to be: the round that tripped the limit executed its calls and
+        // only then lost the tools, so "two repeats and stop" cost three rounds of
+        // the same read and put one more identical result in the prompt. A second
+        // run of the same call with the same arguments cannot return anything the
+        // first did not, so the only thing running it buys is the delay the
+        // operator complained about. The stop sentence is pushed, the calls are
+        // dropped, and the next pass through the loop finds the tools gone and the
+        // answer due.
+        if redundant_rounds >= MAX_REDUNDANT_ROUNDS {
+            messages.push(ChatMessage::text(ChatRole::User, REPEATED_CALL_STOP));
+            continue 'turn;
+        }
+        if redundant_rounds > 0 {
+            messages.push(ChatMessage::text(ChatRole::User, REPEATED_CALL_NUDGE));
+        }
         messages.push(ChatMessage::assistant_calls(completion.tool_calls.clone()));
         for call in &completion.tool_calls {
             // A boundary between calls as well: a round that asked for five
@@ -5569,6 +5730,51 @@ mod tests {
         assert!(notice.contains("last round has no tools"));
     }
 
+    /// The bug this fixes: a budget stated as a number and nothing else is spent
+    /// like a number. A hundred-round turn called a hundred tools for a question
+    /// four rounds could answer, because the only quantity in the prompt was the
+    /// ceiling.
+    #[test]
+    fn the_budget_notice_says_the_ceiling_is_not_a_target() {
+        let notice = budget_notice(100);
+        assert!(
+            notice.contains("ceiling, not a target"),
+            "the distinction has to be explicit: {notice}"
+        );
+        assert!(
+            notice.contains("2 to 6 rounds"),
+            "an ordinary turn's cost is named: {notice}"
+        );
+        assert!(
+            notice.contains("shortest"),
+            "finishing early is stated as the goal: {notice}"
+        );
+        // A tight budget is not told about a six-round normal that it cannot
+        // afford.
+        assert!(budget_notice(3).contains("2 to 3 rounds"));
+    }
+
+    /// The checkpoint fires where an ordinary turn would already be done, and it
+    /// never fires on a budget too small to have a middle.
+    #[test]
+    fn the_checkpoint_arrives_in_the_middle_of_a_large_budget() {
+        assert_eq!(ordinary_rounds(100), 6);
+        assert_eq!(ordinary_rounds(30), 6);
+        assert_eq!(ordinary_rounds(4), 4);
+        assert_eq!(ordinary_rounds(1), 1);
+        let checkpoint = efficiency_checkpoint(6, 100);
+        assert!(checkpoint.contains("6 rounds spent of 100"));
+        assert!(
+            checkpoint.contains("Do you already hold"),
+            "the question is the mechanism: {checkpoint}"
+        );
+        // Continuing is allowed and named, or a real migration gets cut off.
+        assert!(checkpoint.contains("genuinely needs more rounds"));
+        // And the cheap exit is spelled out, because "answer" alone was not
+        // enough to stop one more verification call.
+        assert!(checkpoint.contains("do not make one more verification"));
+    }
+
     #[test]
     fn a_transcript_round_trips_in_order() {
         let db = db();
@@ -6034,6 +6240,65 @@ mod tests {
         assert_eq!(second[2].role, ChatRole::User);
         assert_eq!(second[2].content, "check the logs");
         assert_eq!(steering.queued("c"), 0, "the steer was taken once");
+    }
+
+    /// The complaint this fixes: a budget is spent to its size. A model that
+    /// re-asks for the same command it already ran is not exploring, and the
+    /// result it is reaching for is already in the prompt above it.
+    ///
+    /// Two consecutive rounds of nothing but repeats is the shape that has
+    /// stopped making progress, so the loop withdraws the tools and the model
+    /// answers from what it has. The turn must end far short of the budget, which
+    /// is the fact the assertion is written against.
+    #[test]
+    fn a_turn_that_only_repeats_itself_is_stopped_early() {
+        let steering = Steering::new();
+        let lease = claimed(&steering);
+        let call = core_domain::ToolCall::new(0, "call_1", "read_file", serde_json::json!({"path":"a.txt"}))
+            .expect("a call");
+        let mut executed = 0usize;
+        let mut saw_tools_withdrawn = false;
+        let outcome = drive_tool_loop(
+            &mut |_call: &core_domain::ToolCall,
+                  _chunks: &mut dyn FnMut(&str),
+                  _asked: &mut dyn FnMut(Asked),
+                  _poll: &mut TurnPoll<'_>| {
+                executed += 1;
+                crate::tools::ToolResult::ok(serde_json::json!({ "body": "same every time" }))
+            },
+            vec![ChatMessage::text(ChatRole::User, "what is in a.txt")],
+            &mut |_call| GateDecision::Run,
+            None,
+            MAX_TOOL_ROUNDS,
+            std::time::Duration::from_secs(crate::tools::DEFAULT_TURN_WALL_CLOCK_SECS),
+            None,
+            &mut |_part| {},
+            &mut || lease.signal(),
+            |_messages, tools_allowed, _emit| {
+                if tools_allowed {
+                    // The same call, byte for byte, round after round.
+                    Ok(completion_with_calls(vec![call.clone()], ""))
+                } else {
+                    saw_tools_withdrawn = true;
+                    Ok(completion_with_calls(Vec::new(), "a.txt holds one line"))
+                }
+            },
+        )
+        .expect("a turn");
+
+        assert!(
+            saw_tools_withdrawn,
+            "the loop has to take the tools away, not just ask politely"
+        );
+        assert_eq!(
+            executed, 2,
+            "the first round runs the call, the repeat is allowed once, and the third round is the answer"
+        );
+        assert!(
+            executed < MAX_TOOL_ROUNDS,
+            "the turn stopped at the repetition, not at the budget"
+        );
+        assert_eq!(outcome.text, "a.txt holds one line");
     }
 
     #[test]
@@ -7487,7 +7752,19 @@ mod tests {
             &mut || TurnSignal::Continue,
             |_messages, tools, _emit| {
                 tools_offered.push(tools);
-                Ok(completion_with_calls(vec![call.clone()], ""))
+                // A different argument every round, on purpose. This test is about
+                // the budget, and the redundancy guard ends a turn that asks for
+                // the same call twice in a row at round three - so an identical
+                // call here would measure that guard instead of the cap.
+                let round = tools_offered.len();
+                let call = core_domain::ToolCall::new(
+                    0,
+                    "call_1",
+                    "read_file",
+                    serde_json::json!({ "path": "a.txt", "round": round }),
+                )
+                .expect("a call");
+                Ok(completion_with_calls(vec![call], ""))
             },
         )
         .expect("a turn");
@@ -8054,11 +8331,13 @@ mod tests {
             |messages, tools, _emit| {
                 seen.push(messages.to_vec());
                 if tools {
+                    // Distinct arguments, so the redundancy guard does not end the
+                    // turn before it has done the eight rounds this test is about.
                     let call = core_domain::ToolCall::new(
                         0,
                         format!("call_{}", seen.len()),
                         "read_file",
-                        serde_json::json!({"path": "a.txt"}),
+                        serde_json::json!({"path": "a.txt", "round": seen.len()}),
                     )
                     .expect("a call");
                     Ok(completion_with_calls(vec![call], ""))
