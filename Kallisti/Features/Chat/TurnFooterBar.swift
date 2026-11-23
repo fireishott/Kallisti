@@ -9,7 +9,7 @@ import SwiftUI
 /// never stated, never a zero. A row written before the daemon grew the object
 /// carries no `accounting` at all, and that has to decode rather than take the
 /// whole transcript down with it.
-struct TurnAccounting: Equatable, Sendable {
+struct TurnAccounting: Equatable, Hashable, Sendable {
     /// Prompt tokens the provider reported.
     let promptTokens: Int?
     /// Completion tokens the provider reported.
@@ -139,6 +139,21 @@ extension TurnAccounting: Decodable {
             rounds: count(.rounds),
             contextTokens: count(.contextTokens)
         )
+    }
+}
+
+extension TurnAccounting: Encodable {
+    /// Encoded only so `Message`, which is `Codable`, can re-encode a row that
+    /// carries accounting into the local cache. The daemon is the writer of
+    /// record; the app never posts this object back to it.
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(promptTokens, forKey: .promptTokens)
+        try container.encodeIfPresent(completionTokens, forKey: .completionTokens)
+        try container.encodeIfPresent(cachedTokens, forKey: .cachedTokens)
+        try container.encodeIfPresent(durationMs, forKey: .durationMs)
+        try container.encodeIfPresent(rounds, forKey: .rounds)
+        try container.encodeIfPresent(contextTokens, forKey: .contextTokens)
     }
 }
 
