@@ -443,6 +443,25 @@ pub struct LoginSession {
     started: std::time::Instant,
 }
 
+/// The harnesses with an install running right now.
+///
+/// Keyed by harness id. The vendor installers are not reentrant - Antigravity
+/// stages its download in one fixed path - so two runs of one installer is a
+/// checksum failure that reads like a corrupt download.
+static INSTALLS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn installs() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    INSTALLS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Give back the install claim for one harness.
+fn release_install(id: &str) {
+    if let Ok(mut busy) = installs().lock() {
+        busy.remove(id);
+    }
+}
+
 /// Every sign-in the daemon has open, newest last. Bounded by the sweep below.
 static LOGINS: std::sync::OnceLock<std::sync::Mutex<Vec<LoginSession>>> =
     std::sync::OnceLock::new();
@@ -635,6 +654,10 @@ pub fn start_login(env: &Env) -> Result<(String, String), String> {
 /// A string naming why the sign-in did not complete.
 pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
     use std::io::Write;
+    // What a person actually pastes is whatever their browser showed them. When
+    // that is the callback URL rather than the short code, the CLI answers
+    // "Invalid code" and the sign-in fails for a reason the operator cannot see.
+    let code = code_from_pasted(code);
     // The sign-in is only held for the length of this wait, so a second attempt
     // after a bad code starts from a fresh session rather than blocking here.
     let mut session = {
@@ -646,6 +669,32 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
         };
         open.remove(index)
     };
+
+    // The prompt is drawn after the link, and a code typed before it exists is a
+    // code the CLI can drop: the write lands in the pty and the line discipline
+    // discards it before the reader is attached. So the screen is read until the
+    // prompt is up, and only then is the code sent. A prompt that never arrives is
+    // recorded rather than guessed at, because the failure has to name which of the
+    // two happened: no prompt, or a refused code.
+    let mut seen = String::new();
+    let prompt_deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut prompt_seen = false;
+    while std::time::Instant::now() < prompt_deadline {
+        match session
+            .stdout
+            .recv_timeout(std::time::Duration::from_millis(200))
+        {
+            Ok(chunk) => {
+                seen.push_str(&chunk);
+                if strip_escapes(&seen, true).to_lowercase().contains("paste") {
+                    prompt_seen = true;
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
 
     // A carriage return, not a newline: the prompt reads the terminal in raw
     // mode, where Enter is CR. A bare newline is echoed and then ignored, which left
@@ -670,7 +719,6 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
     // moves and carriage returns with no line break at all. Everything is read
     // as raw chunks and scanned as one growing text.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut seen = String::new();
     let mut token: Option<String> = None;
     let mut complaint: Option<String> = None;
     while std::time::Instant::now() < deadline {
@@ -721,10 +769,79 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
 
     match token {
         Some(found) => Ok(found),
-        None => Err(complaint.unwrap_or_else(|| {
-            "Claude Code did not accept the code in time. Start the sign-in again and paste the new code".to_owned()
-        })),
+        None => Err(match complaint {
+            Some(said) => said,
+            // No complaint and no token is not one failure but several, and the
+            // operator can only act on the one that happened. The CLI's own last
+            // words are carried through, because they are the difference between a
+            // code that was refused, a subscription that is not entitled to a
+            // token, and a prompt that never appeared at all.
+            None => {
+                let exit = session
+                    .child
+                    .try_wait()
+                    .ok()
+                    .flatten()
+                    .and_then(|status| status.code());
+                let drawn = last_words(&seen);
+                let mut sentence = if prompt_seen {
+                    "Claude Code never answered the code: it printed no token and no error within 30 seconds".to_owned()
+                } else {
+                    "Claude Code never drew its code prompt, so the code had nowhere to go. Start the sign-in again and watch for the prompt before pasting".to_owned()
+                };
+                if let Some(code) = exit {
+                    sentence.push_str(&format!(" (it exited with status {code})"));
+                }
+                if !drawn.is_empty() {
+                    sentence.push_str(&format!(". It last printed: {drawn}"));
+                }
+                sentence
+            }
+        }),
     }
+}
+
+/// The code inside whatever was pasted.
+///
+/// A `claude setup-token` code is one short token. What arrives from a phone is
+/// sometimes the whole callback URL the browser landed on, which carries the code
+/// as a query parameter; sending that URL to the CLI is a guaranteed `Invalid
+/// code`. This takes the `code` parameter when there is one, and otherwise just
+/// trims - a copy out of a terminal usually brings a newline with it.
+fn code_from_pasted(pasted: &str) -> String {
+    let trimmed = pasted.trim();
+    let Some(rest) = trimmed.split_once("code=").map(|(_, rest)| rest) else {
+        return trimmed.to_owned();
+    };
+    let code = rest
+        .split(['&', '#', '\n', '\r', ' '])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if code.is_empty() {
+        trimmed.to_owned()
+    } else {
+        code.to_owned()
+    }
+}
+
+/// The last thing a redrawn screen said, escapes gone and on one line.
+///
+/// Bounded to the tail because an Ink screen redraws the whole frame: the useful
+/// words are the last ones drawn, and everything before them is the same header
+/// printed again.
+fn last_words(seen: &str) -> String {
+    let clean = strip_escapes(seen, true);
+    let joined = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clipped: String = joined
+        .chars()
+        .rev()
+        .take(240)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    clipped
 }
 
 /// Read a pipe as raw chunks, which is the only way a redrawn screen is seen.
@@ -967,11 +1084,31 @@ fn installer_for(id: &str, platform: Platform) -> Option<&'static str> {
 ///
 /// A sentence for the route when the shell could not be started at all.
 pub fn start_install(id: &str, command: &str) -> Result<serde_json::Value, String> {
+    // One install per harness, because the vendor script is not reentrant: it
+    // downloads to a fixed staging path under `~/.cache/antigravity/staging`, so a
+    // second run overwrites the file the first one is still hashing. What the
+    // operator saw was two `antigravity` installs started one after the other, and
+    // both failed with "the downloaded payload checksum does not match the
+    // manifest" - a true statement about a file the other run was rewriting, and a
+    // lie about the download. The claim is taken before the row exists so a second
+    // press is answered immediately instead of racing.
+    let mut busy = installs()
+        .lock()
+        .map_err(|_| "the install list is unavailable".to_owned())?;
+    if !busy.insert(id.to_owned()) {
+        return Err(format!(
+            "an install of {id} is already running: the vendor script stages into one \
+             fixed path, so a second copy would corrupt the first one's download. \
+             Wait for the running install to finish"
+        ));
+    }
+    drop(busy);
     let task = format!("install: {command}");
     let run_id = harness_runs::start(id, &task, None, None, INSTALL_TIMEOUT_SECS);
     let mut child = match spawn_install(command) {
         Ok(child) => child,
         Err(error) => {
+            release_install(id);
             harness_runs::finish(&run_id, RunStatus::Failed, None);
             return Err(format!("cannot start `{command}`: {error}"));
         }
@@ -985,6 +1122,7 @@ pub fn start_install(id: &str, command: &str) -> Result<serde_json::Value, Strin
     // The reaper records the ending. A watchdog timeout lands first when the
     // install runs too long, and the first ending is the true one.
     let reaped = run_id.clone();
+    let owned = id.to_owned();
     std::thread::spawn(move || {
         let status = child.wait();
         let code = status.ok().and_then(|status| status.code());
@@ -994,6 +1132,10 @@ pub fn start_install(id: &str, command: &str) -> Result<serde_json::Value, Strin
             RunStatus::Failed
         };
         harness_runs::finish(&reaped, ending, code);
+        // The claim is released by the reaper, which is the only path that knows
+        // the process is gone. A watchdog timeout settles the run, not the claim:
+        // the process is still writing to the staging directory until it exits.
+        release_install(&owned);
     });
     Ok(harness_runs::get(&run_id)
         .map_or_else(|| serde_json::json!({ "id": run_id }), |run| run.detail()))
@@ -2109,4 +2251,36 @@ mod tests {
         assert_eq!(strip_terminal_escapes("keep\u{1b}["), "keep");
         assert_eq!(strip_terminal_escapes("a\u{1b}]0;title\u{7}b"), "ab");
     }
+
+    /// One install of a harness at a time. The Antigravity installer stages its
+    /// download in one fixed path, so a second run overwrites the file the first is
+    /// still hashing - which is exactly the "checksum does not match" failure an
+    /// operator sees after pressing Install twice.
+    #[test]
+    fn a_second_install_of_one_harness_is_refused_while_the_first_runs() {
+        // Two long sleeps, so the first is certainly still running when the second
+        // is asked for. `sleep` writes nothing, so neither run fills a pipe.
+        // Names no other test uses: the claim is keyed by the harness id, and a
+        // test that borrowed a real one would race the suites beside it.
+        const HELD: &str = "testheld-harness";
+        const OTHER: &str = "testheld-other";
+        let first = start_install(HELD, "sleep 3").expect("the first install starts");
+        assert!(first["id"].as_str().is_some_and(|id| !id.is_empty()));
+
+        let second = start_install(HELD, "sleep 3");
+        let refused = second.expect_err("a second install is refused");
+        assert!(
+            refused.contains("already running"),
+            "the refusal says what is happening: {refused}"
+        );
+        assert!(
+            refused.contains("stages into one fixed path"),
+            "and why: {refused}"
+        );
+
+        // A different harness is not blocked by it: the claim is per harness.
+        let other = start_install(OTHER, "sleep 1").expect("another harness installs");
+        assert!(other["id"].as_str().is_some_and(|id| !id.is_empty()));
+    }
+
 }

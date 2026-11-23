@@ -11,11 +11,12 @@
 //! - **A child is a turn.** Same provider, same system prompt, same persona, its
 //!   own budget and its own usage. The way to have a subagent behave like a turn
 //!   is to run a turn, not to write a second, smaller inference path that drifts.
-//! - **A child has no tools.** [`child_settings`] turns tool calling off, the
-//!   child's sandbox is read-only, and its gate refuses every call. Three layers,
-//!   because the interesting failure is a subagent that can run commands, and
-//!   that failure is recursive: a child that could dispatch would be an unbounded
-//!   fan-out of processes on the operator's box.
+//! - **A child has the parent's tools, minus dispatching.** [`child_settings`]
+//!   leaves tool calling on and [`child_sandbox`] gives the child a writable
+//!   workspace with its own process desk, so a task that needs a command, a file
+//!   or a browser actually runs. The one thing a child is never offered is
+//!   `dispatch_agent`: that failure is recursive, and a child that could dispatch
+//!   would be an unbounded fan-out of processes on the operator's box.
 //! - **Work is capped.** [`MAX_RUNNING`] at once and [`MAX_PER_TURN`] per parent
 //!   turn, both counted in the same transaction that writes the row, so two
 //!   dispatches racing cannot both pass the check.
@@ -637,6 +638,70 @@ pub fn bar(db: &Db, limit: usize) -> Result<Vec<Subagent>, DbError> {
     })
 }
 
+/// Every row one conversation dispatched, so a later turn can pick up work an
+/// earlier turn started.
+///
+/// `all` is the whole history; without it the list is what still matters - the
+/// rows still working, plus anything that settled inside [`RECENT_MINUTES`]. Newest
+/// first, bounded by `limit`.
+pub fn for_conversation(
+    db: &Db,
+    conversation: &str,
+    all: bool,
+    limit: usize,
+) -> Result<Vec<Subagent>, DbError> {
+    let where_recent = "AND (status IN ('queued', 'running')
+             OR finished_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3))";
+    let sql = format!(
+        "SELECT {columns}, {elapsed} AS elapsed
+           FROM subagents
+          WHERE parent_conversation = ?1
+          {recent}
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?2",
+        columns = COLUMNS,
+        elapsed = ELAPSED,
+        recent = if all { "" } else { where_recent },
+    );
+    let window = format!("-{RECENT_MINUTES} minutes");
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(&sql)?;
+        let rows = if all {
+            statement.query_map(params![conversation, limit as i64], row_to_subagent)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            statement
+                .query_map(
+                    params![conversation, limit as i64, window],
+                    row_to_subagent,
+                )?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(rows)
+    })
+}
+
+/// One row as the run tool reports it: the state, the age, and what it produced
+/// or why it did not.
+///
+/// The result is carried whole: an operator asking for a finished run wants the
+/// answer, not a preview of it. The prompt is not carried, because the row already
+/// knows it and repeating it back to the model that wrote it is prompt weight.
+#[must_use]
+pub fn run_item(row: &Subagent) -> serde_json::Value {
+    serde_json::json!({
+        "id": row.id,
+        "label": row.label,
+        "status": row.status.as_str(),
+        "age": row.elapsed_label(),
+        "started_at": row.started_at,
+        "finished_at": row.finished_at,
+        "error_code": row.error_code,
+        "result": row.result,
+        "model": row.model,
+    })
+}
+
 /// How many rows are working right now, for the shapes of a status line.
 pub fn running_count(db: &Db) -> Result<i64, DbError> {
     db.with_conn(|conn| {
@@ -682,6 +747,14 @@ pub struct RunRequest {
     pub workspace: PathBuf,
     /// The standing agent this child carries, when it was dispatched to one.
     pub agent: Option<AgentContext>,
+    /// The daemon's database, which is what a child's process desk is recorded
+    /// against.
+    ///
+    /// Without it a child is offered `process` and cannot use it: `run_command`
+    /// with `background` and the `process` handle are both answered from a desk,
+    /// and a desk needs somewhere to write. A child handed work that outlives one
+    /// command is exactly the case that needs it.
+    pub db: Db,
     /// The key the parent turn already resolved, when the caller supplied one.
     ///
     /// A child runs on the parent's provider and model, so re-reading the
@@ -786,6 +859,18 @@ pub fn child_sandbox(workspace: PathBuf) -> crate::tools::Sandbox {
     crate::tools::Sandbox::new(workspace, crate::tools::SandboxMode::Full)
 }
 
+/// [`child_sandbox`] with a process desk, so `run_command` with `background` and
+/// the `process` handle work for a child the way they work for its parent.
+///
+/// The desk is the same one the browser and the phone use: it records against the
+/// daemon's database and logs under the workspace, which is why the database has
+/// to travel with the request.
+#[must_use]
+pub fn child_sandbox_with_desk(workspace: PathBuf, db: &Db) -> crate::tools::Sandbox {
+    let desk = std::sync::Arc::new(crate::process::Desk::new(db.clone(), &workspace));
+    child_sandbox(workspace).with_processes(desk)
+}
+
 /// The production runner: one tool-less turn through the same loop every other
 /// turn uses.
 fn run_child_turn(request: &RunRequest) -> Result<RunOutput, (String, String)> {
@@ -801,7 +886,10 @@ fn run_child_turn(request: &RunRequest) -> Result<RunOutput, (String, String)> {
             crate::tools::Sandbox::new(context.root.clone(), context.tool_policy.sandbox_mode()),
             agent_settings(),
         ),
-        None => (child_sandbox(request.workspace.clone()), child_settings()),
+        None => (
+            child_sandbox_with_desk(request.workspace.clone(), &request.db),
+            child_settings(),
+        ),
     };
     // Nothing a plain child asks for may run, including a call that a provider
     // invented despite being offered an empty tool list. A standing agent's
@@ -1081,6 +1169,7 @@ impl Desk {
             prompt: prompt.to_owned(),
             workspace: self.workspace.clone(),
             agent,
+            db: self.db.clone(),
             key: self.key.clone(),
         };
         let (status, outcome) = match (self.runner)(&request) {
@@ -1127,6 +1216,48 @@ impl Desk {
                 status: status.as_str(),
             });
         }
+    }
+}
+
+/// The tool that reads the dispatch table back.
+///
+/// `dispatch_agent` returns an id and nothing else: a run that is still going
+/// when the turn ends used to be unreachable, because the only way to learn its
+/// result was to be the reply it landed on. This is the read side. It answers
+/// from the `subagents` table, so a later turn - and a later daemon - sees the
+/// same rows.
+pub const RUNS_TOOL: &str = "subagent_runs";
+
+/// How many rows [`RUNS_TOOL`] lists at most. Enough to see a fan-out from a
+/// previous turn without pasting a table nobody will read.
+pub const RUNS_LIMIT: usize = 20;
+
+/// The tool spec for [`RUNS_TOOL`].
+#[must_use]
+pub fn runs_spec() -> ToolSpec {
+    ToolSpec {
+        name: RUNS_TOOL.to_owned(),
+        description: "List the subagents this conversation dispatched, with their state, \
+                      age and the last thing they did, or fetch one run's full result by id. \
+                      Use it to collect the work of a dispatch from an earlier turn, or to \
+                      check on a run that is still going. Reads the daemon's own table, so it \
+                      survives a restart and works on a later turn."
+            .to_owned(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "One run's id, as `dispatch_agent` returned it. Omit to \
+                                    list this conversation's runs."
+                },
+                "all": {
+                    "type": "boolean",
+                    "description": "List settled runs too, not only the ones still working \
+                                    or finished in the last half hour."
+                }
+            }
+        }),
     }
 }
 
@@ -1662,6 +1793,79 @@ mod tests {
         assert_eq!(row.status, Status::Failed);
         assert_eq!(row.error_code.as_deref(), Some("interrupted"));
         assert_eq!(running_count(&db).expect("running"), 0);
+    }
+
+    /// A child can actually run a tool. The list is not the claim: this drives the
+    /// sandbox a child is given, writes a file and reads it back, which is what
+    /// "a subagent is not tool-less" has to mean.
+    #[test]
+    fn a_child_sandbox_runs_a_real_tool() {
+        let db = db();
+        let root = std::env::temp_dir().join(format!("child-tools-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("scratch");
+        let sandbox = child_sandbox_with_desk(root.clone(), &db);
+
+        let wrote = crate::tools::execute(
+            "write_file",
+            &serde_json::json!({"path": "note.txt", "content": "the child wrote this"}),
+            &sandbox,
+        );
+        assert!(!wrote.is_error, "a child may write: {wrote:?}");
+
+        let read = crate::tools::execute(
+            "read_file",
+            &serde_json::json!({"path": "note.txt"}),
+            &sandbox,
+        );
+        assert!(!read.is_error, "a child may read: {read:?}");
+        assert!(
+            read.content.contains("the child wrote this"),
+            "the child's own write came back: {read:?}"
+        );
+
+        // The desk travels with the sandbox, so a command that outlives the round
+        // has somewhere to be recorded. Without it `run_command` refuses the
+        // `background` flag and the `process` handle answers "this turn has none".
+        assert!(
+            sandbox.processes().is_some(),
+            "a child is given the process desk its parent has"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A run is reachable after the turn that dispatched it: the row is durable, so
+    /// a later turn reads it from the table rather than from memory.
+    #[test]
+    fn a_dispatched_run_is_readable_from_a_later_turn() {
+        let db = db();
+        let desk = desk(&db, quiet_runner("the answer is 42"));
+        // Reserved and run by hand: a test has no runtime to hand the background
+        // task to, and what is under test is the row a later turn reads back.
+        let id = reserve(&db, &request("main", Some("t"), "one", "work")).expect("queued");
+        assert!(desk.execute(&id, "one", "work", None));
+        let row = get(&db, &id).expect("read").expect("one row");
+        assert_eq!(row.status, Status::Succeeded);
+
+        let listed = for_conversation(&db, "main", false, RUNS_LIMIT).expect("listed");
+        assert_eq!(listed.len(), 1, "the run is in the conversation's list");
+        let item = run_item(&listed[0]);
+        assert_eq!(item["id"], id.as_str());
+        assert_eq!(item["status"], "succeeded");
+        assert_eq!(item["result"], "the answer is 42");
+        assert!(item["age"].as_str().is_some_and(|age| !age.is_empty()));
+
+        // And by id, which is what a model holding the id from an earlier turn does.
+        let one = get(&db, &id).expect("read").expect("one row");
+        assert_eq!(run_item(&one)["label"], "one");
+
+        // Another conversation's rows are not this one's.
+        assert!(
+            for_conversation(&db, "elsewhere", true, RUNS_LIMIT)
+                .expect("listed")
+                .is_empty(),
+            "the list is scoped to the conversation that dispatched"
+        );
     }
 
     /// A subagent gets the parent's tools, but never the dispatcher. Both the

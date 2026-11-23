@@ -4231,9 +4231,9 @@ pub fn run_turn_with_key(
                  and tool allowance. Its result lands on its own row in the daemon, not in \
                  this reply; do not wait for it in this turn."
             } else {
-                "The subagent is running in the background with no tools. Its result lands \
-                 on its own row in the daemon, not in this reply; do not wait for it in this \
-                 turn."
+                "The subagent is running in the background with this turn's tools in this \
+                 turn's workspace. Its result lands on its own row in the daemon, not in this \
+                 reply; do not wait for it in this turn, and read it later with subagent_runs."
             };
             return match desk.dispatch_as(&label, &prompt, agent.as_deref()) {
                 Ok(id) => crate::tools::ToolResult::ok(serde_json::json!({
@@ -4262,6 +4262,62 @@ pub fn run_turn_with_key(
                     .to_string(),
                     is_error: true,
                 },
+            };
+        }
+
+        // The read side of dispatching: what this conversation handed off, and what
+        // came back. Answered here for the same reason dispatching is, since the
+        // table it reads is the one the sandbox does not hold. It is deliberately
+        // not gated on `settings.agents`: a turn that may no longer dispatch can
+        // still collect work an earlier turn started, which is the whole point of a
+        // durable row.
+        if call.name == crate::subagents::RUNS_TOOL {
+            let Some(db) = settings.db.as_ref() else {
+                return crate::tools::ToolResult::refused(
+                    "this turn was given no database, so the dispatch table cannot be read \
+                     and nothing was listed",
+                );
+            };
+            let wanted = call
+                .arguments
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty());
+            if let Some(id) = wanted {
+                return match crate::subagents::get(db, id) {
+                    Ok(Some(row)) => crate::tools::ToolResult::ok(crate::subagents::run_item(&row)),
+                    Ok(None) => crate::tools::ToolResult::refused(&format!(
+                        "no subagent with id {id} is in the dispatch table"
+                    )),
+                    Err(error) => crate::tools::ToolResult::refused(&format!(
+                        "the dispatch table could not be read: {error}"
+                    )),
+                };
+            }
+            let Some(conversation) = settings.conversation.as_deref() else {
+                return crate::tools::ToolResult::refused(
+                    "this turn has no conversation, so there is no dispatch history to list",
+                );
+            };
+            let all = call
+                .arguments
+                .get("all")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            return match crate::subagents::for_conversation(
+                db,
+                conversation,
+                all,
+                crate::subagents::RUNS_LIMIT,
+            ) {
+                Ok(rows) => crate::tools::ToolResult::ok(serde_json::json!({
+                    "runs": rows.iter().map(crate::subagents::run_item).collect::<Vec<_>>(),
+                    "running": rows.iter().filter(|row| !row.status.settled()).count(),
+                })),
+                Err(error) => crate::tools::ToolResult::refused(&format!(
+                    "the dispatch table could not be read: {error}"
+                )),
             };
         }
 
@@ -4377,6 +4433,12 @@ pub fn run_turn_with_key(
                     // round trip to learn the queue does not exist.
                     if queue.is_some() {
                         offered.push(crate::queue::spec());
+                    }
+                    // The read side of dispatching. Offered whenever this turn can
+                    // read the table, so a run started in an earlier turn - or
+                    // before a restart - can still be collected.
+                    if settings.db.is_some() {
+                        offered.push(crate::subagents::runs_spec());
                     }
                     // The steward's six tools, offered only while it is switched on and this
                     // turn has a database to write its duties into.

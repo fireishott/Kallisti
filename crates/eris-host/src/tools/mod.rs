@@ -800,6 +800,10 @@ pub fn execute_streaming(
             "dispatching needs the turn that offered it, so this call did nothing; \
              it runs inside a conversation turn and not in the sandbox layer",
         ),
+        "subagent_runs" => ToolResult::refused(
+            "the dispatch table lives in the database, which this layer does not hold, so \
+             this call did nothing; the turn that offered the tool answers it",
+        ),
         "budget" => crate::budget::sandbox_refusal(),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }

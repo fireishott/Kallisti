@@ -102,7 +102,11 @@ impl Harness {
         match self {
             Self::Dsh => "dsh",
             Self::ClaudeCode => "claude",
-            Self::Antigravity => "antigravity",
+            // The CLI installs as `agy`: the npm package of the longer name is
+            // a placeholder, and a binary called `antigravity` does not exist on
+            // any host this daemon has run on. `harness_tools` already reports
+            // `agy` for detection, so the two modules now name the same program.
+            Self::Antigravity => "agy",
         }
     }
 
@@ -117,7 +121,9 @@ impl Harness {
         match self {
             Self::Dsh => &["--profile", "headless"],
             Self::ClaudeCode => &[],
-            Self::Antigravity => &["run"],
+            // `agy` has no `run` subcommand: the word was read as a task and
+            // every delegated Antigravity task failed before the model.
+            Self::Antigravity => &[],
         }
     }
 
@@ -129,8 +135,24 @@ impl Harness {
     /// `dsh --profile headless <task>`.
     fn prompt_flag(self) -> &'static [&'static str] {
         match self {
-            Self::Dsh | Self::Antigravity => &[],
-            Self::ClaudeCode => &["-p"],
+            Self::Dsh => &[],
+            // Both coding CLIs answer one prompt with `-p` (`--print`).
+            Self::ClaudeCode | Self::Antigravity => &["-p"],
+        }
+    }
+
+    /// Whether this harness takes the model on its command line.
+    ///
+    /// `dsh` does not. Its launcher takes `--profile`, `--patch` and
+    /// `--dump-config` and hands everything else to the booted profile's own app,
+    /// which answers `error: unknown option '--model'` and starts no turn - so a
+    /// model row set against dsh used to fail every delegated task at the spawn
+    /// while the run reported only "failed". The model belongs in the dsh profile,
+    /// not in this argv; `claude` and `agy` both take `--model` on the command line.
+    fn takes_model(self) -> bool {
+        match self {
+            Self::Dsh => false,
+            Self::ClaudeCode | Self::Antigravity => true,
         }
     }
 }
@@ -241,6 +263,7 @@ pub fn argv(config: &Config, task: &str) -> Vec<String> {
         .as_deref()
         .map(str::trim)
         .filter(|model| !model.is_empty())
+        .filter(|_| config.harness.takes_model())
     {
         argv.push("--model".to_owned());
         argv.push(model.to_owned());
@@ -725,18 +748,13 @@ mod tests {
             cwd: None,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
         };
-        // dsh names its profile first, then the model, and the task is
-        // positional: `-p` is not an option the launcher accepts.
+        // dsh names its profile and takes the task positionally: `-p` is not an
+        // option the launcher accepts, and neither is `--model` - it answers
+        // `error: unknown option '--model'` and boots nothing, so a model row set
+        // against dsh is a setting this argv must not forward.
         assert_eq!(
             argv(&config, "do it"),
-            vec![
-                "dsh",
-                "--profile",
-                "headless",
-                "--model",
-                "a-model",
-                "do it"
-            ]
+            vec!["dsh", "--profile", "headless", "do it"]
         );
 
         config.harness = Harness::ClaudeCode;
@@ -748,11 +766,14 @@ mod tests {
         config.harness = Harness::Antigravity;
         assert_eq!(
             argv(&config, "do it"),
-            vec!["antigravity", "run", "--model", "a-model", "do it"]
+            vec!["agy", "--model", "a-model", "-p", "do it"]
         );
 
         config.model = None;
-        assert_eq!(argv(&config, "do it"), vec!["antigravity", "run", "do it"]);
+        assert_eq!(argv(&config, "do it"), vec!["agy", "-p", "do it"]);
+        // `agy` has no `run` subcommand; a task that carried the word would be
+        // read as a subcommand name and refused before the model saw it.
+        assert!(!argv(&config, "do it").iter().any(|word| word == "run"));
     }
 
     /// A stub proves the parts that only a real process can: stdout, stderr and
