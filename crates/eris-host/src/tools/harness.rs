@@ -305,7 +305,11 @@ fn refusal(code: &str, reason: String) -> ToolResult {
 }
 
 /// Run one delegated task under the configured harness.
-pub fn run(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
+pub fn run(
+    arguments: &serde_json::Value,
+    sandbox: &Sandbox,
+    sink: &mut dyn FnMut(&str),
+) -> ToolResult {
     // The write gate first, exactly where `run_command` puts it: a confined turn
     // cannot reach the filesystem through a harness either.
     if sandbox.mode() != SandboxMode::Full {
@@ -412,7 +416,15 @@ pub fn run(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
     // The same readers that fill the tool result also feed the registry: one
     // drain per stream, two consumers, so a monitor never costs the harness a
     // second read of its pipe.
-    let stdout = stream(child.stdout.take(), run_id.clone(), Sink::Stdout);
+    // The sink is what makes a ten-minute harness run visible: without it the
+    // tool row sits still and the phone's stall watchdog has nothing to reset.
+    let (live_tx, live_rx) = std::sync::mpsc::channel::<String>();
+    let stdout = stream_with_live(
+        child.stdout.take(),
+        run_id.clone(),
+        Sink::Stdout,
+        Some(live_tx),
+    );
     let stderr = stream(child.stderr.take(), run_id.clone(), Sink::Stderr);
 
     let timeout = config.timeout();
@@ -422,6 +434,11 @@ pub fn run(arguments: &serde_json::Value, sandbox: &Sandbox) -> ToolResult {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
+                // Forward whatever arrived since the last tick, so the phone
+                // draws the harness's own output rather than a frozen row.
+                while let Ok(chunk) = live_rx.try_recv() {
+                    sink(&chunk);
+                }
                 if started.elapsed() >= timeout {
                     timed_out = true;
                     harness_runs::finish(&run_id, RunStatus::TimedOut, None);
@@ -530,6 +547,16 @@ impl Sink {
 /// it must not be stopped by a full pipe: the omission is a fact about the
 /// report, not a reason to hang the task.
 fn stream(pipe: Option<impl std::io::Read + Send + 'static>, run_id: String, sink: Sink) -> Stream {
+    stream_with_live(pipe, run_id, sink, None)
+}
+
+/// The same drain, optionally echoing each chunk to the turn.
+fn stream_with_live(
+    pipe: Option<impl std::io::Read + Send + 'static>,
+    run_id: String,
+    sink: Sink,
+    live: Option<std::sync::mpsc::Sender<String>>,
+) -> Stream {
     let snapshot = std::sync::Arc::new(std::sync::Mutex::new(Captured::default()));
     let (sender, finished) = std::sync::mpsc::channel();
     let shared = std::sync::Arc::clone(&snapshot);
@@ -544,6 +571,10 @@ fn stream(pipe: Option<impl std::io::Read + Send + 'static>, run_id: String, sin
                 Ok(0) => break,
                 Ok(count) => {
                     sink.feed(&run_id, &buffer[..count]);
+                    if let Some(live) = live.as_ref() {
+                        let text = String::from_utf8_lossy(&buffer[..count]).into_owned();
+                        let _ = live.send(text);
+                    }
                     let mut captured = shared
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());

@@ -758,7 +758,7 @@ pub fn execute_streaming(
         // Delegating a coding task to the operator's harness. It is a process
         // spawn like `run_command`, under the same write gate, and it answers
         // itself here rather than needing the turn.
-        "delegate_to_harness" => harness::run(arguments, sandbox),
+        "delegate_to_harness" => harness::run(arguments, sandbox, sink),
         "fetch_url" => fetch_url(arguments, sandbox),
         "memory_manage" => match sandbox.memory() {
             Some(access) => access.call(arguments),

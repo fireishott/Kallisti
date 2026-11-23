@@ -57,10 +57,14 @@ pub const CLAUDE_CODE_INSTALL: &str = "npm install -g @anthropic-ai/claude-code"
 pub const DSH_INSTALL: &str = "npm install -g @deepseek-ai/dsh";
 
 /// The command that installs Antigravity on macOS.
-pub const ANTIGRAVITY_INSTALL_MACOS: &str = "brew install antigravity";
+///
+/// The same installer script as everywhere else: the npm package of that name
+/// is an empty placeholder, so installing it succeeds and leaves nothing to run.
+pub const ANTIGRAVITY_INSTALL_MACOS: &str =
+    "curl -fsSL https://antigravity.google/cli/install.sh | bash";
 
 /// The command that installs Antigravity everywhere else.
-pub const ANTIGRAVITY_INSTALL: &str = "npm install -g antigravity";
+pub const ANTIGRAVITY_INSTALL: &str = "curl -fsSL https://antigravity.google/cli/install.sh | bash";
 
 /// How long a binary may take to answer `--version`.
 pub const VERSION_TIMEOUT: Duration = Duration::from_secs(1);
@@ -74,11 +78,11 @@ pub const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 /// The deadline an install is given in the run registry.
 pub const INSTALL_TIMEOUT_SECS: u64 = 600;
 
-/// The package manager that installs two of the three, and Antigravity off macOS.
+/// The package manager that installs two of the three.
 const NPM: &str = "npm";
 
-/// The package manager Antigravity is installed with on macOS.
-const BREW: &str = "brew";
+/// What fetches Antigravity's installer script.
+const CURL: &str = "curl";
 
 /// The macOS binary that reads the keychain.
 const KEYCHAIN_BINARY: &str = "security";
@@ -347,7 +351,7 @@ const TOOLS: [ToolDef; 3] = [
     ToolDef {
         id: TOOL_ANTIGRAVITY,
         name: "Antigravity",
-        binary: "antigravity",
+        binary: "agy",
         models: &ANTIGRAVITY_MODELS,
     },
 ];
@@ -455,6 +459,14 @@ fn logins() -> &'static std::sync::Mutex<Vec<LoginSession>> {
 /// search: an OSC wrapper ends in a printable character, which makes the URL the
 /// tail of a "word" to anything that splits on whitespace first.
 fn strip_terminal_escapes(line: &str) -> String {
+    strip_escapes(line, false)
+}
+
+/// [`strip_terminal_escapes`], with a cursor move across a row read as a space.
+///
+/// An Ink screen draws words by moving the cursor, not by printing the space
+/// between them, so a sentence read without that gap arrives as one long word.
+fn strip_escapes(line: &str, gaps: bool) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();
     while let Some(character) = chars.next() {
@@ -469,6 +481,9 @@ fn strip_terminal_escapes(line: &str) -> String {
             Some('[') => {
                 for next in chars.by_ref() {
                     if ('\u{40}'..='\u{7e}').contains(&next) {
+                        if gaps && (next == 'G' || next == 'C') {
+                            out.push(' ');
+                        }
                         break;
                     }
                 }
@@ -566,37 +581,21 @@ pub fn start_login(env: &Env) -> Result<(String, String), String> {
         .spawn()
         .map_err(|error| format!("Claude Code could not be started: {error}"))?;
     let stdout = child.stdout.take().ok_or("no output pipe")?;
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        use std::io::BufRead;
-        let reader = std::io::BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    let rx = chunk_reader(stdout);
     // stderr is drained too: the CLI writes its own failures there, and a pipe
     // nobody reads fills and stops the child mid-sign-in.
-    let stderr_rx = child.stderr.take().map(|stderr| {
-        let (stderr_tx, stderr_rx) = std::sync::mpsc::channel::<String>();
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            let reader = std::io::BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                if stderr_tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        stderr_rx
-    });
+    let stderr_rx = child.stderr.take().map(chunk_reader);
+    // The screen is drawn in pieces, so the link is read from everything seen so
+    // far, and only once a line break follows it: a link cut at a chunk edge is
+    // a link that opens the wrong page.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut seen = String::new();
     let mut url: Option<String> = None;
     while std::time::Instant::now() < deadline {
         match rx.recv_timeout(std::time::Duration::from_millis(250)) {
-            Ok(line) => {
-                if let Some(found) = first_field_with(&line, "https://") {
+            Ok(chunk) => {
+                seen.push_str(&chunk);
+                if let Some(found) = finished_field(&seen, "https://") {
                     url = Some(found);
                     break;
                 }
@@ -607,6 +606,7 @@ pub fn start_login(env: &Env) -> Result<(String, String), String> {
     }
     let Some(url) = url else {
         let _ = child.kill();
+        let _ = child.wait();
         return Err("Claude Code did not print a sign-in link".to_owned());
     };
     let id = uuid::Uuid::now_v7().to_string();
@@ -665,88 +665,158 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
     // Bounded, because the phone is waiting on this call. A rejection arrives in
     // seconds; anything past half a minute is the CLI waiting for another code,
     // and saying so beats an endless spinner.
+    //
+    // The CLI redraws its screen in place, so what it says arrives as cursor
+    // moves and carriage returns with no line break at all. Everything is read
+    // as raw chunks and scanned as one growing text.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut seen = String::new();
     let mut token: Option<String> = None;
     let mut complaint: Option<String> = None;
     while std::time::Instant::now() < deadline {
-        let mut saw_line = false;
-        if let Ok(line) = session
+        let mut saw_chunk = false;
+        if let Ok(chunk) = session
             .stdout
             .recv_timeout(std::time::Duration::from_millis(200))
         {
-            saw_line = true;
-            if let Some(found) = first_field_with(&line, "sk-ant-") {
-                token = Some(found);
-                break;
-            }
-            if let Some(reason) = login_complaint(&line) {
-                complaint = Some(reason);
-            }
+            saw_chunk = true;
+            seen.push_str(&chunk);
         }
-        if let Ok(line) = session
+        if let Ok(chunk) = session
             .stderr
             .recv_timeout(std::time::Duration::from_millis(50))
         {
-            saw_line = true;
-            if let Some(reason) = login_complaint(&line) {
-                complaint = Some(reason);
-            }
+            saw_chunk = true;
+            seen.push_str(&chunk);
         }
-        if !saw_line && session.child.try_wait().ok().flatten().is_some() {
-            break;
-        }
-        // A complaint means the CLI is back at its prompt waiting for another
-        // code. Give it a moment to print a token first, then answer.
-        if complaint.is_some() {
-            if let Ok(line) = session
-                .stdout
-                .recv_timeout(std::time::Duration::from_millis(300))
-                && let Some(found) = first_field_with(&line, "sk-ant-")
-            {
-                token = Some(found);
-            }
-            if token.is_none() {
+        if saw_chunk {
+            token = first_field_with(&seen, "sk-ant-");
+            if token.is_some() {
                 break;
             }
+            complaint = login_complaint(&seen);
+            if complaint.is_some() {
+                // A complaint means the CLI is back at its prompt. Give it a
+                // moment to print a token it may have written in the same
+                // redraw, then answer.
+                if let Ok(chunk) = session
+                    .stdout
+                    .recv_timeout(std::time::Duration::from_millis(300))
+                {
+                    seen.push_str(&chunk);
+                    token = first_field_with(&seen, "sk-ant-");
+                }
+                break;
+            }
+        } else if session.child.try_wait().ok().flatten().is_some() {
+            break;
         }
     }
 
+    // Whatever the outcome, this sign-in is over. A code works once and only for
+    // the link it came from, and a child left at its prompt is a process nobody
+    // will ever answer.
+    let _ = session.child.kill();
+    let _ = session.child.wait();
+
     match token {
-        Some(found) => {
-            let _ = session.child.kill();
-            Ok(found)
-        }
-        None => {
-            // The CLI also writes the credential itself in some versions, so a
-            // failed scan is not proof of failure until that is checked.
-            if let Some(reason) = complaint {
-                return Err(reason);
-            }
-            Err("the tool is still waiting for a code; check the code and try again".to_owned())
-        }
+        Some(found) => Ok(found),
+        None => Err(complaint.unwrap_or_else(|| {
+            "Claude Code did not accept the code in time. Start the sign-in again and paste the new code".to_owned()
+        })),
     }
 }
 
-/// The CLI's own words when it rejects a code, so the phone can say them.
-fn login_complaint(line: &str) -> Option<String> {
-    let clean = strip_terminal_escapes(line);
-    let trimmed = clean.trim();
-    if trimmed.is_empty() {
+/// Read a pipe as raw chunks, which is the only way a redrawn screen is seen.
+///
+/// A line reader waits for a newline the CLI never sends after a rejection, so
+/// the rejection is never read.
+fn chunk_reader(pipe: impl std::io::Read + Send + 'static) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut pipe = pipe;
+        let mut buffer = [0u8; 4096];
+        // A multi-byte character can be cut at a chunk edge; carry the tail.
+        let mut carry: Vec<u8> = Vec::new();
+        loop {
+            match pipe.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => {
+                    carry.extend_from_slice(&buffer[..count]);
+                    let valid = match std::str::from_utf8(&carry) {
+                        Ok(_) => carry.len(),
+                        Err(error) => error.valid_up_to(),
+                    };
+                    if valid == 0 {
+                        continue;
+                    }
+                    let text = String::from_utf8_lossy(&carry[..valid]).into_owned();
+                    carry.drain(..valid);
+                    if tx.send(text).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    rx
+}
+
+/// The first field after `prefix`, but only once the screen has moved past it.
+///
+/// A value still being drawn is cut at the end of what has arrived; waiting for
+/// a line break after it is what says it is whole.
+fn finished_field(seen: &str, prefix: &str) -> Option<String> {
+    let clean = strip_terminal_escapes(seen);
+    let start = clean.find(prefix)?;
+    if !clean[start..].contains('\n') {
         return None;
     }
-    let lowered = trimmed.to_lowercase();
-    let complaints = [
-        "oauth error",
-        "invalid code",
-        "request failed",
-        "expired",
-        "denied",
+    first_field_with(seen, prefix)
+}
+
+/// The CLI's own words when it rejects a code, so the phone can say them.
+///
+/// Read from everything the CLI has drawn. Words are matched with the spacing
+/// removed, because a redraw leaves gaps and skipped letters inside them.
+fn login_complaint(seen: &str) -> Option<String> {
+    let spaced = strip_escapes(seen, true);
+    let squeezed: String = spaced
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>()
+        .to_lowercase();
+    let refused = [
+        "statuscode400",
+        "statuscode401",
+        "invalidcode",
+        "invalid_grant",
+        "invalidgrant",
     ];
-    if complaints.iter().any(|needle| lowered.contains(needle)) {
-        // Column moves glue words together in a PTY dump, so collapse what is
-        // left into one readable sentence.
-        let joined = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-        return Some(joined);
+    if refused.iter().any(|needle| squeezed.contains(needle)) {
+        return Some(
+            "Claude refused that code (400). A code works once, and only for the link it came from: close this, tap Sign in with Claude again, and paste the code from the new page"
+                .to_owned(),
+        );
+    }
+    if squeezed.contains("expired") {
+        return Some(
+            "That code has expired. Close this, tap Sign in with Claude again, and paste the code from the new page"
+                .to_owned(),
+        );
+    }
+    let other = ["oautherror", "requestfailed", "denied", "pressentertoretry"];
+    if other.iter().any(|needle| squeezed.contains(needle)) {
+        let joined = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+        let tail: String = joined
+            .chars()
+            .rev()
+            .take(160)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        return Some(format!("Claude Code said: {tail}"));
     }
     None
 }
@@ -876,8 +946,7 @@ pub fn install_command(id: &str, platform: Platform) -> Option<&'static str> {
 fn installer_for(id: &str, platform: Platform) -> Option<&'static str> {
     match (id.trim(), platform) {
         (TOOL_CLAUDE_CODE | TOOL_DSH, _) => Some(NPM),
-        (TOOL_ANTIGRAVITY, Platform::MacOs) => Some(BREW),
-        (TOOL_ANTIGRAVITY, _) => Some(NPM),
+        (TOOL_ANTIGRAVITY, _) => Some(CURL),
         _ => None,
     }
 }
@@ -949,7 +1018,9 @@ fn spawn_install(command: &str) -> std::io::Result<std::process::Child> {
     let mut builder = Command::new("bash");
     builder
         .arg("-lc")
-        .arg(command)
+        // A piped installer reports the last stage only, so a failed download
+        // would read as a finished install.
+        .arg(format!("set -o pipefail; {command}"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1424,6 +1495,51 @@ mod tests {
         );
     }
 
+    /// The rejection the CLI really draws: cursor moves and carriage returns,
+    /// and no line break anywhere.
+    #[test]
+    fn a_redrawn_rejection_with_no_newline_is_read() {
+        let drawn = "\u{1b}(B\u{f}\u{1b}[?2004h\r\u{1b}[31C\u{1b}[1A***********klMNOP\r\r\n\u{1b}[2K\u{1b}[1A\u{1b}[2K\u{1b}[G\u{1b}[1A\r\u{1b}[1C\u{1b}[4AOAuth error: Requ\u{1b}[20Gst\u{1b}[23Gfailed with\u{1b}[35Gstatus code 400\u{1b}[K\r\u{1b}[2B\u{1b}[K\r\u{1b}[1C\u{1b}[1BPress\u{1b}[8GEnter\u{1b}[14Gto\u{1b}[17Gretry.\r\u{1b}[1B\u{1b}[K";
+        let said = login_complaint(drawn).expect("a rejection");
+        assert!(said.contains("refused that code"), "{said}");
+        assert!(said.contains("Sign in with Claude again"), "{said}");
+    }
+
+    /// The prompt text before a code is entered is not a rejection.
+    #[test]
+    fn the_prompt_before_a_code_is_not_a_rejection() {
+        let prompt = "\u{1b}[2GPaste\u{1b}[8Gcode\u{1b}[13Ghere\u{1b}[18Gif\u{1b}[21Gprompted\u{1b}[30G>\r\r\n";
+        assert!(login_complaint(prompt).is_none());
+    }
+
+    /// A token cut at a chunk edge is found once the rest arrives, and a link
+    /// is not answered until the screen has moved past it.
+    #[test]
+    fn values_split_across_chunks_are_lifted_whole() {
+        let mut seen = String::from("Your token\r\n\u{1b}[32msk-ant-oat01-abc");
+        assert_eq!(
+            first_field_with(&seen, "sk-ant-").as_deref(),
+            Some("sk-ant-oat01-abc")
+        );
+        seen.push_str("DEF123\u{1b}[0m\r\n");
+        assert_eq!(
+            first_field_with(&seen, "sk-ant-").as_deref(),
+            Some("sk-ant-oat01-abcDEF123")
+        );
+
+        let mut link =
+            String::from("use the url\r\n\u{1b}]8;;https://claude.com/cai/oauth/authorize?code=tr");
+        assert!(
+            finished_field(&link, "https://").is_none(),
+            "still being drawn"
+        );
+        link.push_str("ue&state=abc\u{7}https://claude.com/cai/oauth/authorize?code=true&state=abc\u{1b}]8;;\u{7}\r\n");
+        assert_eq!(
+            finished_field(&link, "https://").as_deref(),
+            Some("https://claude.com/cai/oauth/authorize?code=true&state=abc")
+        );
+    }
+
     #[test]
     fn the_cli_own_complaint_is_reported() {
         assert!(login_complaint("OAuth error: Request failed with status code 400").is_some());
@@ -1432,8 +1548,7 @@ mod tests {
         // The PTY glues words with column moves; the complaint is still read and
         // handed back as one sentence.
         let joined = login_complaint("OAuth\u{1b}[8Gerror: code expired").unwrap_or_default();
-        assert!(joined.contains("OAuth"));
-        assert!(joined.contains("expired"));
+        assert!(joined.contains("expired"), "{joined}");
     }
 
     #[test]
@@ -1451,7 +1566,7 @@ mod tests {
         );
         stub(
             dir.path(),
-            "antigravity",
+            "agy",
             "#!/bin/sh\nprintf 'antigravity 0.3\\n'\n",
         );
 
@@ -1535,15 +1650,15 @@ mod tests {
         assert!(tool(&linux, TOOL_CLAUDE_CODE).installable, "npm is present");
         assert!(tool(&linux, TOOL_DSH).installable, "npm is present");
         assert!(
-            tool(&linux, TOOL_ANTIGRAVITY).installable,
-            "npm is the Linux installer for it"
+            !tool(&linux, TOOL_ANTIGRAVITY).installable,
+            "npm does not install it; its installer script needs curl"
         );
         assert_eq!(
             install_plan(&linux, TOOL_CLAUDE_CODE),
             InstallPlan::Start(CLAUDE_CODE_INSTALL.to_owned())
         );
 
-        // macOS installs it with brew, so brew is what has to be there.
+        // macOS runs the same script, so curl is what has to be there.
         let macos = Env {
             platform: Platform::MacOs,
             ..env_in(&[dir.path().to_path_buf()])
@@ -1551,14 +1666,14 @@ mod tests {
         let report = detect_in(&macos);
         assert!(
             !tool(&report, TOOL_ANTIGRAVITY).installable,
-            "npm does not install it on macOS"
+            "no curl on the fixture path"
         );
         assert_eq!(
             install_plan(&report, TOOL_ANTIGRAVITY),
             InstallPlan::Unsupported(ANTIGRAVITY_INSTALL_MACOS.to_owned())
         );
 
-        stub(dir.path(), "brew", "#!/bin/sh\nexit 0\n");
+        stub(dir.path(), "curl", "#!/bin/sh\nexit 0\n");
         let report = detect_in(&macos);
         assert!(tool(&report, TOOL_ANTIGRAVITY).installable);
         assert_eq!(

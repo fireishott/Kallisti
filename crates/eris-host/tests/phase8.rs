@@ -709,6 +709,8 @@ async fn pair_redeems_a_code_and_refresh_mints_an_access_token() {
     assert_ne!(refresh, access);
     let scopes = body["scopes"].as_array().expect("a scope list");
     assert!(scopes.contains(&serde_json::json!("chat")));
+    // A plain code grants the device scopes; administration rides a code minted
+    // with the box ticked, which is its own test.
     assert!(!scopes.contains(&serde_json::json!("admin")));
     assert!(body["expires_at"].as_str().is_some_and(|at| !at.is_empty()));
 
@@ -3570,7 +3572,8 @@ async fn settings_require_a_bearer_and_the_admin_scope() {
     assert_eq!(body["approval"], "ask");
     assert_eq!(body["memory"], "gbrain");
     assert_eq!(body["tools_enabled"], true);
-    assert_eq!(body["tool_rounds"], 12);
+    // The default budget is 40: 12 wrapped real work at round 11.
+    assert_eq!(body["tool_rounds"], 40);
     assert_eq!(
         body["goal_rounds_ceiling"], 60,
         "the long-job ceiling ships at the goal raise it was before the setting \

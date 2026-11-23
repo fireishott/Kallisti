@@ -57,6 +57,21 @@ use super::handlers::{
 // Shared plumbing
 // ---------------------------------------------------------------------------
 
+/// Chat or administration. A phone paired before the admin box was ticked still
+/// has to be able to sign a coding tool in; storing that credential is not a
+/// change to the daemon's own configuration.
+fn require_login_scope(token: &crate::auth::VerifiedToken) -> Result<(), DeviceError> {
+    let scopes = token.scope();
+    if scopes.has_admin() || scopes.contains(crate::auth::Scope::Chat) {
+        return Ok(());
+    }
+    Err(DeviceError::new(
+        StatusCode::FORBIDDEN,
+        "scope_denied",
+        "the token does not carry the chat scope",
+    ))
+}
+
 /// `POST /v1/harness/tools/claude-code/login/start` - open the CLI's own sign-in.
 ///
 /// Administration, because finishing it stores a credential. The answer carries
@@ -69,7 +84,7 @@ pub async fn harness_tool_login_start(
         Ok(token) => token,
         Err(error) => return error.into_response(),
     };
-    if let Err(error) = require_scope(&token, Scope::Admin) {
+    if let Err(error) = require_login_scope(&token) {
         return error.into_response();
     }
     let env = crate::harness_tools::detect_env();
@@ -97,7 +112,7 @@ pub async fn harness_tool_login_complete(
         Ok(token) => token,
         Err(error) => return error.into_response(),
     };
-    if let Err(error) = require_scope(&token, Scope::Admin) {
+    if let Err(error) = require_login_scope(&token) {
         return error.into_response();
     }
     let fields = match read_fields(&headers, body).await {
@@ -2968,8 +2983,8 @@ mod tests {
             (
                 "antigravity",
                 "Antigravity",
-                "antigravity",
-                "npm install -g antigravity",
+                "agy",
+                "curl -fsSL https://antigravity.google/cli/install.sh | bash",
                 vec!["gemini-3-pro", "gemini-3-flash", "default"],
             ),
         ]
