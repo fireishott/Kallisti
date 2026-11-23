@@ -433,6 +433,7 @@ impl Env {
 pub struct LoginSession {
     child: std::process::Child,
     stdout: std::sync::mpsc::Receiver<String>,
+    stderr: std::sync::mpsc::Receiver<String>,
     pub id: String,
     pub url: String,
     started: std::time::Instant,
@@ -502,15 +503,22 @@ fn first_field_with(line: &str, prefix: &str) -> Option<String> {
     let clean = strip_terminal_escapes(line);
     let start = clean.find(prefix)?;
     let tail = &clean[start..];
-    let end = tail
-        .find(|character: char| {
-            character.is_whitespace()
-                || character.is_control()
-                || character == ')'
-                || character == ','
-        })
-        .unwrap_or(tail.len());
-    Some(tail[..end].to_owned())
+    let mut end = tail.len();
+    for (index, character) in tail.char_indices() {
+        let stops = character.is_whitespace()
+            || character.is_control()
+            || character == ')'
+            || character == ','
+            // A hyperlink wrapper prints the value twice around a BOM; stop at
+            // the second copy rather than returning both run together.
+            || character == '\u{feff}'
+            || (index > 0 && tail[index..].starts_with(prefix));
+        if stops {
+            end = index;
+            break;
+        }
+    }
+    Some(tail[..end].trim().to_owned())
 }
 
 /// A command that gives its child a terminal.
@@ -568,6 +576,21 @@ pub fn start_login(env: &Env) -> Result<(String, String), String> {
             }
         }
     });
+    // stderr is drained too: the CLI writes its own failures there, and a pipe
+    // nobody reads fills and stops the child mid-sign-in.
+    let stderr_rx = child.stderr.take().map(|stderr| {
+        let (stderr_tx, stderr_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if stderr_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        stderr_rx
+    });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut url: Option<String> = None;
     while std::time::Instant::now() < deadline {
@@ -597,6 +620,7 @@ pub fn start_login(env: &Env) -> Result<(String, String), String> {
         .push(LoginSession {
             child,
             stdout: rx,
+            stderr: stderr_rx.unwrap_or_else(|| std::sync::mpsc::channel().1),
             id: id.clone(),
             url: url.clone(),
             started: std::time::Instant::now(),
@@ -611,43 +635,120 @@ pub fn start_login(env: &Env) -> Result<(String, String), String> {
 /// A string naming why the sign-in did not complete.
 pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
     use std::io::Write;
-    let mut open = logins()
-        .lock()
-        .map_err(|_| "the sign-in list is unavailable".to_owned())?;
-    let Some(index) = open.iter().position(|session| session.id == id) else {
-        return Err("no sign-in with that id is open; start one again".to_owned());
+    // The sign-in is only held for the length of this wait, so a second attempt
+    // after a bad code starts from a fresh session rather than blocking here.
+    let mut session = {
+        let mut open = logins()
+            .lock()
+            .map_err(|_| "the sign-in list is unavailable".to_owned())?;
+        let Some(index) = open.iter().position(|session| session.id == id) else {
+            return Err("no sign-in with that id is open; start one again".to_owned());
+        };
+        open.remove(index)
     };
-    let mut session = open.remove(index);
+
+    // A carriage return, not a newline: the prompt reads the terminal in raw
+    // mode, where Enter is CR. A bare newline is echoed and then ignored, which left
+    // the app spinning while the CLI waited for a key it never saw.
     let stdin = session
         .child
         .stdin
         .as_mut()
         .ok_or("the sign-in has no input pipe")?;
-    writeln!(stdin, "{}", code.trim())
+    stdin
+        .write_all(format!("{}\r", code.trim()).as_bytes())
         .map_err(|error| format!("the code could not be sent: {error}"))?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    stdin
+        .flush()
+        .map_err(|error| format!("the code could not be sent: {error}"))?;
+
+    // Bounded, because the phone is waiting on this call. A rejection arrives in
+    // seconds; anything past half a minute is the CLI waiting for another code,
+    // and saying so beats an endless spinner.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut token: Option<String> = None;
+    let mut complaint: Option<String> = None;
     while std::time::Instant::now() < deadline {
-        match session
+        let mut saw_line = false;
+        if let Ok(line) = session
             .stdout
-            .recv_timeout(std::time::Duration::from_millis(250))
+            .recv_timeout(std::time::Duration::from_millis(200))
         {
-            Ok(line) => {
-                if let Some(found) = first_field_with(&line, "sk-ant-") {
-                    token = Some(found);
-                    break;
-                }
+            saw_line = true;
+            if let Some(found) = first_field_with(&line, "sk-ant-") {
+                token = Some(found);
+                break;
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if session.child.try_wait().ok().flatten().is_some() {
-                    break;
-                }
+            if let Some(reason) = login_complaint(&line) {
+                complaint = Some(reason);
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if let Ok(line) = session
+            .stderr
+            .recv_timeout(std::time::Duration::from_millis(50))
+        {
+            saw_line = true;
+            if let Some(reason) = login_complaint(&line) {
+                complaint = Some(reason);
+            }
+        }
+        if !saw_line && session.child.try_wait().ok().flatten().is_some() {
+            break;
+        }
+        // A complaint means the CLI is back at its prompt waiting for another
+        // code. Give it a moment to print a token first, then answer.
+        if complaint.is_some() {
+            if let Ok(line) = session
+                .stdout
+                .recv_timeout(std::time::Duration::from_millis(300))
+                && let Some(found) = first_field_with(&line, "sk-ant-")
+            {
+                token = Some(found);
+            }
+            if token.is_none() {
+                break;
+            }
         }
     }
-    let _ = session.child.kill();
-    token.ok_or_else(|| "Claude Code did not print a token; the code may have expired".to_owned())
+
+    match token {
+        Some(found) => {
+            let _ = session.child.kill();
+            Ok(found)
+        }
+        None => {
+            // The CLI also writes the credential itself in some versions, so a
+            // failed scan is not proof of failure until that is checked.
+            if let Some(reason) = complaint {
+                return Err(reason);
+            }
+            Err("the tool is still waiting for a code; check the code and try again".to_owned())
+        }
+    }
+}
+
+/// The CLI's own words when it rejects a code, so the phone can say them.
+fn login_complaint(line: &str) -> Option<String> {
+    let clean = strip_terminal_escapes(line);
+    let trimmed = clean.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lowered = trimmed.to_lowercase();
+    let complaints = [
+        "oauth error",
+        "invalid code",
+        "request failed",
+        "expired",
+        "denied",
+    ];
+    if complaints.iter().any(|needle| lowered.contains(needle)) {
+        // Column moves glue words together in a PTY dump, so collapse what is
+        // left into one readable sentence.
+        let joined = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+        return Some(joined);
+    }
+    None
 }
 
 /// Kill every sign-in the daemon still has open.
@@ -1307,6 +1408,35 @@ mod tests {
     /// Every harness found on the fixture path reports where it is and the first
     /// line of its own version.
     #[test]
+    #[test]
+    fn a_hyperlink_wrapped_value_is_lifted_once() {
+        // The CLI prints an OSC-8 wrapper: the value appears in the escape
+        // payload, then again as the visible text with a BOM between. Returning
+        // both run together produced a URL nothing could open.
+        let line = "\u{1b}]8;;https://claude.com/cai/oauth?code=true\u{7}\u{feff}https://claude.com/cai/oauth?code=true\u{1b}]8;;\u{7}";
+        assert_eq!(
+            first_field_with(line, "https://").as_deref(),
+            Some("https://claude.com/cai/oauth?code=true")
+        );
+        let token = "Your token: \u{1b}]8;;\u{7}sk-ant-oat01-abc_DEF\u{7}";
+        assert_eq!(
+            first_field_with(token, "sk-ant-").as_deref(),
+            Some("sk-ant-oat01-abc_DEF")
+        );
+    }
+
+    #[test]
+    fn the_cli_own_complaint_is_reported() {
+        assert!(login_complaint("OAuth error: Request failed with status code 400").is_some());
+        assert!(login_complaint("Invalid code, try again").is_some());
+        assert!(login_complaint("Paste code here if prompted >").is_none());
+        // The PTY glues words with column moves; the complaint is still read and
+        // handed back as one sentence.
+        let joined = login_complaint("OAuth\u{1b}[8Gerror: code expired").unwrap_or_default();
+        assert!(joined.contains("OAuth"));
+        assert!(joined.contains("expired"));
+    }
+
     fn a_fixture_path_reports_each_tool_with_its_version() {
         let dir = tempfile::tempdir().expect("temp dir");
         stub(
