@@ -10,6 +10,31 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.7] - 2026-11-23
+
+### Added
+
+- A running turn says where it is. The daemon already announced its round before
+  every tool pass and the client decoded the frame and dropped it, so a long turn
+  showed a spinner and nothing else. It reaches the store now and reads as round
+  3/100.
+- A settled answer carries the daemon's accounting object - rounds, wall time,
+  tokens in and out, cache share, context - drawn as one line under the bubble.
+  Every field has its own switch under Settings > Turn footer, and a field the
+  daemon never measured is left out rather than printed as a zero.
+- Build number 243.
+
+### Fixed
+
+- The transcript could not be written back to the local cache. `Message` is
+  `Codable` and `TurnAccounting` was decode-only, so re-encoding a row that
+  carried accounting failed. It encodes now; the daemon stays the writer of
+  record and the app never posts the object back.
+- The model picker writes `provider/id` when two catalogues publish the same id,
+  which is the only spelling the daemon accepts for an ambiguous id.
+- A completion push refreshes the conversation on screen by its own id instead of
+  the daemon's notion of which one is current.
+
 ## [1.7.6] - 2026-11-23
 
 ### Added
@@ -403,6 +428,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versions follow the daemon's own `VERSION`, with a build number that moves on every
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
+
+## 1.10.1
+
+- **A turn is never charged for a round it does not run.** The redundancy guard
+  counted a round and then ran it, so "two repeats and stop" cost three rounds of
+  the same read and put one more identical result in the prompt. The round that
+  trips the limit is called off before its calls execute: the stop sentence goes
+  in, the calls are dropped, and the next pass finds the tools gone and the
+  answer due.
+- **A turn is bounded by time, not by running out of rounds mid-job.** Every
+  recent answer wrapped up on round 29 of 30 and said so. The loop no longer
+  takes tools away two rounds early, and the wall clock is a setting - half an
+  hour by default instead of eight minutes. `build 217`.
+- **The dsh delegation starts.** The built-in command was `dsh --model M -p task`,
+  which the launcher refuses twice over: a profile is mandatory and it takes no
+  `-p`. Every delegated coding task died at the spawn. It is
+  `dsh --profile headless <task>` now.
+- **Stopping the unit is instant.** Shutdown waits on the whole cgroup, and a
+  delegated harness with its own children kept it open, so the unit sat in
+  final-sigterm until the timeout and the next start raced a half-dead process for
+  the ports. Shutdown kills every live harness run's group and every open sign-in
+  child before the runtime drains. `build 215`.
+- **The Claude sign-in accepts what a person pastes.** The prompt reads the
+  terminal in raw mode, where Enter is CR, and the daemon wrote a newline, so the
+  CLI echoed it and waited for a key that never came. A pasted callback URL is
+  unwrapped to its code, the screen is read until the prompt is up before the code
+  is sent, the tool's own rejection comes back as the reason, and a refused code
+  says whether there was no prompt or a refused code. Sign-in no longer demands
+  administration, and a harness run forwards its stdout to the turn as it arrives,
+  so a ten-minute delegate is not a frozen row.
+- **Antigravity is an agent CLI, not a chat binary.** `antigravity` takes `-p`,
+  which is what the harness wrapper now passes, and one installer runs at a time
+  because the vendor's staging path is fixed and two is a checksum failure that
+  reads like a corrupt download.
 
 ## 1.10.0
 
