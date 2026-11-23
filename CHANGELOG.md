@@ -10,6 +10,33 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.6] - 2026-11-23
+
+### Added
+
+- Texts leave the phone for real. A confirmed `sms` or `imessage` is handed to a
+  BlueBubbles server on the host and the row records what that server answered,
+  so a send either has a guid or the server's own reason. `comms_status` reports
+  the transport, the allowlist and the last five sends. `email` and `call` are
+  still recorded only and say so.
+- An `imessage` skill so a turn knows how to stage, confirm and check a text, and an
+  `ios-senses` skill so a turn reads the phone's location, health and activity
+  through the sensor tools with the sensitivity level already applied.
+- Build number 242.
+
+### Fixed
+
+- The Claude Code sign-in popup could never reach the daemon. The paired base URL
+  already ends in `/v1` and every route starts with `/v1`, so the two joined into
+  `/v1/v1/...` and every call 404'd. One trailing segment is dropped now, and the
+  paste-a-token field opens expanded instead of hiding behind a disclosure.
+- A long turn ended in a transport alert. The client's own error type was missing
+  from the transient-error check, so a timed-out request set the message instead
+  of being retried quietly.
+- A turn parked by the app going to the background needed repeated nudges to
+  reattach. The single reattach attempt was spent per process; it is now per
+  foreground.
+
 ## [1.7.5] - 2026-11-22
 
 ### Changed

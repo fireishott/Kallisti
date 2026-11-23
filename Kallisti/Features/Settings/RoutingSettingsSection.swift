@@ -167,6 +167,9 @@ struct RoutingSettingsSection: View {
     /// The Claude sign-in sheet: a token pasted from the host, or the command to
     /// produce one there.
     @State private var showingClaudeSignIn = false
+    /// Build 242: the token field is open on arrival. Collapsed, the popup read
+    /// as if a pasted token had been removed.
+    @State private var showTokenInstead = true
     @State private var claudeTokenInput = ""
     @State private var claudeSignInError: String?
     @State private var isSavingClaudeToken = false
@@ -520,7 +523,7 @@ struct RoutingSettingsSection: View {
                 }
 
                 Section {
-                    DisclosureGroup("Use a token instead") {
+                    DisclosureGroup("Use a token instead", isExpanded: $showTokenInstead) {
                         SecureField("sk-ant-oat…", text: $claudeTokenInput)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
@@ -927,8 +930,17 @@ struct RoutingSettingsSection: View {
     /// Join a `/v1/...` route onto the same stripped base `routingBaseURL` uses,
     /// so the routing read, the tools read and the install POST cannot disagree
     /// about whether the paired URL already ends in `/v1`.
+    /// Join a `/v1/...` route onto the paired base URL.
+    ///
+    /// Build 242: the paired URL is a relay URL and already ends in `/v1`, while
+    /// every route path here starts with `/v1` too - so naively concatenating
+    /// them asked for `/v1/v1/harness/tools/...` and the sign-in popup could
+    /// never reach the daemon at all. One trailing segment is dropped, and any
+    /// trailing slash with it.
     private func daemonURL(_ route: String) -> URL? {
-        guard let base = daemonBaseURLString else { return nil }
+        guard var base = daemonBaseURLString else { return nil }
+        while base.hasSuffix("/") { base = String(base.dropLast()) }
+        if base.hasSuffix("/v1") { base = String(base.dropLast(3)) }
         return URL(string: base + route)
     }
 

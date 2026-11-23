@@ -1,14 +1,14 @@
 ---
 name: kallisti-ios
 description: Work with the Kallisti iOS app - deliver files inline with attach_file, and read iPhone sensor data (location, health, activity) from the daemon sensors.db.
-version: 3.1.0
+version: 3.2.0
 author: Kallisti
 license: MIT
 platforms: [linux, macos]
 metadata:
   kallisti:
     tags: [ios, mobile, attachments, location, health, sensors, context]
-    related_skills: [apple-notes, apple-reminders]
+    related_skills: [kallisti-ios-senses, apple-notes, apple-reminders]
 ---
 
 # Kallisti iOS
@@ -56,8 +56,10 @@ Then one line of prose about what it contains. Not a second copy of the contents
 
 ## Sensor data
 
-The phone uploads samples to the daemon; the daemon stores them. There are **no agent
-tools** for reading them. Read the database directly, read-only.
+The phone uploads samples to the daemon; the daemon stores them. Four tools read
+them back with the sensitivity level applied - see the `kallisti-ios-senses` skill,
+which is the short version. Raw SQL is the fallback, and it is what the rest of
+this section covers for shapes the tools do not expose.
 
 Database: `~/.local/share/kallisti/sensors.db` (WAL).
 

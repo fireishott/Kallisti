@@ -446,6 +446,98 @@ fn logins() -> &'static std::sync::Mutex<Vec<LoginSession>> {
     LOGINS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
+/// Remove the terminal control sequences a pseudo-terminal interleaves.
+///
+/// `claude setup-token` only renders on a terminal, so its stream carries CSI
+/// and OSC escapes and hyperlink wrappers around the two things worth lifting
+/// out of it. Stripping them here is what lets the scan below be a substring
+/// search: an OSC wrapper ends in a printable character, which makes the URL the
+/// tail of a "word" to anything that splits on whitespace first.
+fn strip_terminal_escapes(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character != '\u{1b}' {
+            if character != '\u{7}' && character != '\r' {
+                out.push(character);
+            }
+            continue;
+        }
+        match chars.next() {
+            // CSI: ESC [ parameters, then one byte in 0x40..=0x7e.
+            Some('[') => {
+                for next in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            // OSC: ESC ] text, ended by BEL or by ESC \.
+            Some(']') => {
+                while let Some(next) = chars.next() {
+                    if next == '\u{7}' {
+                        break;
+                    }
+                    if next == '\u{1b}' {
+                        if chars.peek() == Some(&'\\') {
+                            chars.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            // Two-character escapes, and a truncated one at the end of a chunk.
+            Some(_) | None => {}
+        }
+    }
+    out
+}
+
+/// The first run of text after `prefix`, cut at whitespace or a control byte.
+///
+/// The URL and the token are the only two things the sign-in says that matter,
+/// and on a terminal both arrive glued to prompt text and escape sequences. This
+/// is the one place that knows how they end.
+fn first_field_with(line: &str, prefix: &str) -> Option<String> {
+    let clean = strip_terminal_escapes(line);
+    let start = clean.find(prefix)?;
+    let tail = &clean[start..];
+    let end = tail
+        .find(|character: char| {
+            character.is_whitespace() || character.is_control() || character == ')' || character == ','
+        })
+        .unwrap_or(tail.len());
+    Some(tail[..end].to_owned())
+}
+
+/// A command that gives its child a terminal.
+///
+/// The CLI writes nothing at all to a pipe: spawned plainly from a service, its
+/// sign-in reads as "did not print a sign-in link" on a host where the same
+/// command works by hand. `script` is the smallest thing on this box that
+/// supplies a pty, and its `-c` form keeps the child on our stdin and stdout, so
+/// the code still goes in through the pipe the caller already writes to. The
+/// width is set first because the token is longer than a default 80-column
+/// terminal and a wrapped token would be read back in halves.
+fn terminal_command(claude: &Path, dirs: &[PathBuf]) -> Command {
+    let Some(script) = find_on_path(dirs, "script") else {
+        let mut plain = Command::new(claude);
+        plain.arg("setup-token");
+        return plain;
+    };
+    let path = claude.display().to_string().replace('\'', "'\\''");
+    let mut command = Command::new(script);
+    command
+        .arg("-q")
+        .arg("-e")
+        .arg("-c")
+        .arg(format!(
+            "stty cols 500 rows 50 2>/dev/null; '{path}' setup-token"
+        ))
+        .arg("/dev/null");
+    command
+}
+
 /// Start `claude setup-token` and read the URL it prints.
 ///
 /// # Errors
@@ -456,8 +548,7 @@ pub fn start_login(env: &Env) -> Result<(String, String), String> {
     let Some(claude) = find_on_path(&env.dirs, "claude") else {
         return Err("Claude Code is not installed on this host".to_owned());
     };
-    let mut child = std::process::Command::new(&claude)
-        .arg("setup-token")
+    let mut child = terminal_command(&claude, &env.dirs)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -479,11 +570,8 @@ pub fn start_login(env: &Env) -> Result<(String, String), String> {
     while std::time::Instant::now() < deadline {
         match rx.recv_timeout(std::time::Duration::from_millis(250)) {
             Ok(line) => {
-                if let Some(found) = line
-                    .split_whitespace()
-                    .find(|word| word.starts_with("https://"))
-                {
-                    url = Some(found.trim_end_matches([',', ')']).to_owned());
+                if let Some(found) = first_field_with(&line, "https://") {
+                    url = Some(found);
                     break;
                 }
             }
@@ -542,11 +630,8 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
             .recv_timeout(std::time::Duration::from_millis(250))
         {
             Ok(line) => {
-                if let Some(found) = line
-                    .split_whitespace()
-                    .find(|word| word.starts_with("sk-ant-"))
-                {
-                    token = Some(found.trim().to_owned());
+                if let Some(found) = first_field_with(&line, "sk-ant-") {
+                    token = Some(found);
                     break;
                 }
             }
@@ -1718,5 +1803,45 @@ mod tests {
             "stdout reached the registry: {:?}",
             ended.stdout_tail
         );
+    }
+    /// The pty stream is full of escapes; what matters has to survive them.
+    #[test]
+    fn a_sign_in_url_is_lifted_out_of_a_terminal_stream() {
+        let line = "\u{1b}]8;id=7e4i2;https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&state=abc\u{7}https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&state=abc\u{1b}]8;;\u{7}";
+        let found = first_field_with(line, "https://").expect("a url");
+        assert_eq!(
+            found,
+            "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&state=abc"
+        );
+    }
+
+    /// A plain pipe has no escapes and still parses.
+    #[test]
+    fn a_url_without_escapes_still_parses() {
+        let found = first_field_with("Use the url below https://claude.com/x, then wait", "https://")
+            .expect("a url");
+        assert_eq!(found, "https://claude.com/x");
+    }
+
+    /// The token arrives glued to a prompt and wrapped in escapes.
+    #[test]
+    fn a_token_is_lifted_out_of_a_terminal_stream() {
+        let line = "\u{1b}[32msk-ant-oat01-abcDEF123\u{1b}[0m\r";
+        let found = first_field_with(line, "sk-ant-").expect("a token");
+        assert_eq!(found, "sk-ant-oat01-abcDEF123");
+    }
+
+    /// A line with neither reads as neither, rather than as an empty string.
+    #[test]
+    fn a_line_without_a_url_reports_nothing() {
+        assert!(first_field_with("Welcome to Claude Code", "https://").is_none());
+        assert!(first_field_with("", "sk-ant-").is_none());
+    }
+
+    /// A truncated escape at the end of a chunk does not eat the text before it.
+    #[test]
+    fn a_trailing_partial_escape_leaves_the_text_alone() {
+        assert_eq!(strip_terminal_escapes("keep\u{1b}["), "keep");
+        assert_eq!(strip_terminal_escapes("a\u{1b}]0;title\u{7}b"), "ab");
     }
 }

@@ -34,6 +34,14 @@ reaches it over Tailscale, your LAN, or your own TLS endpoint.
   the transcript.
 - **PDFs you can actually use.** Tap a PDF in a chat to open it, fill its form fields,
   and share or save the filled document from the same screen.
+- **Texts from your own number.** Stage a message, see the words and the
+  recipient, confirm it, and it goes out of your own Messages app through a
+  BlueBubbles server on the host. The send carries the server's message id or the
+  server's reason for refusing it, so nothing is ever called delivered twice for
+  free.
+- **The phone's senses, read properly.** Location, health and activity come back
+  through tools that carry the sensitivity level, so a key left at `off` reads as
+  recorded-but-withheld instead of missing.
 - **Approvals.** A turn that wants to write a file or touch the system can park and
   ask. You approve or refuse from the phone, with the detail that matters.
 - **Cron jobs.** See every schedule on the host, what it will run, when it fires next,

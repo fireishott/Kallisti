@@ -51,6 +51,25 @@ final class SessionListStore {
         // change) is EXPECTED behavior, not a real error.
         if error is CancellationError { return true }
 
+        // Build 242: the Eris client is the transport this app actually uses,
+        // and its failures were never in this list - a timed-out request walked
+        // past every branch and set `errorMessage`, which is the alert that used
+        // to fire after a long turn. A transport that produced no answer, a
+        // broken stream, a timeout and the retryable statuses are all the same
+        // class of "ask again" as the cases below.
+        if let eris = error as? ErisError {
+            switch eris {
+            case .transport, .stream:
+                return true
+            case .server(let status, _, _):
+                return status == 408 || status == 429 || (500..<600).contains(status)
+            case .turn:
+                return true
+            default:
+                return false
+            }
+        }
+
         if let native = error as? NativeGatewayClientError {
             switch native {
             case .notConnected, .transportClosed, .requestTimeout:

@@ -459,6 +459,13 @@ final class ChatStore {
     /// the parked session or let the watchdog fire.
     func markStreamForegrounded() {
         streamBackgroundedAt = nil
+        // Build 242: the reattach mark is per foreground, not per process. A
+        // probe that could not reach the daemon while the app was parked used to
+        // spend the only attempt the record would ever get, so the turn sat
+        // unattached until the app was force-quit and launched again - the
+        // "nudge it a few times" behaviour. Dropping the mark here lets the
+        // catch-up that runs on the same beat ask again.
+        launchReattachAttempted.removeAll()
         // Build 64: clear the Lock Screen / Dynamic Island "needsAttention"
         // state set by notifyBackgroundExpiry so the user sees active
         // progress the moment they unlock the phone. No-op if the activity
