@@ -279,6 +279,9 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
     let clientMessageID: String?
     /// Files this turn attached, in the order the daemon lists them.
     let attachments: [ErisAttachmentRef]
+    /// What this turn cost, when the daemon measured it. nil is the old row
+    /// shape, so a transcript from a daemon without the object still reads.
+    let accounting: TurnAccounting?
 
     init(
         id: String,
@@ -290,7 +293,8 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
         tools: [ErisToolCall],
         jobID: String? = nil,
         clientMessageID: String? = nil,
-        attachments: [ErisAttachmentRef] = []
+        attachments: [ErisAttachmentRef] = [],
+        accounting: TurnAccounting? = nil
     ) {
         self.id = id
         self.role = role
@@ -302,6 +306,7 @@ struct ErisConversationMessage: Identifiable, Equatable, Sendable {
         self.jobID = jobID
         self.clientMessageID = clientMessageID
         self.attachments = attachments
+        self.accounting = accounting
     }
 
     /// Whether the row is the operator's question.
@@ -330,6 +335,7 @@ extension ErisConversationMessage: Decodable {
         case jobID = "job_id"
         case clientMessageID = "client_message_id"
         case attachments
+        case accounting
     }
 
     init(from decoder: any Decoder) throws {
@@ -344,7 +350,8 @@ extension ErisConversationMessage: Decodable {
             tools: try container.decodeIfPresent([ErisToolCall].self, forKey: .tools) ?? [],
             jobID: try container.decodeIfPresent(String.self, forKey: .jobID),
             clientMessageID: try container.decodeIfPresent(String.self, forKey: .clientMessageID),
-            attachments: try container.decodeIfPresent([ErisAttachmentRef].self, forKey: .attachments) ?? []
+            attachments: try container.decodeIfPresent([ErisAttachmentRef].self, forKey: .attachments) ?? [],
+            accounting: try container.decodeIfPresent(TurnAccounting.self, forKey: .accounting)
         )
     }
 }

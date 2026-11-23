@@ -1502,7 +1502,9 @@ final class AppContainer {
         // The reconcile above ran while the stream was still latched, so it
         // kept the Lock Screen activity. Now that the phase is idle, end it.
         reconcileLiveActivities()
-        await chatStore.loadConversation()
+        // Refresh the thread on screen, not the daemon's idea of current: a
+        // wake is not a reason to swap the conversation under the operator.
+        await chatStore.refreshVisibleConversationAfterPush()
         await inboxStore.loadInbox(force: true)
     }
 

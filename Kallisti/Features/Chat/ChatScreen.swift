@@ -293,6 +293,12 @@ struct ChatScreen: View {
                 if chatStore.isStreaming, chatStore.stallSnapshot != nil || chatStore.streamingPhase == .stalled || chatStore.streamingPhase == .reconnecting {
                     streamingPhaseBanner
                 }
+                // Where the turn actually is. A long turn used to show a
+                // spinner and nothing else, which the operator cannot tell
+                // apart from a daemon that stopped working.
+                if chatStore.liveRound.isVisible {
+                    liveRoundBar
+                }
                 // Build 33: a gateway restart supersedes transport banners —
                 // the stream was suspended on purpose, so explain why.
                 if chatStore.restartInProgress {
@@ -1635,6 +1641,20 @@ struct ChatScreen: View {
     ///
     /// `Design.Colors.tertiaryForeground` is the design token for the
     /// secondary metadata line; the warning color stays on the headline.
+    /// The live round counter: `round 3/100` while a turn is running.
+    private var liveRoundBar: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .scaleEffect(0.55)
+                .tint(Design.Brand.accent)
+            LiveRoundBadge(progress: chatStore.liveRound)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Design.Spacing.sm)
+        .padding(.vertical, 2)
+        .accessibilityIdentifier("chat.liveRound")
+    }
+
     private var streamingPhaseBanner: some View {
         TimelineView(.periodic(from: .now, by: 1.0)) { context in
             streamingPhaseBannerBody(at: context.date)

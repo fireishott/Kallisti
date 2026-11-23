@@ -475,6 +475,9 @@ final class ErisHeraldClient: HeraldClientProtocol {
             // activity lines, not answer text.
             if stepType == "tool_call" { return nil }
             return (.toolActivity(label), false)
+        case .round(let count, let total, _):
+            // Nothing in the transcript changes: this is the live counter.
+            return (.round(count: count, total: total), false)
         case .done(let full, let usage):
             let content = full.isEmpty ? accumulatedText : full
             let final = Message(
@@ -1195,7 +1198,8 @@ final class ErisHeraldClient: HeraldClientProtocol {
             },
             attachments: m.attachments.map(Self.messageAttachment(from:)),
             reasoning: m.displayReasoning ?? "",
-            erisID: m.id
+            erisID: m.id,
+            accounting: m.accounting
         )
     }
 

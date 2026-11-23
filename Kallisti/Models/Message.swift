@@ -173,6 +173,10 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     /// Error category from the connector (e.g. "context_exceeded", "timeout").
     /// Non-persisted — only set for in-memory failed messages.
     var errorCategory: String?
+    /// What this turn cost, when the daemon measured it: rounds, wall time and
+    /// the token split. The footer under the answer draws it.
+    var accounting: TurnAccounting?
+
     /// Which way the daemon routed this turn, from its `turn.start` frame.
     /// Absent for a daemon that does not route, for a turn this device only
     /// reattached to (the frame is behind the tail), and for every row the
@@ -212,6 +216,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         reasoningDuration: TimeInterval? = nil,
         errorCategory: String? = nil,
         erisID: String? = nil,
+        accounting: TurnAccounting? = nil,
         route: TurnRoute? = nil
     ) {
         self.id = id
@@ -231,6 +236,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         self.reasoningDuration = reasoningDuration
         self.errorCategory = errorCategory
         self.erisID = erisID
+        self.accounting = accounting
         self.route = route
     }
 
@@ -239,6 +245,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         case reasoning, reasoningDuration
         case toolActivities
         case codeDiff
+        case accounting
         case route
     }
 
@@ -258,6 +265,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         toolActivity = nil
         codeDiff = try container.decodeIfPresent(CodeDiff.self, forKey: .codeDiff)
         route = try container.decodeIfPresent(TurnRoute.self, forKey: .route)
+        accounting = try container.decodeIfPresent(TurnAccounting.self, forKey: .accounting)
         isStreaming = false
         voiceSessionDuration = nil
         errorCategory = nil
@@ -285,6 +293,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         if let codeDiff {
             try container.encode(codeDiff, forKey: .codeDiff)
         }
+        try container.encodeIfPresent(accounting, forKey: .accounting)
         try container.encodeIfPresent(route, forKey: .route)
     }
 }

@@ -432,6 +432,12 @@ struct MessageBubble: View, Equatable {
                     }
                 }
 
+                // The receipt under the answer. Draws nothing at all when the
+                // footer is switched off or the daemon measured nothing.
+                if !message.isStreaming {
+                    TurnFooterBar(accounting: message.accounting)
+                }
+
                 if message.status == .failed {
                     Button { onRetry?(message) } label: {
                         Label("Regenerate", systemImage: "arrow.counterclockwise")

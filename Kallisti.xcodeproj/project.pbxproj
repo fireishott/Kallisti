@@ -343,6 +343,7 @@
 		ACF307046914CC5B80E78BE0 /* AuthTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B1F591EBAE050C5B1D31C24 /* AuthTokens.swift */; };
 		AD29822736C7F25538122A22 /* GatewayState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 624E858B0B914D6EFFB4C11B /* GatewayState.swift */; };
 		AD39E9B483841C3ADA77778D /* HeraldCanvasStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F69A4DE287CEC8F1CEF19C4B /* HeraldCanvasStore.swift */; };
+		CA4B264CA3DD71360DD4FC63 /* TurnFooterBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D4D4B485EAB2784B3F596AF /* TurnFooterBar.swift */; };
 		ADD1E87D022D6B41EEA28832 /* TypingDotsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6067EA9935B02094B0FF2D50 /* TypingDotsView.swift */; };
 		AE078EF89EA31486062D093C /* MimoVoiceCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00B3B0697C85486F4E109FA9 /* MimoVoiceCatalogTests.swift */; };
 		AE4D32AFAF5CE5A18F0326FC /* B18TranscriptOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A688A071A07B2B4457157325 /* B18TranscriptOrderTests.swift */; };
@@ -836,6 +837,7 @@
 		5E6C239939EA0C12EFA03092 /* stream_v3_error.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v3_error.json; sourceTree = "<group>"; };
 		5ED0A0D3A01D04924690ADD7 /* NoteDirective.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteDirective.swift; sourceTree = "<group>"; };
 		5FE544F3816D188BF3045EE7 /* LocalProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalProcess.swift; sourceTree = "<group>"; };
+		7D4D4B485EAB2784B3F596AF /* TurnFooterBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnFooterBar.swift; sourceTree = "<group>"; };
 		6067EA9935B02094B0FF2D50 /* TypingDotsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingDotsView.swift; sourceTree = "<group>"; };
 		607B778FF574162BE7E97FA7 /* ContentSeparationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSeparationTests.swift; sourceTree = "<group>"; };
 		61566DB0C7B6EE69901264F3 /* MockMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockMediaService.swift; sourceTree = "<group>"; };
@@ -1554,6 +1556,7 @@
 				FEB8D0FDF27FA417F100E56B /* TerminalOutputView.swift */,
 				F6D239C586BA9ABDB9FBA5E7 /* ToolActivityRail.swift */,
 				E945C66583CB6483CF5E62B7 /* TUITerminalScreen.swift */,
+				7D4D4B485EAB2784B3F596AF /* TurnFooterBar.swift */,
 				6067EA9935B02094B0FF2D50 /* TypingDotsView.swift */,
 				18CB6B501373ACAFB9B02249 /* VideoPlayerView.swift */,
 				707BB716D7A1C5689DBB90F7 /* VoiceSessionBanner.swift */,
@@ -3107,6 +3110,7 @@
 				3999EE7C9B47B70D674FFFC4 /* TranscriptIdentity.swift in Sources */,
 				14A765FB4131946E8ABC534B /* TranscriptRow.swift in Sources */,
 				E13BA99D9DA5D0583B499C58 /* TranscriptView.swift in Sources */,
+				CA4B264CA3DD71360DD4FC63 /* TurnFooterBar.swift in Sources */,
 				ADD1E87D022D6B41EEA28832 /* TypingDotsView.swift in Sources */,
 				9C9F0232773541A4E56E2DDE /* UnicodeWidthData.swift in Sources */,
 				EB9FEDAC1965A07677F70D08 /* UserDefaultsAppPersistenceStore.swift in Sources */,

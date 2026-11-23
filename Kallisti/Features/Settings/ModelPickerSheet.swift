@@ -65,6 +65,20 @@ struct ModelPickerSheet: View {
 
     @State private var query = ""
 
+    /// How many catalogues publish this id. Two or more means the daemon cannot
+    /// tell which one a bare id means, so a pick has to name the provider.
+    private func publisherCount(_ id: String) -> Int {
+        models.filter { $0.id == id }.count
+    }
+
+    /// The value a pick writes. Bare when one provider publishes the id, which
+    /// is what every pin written before providers were plural looks like;
+    /// `provider/id` when two do.
+    private func value(for model: RoutingModel) -> String {
+        guard publisherCount(model.id) > 1 else { return model.id }
+        return "\(model.provider)/\(model.id)"
+    }
+
     private var grouped: [(provider: String, models: [RoutingModel])] {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
         let filtered = needle.isEmpty
@@ -90,13 +104,13 @@ struct ModelPickerSheet: View {
                     Section {
                         ForEach(group.models) { model in
                             Button {
-                                onPick(model.id)
+                                onPick(value(for: model))
                             } label: {
                                 row(
                                     title: model.id,
                                     subtitle: model.providerLabel,
                                     monogram: model.monogram,
-                                    selected: model.id == selection
+                                    selected: selection == model.id || selection == value(for: model)
                                 )
                             }
                             .buttonStyle(.plain)

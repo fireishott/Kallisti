@@ -107,6 +107,9 @@ final class ChatStore {
     /// Streaming phase for UI indicators (e.g. "Sending…", "Waiting…", "Streaming…").
     /// Updated by `runStreamingAttemptLegacy` as the job progresses through the SSE pipeline.
     var streamingPhase: StreamingPhase = .idle
+    /// The round the current turn is on, as the daemon announced it. Cleared
+    /// when the turn ends, so a finished chat never shows a stale counter.
+    var liveRound = LiveRoundProgress()
     /// Build 128.76: pending clarify question the agent parked the turn on.
     /// When non-nil the chat shows the ClarifyCard (question + tappable
     /// choices + free-text row) above the composer. The card answers via
@@ -2605,6 +2608,9 @@ final class ChatStore {
                 self.conversation = conv
             }
 
+        case .round(let count, let total):
+            // One-based on the wire: the count is the round about to run.
+            liveRound = LiveRoundProgress(count: count, total: total)
         case .keepalive:
             // Transport keepalives prove the connection is alive but do
             // NOT prove the model is making progress. Do not reset the
@@ -2612,6 +2618,9 @@ final class ChatStore {
             break
 
         case .finished(let finalMessage, let usage, let diff, let context):
+            // The footer carries the settled round count, so the live counter
+            // must not outlive the turn that owned it.
+            liveRound = LiveRoundProgress()
             guard self.activeAttemptID == attemptID else { break }
             // Build 64: turn terminated, clear any pending stall
             // snapshot so the banner hides.
@@ -4867,6 +4876,39 @@ final class ChatStore {
             persistence.saveConversationCache(conversation)
             onConversationChanged?()
         }
+    }
+
+    /// Refresh the conversation this device is *showing*, by the id it is
+    /// showing under.
+    ///
+    /// A completion push lands while the phone may be displaying any thread.
+    /// The daemon's `conversations/current` is not that thread - it is whichever
+    /// one the daemon touched last - so a wake that refreshes `current` leaves
+    /// the chat the operator is looking at exactly as stale as it was. That is
+    /// the shape of "the turn finished, the push arrived, and the answer is not
+    /// in the chat": the write went to a different row.
+    ///
+    /// Settles the latched stream first, because the rows only exist once the
+    /// daemon considers the turn over.
+    func refreshVisibleConversationAfterPush() async {
+        settleStreamFromCompletionPush()
+        guard isPollingEnabled, let visibleID = conversation?.id else { return }
+        let generation = conversationGeneration
+        guard let refreshed = try? await heraldClient.loadConversation(id: visibleID) else { return }
+        // A refresh that raced a switch or a terminal merge is discarded, the
+        // same way every other load in this store guards its pre-await state.
+        guard generation == conversationGeneration else { return }
+        conversation = mergeConversationMetadata(from: conversation, into: refreshed)
+        restoreInFlightRows()
+        if let conversation {
+            var cacheCopy = conversation
+            cacheCopy.contextPercent = nil
+            cacheCopy.latestUsage = nil
+            persistence.saveConversationCache(cacheCopy)
+            onConversationChanged?()
+        }
+        restartPendingPollingIfNeeded()
+        clearNotificationsForCurrentConversation()
     }
 
     /// Build 124: silent catch-up refresh on foreground. When the app returns

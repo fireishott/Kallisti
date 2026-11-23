@@ -86,6 +86,7 @@ struct SettingsScreen: View {
                         }
                         appearanceSection
                         preferencesSection
+                        turnFooterSection
                         agentToolsSection
                         voiceSection
                         // Notes is an iPad feature: the tab, the sync and the
@@ -2000,6 +2001,10 @@ struct SettingsScreen: View {
     }
 
     // MARK: - Preferences
+
+    private var turnFooterSection: some View {
+        TurnFooterSettingsSection()
+    }
 
     private var preferencesSection: some View {
         SettingsSectionView(title: "Preferences") {

@@ -24,6 +24,10 @@ enum StreamingUpdate: Sendable {
     case toolStarted(ToolActivity)
     case toolCompleted(toolCallID: String, resultPreview: String?, isError: Bool, durationMs: Int?)
     case toolOutput(toolCallID: String, chunk: String)
+    /// The turn loop's round announcement: which round is about to run, and the
+    /// ceiling it runs against. Drawn live so a long turn says where it is
+    /// instead of only that it is working.
+    case round(count: Int, total: Int)
     /// A file the turn attached to its own reply, streamed when `attach_file`
     /// succeeds. Without this the bubble being watched had no chip until the
     /// conversation was reloaded.
