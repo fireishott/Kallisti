@@ -381,7 +381,7 @@ enum ErisFrame: Equatable, Sendable {
             // footer and not the answer: the text above is what the operator is
             // waiting for, and it must land either way.
             let accounting = (object["accounting"] as? [String: Any])
-                .flatMap { Self.accounting(from: $0) }
+                .flatMap { TurnAccounting(json: $0) }
             return .done(
                 text: object["text"] as? String ?? "",
                 usage: ErisUsage(json: object["usage"]),
