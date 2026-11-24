@@ -29,6 +29,13 @@ reaches it over Tailscale, your LAN, or your own TLS endpoint.
   the turn that is still running.
 - **Thinking that tells the truth.** A turn that is slow says so, with the round it is
   on and the time it has spent, instead of an empty bubble.
+- **A receipt under every answer.** Each reply carries one line of what it cost: the
+  model and provider that answered, the tool rounds and calls, the wall time, tokens in
+  and out, the cached share, what the turn cost, what the chat has cost so far, and how
+  full the context window is. A number the daemon did not measure is left out rather
+  than printed as a zero, and a dollar figure appears only when you have given the
+  daemon a price for that model. Twelve switches under Settings > Turn footer, one per
+  field.
 - **Files, not just text.** Attach photos and PDFs. Uploads show per-file progress and
   a result, and land on the daemon with the turn that names them. Open them again from
   the transcript.
@@ -95,6 +102,31 @@ coding tool should do it.
   of its output. A run silent for ninety seconds shows as stalled without being
   killed, the deadline still ends it, and the monitor in the web UI and in the
   app shows the live tail with a Kill for an administrator.
+- **Signing a coding tool in.** The daemon opens the tool's own authorization page
+  and takes the code back, so no browser is needed on the host. Paste the whole value
+  the page shows, including the part after the `#`: that half is the flow's state, and
+  a code sent without it is refused by Claude's own servers.
+
+## What a turn cost
+
+The daemon reports tokens because a provider states them. It reports a dollar figure
+only when you have said what a token costs, because a price is a fact about a contract
+and not about a model.
+
+- **`assistant.model_prices`** is one JSON settings row, per model, in US dollars per
+  million tokens: `{"deepseek-v4-flash": {"input": 0.10, "output": 0.40, "cache": 0.02}}`.
+  Input and output are both required; `cache` falls back to the input rate when absent.
+  A model with no row reports no cost, which the footer shows by saying nothing.
+- **A local model is free.** Anything under `ollama/`, `lmstudio/`, `local/` or a
+  `:11434/` endpoint is priced at zero by rule, so it never needs a row.
+- **A session total is a floor when it has to be.** Each answer reports how many of the
+  conversation's answers carried a price. When that is fewer than the number of answers,
+  the phone prints the session figure with a `+`, because a partial total presented as a
+  complete one is the one number a receipt must not get wrong.
+- **Cache reads are charged once.** The cached share is taken out of the prompt and
+  billed at the cache rate rather than the input rate, so a provider with a cheaper cache
+  price is not overcharged. A cache count larger than the prompt is clamped, never
+  subtracted into a discount.
 
 ## Privacy by design
 
