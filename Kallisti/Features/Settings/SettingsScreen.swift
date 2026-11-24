@@ -1068,6 +1068,41 @@ struct SettingsScreen: View {
         }
     }
 
+    /// Wait until the daemon answers its health route again.
+    ///
+    /// A restart takes the listener down for a second or two, so a single probe
+    /// fired immediately after the request is a coin flip. Polling a health route
+    /// that costs no tokens is the honest way to answer "is it back" rather than
+    /// declaring success because the POST was accepted.
+    private func waitForDaemonHealthy(timeout: Int) async -> Bool {
+        // `/v1/healthz` is admin-plane and never answers on the device listener,
+        // so probing it here would time out on a perfectly healthy daemon. The
+        // device API's own health route is `/v1/gw/health`, admin-scoped, and its
+        // `ready` flag is the same one the dashboard draws.
+        guard let base = erisBaseURLString, let url = URL(string: base + "/v1/gw/health") else {
+            // Nothing to probe. Do not claim a state this app cannot observe.
+            return false
+        }
+        let token = await sessionStore.currentAccessToken()
+        let deadline = Date.now.addingTimeInterval(TimeInterval(timeout))
+        while Date.now < deadline {
+            try? await Task.sleep(for: .seconds(2))
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 5
+            if let token, !token.isEmpty {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            if let (data, response) = try? await URLSession.shared.data(for: request),
+               let http = response as? HTTPURLResponse,
+               (200..<300).contains(http.statusCode),
+               let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               (body["ready"] as? Bool) == true {
+                return true
+            }
+        }
+        return false
+    }
+
     private func restartGateway(target: String) async {
         isRestartingGW = true
         gwRestartTarget = target
@@ -1358,6 +1393,44 @@ struct SettingsScreen: View {
     private func beginHermesRestart() async {
         stalePreflightNotice = nil
         restartState = .loadingPreflight
+
+        // The Eris daemon has no separate "agent" process to preflight: one
+        // unit serves the web UI, the device API and the turn loop, so restarting
+        // the agent IS restarting the daemon. This row used the legacy relay flow
+        // (preflight -> confirm -> poll on `gw/restart`), which Eris does not
+        // serve, so pressing it reported a 405-shaped error and changed nothing.
+        //
+        // It now runs the same admin restart the daemon registers and reports the
+        // result in this row's own state machine, so the row keeps its
+        // confirmation step instead of becoming a second button that just fires.
+        if erisBaseURLString != nil {
+            let summary = await restartErisDaemon()
+            if summary.hasPrefix("Failed") {
+                restartState = .failed(operation: RestartOperation.localFailure(
+                    stage: "restart",
+                    action: summary
+                ))
+            } else {
+                // The daemon answers before it stops, so there is no operation id
+                // to poll: this row reports the schedule, then checks the daemon
+                // is answering again rather than pretending to track a phase.
+                restartState = .inProgress(operation: RestartOperation.localAccepted(
+                    stage: "restart",
+                    action: summary
+                ))
+                let cameBack = await waitForDaemonHealthy(timeout: 45)
+                restartState = cameBack
+                    ? .healthy(operation: RestartOperation.healthVerified(unit: "kallisti-eris.service"))
+                    : .failed(operation: RestartOperation.localFailure(
+                        stage: "health",
+                        action: "The daemon did not answer within 45 seconds. Check the host."
+                    ))
+                try? await Task.sleep(for: .seconds(3))
+                restartState = .idle
+            }
+            return
+        }
+
         do {
             let preflight = try await withTimeout(seconds: 15) {
                 try await gatewayControl.fetchPreflight(target: "hermes")

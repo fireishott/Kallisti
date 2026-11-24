@@ -48,7 +48,20 @@ pub const SETTING_CWD: &str = "routing.harness.cwd";
 pub const SETTING_TIMEOUT_SECS: &str = "routing.harness.timeout_secs";
 
 /// How long one delegated task may run when the row is absent or unusable.
-pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
+///
+/// Ten minutes was the shipped default and it is too short for the work this
+/// tool exists for. A delegated task is a multi-file change on a real repo, run
+/// by ANOTHER agent that has to read the tree, edit, build and test before it
+/// reports. The first real delegation against a 900-line FastAPI app hit the
+/// ceiling at 600 s with the work half done: the harness was killed mid-task, its
+/// report came back "timed out", and the turn had to finish the job by hand.
+///
+/// Thirty minutes is the new default. It is still bounded, the operator can move
+/// it anywhere in [`MIN_TIMEOUT_SECS`]..=[`MAX_TIMEOUT_SECS`], and the run is
+/// visible the whole time through the harness monitor, so a long run is watched
+/// rather than waited on blindly. `MAX_TIMEOUT_SECS` stays at an hour: past that
+/// a wedged task should be killed and re-specified, not left running.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 1_800;
 
 /// The shortest timeout an operator may configure.
 pub const MIN_TIMEOUT_SECS: u64 = 30;
@@ -282,13 +295,28 @@ pub fn argv(config: &Config, task: &str) -> Vec<String> {
 /// The tool description the model reads.
 #[must_use]
 pub fn spec(config: &Config) -> ToolSpec {
+    // The deadline is stated in the description, not just enforced.
+    //
+    // A model that does not know the ceiling writes a task that cannot fit in it
+    // and gets a kill instead of a report: the failure then reads as "the
+    // harness is broken" when the real problem was a spec too large for the
+    // budget. Naming the minutes is what lets a caller split the work itself.
+    let minutes = config.timeout_secs / 60;
+    let budget = if minutes >= 2 {
+        format!("{minutes} minutes")
+    } else {
+        format!("{} seconds", config.timeout_secs)
+    };
     ToolSpec {
         name: TOOL.to_owned(),
         description: format!(
             "Delegate one coding task to the external `{}` harness and return its report. \
              The harness runs on its own with its own tools and may change files in the \
              working directory. When a coding task is delegated here, return the harness's \
-             own report: do not re-implement the work yourself afterwards.",
+             own report: do not re-implement the work yourself afterwards. \
+             The harness is killed at {budget}, so scope the task to fit: a change that \
+             needs longer should be split into steps across several calls rather than \
+             given one deadline it cannot meet.",
             config.harness.as_str()
         ),
         parameters: serde_json::json!({
@@ -527,10 +555,55 @@ pub fn run(
 }
 
 /// One stream, as much as the cap allowed plus how much it dropped.
+///
+/// The cap keeps the TAIL, not the head, and that is the opposite of what
+/// `run_command` does on purpose.
+///
+/// A command's output is usually a single answer whose interesting part is at the
+/// top. A delegated harness run is a build log: the head is the tree scan and the
+/// first compile, and the conclusion - what broke, whether the tests passed, what
+/// the run decided - is the LAST thing written. Keeping the first 64 KiB and
+/// dropping the rest is how a report came back reading "timed out" with the
+/// harness's actual findings cut off the end.
+///
+/// So bytes are appended until the cap, then the buffer rolls: the oldest bytes
+/// are dropped to make room for the newest. `omitted` still counts everything
+/// lost, and `truncate_bytes` states it in the payload, so a short read is never
+/// silent.
 #[derive(Debug, Default, Clone)]
 struct Captured {
     kept: Vec<u8>,
     omitted: usize,
+}
+
+impl Captured {
+    /// Add one chunk, keeping the newest `cap` bytes overall.
+    fn absorb(&mut self, chunk: &[u8], cap: usize) {
+        if cap == 0 {
+            self.omitted += chunk.len();
+            return;
+        }
+        // A chunk larger than the whole cap: keep its own tail and count the
+        // rest as omitted, without first copying it into the buffer.
+        if chunk.len() >= cap {
+            let drop_from_chunk = chunk.len() - cap;
+            self.omitted += drop_from_chunk;
+            // Whatever was already buffered is now older than this chunk.
+            self.omitted += self.kept.len();
+            self.kept.clear();
+            self.kept.extend_from_slice(&chunk[drop_from_chunk..]);
+            return;
+        }
+        // Normal case: drop from the front until the chunk fits.
+        let total = self.kept.len() + chunk.len();
+        if total > cap {
+            let excess = total - cap;
+            let from_front = excess.min(self.kept.len());
+            self.kept.drain(..from_front);
+            self.omitted += from_front;
+        }
+        self.kept.extend_from_slice(chunk);
+    }
 }
 
 /// A stream being drained by its own thread, readable without joining it.
@@ -613,10 +686,9 @@ fn stream_with_live(
                     let mut captured = shared
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    let room = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(captured.kept.len());
-                    let taken = room.min(count);
-                    captured.kept.extend_from_slice(&buffer[..taken]);
-                    captured.omitted += count - taken;
+                    // Keeps the newest bytes, not the first ones: a harness
+                    // report is written at the end. See `Captured::absorb`.
+                    captured.absorb(&buffer[..count], MAX_COMMAND_OUTPUT_BYTES);
                 }
                 Err(_) => break,
             }
@@ -1085,18 +1157,28 @@ mod tests {
         assert_eq!(run.turn_id.as_deref(), Some("turn-9"));
     }
 
-    /// Output past the cap is kept up to the cap, and the payload states how much
-    /// was dropped.
+    /// Output past the cap keeps the TAIL, and the payload states how much was
+    /// dropped.
+    ///
+    /// This is the assertion that flipped. The cap used to keep the first
+    /// 64 KiB, which is right for a single command whose answer is at the top
+    /// and wrong for a harness run, whose conclusion is written last. A real
+    /// delegation came back reading "timed out" with the harness's actual
+    /// findings cut off the end, so the reader kept the beginning of a build log
+    /// and lost the only part that said what happened.
     #[test]
-    fn output_past_the_cap_is_truncated_and_says_so() {
+    fn output_past_the_cap_keeps_the_tail_and_says_so() {
         let dir = tempfile::tempdir().expect("temp dir");
-        // One byte over the cap, written without a shell builtin that could
-        // itself be affected by buffering.
-        let over = MAX_COMMAND_OUTPUT_BYTES + 17;
+        // Two distinct bands: enough 'a' to overflow the cap, then a short
+        // marker at the very end. The marker is what must survive, because a
+        // harness report ends with its conclusion.
+        let filler = MAX_COMMAND_OUTPUT_BYTES + 4_096;
         let command = stub(
             dir.path(),
             "loud.sh",
-            &format!("#!/bin/sh\nhead -c {over} /dev/zero | tr '\\0' 'x'\n"),
+            &format!(
+                "#!/bin/sh\nhead -c {filler} /dev/zero | tr '\\0' 'a'\nprintf 'CONCLUSION-marker'\n"
+            ),
         );
         let config = stub_config(&command, Harness::Dsh);
         let sandbox = full_sandbox(dir.path()).with_harness(Some(config));
@@ -1106,14 +1188,53 @@ mod tests {
         assert!(!result.is_error, "{result:?}");
         let payload = payload_of(&result);
         let stdout = payload["stdout"].as_str().expect("stdout");
-        let head = "x".repeat(MAX_COMMAND_OUTPUT_BYTES);
         assert!(
-            stdout.starts_with(head.as_str()),
-            "the head of the output is kept"
+            stdout.ends_with("CONCLUSION-marker") || stdout.contains("CONCLUSION-marker"),
+            "the end of the output is kept, because that is where a report concludes: {}",
+            &stdout[stdout.len().saturating_sub(120)..]
+        );
+        // The overflow is small relative to the cap, so some leading filler
+        // survives; what must NOT happen is the marker being lost. That is the
+        // regression: the old code kept the head and dropped the conclusion.
+        assert!(
+            !stdout.starts_with(&"a".repeat(MAX_COMMAND_OUTPUT_BYTES)),
+            "the whole buffer must not be the original head"
         );
         assert!(
-            stdout.contains("[truncated: 17 bytes omitted]"),
+            stdout.contains("truncated:"),
             "the omission is stated in the payload"
         );
+        // The kept region cannot exceed the cap plus the marker and the note.
+        assert!(
+            stdout.len() < MAX_COMMAND_OUTPUT_BYTES + 512,
+            "the cap still bounds the payload: {} bytes",
+            stdout.len()
+        );
+    }
+
+    /// A harness whose output is one enormous chunk keeps that chunk's tail.
+    #[test]
+    fn a_single_chunk_past_the_cap_keeps_its_tail() {
+        let mut captured = Captured::default();
+        let cap = 8;
+        captured.absorb(b"0123456789ABC", cap);
+        assert_eq!(captured.kept, b"56789ABC");
+        assert_eq!(captured.omitted, 5);
+    }
+
+    /// Rolling several chunks keeps the newest bytes and totals every omission.
+    #[test]
+    fn rolling_chunks_keep_the_newest_bytes() {
+        let mut captured = Captured::default();
+        let cap = 8;
+        captured.absorb(b"abcd", cap);
+        assert_eq!(captured.kept, b"abcd");
+        assert_eq!(captured.omitted, 0);
+        captured.absorb(b"efgh", cap);
+        assert_eq!(captured.kept, b"abcdefgh");
+        assert_eq!(captured.omitted, 0);
+        captured.absorb(b"ij", cap);
+        assert_eq!(captured.kept, b"cdefghij", "the two oldest bytes rolled off");
+        assert_eq!(captured.omitted, 2);
     }
 }

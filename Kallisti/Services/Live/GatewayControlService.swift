@@ -84,6 +84,29 @@ struct RestartOperation: Codable, Identifiable, Sendable {
         )
     }
 
+    /// The daemon accepted a restart and will stop shortly.
+    ///
+    /// The Eris route answers before it takes the process down, so there is no
+    /// operation id to poll. This records the acceptance in the same typed shape
+    /// the rest of the row uses, which keeps one error path and one phase
+    /// vocabulary rather than a second, parallel representation.
+    static func localAccepted(
+        stage: String,
+        action: String?
+    ) -> RestartOperation {
+        let now = ISO8601DateFormatter().string(from: Date())
+        return RestartOperation(
+            operationId: "local-accepted",
+            target: "hermes",
+            unit: "kallisti-eris.service",
+            phase: .accepted,
+            acceptedAt: now,
+            completedAt: nil,
+            checks: [],
+            error: nil
+        )
+    }
+
     /// Synthesized healthy result for legacy connectors (no operation
     /// tracking) verified through `GET /gw/health`.
     static func healthVerified(unit: String) -> RestartOperation {
