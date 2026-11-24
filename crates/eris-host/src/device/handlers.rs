@@ -10576,14 +10576,23 @@ mod tests {
         let row = &body["messages"][0];
         assert_eq!(row["model"], serde_json::json!("ds/deepseek-v4-flash"));
         assert_eq!(row["accounting"]["prompt_tokens"], serde_json::json!(1_000));
-        assert_eq!(row["accounting"]["completion_tokens"], serde_json::json!(500));
+        assert_eq!(
+            row["accounting"]["completion_tokens"],
+            serde_json::json!(500)
+        );
         assert_eq!(row["accounting"]["cached_tokens"], serde_json::json!(2_000));
         assert_eq!(row["accounting"]["duration_ms"], serde_json::json!(4_200));
         assert_eq!(row["accounting"]["rounds"], serde_json::json!(3));
         // The context reading the turn loop measured. It used to stop at the
         // signal and leave this NULL on every phone turn.
-        assert_eq!(row["accounting"]["context_tokens"], serde_json::json!(96_000));
-        assert_eq!(row["accounting"]["context_window"], serde_json::json!(128_000));
+        assert_eq!(
+            row["accounting"]["context_tokens"],
+            serde_json::json!(96_000)
+        );
+        assert_eq!(
+            row["accounting"]["context_window"],
+            serde_json::json!(128_000)
+        );
 
         // No price is declared, so no cost is claimed. A daemon that invented
         // one would put a confident dollar figure under every answer.

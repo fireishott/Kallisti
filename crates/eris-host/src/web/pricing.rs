@@ -94,7 +94,9 @@ pub fn parse_prices(stored: Option<&str>) -> std::collections::BTreeMap<String, 
 #[must_use]
 pub fn is_local(model: &str) -> bool {
     let lowered = model.trim().to_lowercase();
-    LOCAL_MARKERS.iter().any(|marker| lowered.starts_with(marker))
+    LOCAL_MARKERS
+        .iter()
+        .any(|marker| lowered.starts_with(marker))
 }
 
 /// The published price for one model, when there is one.
@@ -105,10 +107,7 @@ pub fn is_local(model: &str) -> bool {
 /// so both have to resolve or the table only works from the surface it was
 /// typed on.
 #[must_use]
-pub fn price_for(
-    model: &str,
-    table: &std::collections::BTreeMap<String, Price>,
-) -> Option<Price> {
+pub fn price_for(model: &str, table: &std::collections::BTreeMap<String, Price>) -> Option<Price> {
     let trimmed = model.trim();
     if trimmed.is_empty() {
         return None;
@@ -230,7 +229,13 @@ mod tests {
         let empty = parse_prices(None);
         assert!(empty.is_empty());
         assert_eq!(
-            cost_of("deepseek/deepseek-v4-flash", Some(10), Some(5), None, &empty),
+            cost_of(
+                "deepseek/deepseek-v4-flash",
+                Some(10),
+                Some(5),
+                None,
+                &empty
+            ),
             Cost::Unpriced
         );
         assert!(parse_prices(Some("{not json")).is_empty());
@@ -241,7 +246,10 @@ mod tests {
     fn a_half_written_price_cannot_value_a_turn() {
         let table = table(&[("m", Some(1.0), None, None)]);
         assert!(!table["m"].is_complete());
-        assert_eq!(cost_of("m", Some(1_000), Some(500), None, &table), Cost::Unpriced);
+        assert_eq!(
+            cost_of("m", Some(1_000), Some(500), None, &table),
+            Cost::Unpriced
+        );
     }
 
     /// One million prompt and one million completion tokens at a $1/$2 table is
@@ -300,12 +308,24 @@ mod tests {
     fn a_price_finds_its_model_with_or_without_the_prefix() {
         let with_prefix = table(&[("ds/deepseek-v4-flash", Some(1.0), Some(2.0), None)]);
         assert_eq!(
-            cost_of("deepseek-v4-flash", Some(1_000_000), Some(0), None, &with_prefix),
+            cost_of(
+                "deepseek-v4-flash",
+                Some(1_000_000),
+                Some(0),
+                None,
+                &with_prefix
+            ),
             Cost::Amount(1.0)
         );
         let without = table(&[("deepseek-v4-flash", Some(1.0), Some(2.0), None)]);
         assert_eq!(
-            cost_of("ds/deepseek-v4-flash", Some(1_000_000), Some(0), None, &without),
+            cost_of(
+                "ds/deepseek-v4-flash",
+                Some(1_000_000),
+                Some(0),
+                None,
+                &without
+            ),
             Cost::Amount(1.0)
         );
     }

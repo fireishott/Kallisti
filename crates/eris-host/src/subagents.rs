@@ -667,14 +667,12 @@ pub fn for_conversation(
     db.with_conn(|conn| {
         let mut statement = conn.prepare(&sql)?;
         let rows = if all {
-            statement.query_map(params![conversation, limit as i64], row_to_subagent)?
+            statement
+                .query_map(params![conversation, limit as i64], row_to_subagent)?
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             statement
-                .query_map(
-                    params![conversation, limit as i64, window],
-                    row_to_subagent,
-                )?
+                .query_map(params![conversation, limit as i64, window], row_to_subagent)?
                 .collect::<Result<Vec<_>, _>>()?
         };
         Ok(rows)

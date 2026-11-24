@@ -6417,8 +6417,13 @@ mod tests {
     fn a_turn_that_only_repeats_itself_is_stopped_early() {
         let steering = Steering::new();
         let lease = claimed(&steering);
-        let call = core_domain::ToolCall::new(0, "call_1", "read_file", serde_json::json!({"path":"a.txt"}))
-            .expect("a call");
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "read_file",
+            serde_json::json!({"path":"a.txt"}),
+        )
+        .expect("a call");
         let mut executed = 0usize;
         let mut saw_tools_withdrawn = false;
         let outcome = drive_tool_loop(

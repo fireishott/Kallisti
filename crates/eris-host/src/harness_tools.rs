@@ -994,7 +994,12 @@ fn login_complaint(seen: &str) -> Option<String> {
                 .to_owned(),
         );
     }
-    let refused = ["statuscode400", "statuscode401", "invalid_grant", "invalidgrant"];
+    let refused = [
+        "statuscode400",
+        "statuscode401",
+        "invalid_grant",
+        "invalidgrant",
+    ];
     if refused.iter().any(|needle| squeezed.contains(needle)) {
         return Some(
             "Claude refused that code (400). A code works once, and only for the link it came from: close this, tap Sign in with Claude again, and paste the code from the new page"
@@ -1786,8 +1791,8 @@ mod tests {
         assert!(local.contains("after the #"), "{local}");
         assert!(!local.contains("refused"), "{local}");
 
-        let server = login_complaint("OAuth error: Requstfailed withstatus code 400")
-            .expect("a complaint");
+        let server =
+            login_complaint("OAuth error: Requstfailed withstatus code 400").expect("a complaint");
         assert!(server.contains("refused that code"), "{server}");
     }
 
@@ -2448,5 +2453,4 @@ mod tests {
         let other = start_install(OTHER, "sleep 1").expect("another harness installs");
         assert!(other["id"].as_str().is_some_and(|id| !id.is_empty()));
     }
-
 }

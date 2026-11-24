@@ -365,7 +365,7 @@ impl OpenAiCompatProvider {
                         "function": {
                             "name": tool.name,
                             "description": tool.description,
-                            "parameters": tool.parameters,
+                            "parameters": grammar_safe_schema(&tool.parameters),
                         }
                     })
                 })
@@ -849,6 +849,80 @@ impl Provider for OpenAiCompatProvider {
     fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
+}
+
+/// Keywords whose value is a single sub-schema.
+const SCHEMA_KEYWORDS: &[&str] = &[
+    "items",
+    "additionalItems",
+    "contains",
+    "propertyNames",
+    "not",
+    "if",
+    "then",
+    "else",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+];
+/// Keywords whose value is an array of sub-schemas.
+const SCHEMA_LIST_KEYWORDS: &[&str] = &["oneOf", "anyOf", "allOf", "prefixItems"];
+/// Keywords whose value is a map of name to sub-schema.
+const SCHEMA_MAP_KEYWORDS: &[&str] = &["properties", "patternProperties", "$defs", "definitions"];
+
+/// A copy of a tool's JSON schema in which every boolean schema is an object.
+///
+/// JSON Schema allows `true` and `false` wherever a schema is expected, and
+/// hosted providers accept them. llama.cpp turns each tool schema into a
+/// grammar and refuses a bare boolean (`schema must be an object`), which fails
+/// the whole request with a 400 before the model runs. `true` is exactly `{}`
+/// and `false` is exactly `{"not": {}}`, so the rewrite changes no meaning for
+/// any provider.
+///
+/// Only positions that hold a schema are rewritten. `additionalProperties` is
+/// left alone: a boolean there is a plain keyword value the grammar builder
+/// understands, and so are `required`, `default`, `nullable` and `enum` values.
+/// The stored tool definition is never touched; this works on a clone.
+#[must_use]
+pub fn grammar_safe_schema(schema: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    fn fix(value: &Value) -> Value {
+        match value {
+            Value::Bool(true) => serde_json::json!({}),
+            Value::Bool(false) => serde_json::json!({"not": {}}),
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(key, child)| {
+                        let key_str = key.as_str();
+                        let fixed = if SCHEMA_KEYWORDS.contains(&key_str) {
+                            fix(child)
+                        } else if SCHEMA_LIST_KEYWORDS.contains(&key_str) {
+                            match child {
+                                Value::Array(items) => Value::Array(items.iter().map(fix).collect()),
+                                other => other.clone(),
+                            }
+                        } else if SCHEMA_MAP_KEYWORDS.contains(&key_str) {
+                            match child {
+                                Value::Object(entries) => Value::Object(
+                                    entries.iter().map(|(k, v)| (k.clone(), fix(v))).collect(),
+                                ),
+                                other => other.clone(),
+                            }
+                        } else if key_str == "additionalProperties" {
+                            match child {
+                                Value::Object(_) => fix(child),
+                                other => other.clone(),
+                            }
+                        } else {
+                            child.clone()
+                        };
+                        (key.clone(), fixed)
+                    })
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    fix(schema)
 }
 
 /// The one cache-control value the Messages dialect defines.
@@ -1434,6 +1508,86 @@ mod tests {
         };
         let body = messages_provider().build_messages_body(&remote);
         assert_eq!(body["messages"][0]["content"][1]["source"]["type"], "url");
+    }
+
+    #[test]
+    fn a_bare_true_schema_becomes_an_empty_object() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"evidence": true, "name": {"type": "string"}},
+            "required": ["evidence"]
+        });
+        let out = grammar_safe_schema(&schema);
+        assert_eq!(out["properties"]["evidence"], serde_json::json!({}));
+        assert_eq!(out["properties"]["name"]["type"], "string");
+        assert_eq!(out["required"], serde_json::json!(["evidence"]));
+    }
+
+    #[test]
+    fn a_true_inside_a_oneof_branch_under_defs_is_fixed() {
+        let schema = serde_json::json!({
+            "$defs": {"RecordSource": {"oneOf": [
+                {"properties": {"evidence_id": {"type": "string"}}},
+                {"properties": {"evidence": true}}
+            ]}}
+        });
+        let out = grammar_safe_schema(&schema);
+        assert_eq!(
+            out["$defs"]["RecordSource"]["oneOf"][1]["properties"]["evidence"],
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn a_false_schema_becomes_a_not_empty() {
+        let out = grammar_safe_schema(&serde_json::json!({"properties": {"x": false}}));
+        assert_eq!(out["properties"]["x"], serde_json::json!({"not": {}}));
+    }
+
+    #[test]
+    fn nested_items_and_additional_properties_schemas_are_fixed() {
+        let schema = serde_json::json!({
+            "type": "array",
+            "items": {"type": "object", "properties": {"v": true},
+                      "additionalProperties": {"properties": {"w": true}}}
+        });
+        let out = grammar_safe_schema(&schema);
+        assert_eq!(out["items"]["properties"]["v"], serde_json::json!({}));
+        assert_eq!(
+            out["items"]["additionalProperties"]["properties"]["w"],
+            serde_json::json!({})
+        );
+        assert_eq!(grammar_safe_schema(&serde_json::json!({"items": true}))["items"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn plain_boolean_keyword_values_are_left_alone() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"a": {"type": "boolean", "default": true, "nullable": true,
+                                  "enum": [true, false]}}
+        });
+        assert_eq!(grammar_safe_schema(&schema), schema);
+    }
+
+    #[test]
+    fn the_tool_body_carries_the_fixed_schema_and_the_original_is_untouched() {
+        let original = serde_json::json!({"type": "object", "properties": {"e": true}});
+        let request = ChatRequest {
+            tools: vec![ToolSpec {
+                name: "t".into(),
+                description: "d".into(),
+                parameters: original.clone(),
+            }],
+            ..ChatRequest::default()
+        };
+        let body = provider().build_body(&request);
+        assert_eq!(
+            body["tools"][0]["function"]["parameters"]["properties"]["e"],
+            serde_json::json!({})
+        );
+        assert_eq!(request.tools[0].parameters, original);
     }
 
     #[test]

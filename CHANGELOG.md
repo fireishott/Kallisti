@@ -469,6 +469,16 @@ Versions follow the daemon's own `VERSION`, with a build number that moves on ev
 ship without changing the version. Entries describe behaviour that a user can
 observe; commit history carries the detail.
 
+## 1.11.0
+
+- **Local models accept every tool.** A tool schema that declares a bare `true` or
+  `false` where a schema belongs (the evidence field of a `oneOf` branch was one)
+  made llama.cpp refuse the whole request with a 400 before it generated a word.
+  The chat-completions request now rewrites those positions to `{}` and
+  `{"not": {}}`, which mean the same thing, and leaves boolean keywords such as
+  `additionalProperties` and `required` alone. The stored tool definitions are not
+  changed.
+
 ## 1.10.1
 
 - **A turn is never charged for a round it does not run.** The redundancy guard
