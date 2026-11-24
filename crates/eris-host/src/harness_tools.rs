@@ -982,13 +982,19 @@ fn login_complaint(seen: &str) -> Option<String> {
         .filter(|character| !character.is_whitespace())
         .collect::<String>()
         .to_lowercase();
-    let refused = [
-        "statuscode400",
-        "statuscode401",
-        "invalidcode",
-        "invalid_grant",
-        "invalidgrant",
-    ];
+    // The CLI's own format check, which runs before any network call. Its text
+    // is "Invalid code. Please make sure the full code was copied", and it means
+    // the value never left the machine - the pasted text was not in the
+    // `code#state` shape the CLI expects. That is a different failure from a code
+    // the server refused, and it has a different fix, so it is reported first and
+    // says which one happened.
+    if squeezed.contains("invalidcode") && !squeezed.contains("statuscode") {
+        return Some(
+            "That does not look like a complete code. Claude Code expects the whole value from the page, including the part after the #. Close this, tap Sign in with Claude again, and copy the entire code"
+                .to_owned(),
+        );
+    }
+    let refused = ["statuscode400", "statuscode401", "invalid_grant", "invalidgrant"];
     if refused.iter().any(|needle| squeezed.contains(needle)) {
         return Some(
             "Claude refused that code (400). A code works once, and only for the link it came from: close this, tap Sign in with Claude again, and paste the code from the new page"
@@ -1759,6 +1765,30 @@ mod tests {
             finished_field(&link, "https://").as_deref(),
             Some("https://claude.com/cai/oauth/authorize?code=true&state=abc")
         );
+    }
+
+    /// A locally-refused code and a server-refused one are different failures
+    /// with different fixes, and the phone has to be told which one it hit.
+    ///
+    /// The real CLI answers "OAuth error: Invalid code. Please make sure the full
+    /// code was copied" when the pasted value is not in its `code#state` shape;
+    /// that check never leaves the machine. A server rejection says "Request
+    /// failed with status code 400". Reading both as "Claude refused that code"
+    /// is what sent an operator to fetch a fresh code for a paste they could have
+    /// completed.
+    #[test]
+    fn a_locally_refused_code_is_not_a_server_rejection() {
+        let local = login_complaint(
+            "OAuth error: Invalidcode. Please makesure the fullcde wascopied PressEntertoretry.",
+        )
+        .expect("a complaint");
+        assert!(local.contains("complete code"), "{local}");
+        assert!(local.contains("after the #"), "{local}");
+        assert!(!local.contains("refused"), "{local}");
+
+        let server = login_complaint("OAuth error: Requstfailed withstatus code 400")
+            .expect("a complaint");
+        assert!(server.contains("refused that code"), "{server}");
     }
 
     #[test]

@@ -10,6 +10,46 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.8] - 2026-11-23
+
+### Added
+
+- The answer footer carries the field set `hermes-signature` carried: the model,
+  the provider, tool rounds, tool calls, wall time, tokens in and out, the combined
+  count, the cached count and its share, the turn's dollar cost, the session's
+  running cost, the conversation's turn counter, and the context reading as a
+  share of the window the model declares. Twelve switches under Settings > Turn
+  footer, one per field, and the master switch still hides all of them.
+- A dollar cost appears only when the daemon has a price for the model. The
+  price table is the `assistant.model_prices` settings row, and a model that runs
+  on this host is priced at zero by rule. An unpriced model prints nothing rather
+  than `free`.
+- A session total that does not cover every answer is marked `+`, because a
+  partial total presented as a complete one is the one number a footer must not
+  get wrong.
+
+### Fixed
+
+- The footer vanished on live turns. The terminal frame carries the receipt and
+  the client decoded the text and dropped the numbers, so a footer only appeared
+  after the chat was reopened. It draws from the stream now. A transcript refresh
+  that lands before the row is written also no longer erases a receipt it does not
+  have.
+- The context reading was recorded as NULL on every turn that came from the phone:
+  the turn loop measured it and `Signal::Done` had no field to carry it. It crosses
+  now, so the footer's context figure works on both surfaces.
+- Settings > Turn footer no longer looks like it came from another app. It uses
+  the same section shell, eyebrow, card, row height and switch as every other
+  section instead of stock `Toggle`s in a bare `Section`.
+- Signing Claude Code in from the phone sent an incomplete code. The CLI's code is
+  `code#state` and the daemon cut the pasted text at `#`, so every attempt was a
+  400 the app reported as "Claude refused that code". A callback URL is unwrapped
+  into the same pair, and a code the CLI rejects locally now says so instead of
+  blaming the server.
+- A turn streaming fast no longer recompiles two regexes per fragment, and the live
+  token hint no longer rewrites the whole transcript array per fragment. Both were
+  on the main actor ahead of the coalescer.
+
 ## [1.7.7] - 2026-11-23
 
 ### Added
