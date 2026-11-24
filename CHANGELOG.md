@@ -10,6 +10,34 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-11-24
+
+### Changed
+
+- **A delegated harness task gets 30 minutes, not 10.** The default deadline was
+  600 s, and the first real delegation - note editing across a 900-line FastAPI
+  app - hit it with the work half done. The harness was killed mid-task, its
+  report read `timed out`, and the turn finished the job by hand. Thirty minutes
+  is still bounded, the run stays visible in the harness monitor the whole time,
+  and the ceiling stays at an hour.
+- **The tool description names the deadline.** A model that does not know the
+  budget writes a task that cannot fit in it and gets a kill instead of a report.
+  Saying "killed at N minutes" lets it split the work across calls instead.
+
+### Fixed
+
+- **A truncated harness report keeps its end, not its beginning.** The capture
+  capped at 64 KiB and kept the FIRST bytes. For a single command that is right;
+  for a harness it is backwards, because a run's conclusion - what broke, whether
+  the tests passed, what it decided - is written last. The buffer now rolls,
+  keeping the newest bytes and stating how many were dropped. A reader no longer
+  gets the tree scan and loses the findings.
+
+### Changed in the daemon
+
+- `DEFAULT_TIMEOUT_SECS` 600 -> 1800. An explicit `routing.harness.timeout_secs`
+  row still wins, and the 30 s..3600 s bounds are unchanged.
+
 ## [1.7.9] - 2026-11-24
 
 ### Fixed
