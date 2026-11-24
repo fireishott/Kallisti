@@ -1428,6 +1428,7 @@
 				D8B614699402A26733BC7098 /* RoutingSettingsSection.swift */,
 				B3A1E9B33F7319E44F32378A /* SettingsScreen.swift */,
 				945CB9419B2D507FB763BCFE /* SettingsSectionView.swift */,
+				BBC553CC54FDFBE7941B310D /* TurnFooterSettingsSection.swift */,
 				F103E0443CD4AFBE40AF8E85 /* WallpaperPickerSheet.swift */,
 				917B3170097A234E21C48856 /* YamlEditorView.swift */,
 			);
@@ -1559,7 +1560,6 @@
 				F6D239C586BA9ABDB9FBA5E7 /* ToolActivityRail.swift */,
 				E945C66583CB6483CF5E62B7 /* TUITerminalScreen.swift */,
 				7D4D4B485EAB2784B3F596AF /* TurnFooterBar.swift */,
-				BBC553CC54FDFBE7941B310D /* TurnFooterSettingsSection.swift */,
 				6067EA9935B02094B0FF2D50 /* TypingDotsView.swift */,
 				18CB6B501373ACAFB9B02249 /* VideoPlayerView.swift */,
 				707BB716D7A1C5689DBB90F7 /* VoiceSessionBanner.swift */,
