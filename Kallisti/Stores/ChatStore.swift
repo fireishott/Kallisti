@@ -174,6 +174,15 @@ final class ChatStore {
     // of every new attempt.
     private(set) var streamingTokenCount: Int = 0
 
+    /// When the live "N tokens streamed" hint was last written into the bubble.
+    ///
+    /// The hint used to be rewritten on every fragment, and each write assigned
+    /// the whole `conversation` — an array copy plus a full transcript
+    /// invalidation for a one-string change. Throttled to four a second, which
+    /// is indistinguishable on screen and stops a fast turn from spending the
+    /// main actor's budget on re-renders.
+    private var lastLiveCounterWrite: Date = .distantPast
+
     // Build 64: snapshot captured when the streaming watchdog declares
     // a stall or the stream drops into .reconnecting. Read by the
     // ChatScreen banner; never written from the view layer.
@@ -538,6 +547,31 @@ final class ChatStore {
     private var reasoningBuffers: [UUID: DeltaBuffer] = [:]
     private static let deltaFlushInterval: Duration = .milliseconds(16)  // 60 fps cap
     private static let deltaFlushByteThreshold = 4_096
+
+    /// The thinking tags, compiled once.
+    ///
+    /// These were written inline as `range(of:options:.regularExpression)`, which
+    /// compiles the pattern on every call, and the call sits on the delta path
+    /// before coalescing: a turn streaming a thousand fragments compiled and ran
+    /// the pattern a thousand times on the main actor, twice, for tags that
+    /// almost never appear in that fragment. That is part of why a long turn made
+    /// the app feel unresponsive until something forced a redraw.
+    ///
+    /// Two forms: the opening tag, and the closing tag. Both tolerate the
+    /// `<thinking>` spelling the models also emit.
+    private static let openThinkRegex = try! NSRegularExpression(
+        pattern: "<think(?:ing)?>", options: [.caseInsensitive]
+    )
+    private static let closeThinkRegex = try! NSRegularExpression(
+        pattern: "</think(?:ing)?>", options: [.caseInsensitive]
+    )
+
+    /// The first range of `regex` inside `text`, if any.
+    private static func firstRange(of regex: NSRegularExpression, in text: String) -> Range<String.Index>? {
+        let full = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, range: full) else { return nil }
+        return Range(match.range, in: text)
+    }
 
     /// Whether deterministic local title derivation has run for this conversation.
     private var autoTitleAttempted = false
@@ -2379,8 +2413,20 @@ final class ChatStore {
             // will clear it, which is fine; the placeholders'
             // built-in streaming indicator takes over for the
             // "still going" signal.
-            if var conv = self.conversation,
+            //
+            // Throttled, because this used to run on every fragment: assigning
+            // `self.conversation` copies the whole message array and invalidates
+            // every observer, so a fast turn re-rendered the entire transcript
+            // once per token only to change one string. That is the freeze the
+            // operator feels as "the app stopped responding" - the deltas are
+            // arriving and being applied, the UI simply cannot keep up. The
+            // counter is a progress hint, not a measurement, so four updates a
+            // second reads the same as sixty and costs a fraction.
+            let now = Date.now
+            if now.timeIntervalSince(lastLiveCounterWrite) >= 0.25,
+               var conv = self.conversation,
                let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                lastLiveCounterWrite = now
                 conv.messages[idx].toolActivity = "\(self.streamingTokenCount) tokens streamed"
                 self.conversation = conv
             }
@@ -2393,51 +2439,41 @@ final class ChatStore {
             // If a reasoning stream is already active, check if this
             // delta closes the block; otherwise check if it opens one.
             if reasoningStartedAt != nil {
-                // We're inside reasoning — check if the delta closes it
-                let hasCloseTag = delta.range(
-                    of: #"</think(?:ing)?>"#, options: .regularExpression
-                ) != nil
-                if hasCloseTag {
+                // We're inside reasoning — check if the delta closes it. The
+                // pattern is compiled once for the process, not once per
+                // fragment: see `closeThinkRegex`.
+                if let closeRange = Self.firstRange(of: Self.closeThinkRegex, in: delta) {
                     // Split at the close tag — reasoning before, visible after
-                    if let closeRange = delta.range(of: #"</think(?:ing)?>"#, options: .regularExpression) {
-                        let reasoningPart = String(delta[delta.startIndex..<closeRange.lowerBound])
-                        let visiblePart = String(delta[closeRange.upperBound...])
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !reasoningPart.isEmpty {
-                            self.enqueueReasoningDelta(reasoningPart, placeholderID: placeholderID)
+                    let reasoningPart = String(delta[delta.startIndex..<closeRange.lowerBound])
+                    let visiblePart = String(delta[closeRange.upperBound...])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !reasoningPart.isEmpty {
+                        self.enqueueReasoningDelta(reasoningPart, placeholderID: placeholderID)
+                    }
+                    if !visiblePart.isEmpty {
+                        if let settings = self.ttsSettingsProvider?(),
+                           settings.enabled,
+                           settings.autoSpeakDuringStreaming {
+                            self.ttsService?.speakStreaming(visiblePart, voice: settings.voice)
                         }
-                        if !visiblePart.isEmpty {
-                            if let settings = self.ttsSettingsProvider?(),
-                               settings.enabled,
-                               settings.autoSpeakDuringStreaming {
-                                self.ttsService?.speakStreaming(visiblePart, voice: settings.voice)
-                            }
-                            self.enqueueDelta(visiblePart, placeholderID: placeholderID)
-                        }
+                        self.enqueueDelta(visiblePart, placeholderID: placeholderID)
                     }
                 } else {
                     self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
                 }
             } else {
-                // Check if this delta opens a reasoning block
-                let hasOpenThinkTag = delta.range(
-                    of: #"<think(?:ing)?>"#, options: .regularExpression
-                ) != nil
-                if hasOpenThinkTag {
+                // Check if this delta opens a reasoning block.
+                if let openRange = Self.firstRange(of: Self.openThinkRegex, in: delta) {
                     reasoningStartedAt = .now
-                    // Split at the open tag — visible before (unlikely), reasoning after
-                    if let openRange = delta.range(of: #"<think(?:ing)?>"#, options: .regularExpression) {
-                        let beforeTag = String(delta[delta.startIndex..<openRange.lowerBound])
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                        let afterTag = String(delta[openRange.upperBound...])
-                        if !beforeTag.isEmpty {
-                            self.enqueueDelta(beforeTag, placeholderID: placeholderID)
-                        }
-                        if !afterTag.isEmpty {
-                            self.enqueueReasoningDelta(afterTag, placeholderID: placeholderID)
-                        }
-                    } else {
-                        self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
+                    // Split at the open tag — visible before (unlikely), reasoning after.
+                    let beforeTag = String(delta[delta.startIndex..<openRange.lowerBound])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let afterTag = String(delta[openRange.upperBound...])
+                    if !beforeTag.isEmpty {
+                        self.enqueueDelta(beforeTag, placeholderID: placeholderID)
+                    }
+                    if !afterTag.isEmpty {
+                        self.enqueueReasoningDelta(afterTag, placeholderID: placeholderID)
                     }
                 } else {
                     // Normal visible content

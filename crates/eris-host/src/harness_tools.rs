@@ -803,26 +803,105 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
 
 /// The code inside whatever was pasted.
 ///
-/// A `claude setup-token` code is one short token. What arrives from a phone is
-/// sometimes the whole callback URL the browser landed on, which carries the code
-/// as a query parameter; sending that URL to the CLI is a guaranteed `Invalid
-/// code`. This takes the `code` parameter when there is one, and otherwise just
-/// trims - a copy out of a terminal usually brings a newline with it.
+/// A `claude setup-token` code is not one bare token. What the browser shows is
+/// the OAuth authorization code joined to the flow's `state` by a `#`, and the
+/// CLI splits on that separator before it exchanges the pair. This function used
+/// to cut the pasted text at `#`, which threw the state away: the CLI then had a
+/// code with no state and answered a 400, which the phone rendered as "Claude
+/// refused that code". It was never refused - it was sent incomplete.
+///
+/// Three shapes arrive from a phone and all three have to produce the same pair:
+///
+/// - `code#state`, copied straight off the callback page, passed through whole;
+/// - the whole callback URL, where both halves are query parameters;
+/// - a bare code, for a deployment whose page shows only that.
 fn code_from_pasted(pasted: &str) -> String {
     let trimmed = pasted.trim();
-    let Some(rest) = trimmed.split_once("code=").map(|(_, rest)| rest) else {
-        return trimmed.to_owned();
-    };
-    let code = rest
-        .split(['&', '#', '\n', '\r', ' '])
-        .next()
-        .unwrap_or_default()
-        .trim();
-    if code.is_empty() {
-        trimmed.to_owned()
-    } else {
-        code.to_owned()
+    if trimmed.is_empty() {
+        return String::new();
     }
+    // A callback URL carries the code as a parameter. When it does, both halves
+    // are read and rejoined in the CLI's own format, so a password manager that
+    // pastes the URL and a person who copies the shown code take one path.
+    if trimmed.contains("://") || trimmed.contains("code=") {
+        let code = query_value(trimmed, "code");
+        let state = query_value(trimmed, "state");
+        if let Some(code) = code.filter(|code| !code.is_empty()) {
+            return match state.filter(|state| !state.is_empty()) {
+                Some(state) => format!("{code}#{state}"),
+                None => code,
+            };
+        }
+        return trimmed.to_owned();
+    }
+    // A code already in `code#state` form is kept whole. The state is a required
+    // half of the pair, not a comment to be trimmed off.
+    if let Some((code, state)) = trimmed.split_once('#') {
+        let code = code.trim();
+        let state = state.trim();
+        if !code.is_empty() && !state.is_empty() {
+            return format!("{code}#{state}");
+        }
+        // A trailing `#` with nothing after it is a copy artefact, not a state.
+        return code.to_owned();
+    }
+    trimmed.to_owned()
+}
+
+/// One query parameter out of a URL, percent-decoded.
+///
+/// Deliberately not a URL parser: this reads the two parameters it was written
+/// for, from text that may be a URL, a fragment of one, or a line a person
+/// pasted with the label still attached.
+fn query_value(url: &str, name: &str) -> Option<String> {
+    // Matched only at a `?` or `&` boundary, so `state` is not found inside
+    // `code_challenge_method` or any other key that merely contains it.
+    let mut offset = 0usize;
+    while let Some(found) = url[offset..].find(name) {
+        let at = offset + found;
+        let before = if at == 0 {
+            None
+        } else {
+            url[..at].chars().next_back()
+        };
+        let after = url[at + name.len()..].chars().next();
+        let starts_field = matches!(before, None | Some('?') | Some('&'));
+        if starts_field && after == Some('=') {
+            let value_start = at + name.len() + 1;
+            let tail = &url[value_start..];
+            let end = tail
+                .find(['&', '#', '\n', '\r', ' ', '"', '\''])
+                .unwrap_or(tail.len());
+            let raw = tail[..end].trim();
+            return Some(percent_decode(raw));
+        }
+        // Not this occurrence; look past it.
+        offset = at + name.len();
+    }
+    None
+}
+
+/// Decode the percent escapes a URL parameter carries.
+///
+/// The code and state are base64url in practice, so the common case has nothing
+/// to decode and this returns the input unchanged.
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = &raw[index + 1..index + 3];
+            if let Ok(value) = u8::from_str_radix(hex, 16) {
+                out.push(value);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The last thing a redrawn screen said, escapes gone and on one line.
@@ -2210,6 +2289,63 @@ mod tests {
     }
     /// The pty stream is full of escapes; what matters has to survive them.
     #[test]
+    /// The code is a pair, not a token. The CLI splits the pasted text on `#`
+    /// and exchanges the two halves; cutting the state off here is what made
+    /// every sign-in from the phone answer a 400 and read as a refused code.
+    #[test]
+    fn a_pasted_code_keeps_the_state_half() {
+        assert_eq!(code_from_pasted("abc123#stateXYZ"), "abc123#stateXYZ");
+        assert_eq!(code_from_pasted("  abc123#stateXYZ  "), "abc123#stateXYZ");
+        // A trailing separator with nothing after it is a copy artefact.
+        assert_eq!(code_from_pasted("abc123#"), "abc123");
+        // A bare code still passes through.
+        assert_eq!(code_from_pasted("abc123"), "abc123");
+        assert_eq!(code_from_pasted("abc123\n"), "abc123");
+    }
+
+    /// A callback URL is unwrapped into the pair, in both directions, so a phone
+    /// that pastes the URL and a person who copies the shown code agree.
+    #[test]
+    fn a_callback_url_becomes_the_pair_the_cli_expects() {
+        assert_eq!(
+            code_from_pasted(
+                "https://platform.claude.com/oauth/code/callback?code=abc123&state=stateXYZ"
+            ),
+            "abc123#stateXYZ"
+        );
+        // The order the parameters arrive in does not matter.
+        assert_eq!(
+            code_from_pasted("http://localhost:54545/callback?state=stateXYZ&code=abc123"),
+            "abc123#stateXYZ"
+        );
+        // A URL with a code and no state is still a code.
+        assert_eq!(
+            code_from_pasted("https://example.test/cb?code=abc123"),
+            "abc123"
+        );
+        // A percent-encoded state survives decoding.
+        assert_eq!(
+            code_from_pasted("https://example.test/cb?code=abc123&state=a%2Fb"),
+            "abc123#a/b"
+        );
+    }
+
+    /// `state` is not matched inside a longer key, which a naive substring search
+    /// would do on `code_challenge_method` in the same URL.
+    #[test]
+    fn a_parameter_name_is_matched_at_a_field_boundary() {
+        assert_eq!(
+            code_from_pasted(
+                "https://claude.com/cai/oauth/authorize?code_challenge_method=S256&code=real&state=s1"
+            ),
+            "real#s1"
+        );
+        assert_eq!(query_value("a=1&state=s2", "state"), Some("s2".to_owned()));
+        assert_eq!(query_value("state=s3&b=2", "state"), Some("s3".to_owned()));
+        assert_eq!(query_value("xstate=no", "state"), None);
+        assert_eq!(query_value("no-params", "state"), None);
+    }
+
     fn a_sign_in_url_is_lifted_out_of_a_terminal_stream() {
         let line = "\u{1b}]8;id=7e4i2;https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&state=abc\u{7}https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&state=abc\u{1b}]8;;\u{7}";
         let found = first_field_with(line, "https://").expect("a url");
