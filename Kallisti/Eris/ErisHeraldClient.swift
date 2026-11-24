@@ -478,7 +478,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
         case .round(let count, let total, _):
             // Nothing in the transcript changes: this is the live counter.
             return (.round(count: count, total: total), false)
-        case .done(let full, let usage):
+        case .done(let full, let usage, let accounting):
             let content = full.isEmpty ? accumulatedText : full
             let final = Message(
                 id: messageID,
@@ -487,6 +487,13 @@ final class ErisHeraldClient: HeraldClientProtocol {
                 content: content,
                 jobID: jobID,
                 status: .sent,
+                // The receipt the footer draws. It arrives on the terminal frame
+                // and was dropped here, so the footer under a live turn had no
+                // numbers until the chat was reopened and read back from the
+                // transcript. That is why the footer looked like it only worked
+                // in some sessions: it worked after a reload, and not while the
+                // answer was arriving.
+                accounting: accounting,
                 route: route
             )
             let tokenUsage = usage.map {
@@ -515,7 +522,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
             if let boundID = conversationIDByLocalID[current.id],
                let client = await pairedClient(),
                let detail = try? await client.conversation(id: boundID) {
-                current.messages = detail.messages.map { Self.message(from: $0) }
+                current.messages = Self.messages(from: detail)
                 currentConversation = current
             }
             return current
@@ -676,7 +683,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
         let conversation = Conversation(
             id: id,
             title: detail.displayTitle,
-            messages: detail.messages.map { Self.message(from: $0) },
+            messages: Self.messages(from: detail),
             sessionKey: conversationID
         )
         currentConversation = conversation
@@ -846,7 +853,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
         var text = ""
         let stream = await client.events(turnID: turn.jobID)
         for try await frame in stream {
-            if case .done(let full, _) = frame { text = full; break }
+            if case .done(let full, _, _) = frame { text = full; break }
             if case .delta(let d) = frame { text += d }
             if case .error(let e) = frame { throw e }
         }
@@ -1019,7 +1026,7 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     continuation.yield(.reasoningDelta(fragment))
                 case .step(let label, _):
                     continuation.yield(.toolActivity(label))
-                case .done(let full, let usage):
+                case .done(let full, let usage, let accounting):
                     let content = full.isEmpty ? accumulated : full
                     let final = Message(
                         id: clientMessageID,
@@ -1027,7 +1034,10 @@ final class ErisHeraldClient: HeraldClientProtocol {
                         sender: .herald,
                         content: content,
                         jobID: jobID,
-                        status: .sent
+                        status: .sent,
+                        // The same receipt the streaming path carries, so a
+                        // note answer and a chat answer draw the same footer.
+                        accounting: accounting
                     )
                     let tokenUsage = usage.map {
                         TokenUsage(
@@ -1201,6 +1211,75 @@ final class ErisHeraldClient: HeraldClientProtocol {
             erisID: m.id,
             accounting: m.accounting
         )
+    }
+
+    /// The receipt for one row, with the conversation's own totals folded in.
+    ///
+    /// Two of the footer's fields are conversation-scoped and cannot be read off
+    /// a row: the turn counter would restart on every older page, and a session
+    /// total summed from the rows on screen would be a floor presented as a
+    /// total. The daemon totals them over the conversation it just sent, so they
+    /// are folded in here and every answer shows the same session figures.
+    ///
+    /// Only the newest answer keeps the conversation-level cost, because a
+    /// session total on each of forty bubbles reads as forty separate charges.
+    /// The turn counter is the exception: it is the same number for every row and
+    /// reads correctly on all of them.
+    static func receipt(
+        for row: ErisConversationMessage,
+        totals: ErisConversationTotals?,
+        isNewestAnswer: Bool
+    ) -> TurnAccounting? {
+        guard let totals else { return row.accounting }
+        let base = row.accounting
+        // The row's own measured numbers win; the totals fill in only what a row
+        // cannot know. A session that lost its per-row receipt still gets its
+        // turn counter, and a row that measured nothing still gets a footer when
+        // the conversation has a cost to report.
+        return TurnAccounting(
+            model: base?.model,
+            provider: base?.provider,
+            promptTokens: base?.promptTokens,
+            completionTokens: base?.completionTokens,
+            cachedTokens: base?.cachedTokens,
+            durationMs: base?.durationMs,
+            rounds: base?.rounds,
+            contextTokens: base?.contextTokens ?? (isNewestAnswer ? totals.contextUsed : nil),
+            contextWindow: base?.contextWindow ?? (isNewestAnswer ? totals.contextWindow : nil),
+            // The row's own cost when it has one: that is the figure that
+            // belongs under this answer.
+            costUSD: base?.costUSD ?? (isNewestAnswer ? totals.turnCostUSD : nil),
+            sessionCostUSD: isNewestAnswer ? (base?.sessionCostUSD ?? totals.sessionCostUSD) : nil,
+            pricedAnswers: totals.pricedAnswers,
+            sessionAnswers: totals.answers,
+            sessionTurns: totals.turns,
+            toolCalls: base?.toolCalls ?? (row.tools.isEmpty ? nil : row.tools.count),
+            capped: base?.capped,
+            wrappedUp: base?.wrappedUp
+        )
+    }
+
+    /// Every row of a fetched conversation, with the session figures folded in.
+    static func messages(
+        from detail: ErisConversationDetail
+    ) -> [Message] {
+        // The newest settled answer is the one that carries the conversation's
+        // cost and context figures. Indexing first keeps the marking honest when
+        // the last row is a canned system notice rather than an answer.
+        let newestAnswerID = detail.messages
+            .last(where: { !$0.isUser && !$0.isFailed })?
+            .id
+        return detail.messages.map { row in
+            var message = Self.message(from: row)
+            if !row.isUser {
+                message.accounting = Self.receipt(
+                    for: row,
+                    totals: detail.totals,
+                    isNewestAnswer: row.id == newestAnswerID
+                )
+            }
+            return message
+        }
     }
 
     static func summary(from s: ErisConversationSummary) -> SessionSummary {

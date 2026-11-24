@@ -1502,6 +1502,15 @@ pub async fn conversation(
             .into_response();
         }
     };
+    // The conversation's own totals, taken over the rows this read returned.
+    //
+    // Over the page rather than the whole table on purpose: the page is what the
+    // phone holds, so a session figure computed here and a transcript the phone
+    // can scroll are the same set of rows. A page that is not the whole
+    // conversation says so in `truncated`, and a client shows the figure as a
+    // floor or leaves it out. Reading every row to total it would make opening a
+    // long chat cost a full-table scan on the device listener.
+    let totals = chat::stats_for(db, &messages);
     // The count bound above is not a size bound, and this is the surface that has
     // to live with the difference: a tool-heavy conversation is megabytes of
     // stdout, and a phone that cannot finish reading it opens the chat blank.
@@ -1516,6 +1525,16 @@ pub async fn conversation(
     // message, and a failure to read them costs the attachments rather than the
     // transcript: a chat that cannot list its pictures still opens.
     let files_by_message = chat::attachments_by_message(db, &conversation_id).unwrap_or_default();
+    // The operator's declared dollar prices, read once for the whole conversation
+    // rather than per row. An empty table is the shipped state and means every
+    // cost below is `null`, which is the honest answer for a daemon that has not
+    // been told what a token costs.
+    let prices = crate::web::pricing::parse_prices(
+        crate::web::store::settings_get(db, crate::web::pricing::SETTING_PRICES)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
     let messages: Vec<serde_json::Value> = bounded
         .messages
         .into_iter()
@@ -1529,6 +1548,10 @@ pub async fn conversation(
                 "created_at": message.created_at,
                 "reasoning": message.reasoning,
                 "tools": message.tools,
+                // The model that answered this row, when the daemon recorded
+                // one. The footer names it, and without it a reopened chat could
+                // not say which model replied no matter what else it knew.
+                "model": message.model,
                 // What the turn cost, as one object rather than six loose keys.
                 //
                 // The footer the phone draws under an answer wants the round
@@ -1538,6 +1561,11 @@ pub async fn conversation(
                 // value is `null` when the row never recorded it, which is the
                 // honest answer for a row written before the column existed -
                 // a client omits a null field rather than printing a zero.
+                //
+                // `cost_usd` is null unless the operator declared a price for
+                // this row's model. The daemon does not guess one, so a phone
+                // that shows nothing here is reporting the truth rather than a
+                // free turn.
                 "accounting": {
                     "prompt_tokens": message.prompt_tokens,
                     "completion_tokens": message.completion_tokens,
@@ -1545,6 +1573,17 @@ pub async fn conversation(
                     "duration_ms": message.duration_ms,
                     "rounds": message.rounds,
                     "context_tokens": message.context_tokens,
+                    "context_window": message.context_window,
+                    "cost_usd": match crate::web::pricing::cost_of(
+                        message.model.as_deref().unwrap_or_default(),
+                        message.prompt_tokens,
+                        message.completion_tokens,
+                        message.cached_tokens,
+                        &prices,
+                    ) {
+                        crate::web::pricing::Cost::Amount(amount) => Some(amount),
+                        crate::web::pricing::Cost::Unpriced => None,
+                    },
                 },
                 // The two handles a device needs to recognise its own rows. Sent
                 // as explicit nulls rather than omitted, so a client can tell
@@ -1578,6 +1617,23 @@ pub async fn conversation(
         // not read it keeps working.
         "model": row.model,
         "messages": messages,
+        // The conversation's totals, for the footer's session line and its
+        // turn counter. `priced_answers` beside `answers` is what lets a client
+        // tell a total that covers every reply from one that covers some of
+        // them: equal means complete, fewer means the figure is a floor.
+        // Additive keys: a client that does not know them reads exactly what it
+        // read before.
+        "totals": {
+            "turns": totals.turns,
+            "answers": totals.answers,
+            "priced_answers": totals.priced_answers,
+            "session_cost_usd": totals.session_cost_usd,
+            "turn_cost_usd": totals.turn_cost_usd,
+            "context_used": totals.context_used,
+            "context_window": totals.context_window,
+            "total_tokens": totals.total_tokens,
+            "cache_hit_pct": totals.cache_hit_pct,
+        },
         "truncated": truncated || bounded.omitted > 0,
         // Whether an older page exists, so a client can decide to ask for one
         // before it renders a top-of-list that claims to be the beginning.
@@ -10473,5 +10529,91 @@ mod tests {
             content_type.starts_with("text/event-stream"),
             "the stream is an event stream: {content_type}"
         );
+    }
+
+    /// The conversation read carries the receipt the footer draws under an
+    /// answer: the model that replied, and an accounting object with the
+    /// measured numbers. Before this the payload named no model at all, so a
+    /// reopened chat could not say which model answered no matter what else it
+    /// knew, and the footer's context reading was blank on the phone.
+    #[tokio::test]
+    async fn a_conversation_read_carries_the_model_and_the_receipt() {
+        use crate::web::chat;
+        let fx = fixture();
+        let db = fx.service.engine().db();
+        let conversation = chat::create_conversation(db).expect("conversation");
+        let answer = chat::append_answer(db, &conversation, "ds/deepseek-v4-flash", Some(128_000))
+            .expect("answer row");
+        chat::settle(
+            db,
+            &answer,
+            "the reply",
+            None,
+            &[],
+            None,
+            chat::Accounting {
+                prompt_tokens: Some(1_000),
+                completion_tokens: Some(500),
+                cached_tokens: Some(2_000),
+                duration_ms: Some(4_200),
+                rounds: Some(3),
+                context_tokens: Some(96_000),
+                capped: None,
+                wrapped_up: None,
+            },
+        )
+        .expect("settle");
+
+        let (status, body) = send(
+            &fx.service,
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let row = &body["messages"][0];
+        assert_eq!(row["model"], serde_json::json!("ds/deepseek-v4-flash"));
+        assert_eq!(row["accounting"]["prompt_tokens"], serde_json::json!(1_000));
+        assert_eq!(row["accounting"]["completion_tokens"], serde_json::json!(500));
+        assert_eq!(row["accounting"]["cached_tokens"], serde_json::json!(2_000));
+        assert_eq!(row["accounting"]["duration_ms"], serde_json::json!(4_200));
+        assert_eq!(row["accounting"]["rounds"], serde_json::json!(3));
+        // The context reading the turn loop measured. It used to stop at the
+        // signal and leave this NULL on every phone turn.
+        assert_eq!(row["accounting"]["context_tokens"], serde_json::json!(96_000));
+        assert_eq!(row["accounting"]["context_window"], serde_json::json!(128_000));
+
+        // No price is declared, so no cost is claimed. A daemon that invented
+        // one would put a confident dollar figure under every answer.
+        assert_eq!(row["accounting"]["cost_usd"], serde_json::json!(null));
+
+        // Declaring a price turns the same row into a costed one.
+        crate::web::store::settings_put(
+            db,
+            crate::web::pricing::SETTING_PRICES,
+            r#"{"deepseek-v4-flash":{"input":0.10,"output":0.40,"cache":0.02}}"#,
+        )
+        .expect("price row");
+        let (status, body) = send(
+            &fx.service,
+            "GET",
+            &format!("/v1/conversations/{conversation}"),
+            &fx.chat,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let cost = body["messages"][0]["accounting"]["cost_usd"]
+            .as_f64()
+            .expect("a declared price produces a number");
+        // 1k prompt with 1k of the 2k cached claim clamped... the cached count
+        // exceeds the prompt here, so the clamp applies and the whole prompt
+        // bills at the cache rate: 1000/1e6*0.02 + 500/1e6*0.40.
+        assert!(cost > 0.0 && cost < 0.001, "a real but tiny charge: {cost}");
+        // The session total covers the one priced answer.
+        assert_eq!(body["totals"]["priced_answers"], serde_json::json!(1));
+        assert!(body["totals"]["session_cost_usd"].as_f64().is_some());
     }
 }

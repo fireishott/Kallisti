@@ -15,6 +15,7 @@ pub mod context;
 pub mod css;
 pub mod dsml;
 pub mod live;
+pub mod pricing;
 pub mod proxy;
 pub mod qr;
 pub mod quota;

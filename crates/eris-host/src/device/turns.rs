@@ -452,6 +452,15 @@ enum Signal {
         rounds: u64,
         /// Wall time from the first round to the last byte.
         duration_ms: u64,
+        /// The prompt size of the turn's last round trip, which is how full the
+        /// window actually was. `None` when the loop could not measure it.
+        ///
+        /// Carried on the signal because the transcript row is written from this
+        /// signal alone: the turn loop computed this figure and the value was
+        /// dropped here for as long as the field existed, so every phone turn
+        /// recorded `context_tokens = NULL` and the footer's context reading was
+        /// blank on the device lane while the browser's was not.
+        context_tokens: Option<u64>,
     },
     /// The provider failed.
     Failed {
@@ -2299,6 +2308,11 @@ impl TurnHub {
         // Additive: a client that does not know `turn.start` ignores it, and a
         // client that does not know `route` still reads the model and profile it
         // always did.
+        // The model this turn ends up on, captured before the turn body moves
+        // `config` into its blocking closure. The receipt under the answer names
+        // it, and `config.model` is no longer reachable from the writer once the
+        // turn has taken ownership of the config.
+        let turn_model = config.model.clone();
         let opening = serde_json::json!({
             "model": config.model,
             "profile": config.provider_id,
@@ -2761,6 +2775,7 @@ impl TurnHub {
                             wrapped_up,
                             rounds,
                             duration_ms,
+                            context_tokens,
                         } => {
                             if let Ok(mut last) = last_turn.lock() {
                                 *last = Some((capped, text.clone()));
@@ -2771,10 +2786,34 @@ impl TurnHub {
                             // client; adding the word costs nothing and lets a
                             // reader tell a finished turn from a stopped one
                             // without inferring it from the text.
+                            // The receipt the phone draws under the answer.
+                            //
+                            // The footer needs more than the provider's usage
+                            // object: it names the model, the round count, the
+                            // wall time, the context size and - when the operator
+                            // has declared a price - the turn's cost. None of
+                            // those travelled on this frame, so a footer drawn
+                            // from the live stream had no numbers until the chat
+                            // was reopened and read back from the transcript.
+                            // Every value here is the same one written to the row
+                            // a moment later, so the live view and the reopened
+                            // one cannot disagree.
+                            let receipt = receipt_for(
+                                store.db(),
+                                &turn_model,
+                                &usage,
+                                rounds,
+                                duration_ms,
+                                context_tokens,
+                            );
                             let data = serde_json::json!({
                                 "text": &text,
                                 "usage": &usage,
                                 "status": "ok",
+                                // The same object the transcript sends as
+                                // `accounting`, so one decoder on the client reads
+                                // a live turn and a reopened one identically.
+                                "accounting": receipt,
                             });
                             // The turn's own duration, recorded only when it
                             // crossed the slow watermark: a diagnostic buffer
@@ -2806,6 +2845,7 @@ impl TurnHub {
                                                 wrapped_up,
                                                 rounds,
                                                 duration_ms,
+                                                context_tokens,
                                             ),
                                         );
                                         // Then, and only then, the name. A title
@@ -3421,6 +3461,7 @@ impl TurnHub {
                         wrapped_up: outcome.wrapped_up,
                         rounds: outcome.rounds as u64,
                         duration_ms: turn_started.elapsed().as_millis() as u64,
+                        context_tokens: outcome.context_tokens,
                     });
                 }
                 Err((code, message)) => {
@@ -3657,6 +3698,7 @@ fn accounting_from(
     wrapped_up: bool,
     rounds: u64,
     duration_ms: u64,
+    context_tokens: Option<u64>,
 ) -> crate::web::chat::Accounting {
     serde_json::from_value::<core_domain::Usage>(usage.clone())
         .map(|usage| crate::web::chat::Accounting {
@@ -3665,9 +3707,10 @@ fn accounting_from(
             cached_tokens: usage.cache_read_tokens(),
             duration_ms: Some(duration_ms),
             rounds: Some(rounds),
-            // The terminal frame carries the turn's summed usage, not a single
-            // round, so the live context size is not something this worker knows.
-            context_tokens: None,
+            // The loop measured this on its last round trip and the value used to
+            // stop at the signal, so the column was dead on this lane however
+            // well the turn was measured. It crosses now.
+            context_tokens,
             // Both facts cross the terminal frame, so the row records what the
             // loop decided instead of leaving "not measured" on every phone
             // turn. `wrapped_up` used to be hardcoded to `None` here because
@@ -3677,6 +3720,50 @@ fn accounting_from(
             wrapped_up: Some(wrapped_up),
         })
         .unwrap_or_default()
+}
+
+/// The receipt one finished turn carries, as the transcript sends it.
+///
+/// One shape for the live `done` frame and the `accounting` object on a
+/// transcript row, so a client has one decoder for both and cannot draw a
+/// different receipt for the same turn depending on whether it watched the
+/// stream or reopened the chat.
+///
+/// A dollar figure is present only when the operator has declared a price for
+/// this model. The daemon does not guess one, so `cost_usd: null` means "nobody
+/// said what this costs", which the client renders by saying nothing.
+fn receipt_for(
+    db: &crate::db::Db,
+    model: &str,
+    usage: &serde_json::Value,
+    rounds: u64,
+    duration_ms: u64,
+    context_tokens: Option<u64>,
+) -> serde_json::Value {
+    let parsed = serde_json::from_value::<core_domain::Usage>(usage.clone()).ok();
+    let prompt = parsed.and_then(|usage| usage.input_tokens());
+    let completion = parsed.and_then(|usage| usage.output_tokens());
+    let cached = parsed.and_then(|usage| usage.cache_read_tokens());
+    let prices = crate::web::pricing::parse_prices(
+        crate::web::store::settings_get(db, crate::web::pricing::SETTING_PRICES)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    let cost = crate::web::pricing::cost_of(model, prompt, completion, cached, &prices);
+    serde_json::json!({
+        "model": model,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "cached_tokens": cached,
+        "duration_ms": duration_ms,
+        "rounds": rounds,
+        "context_tokens": context_tokens,
+        "cost_usd": match cost {
+            crate::web::pricing::Cost::Amount(amount) => Some(amount),
+            crate::web::pricing::Cost::Unpriced => None,
+        },
+    })
 }
 
 /// Publish one frame to whoever is listening. A send with no receivers is not an
@@ -4052,14 +4139,27 @@ mod tests {
             core_domain::UnavailableReason::FieldsAbsent,
         ))
         .expect("usage is serialisable");
-        let accounting = accounting_from(&usage, true, false, 60, 95_000);
+        let accounting = accounting_from(&usage, true, false, 60, 95_000, Some(96_000));
         assert_eq!(accounting.capped, Some(true));
         assert_eq!(accounting.rounds, Some(60));
         assert_eq!(accounting.duration_ms, Some(95_000));
         assert_eq!(accounting.capped, Some(true), "the budget ended this turn");
-        let clean = accounting_from(&usage, false, true, 3, 4_000);
+        // The context reading survives the boundary. It did not before: the
+        // signal had no field for it, so every device row stored NULL and the
+        // footer's context figure was blank on the phone while the browser's
+        // was not.
+        assert_eq!(
+            accounting.context_tokens,
+            Some(96_000),
+            "the last round trip's prompt size reaches the row"
+        );
+        let clean = accounting_from(&usage, false, true, 3, 4_000, None);
         assert_eq!(clean.capped, Some(false));
         assert_eq!(clean.rounds, Some(3));
+        assert_eq!(
+            clean.context_tokens, None,
+            "an unmeasured context stays unmeasured rather than becoming zero"
+        );
         // The other fact survives the boundary. It was dead before: the signal
         // had no field for it, so every device row stored NULL.
         assert_eq!(

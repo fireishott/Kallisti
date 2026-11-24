@@ -5635,6 +5635,44 @@ final class ChatStore {
                 refreshedConversation.messages[index].route = route
             }
 
+            // The receipt under a live turn comes from the terminal frame, and a
+            // refresh can land before the row it belongs to is readable: the row
+            // is written by the worker that won the frame, a beat after the client
+            // is told the turn finished. When that happened the refreshed row
+            // carried no `accounting` at all, and adopting it erased the footer
+            // that had just been drawn. That is why the footer looked like it
+            // worked in some sessions and vanished in others: it depended on
+            // whether a session refresh raced the row write.
+            //
+            // Keep whichever copy actually measured something. The refreshed row
+            // wins on every field it has, because it is the record; the local one
+            // fills a hole rather than being overwritten by one.
+            let refreshedReceipt = refreshedConversation.messages[index].accounting
+            let localReceipt = local.accounting
+            if refreshedReceipt == nil, let localReceipt, !localReceipt.isEmpty {
+                refreshedConversation.messages[index].accounting = localReceipt
+            } else if let refreshedReceipt, let localReceipt, !localReceipt.isEmpty {
+                refreshedConversation.messages[index].accounting = TurnAccounting(
+                    model: refreshedReceipt.model ?? localReceipt.model,
+                    provider: refreshedReceipt.provider ?? localReceipt.provider,
+                    promptTokens: refreshedReceipt.promptTokens ?? localReceipt.promptTokens,
+                    completionTokens: refreshedReceipt.completionTokens ?? localReceipt.completionTokens,
+                    cachedTokens: refreshedReceipt.cachedTokens ?? localReceipt.cachedTokens,
+                    durationMs: refreshedReceipt.durationMs ?? localReceipt.durationMs,
+                    rounds: refreshedReceipt.rounds ?? localReceipt.rounds,
+                    contextTokens: refreshedReceipt.contextTokens ?? localReceipt.contextTokens,
+                    contextWindow: refreshedReceipt.contextWindow ?? localReceipt.contextWindow,
+                    costUSD: refreshedReceipt.costUSD ?? localReceipt.costUSD,
+                    sessionCostUSD: refreshedReceipt.sessionCostUSD ?? localReceipt.sessionCostUSD,
+                    pricedAnswers: refreshedReceipt.pricedAnswers ?? localReceipt.pricedAnswers,
+                    sessionAnswers: refreshedReceipt.sessionAnswers ?? localReceipt.sessionAnswers,
+                    sessionTurns: refreshedReceipt.sessionTurns ?? localReceipt.sessionTurns,
+                    toolCalls: refreshedReceipt.toolCalls ?? localReceipt.toolCalls,
+                    capped: refreshedReceipt.capped ?? localReceipt.capped,
+                    wrappedUp: refreshedReceipt.wrappedUp ?? localReceipt.wrappedUp
+                )
+            }
+
             if !local.reasoning.isEmpty {
                 if refreshedConversation.messages[index].reasoning.isEmpty {
                     Self.logger.info("REASON_DBG merge COPY_LOCAL_TO_REFRESHED idx=\(index) localLen=\(local.reasoning.count) remoteLen=\(refreshedConversation.messages[index].reasoning.count)")

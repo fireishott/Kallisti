@@ -12373,6 +12373,28 @@ fn spawn_turn(
                         }),
                     );
                 }
+                // The turn's dollar cost, or nothing when the operator has not
+                // declared a price for this model. Resolved before the frame so
+                // the `json!` body stays a value, and so the same figure is
+                // available to anything else that publishes this turn.
+                let turn_cost_usd = {
+                    let prices = crate::web::pricing::parse_prices(
+                        crate::web::store::settings_get(&db, crate::web::pricing::SETTING_PRICES)
+                            .ok()
+                            .flatten()
+                            .as_deref(),
+                    );
+                    match crate::web::pricing::cost_of(
+                        &model,
+                        accounting.prompt_tokens,
+                        accounting.completion_tokens,
+                        accounting.cached_tokens,
+                        &prices,
+                    ) {
+                        crate::web::pricing::Cost::Amount(amount) => Some(amount),
+                        crate::web::pricing::Cost::Unpriced => None,
+                    }
+                };
                 emit(
                     "done",
                     serde_json::json!({
@@ -12385,8 +12407,28 @@ fn spawn_turn(
                         "cached_tokens": accounting.cached_tokens,
                         "duration_ms": accounting.duration_ms,
                         "rounds": accounting.rounds,
+                        "context_tokens": accounting.context_tokens,
                         "capped": turn.capped,
                         "quota": quota.as_ref().map(crate::web::quota::Quota::line),
+                        // The same receipt the phone's `done` frame carries, so
+                        // a client that decodes one shape reads every surface.
+                        "accounting": {
+                            "model": model,
+                            "prompt_tokens": accounting.prompt_tokens,
+                            "completion_tokens": accounting.completion_tokens,
+                            "cached_tokens": accounting.cached_tokens,
+                            "duration_ms": accounting.duration_ms,
+                            "rounds": accounting.rounds,
+                            "context_tokens": accounting.context_tokens,
+                            // No `context_window` here: this handler never
+                            // resolves one, and the browser's transcript
+                            // payload already sends it per row. The phone's
+                            // frame carries it because its row read has the
+                            // column in hand. Stating it here would mean a
+                            // second lookup for a figure this surface does not
+                            // draw from the frame.
+                            "cost_usd": turn_cost_usd,
+                        },
                     }),
                 );
                 // Rename only after the operator already has the answer: a title

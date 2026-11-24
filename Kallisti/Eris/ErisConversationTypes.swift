@@ -369,19 +369,29 @@ struct ErisConversationDetail: Equatable, Sendable, Decodable {
     /// Whether an older page exists. Optional so a daemon that does not send the
     /// key still decodes; absent means unknown, and the caller should not page.
     let hasMore: Bool?
+    /// The conversation's own totals: turns, answers, and what it has cost.
+    ///
+    /// Separate from the per-row receipts because two of the footer's fields are
+    /// conversation-scoped and cannot be derived from the rows on screen: the
+    /// turn counter would restart every time an older page loaded, and a session
+    /// cost summed from a partial page would be a floor presented as a total.
+    /// Optional so a daemon that does not send the object still decodes.
+    let totals: ErisConversationTotals?
 
     init(
         id: String,
         title: String,
         messages: [ErisConversationMessage],
         truncated: Bool,
-        hasMore: Bool? = nil
+        hasMore: Bool? = nil,
+        totals: ErisConversationTotals? = nil
     ) {
         self.id = id
         self.title = title
         self.messages = messages
         self.truncated = truncated
         self.hasMore = hasMore
+        self.totals = totals
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -390,6 +400,7 @@ struct ErisConversationDetail: Equatable, Sendable, Decodable {
         case messages
         case truncated
         case hasMore = "has_more"
+        case totals
     }
 
     init(from decoder: any Decoder) throws {
@@ -404,7 +415,9 @@ struct ErisConversationDetail: Equatable, Sendable, Decodable {
             id: id,
             title: try container.decodeIfPresent(String.self, forKey: .title) ?? "",
             messages: try container.decodeIfPresent([ErisConversationMessage].self, forKey: .messages) ?? [],
-            truncated: try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+            truncated: try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false,
+            hasMore: try container.decodeIfPresent(Bool.self, forKey: .hasMore),
+            totals: try container.decodeIfPresent(ErisConversationTotals.self, forKey: .totals)
         )
     }
 
@@ -412,6 +425,103 @@ struct ErisConversationDetail: Equatable, Sendable, Decodable {
     var displayTitle: String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Untitled conversation" : trimmed
+    }
+}
+
+/// What a conversation has done so far, as the daemon totals it.
+///
+/// Every count is optional because the daemon omits what it did not measure, and
+/// a total the daemon could not compute must not arrive as a zero: "this chat
+/// has cost nothing" and "nobody priced this chat" are different sentences and
+/// the footer prints different things for them.
+struct ErisConversationTotals: Equatable, Sendable, Decodable {
+    /// Questions asked.
+    let turns: Int?
+    /// Answers that settled.
+    let answers: Int?
+    /// Answers that carry a dollar cost, so a session total can be described as
+    /// complete or as a floor.
+    let pricedAnswers: Int?
+    /// What the whole conversation has cost, when any row carried a price.
+    let sessionCostUSD: Double?
+    /// What the newest answer cost, when its model had a price.
+    let turnCostUSD: Double?
+    /// The live context size, newest reading wins.
+    let contextUsed: Int?
+    /// The window declared for the model that answered.
+    let contextWindow: Int?
+    /// Prompt plus completion across the transcript.
+    let totalTokens: Int?
+    /// The cached share of the prompt, when there is a denominator.
+    let cacheHitPercent: Int?
+
+    init(
+        turns: Int? = nil,
+        answers: Int? = nil,
+        pricedAnswers: Int? = nil,
+        sessionCostUSD: Double? = nil,
+        turnCostUSD: Double? = nil,
+        contextUsed: Int? = nil,
+        contextWindow: Int? = nil,
+        totalTokens: Int? = nil,
+        cacheHitPercent: Int? = nil
+    ) {
+        self.turns = turns
+        self.answers = answers
+        self.pricedAnswers = pricedAnswers
+        self.sessionCostUSD = sessionCostUSD
+        self.turnCostUSD = turnCostUSD
+        self.contextUsed = contextUsed
+        self.contextWindow = contextWindow
+        self.totalTokens = totalTokens
+        self.cacheHitPercent = cacheHitPercent
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case turns
+        case answers
+        case pricedAnswers = "priced_answers"
+        case sessionCostUSD = "session_cost_usd"
+        case turnCostUSD = "turn_cost_usd"
+        case contextUsed = "context_used"
+        case contextWindow = "context_window"
+        case totalTokens = "total_tokens"
+        case cacheHitPercent = "cache_hit_pct"
+    }
+
+    /// Tolerant per key, so one shape this build does not know costs that field
+    /// and not the transcript it was attached to.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func count(_ key: CodingKeys) -> Int? {
+            if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+                return value
+            }
+            if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+                return Int(value)
+            }
+            return nil
+        }
+        func money(_ key: CodingKeys) -> Double? {
+            if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+                return value.isFinite ? value : nil
+            }
+            if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+                return Double(value)
+            }
+            return nil
+        }
+        self.init(
+            turns: count(.turns),
+            answers: count(.answers),
+            pricedAnswers: count(.pricedAnswers),
+            sessionCostUSD: money(.sessionCostUSD),
+            turnCostUSD: money(.turnCostUSD),
+            contextUsed: count(.contextUsed),
+            contextWindow: count(.contextWindow),
+            totalTokens: count(.totalTokens),
+            cacheHitPercent: count(.cacheHitPercent)
+        )
     }
 }
 

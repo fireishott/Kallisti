@@ -4526,7 +4526,7 @@ pub fn run_turn_with_key(
 /// Every number here is a sum of numbers a provider actually reported. A total
 /// over an unreported row is unreported, not zero, and a percentage with no
 /// denominator is `None` rather than a confident-looking 0.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stats {
     /// Questions asked.
     pub turns: usize,
@@ -4557,14 +4557,46 @@ pub struct Stats {
     /// turn that just ran reuse anything", which is the question an operator asks
     /// while a long conversation gets expensive.
     pub turn_cache_pct: Option<u8>,
+    /// The newest answer's own dollar cost, when its model has a price.
+    ///
+    /// `None` is "nobody said what this model costs", which is the shipped state
+    /// and the honest one: the daemon does not guess a price for a model it has
+    /// no rate for. See [`crate::web::pricing`].
+    pub turn_cost_usd: Option<f64>,
+    /// Every answer in the transcript, summed, for the models that have prices.
+    ///
+    /// A transcript that mixes a priced model with an unpriced one still totals
+    /// the priced rows and says nothing about the rest, rather than reporting the
+    /// unpriced ones as free. The footer labels this as a floor accordingly.
+    pub session_cost_usd: Option<f64>,
+    /// How many answers in the transcript actually contributed to
+    /// [`Self::session_cost_usd`].
+    ///
+    /// Compared against [`Self::answers`] by the caller: equal means the session
+    /// total covers every reply, fewer means it covers some and the figure is a
+    /// lower bound. Without this the number cannot be described truthfully.
+    pub priced_answers: usize,
 }
 
 /// Total a transcript into [`Stats`].
+///
+/// `prices` is the operator's declared table. It is a parameter rather than a
+/// read of `settings` here because this function is pure and called from tests,
+/// the dashboard and the device lane, and only the caller knows which database
+/// the row came from. An empty table is the shipped state and means no cost is
+/// reported at all - see [`crate::web::pricing`].
 #[must_use]
-pub fn stats(transcript: &[Message]) -> Stats {
+pub fn stats_with_prices(
+    transcript: &[Message],
+    prices: &std::collections::BTreeMap<String, crate::web::pricing::Price>,
+) -> Stats {
     let mut out = Stats::default();
     let mut timed_ms: u64 = 0;
     let mut timed_tokens: u64 = 0;
+    // The session total is accumulated here rather than derived from `out`
+    // because a row whose model has no price contributes nothing to it, and the
+    // count of contributing rows is what makes the figure describable.
+    let mut session_cost: f64 = 0.0;
 
     for message in transcript {
         match message.role {
@@ -4582,8 +4614,30 @@ pub fn stats(transcript: &[Message]) -> Stats {
                     timed_tokens += tokens;
                     timed_ms += ms;
                 }
+                // A row that never recorded a model cannot be priced, and a row
+                // that recorded one the table does not name is left out rather
+                // than counted as free.
+                if let Some(model) = message.model.as_deref() {
+                    match crate::web::pricing::cost_of(
+                        model,
+                        message.prompt_tokens,
+                        message.completion_tokens,
+                        message.cached_tokens,
+                        prices,
+                    ) {
+                        crate::web::pricing::Cost::Amount(amount) => {
+                            session_cost += amount;
+                            out.priced_answers += 1;
+                        }
+                        crate::web::pricing::Cost::Unpriced => {}
+                    }
+                }
             }
         }
+    }
+
+    if out.priced_answers > 0 {
+        out.session_cost_usd = Some(session_cost);
     }
 
     // The newest answer that reported usage, for the turn-level share.
@@ -4599,6 +4653,27 @@ pub fn stats(transcript: &[Message]) -> Stats {
             out.turn_cache_pct = Some((cached * 100).div_ceil(denominator).min(100) as u8);
         }
     }
+    // The turn figure comes from the newest answer that has a model and priced
+    // tokens, which is not always the newest answer: a failed round trip carries
+    // no usage, and reporting its cost as nothing would read as a free turn.
+    out.turn_cost_usd = transcript
+        .iter()
+        .rev()
+        .filter(|message| message.role == Role::Assistant)
+        .find_map(|message| {
+            let model = message.model.as_deref()?;
+            match crate::web::pricing::cost_of(
+                model,
+                message.prompt_tokens,
+                message.completion_tokens,
+                message.cached_tokens,
+                prices,
+            ) {
+                crate::web::pricing::Cost::Amount(amount) => Some(amount),
+                crate::web::pricing::Cost::Unpriced => None,
+            }
+        });
+
     out.total_tokens = out.prompt_tokens + out.completion_tokens;
     let prompt_total = out.prompt_tokens + out.cached_tokens;
     out.cache_hit_pct = (out.cached_tokens * 100)
@@ -4628,6 +4703,32 @@ pub fn stats(transcript: &[Message]) -> Stats {
         .checked_div(timed_ms)
         .map(|rate| rate as u32);
     out
+}
+
+/// [`stats_with_prices`] with no price table, for callers that have no database
+/// to read one from.
+///
+/// Kept as the plain spelling so a test, a fixture and a page that only wants
+/// token counts do not have to name an empty table to get them. Anything that
+/// draws a dollar figure must call [`stats_with_prices`] instead: this one
+/// reports no cost at all, which is the truthful answer for a caller that never
+/// asked what a model costs.
+#[must_use]
+pub fn stats(transcript: &[Message]) -> Stats {
+    stats_with_prices(transcript, &std::collections::BTreeMap::new())
+}
+
+/// [`stats`], reading the operator's price table out of `settings`.
+///
+/// The table lives in one row, so every surface that wants a cost reads it the
+/// same way and a price typed on the dashboard applies to the phone too.
+#[must_use]
+pub fn stats_for(db: &Db, transcript: &[Message]) -> Stats {
+    let stored = crate::web::store::settings_get(db, crate::web::pricing::SETTING_PRICES)
+        .ok()
+        .flatten();
+    let prices = crate::web::pricing::parse_prices(stored.as_deref());
+    stats_with_prices(transcript, &prices)
 }
 
 /// The number of rows a conversation holds, for a page that wants a count without

@@ -264,8 +264,15 @@ enum ErisFrame: Equatable, Sendable {
     /// renders the model's doubts as the reply. Dropping it (the previous
     /// behaviour) is why the Thought process row sat empty for the whole turn.
     case reasoning(text: String)
-    /// The turn finished: `{"text":"<assembled>","usage":{...}}`.
-    case done(text: String, usage: ErisUsage?)
+    /// The turn finished: `{"text":"<assembled>","usage":{...},"accounting":{...}}`.
+    ///
+    /// `accounting` is the receipt the footer draws: model, rounds, wall time,
+    /// the token split, the context reading, and a dollar cost when the operator
+    /// has declared a price. It is separate from `usage` because `usage` carries
+    /// the provider's own tags and says nothing about the turn. A daemon that
+    /// does not send it produces `nil`, which the footer handles by saying
+    /// nothing rather than drawing zeros.
+    case done(text: String, usage: ErisUsage?, accounting: TurnAccounting?)
     /// The turn failed: `{"code":"...","message":"..."}`.
     case error(ErisError)
     /// The turn was cancelled: `{"reason":"cancel"}`.
@@ -330,7 +337,7 @@ enum ErisFrame: Equatable, Sendable {
     var text: String? {
         switch self {
         case .delta(let text): return text
-        case .done(let text, _): return text
+        case .done(let text, _, _): return text
         case .reasoning, .toolStart, .toolFinished, .toolOutput, .step,
              .artifactDiff, .artifactPage, .attachment, .ask, .approval,
              .turnStarted, .round, .error, .cancelled: return nil
@@ -369,9 +376,16 @@ enum ErisFrame: Equatable, Sendable {
             return .reasoning(text: object["text"] as? String ?? "")
         case "done":
             let object = try ErisJSON.object(data)
+            // The receipt is decoded from its own sub-object. A daemon that does
+            // not send one, or sends a shape this build does not know, costs the
+            // footer and not the answer: the text above is what the operator is
+            // waiting for, and it must land either way.
+            let accounting = (object["accounting"] as? [String: Any])
+                .flatMap { Self.accounting(from: $0) }
             return .done(
                 text: object["text"] as? String ?? "",
-                usage: ErisUsage(json: object["usage"])
+                usage: ErisUsage(json: object["usage"]),
+                accounting: accounting
             )
         case "round":
             // Read separately from every other optional key: a daemon that
