@@ -10,6 +10,19 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.9] - 2026-11-24
+
+### Fixed
+
+- **Restart Daemon works against the daemon it is actually paired with.** The
+  button had two paths and neither addressed Eris: in native mode it asked a
+  `cli.exec` socket for `gateway restart`, a Hermes command with no transport
+  here, and otherwise it posted to the relay's legacy `gw/restart`, which is
+  mounted at the host root and absent under `/v1`. That is the "Relay request
+  failed with status 405" the card showed. It now posts `POST /v1/gw/restart`,
+  reports the operation the daemon answers with, and treats a dropped connection
+  as the expected shape of a scheduled restart rather than a failure.
+
 ## [1.7.8] - 2026-11-23
 
 ### Added
