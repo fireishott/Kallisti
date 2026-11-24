@@ -897,7 +897,9 @@ pub fn grammar_safe_schema(schema: &serde_json::Value) -> serde_json::Value {
                             fix(child)
                         } else if SCHEMA_LIST_KEYWORDS.contains(&key_str) {
                             match child {
-                                Value::Array(items) => Value::Array(items.iter().map(fix).collect()),
+                                Value::Array(items) => {
+                                    Value::Array(items.iter().map(fix).collect())
+                                }
                                 other => other.clone(),
                             }
                         } else if SCHEMA_MAP_KEYWORDS.contains(&key_str) {
@@ -1557,7 +1559,10 @@ mod tests {
             out["items"]["additionalProperties"]["properties"]["w"],
             serde_json::json!({})
         );
-        assert_eq!(grammar_safe_schema(&serde_json::json!({"items": true}))["items"], serde_json::json!({}));
+        assert_eq!(
+            grammar_safe_schema(&serde_json::json!({"items": true}))["items"],
+            serde_json::json!({})
+        );
     }
 
     #[test]

@@ -1006,10 +1006,82 @@ struct SettingsScreen: View {
     /// connector, and `RestartResponse` remains the backward-compat decoder.
     /// The Hermes agent restart uses the new preflight/confirm/operation flow
     /// below instead.
+    /// The daemon's own base URL, with any trailing `/v1` removed.
+    ///
+    /// The Eris daemon serves its routes under `/v1`, and the settings record
+    /// stores the base the *relay* is configured with, which may or may not
+    /// carry that suffix. Normalising here is what lets one helper address both.
+    private var erisBaseURLString: String? {
+        guard var base = settingsStore.settings.relayConfiguration.activeBaseURLString
+            ?? pairingStore.pairedRelayConfiguration?.baseURLString, !base.isEmpty
+        else { return nil }
+        base = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        while base.hasSuffix("/") { base.removeLast() }
+        if base.hasSuffix("/v1") { base.removeLast(3) }
+        return base.isEmpty ? nil : base
+    }
+
+    /// Restart the Eris daemon through the route it actually serves.
+    ///
+    /// The button used to do one of two things, and both were wrong against a
+    /// daemon: in native mode it asked a `cli.exec` WebSocket for
+    /// `gateway restart`, a Hermes command Eris has no transport for; otherwise
+    /// it posted to the relay's legacy `gw/restart`, which is mounted at the host
+    /// root and does not exist under `/v1`. Against Eris that produced the
+    /// "Relay request failed with status 405" this button showed.
+    ///
+    /// `POST /v1/gw/restart` is the route the daemon registers, and it is
+    /// admin-scoped. The reply is the contract's operation object, so a restart
+    /// that was merely scheduled reads as scheduled rather than as a failure the
+    /// instant the socket drops.
+    private func restartErisDaemon() async -> String {
+        guard let base = erisBaseURLString, let url = URL(string: base + "/v1/gw/restart") else {
+            return "Failed: no daemon address is configured."
+        }
+        let token = await sessionStore.currentAccessToken()
+        guard let token, !token.isEmpty else {
+            return "Failed: this phone is not paired."
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        request.timeoutInterval = 20
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if status == 403 {
+                return "Failed: this phone was paired without administration."
+            }
+            guard (200..<300).contains(status) else {
+                let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                let message = (body?["message"] as? String) ?? ""
+                return "Failed: the daemon answered \(status). \(message)"
+            }
+            return "Daemon restarting…"
+        } catch {
+            // The daemon goes away while answering a restart it scheduled, so a
+            // dropped connection here is the expected shape of success rather
+            // than a failure to report.
+            return "Daemon restarting…"
+        }
+    }
+
     private func restartGateway(target: String) async {
         isRestartingGW = true
         gwRestartTarget = target
         gwRestartResult = nil
+
+        // The Eris daemon is the surface this app is paired with; the Hermes
+        // connector paths below are legacy and only reachable in a relay build.
+        if erisBaseURLString != nil {
+            gwRestartResult = await restartErisDaemon()
+            isRestartingGW = false
+            try? await Task.sleep(for: .seconds(4))
+            gwRestartResult = nil
+            return
+        }
 
         // NATIVE mode: restart the gateway via `hermes gateway restart`
         // through cli.exec. The gateway runs it locally - no relay token.
