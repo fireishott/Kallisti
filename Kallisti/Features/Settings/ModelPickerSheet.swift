@@ -71,6 +71,29 @@ struct ModelPickerSheet: View {
         models.filter { $0.id == id }.count
     }
 
+    /// Whether this row is the pin the daemon is on.
+    ///
+    /// The same id is published by several providers, so a name-only match ticked
+    /// every row that shared it. The comparison is over the values this sheet
+    /// itself writes: the bare id when one provider publishes it, and
+    /// `provider/id` when more than one does. A stored pin of either shape is
+    /// accepted for the row it belongs to, and nothing else matches.
+    private func isSelected(_ model: RoutingModel) -> Bool {
+        let trimmed = selection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        // The exact value this row would write.
+        if trimmed == value(for: model) { return true }
+        // A pin stored in the qualified form for a row that currently reads as
+        // unique (the other publisher was dropped from the catalogue) still
+        // belongs to that provider, not to every row with the id.
+        if trimmed == "\(model.provider)/\(model.id)" { return true }
+        // A bare stored pin matches only when this id really is unambiguous, which
+        // is the same rule `value(for:)` uses when writing one.
+        if trimmed == model.id, publisherCount(model.id) == 1 { return true }
+        return false
+    }
+
+
     /// The value a pick writes. Bare when one provider publishes the id, which
     /// is what every pin written before providers were plural looks like;
     /// `provider/id` when two do.
@@ -110,7 +133,7 @@ struct ModelPickerSheet: View {
                                     title: model.id,
                                     subtitle: model.providerLabel,
                                     monogram: model.monogram,
-                                    selected: selection == model.id || selection == value(for: model)
+                                    selected: isSelected(model)
                                 )
                             }
                             .buttonStyle(.plain)

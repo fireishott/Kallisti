@@ -201,14 +201,14 @@ struct HeraldSelectorSheet: View {
                 )
             } else {
                 List {
-                    ForEach(filteredModelGroups, id: \.provider) { group in
-                        Section(group.provider) {
-                            ForEach(group.models) { model in
-                                modelRow(model)
-                            }
-                        }
-                    }
-
+                    // The default switch lives at the TOP of the list.
+                    //
+                    // It used to be the last section, below every model and every
+                    // provider group, which put it several screens down on a
+                    // catalogue this size: the operator had to scroll past the
+                    // whole list to reach the switch that decides whether their
+                    // pick survives a restart. It is a decision about the pick, so
+                    // it belongs where the pick starts.
                     Section {
                         Toggle(isOn: $setAsGlobalDefault) {
                             VStack(alignment: .leading, spacing: 2) {
@@ -220,6 +220,14 @@ struct HeraldSelectorSheet: View {
                             }
                         }
                         .tint(Design.Brand.accent)
+                    }
+
+                    ForEach(filteredModelGroups, id: \.provider) { group in
+                        Section(group.provider) {
+                            ForEach(group.models) { model in
+                                modelRow(model)
+                            }
+                        }
                     }
                 }
                 .scrollContentBackground(.hidden)
@@ -256,7 +264,10 @@ struct HeraldSelectorSheet: View {
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .lineLimit(1)
                     } else if model.isProviderDefault == true {
-                        Text("provider default")
+                        // The daemon's `is_default` is the pinned turn model, not
+                        // the provider's own default id. Labelling it "provider
+                        // default" named a fact it does not carry.
+                        Text("current")
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .lineLimit(1)

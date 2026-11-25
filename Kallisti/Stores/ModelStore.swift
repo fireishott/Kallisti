@@ -93,18 +93,65 @@ final class ModelStore {
     /// with the active model's provider first.
     var modelsByProvider: [(provider: String, models: [HeraldModel])] {
         let grouped = Dictionary(grouping: models, by: \.displayProviderName)
+        // The provider of the row that is actually active, not of the first row
+        // that happens to share its name: with the same id published by several
+        // providers, a name-only lookup floated whichever group came first rather
+        // than the one in use.
+        let activeProvider = models
+            .first(where: { isActive($0) })?
+            .displayProviderName
         return grouped
             .map { (provider: $0.key, models: $0.value) }
             .sorted { lhs, rhs in
-                let activeProvider = models.first { $0.name == activeModel?.name }?.displayProviderName
                 if lhs.provider == activeProvider { return true }
                 if rhs.provider == activeProvider { return false }
                 return lhs.provider.localizedCaseInsensitiveCompare(rhs.provider) == .orderedAscending
             }
     }
 
+    /// Whether this catalogue row is the model the daemon is answering on.
+    ///
+    /// A model id is not unique across this catalogue: `deepseek-v4.1-flash` is
+    /// published by Command Code, by OpenUncensored and by the native DeepSeek
+    /// provider, and the picker lists one row per publisher so the operator can
+    /// choose which account the turn is spent on. Comparing `name` alone therefore
+    /// matched every row that shared the id, and the tick appeared beside all of
+    /// them no matter which single one was chosen.
+    ///
+    /// Both halves now have to agree. The provider comparison is tolerant because
+    /// the active model's provider can arrive from three places with three
+    /// spellings: the `switchModel` call that just wrote it, the daemon's catalog
+    /// response, and a restored session. `provider` is the registry id the
+    /// catalogue carries; `displayProviderName` is the pretty label the daemon may
+    /// put in the active record. Either matching the row's provider counts.
     func isActive(_ model: HeraldModel) -> Bool {
-        model.name == activeModel?.name
+        // The daemon computes the tick itself, by exact provider identity, on
+        // every catalogue row (`is_default`). That is the authority: the daemon
+        // holds the pin, so a client comparing strings can only disagree with it.
+        // This runs first so the answer cannot drift from what the daemon will
+        // actually route.
+        if model.isProviderDefault == true { return true }
+        guard let activeModel else { return false }
+        guard model.name == activeModel.name else { return false }
+        // A daemon that names no provider cannot be disaggregated, so a name match
+        // is the most that can be said. Every current daemon names one.
+        guard let activeProvider = activeModel.provider, !activeProvider.isEmpty else {
+            return true
+        }
+        let active = activeProvider.lowercased()
+        if model.provider.lowercased() == active { return true }
+        if model.displayProviderName.lowercased() == active { return true }
+        // The active record may carry a provider-qualified id (`cmc/deepseek-v4.1-flash`)
+        // while the row carries the halves separately.
+        if let slash = activeProvider.firstIndex(of: "/") {
+            let prefix = String(activeProvider[activeProvider.startIndex..<slash]).lowercased()
+            let rest = String(activeProvider[activeProvider.index(after: slash)...])
+            if rest == model.name.lowercased(),
+               prefix == model.provider.lowercased() || prefix == model.displayProviderName.lowercased() {
+                return true
+            }
+        }
+        return false
     }
 
     func loadModels(force: Bool = false) async {
