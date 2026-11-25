@@ -10,6 +10,41 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-11-25
+
+### Fixed
+
+- **An attachment opens when you tap it.** Every image the daemon attaches was
+  drawn by a view with no gesture on it, so it could be looked at and never
+  opened: no viewer, no zoom, no share, no save to Photos. That covers the
+  "Where is the headshot" case - the files were on the daemon the whole time and
+  the thumbnail was not a button.
+- **The round counter belongs to the chat you are looking at.** It was cleared
+  only when a turn finished, so starting a new chat - or opening another one -
+  while a turn was running carried that turn's `round 44/100` onto a thread that
+  had run nothing.
+- **Restarting the daemon cannot end a live turn.** The preflight answered from
+  readiness alone, so a restart could be scheduled mid-turn; the boot sweep then
+  settled that turn as `interrupted` and the reply was lost. It now refuses while
+  a job is running, says which one, and the app asks before posting rather than
+  after.
+- **A healthy long tool no longer reads as a stall.** The fallback poll loop armed
+  the stall banner on a timer without checking whether the job was alive, so a
+  24-second `run_command` showed "Stream stalled - 10s elapsed". When the server
+  confirms the turn is running, the waiting label stays and the banner is not
+  armed. That path also no longer spins: confirming the job alive skipped the
+  loop's own sleep and fired a probe per iteration.
+
+### Changed
+
+- **Tool activity reads newest-first.** Expanding a 57-tool turn put the call
+  running now at the bottom, below every call that had already finished.
+
+### Changed in the daemon
+
+- `GET /v1/gw/restart/preflight` reports `canRestart: false` with a `blocker` while
+  a turn is running, instead of reporting only setup readiness.
+
 ## [1.8.1] - 2026-11-25
 
 ### Fixed
