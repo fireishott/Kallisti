@@ -10,6 +10,31 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-11-25
+
+### Fixed
+
+- **The tick marks the provider you chose, not every provider that publishes that
+  id.** `deepseek/deepseek-v4.1-flash` is sold by Command Code, by Open Uncensored
+  and by native DeepSeek, and the picker lists one row per publisher so the
+  account a turn spends is visible. The selection test compared only the model
+  name, so choosing one drew a tick beside all three.
+- The test now uses the daemon's own answer first. `GET /v1/models` stamps
+  `is_default` on the row the pin belongs to, computed from `(provider, model)`
+  identity, so at most one row in the catalogue can carry it - a client comparing
+  strings could only ever disagree with the daemon that actually routes the turn.
+- The same defect in the Settings model picker, from the other direction: it
+  matched a bare id before the qualified one, which ticked every row sharing it.
+  It now compares the exact value the row writes.
+- A label correction: the selected row read "provider default", but the flag
+  behind it is the pinned turn model, not the provider's own default id.
+
+### Changed
+
+- **"Set as default" is the first section of the model list**, not the last. On a
+  catalogue this size it sat several screens down, so the switch that decides
+  whether a pick survives a restart needed a scroll past the whole list.
+
 ## [1.8.0] - 2026-11-24
 
 ### Changed
