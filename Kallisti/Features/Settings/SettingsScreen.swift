@@ -1034,6 +1034,30 @@ struct SettingsScreen: View {
     /// admin-scoped. The reply is the contract's operation object, so a restart
     /// that was merely scheduled reads as scheduled rather than as a failure the
     /// instant the socket drops.
+    /// The daemon's reason this restart must not happen, or nil when it may.
+    ///
+    /// Reads `/v1/gw/restart/preflight`, whose `blocker` is the daemon's own
+    /// sentence for why not - an unfinished setup, or a turn still running. A
+    /// preflight that cannot be read returns nil rather than blocking the button:
+    /// an unreachable preflight must not make a working restart impossible, and
+    /// the route itself enforces the same rule on its own.
+    private func restartBlocker(base: String, token: String) async -> String? {
+        guard let url = URL(string: base + "/v1/gw/restart/preflight") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return nil }
+        guard (body["canRestart"] as? Bool) == false else { return nil }
+        if let reason = body["blocker"] as? String, !reason.isEmpty {
+            return reason
+        }
+        return "the daemon is not ready to restart right now."
+    }
+
     private func restartErisDaemon() async -> String {
         guard let base = erisBaseURLString, let url = URL(string: base + "/v1/gw/restart") else {
             return "Failed: no daemon address is configured."
@@ -1041,6 +1065,17 @@ struct SettingsScreen: View {
         let token = await sessionStore.currentAccessToken()
         guard let token, !token.isEmpty else {
             return "Failed: this phone is not paired."
+        }
+        // Ask before restarting.
+        //
+        // The daemon refuses a restart while a turn is running, because the boot
+        // sweep would settle that turn as `interrupted` and the reply the operator
+        // was waiting for would be thrown away. Posting first and reading the
+        // refusal afterwards means the turn is already gone by the time the reason
+        // is shown; asking the preflight first means the answer is "cannot,
+        // because something is running" with nothing lost.
+        if let blocked = await restartBlocker(base: base, token: token) {
+            return "Failed: \(blocked)"
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

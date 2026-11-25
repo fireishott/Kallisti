@@ -322,6 +322,28 @@ pub async fn gw_health(State(service): State<DeviceService>, headers: HeaderMap)
 }
 
 /// `GET /v1/gw/restart/preflight` - the snapshot a restart confirmation shows.
+/// Why a restart must not happen, or `None` when one may.
+///
+/// Split out from the handler so the rule can be tested without a router: this is
+/// the decision that stops a phone from ending a turn somebody is waiting on, and
+/// it had no test when it lived inline.
+#[must_use]
+fn restart_blocker(ready: bool, running: i64) -> Option<&'static str> {
+    if !ready {
+        return Some(
+            "onboarding is not finished: a restart would not help a daemon that has no \
+             provider configured",
+        );
+    }
+    if running > 0 {
+        return Some(
+            "a turn is running: restarting now would end it and lose the reply. Wait for it \
+             to finish, or stop it first",
+        );
+    }
+    None
+}
+
 pub async fn gw_restart_preflight(
     State(service): State<DeviceService>,
     headers: HeaderMap,
@@ -336,21 +358,27 @@ pub async fn gw_restart_preflight(
     let engine = service.engine();
     let ready = engine.is_ready().unwrap_or(false);
     let (running, queued) = active_jobs(engine.db());
-    let blocker = if ready {
-        None
-    } else {
-        Some(
-            "onboarding is not finished: a restart would not help a daemon that has no \
-             provider configured",
-        )
-    };
+    // A restart with a turn in flight kills that turn.
+    //
+    // The boot sweep settles the row as `interrupted`, so the operator is told "the
+    // daemon stopped before this turn finished" for work they did not stop - and
+    // the reply they were waiting on is gone. This preflight reported `canRestart`
+    // from readiness alone, so a phone could schedule exactly that in the middle
+    // of a long turn. That is what happened on 2026-11-25: a turn started at
+    // 18:40, the daemon restarted at 18:46:53, and the turn settled `interrupted`,
+    // leaving the operator to press Retry on a turn whose work had been thrown
+    // away.
+    //
+    let blocker = restart_blocker(ready, running);
     axum::Json(serde_json::json!({
         "target": "eris",
         "profile": "eris",
         "unit": ERIS_UNIT,
         "preflightVersion": admin::version_line(),
         "activeWork": { "running": running, "queued": queued, "voice": 0, "tools": 0 },
-        "canRestart": ready,
+        // Derived from the blocker, not from readiness alone: a daemon that is
+        // ready but mid-turn must not advertise a safe restart.
+        "canRestart": blocker.is_none(),
         "blocker": blocker,
         "observed": {
             "mainPid": std::process::id(),
@@ -1315,6 +1343,35 @@ fn read_progress(engine: &crate::onboarding::SetupEngine) -> Option<serde_json::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A restart is refused while a turn is running, and the refusal names the
+    /// turn rather than the daemon's readiness.
+    ///
+    /// The preflight used to answer `canRestart: ready`, so a phone could schedule
+    /// a restart in the middle of a long turn. The boot sweep then settled that
+    /// turn as `interrupted` and the reply was lost - what happened on 2026-11-25
+    /// at 18:40, and why the operator had to press Retry on a turn whose work had
+    /// already been thrown away.
+    #[test]
+    fn a_running_turn_blocks_a_restart() {
+        let blocked = restart_blocker(true, 1).expect("a running turn blocks the restart");
+        assert!(blocked.contains("a turn is running"), "{blocked}");
+        assert!(blocked.contains("lose the reply"), "{blocked}");
+
+        // An idle, ready daemon may restart.
+        assert_eq!(restart_blocker(true, 0), None);
+
+        // A daemon that is not ready is refused for the setup reason, not the
+        // turn one: they are different problems with different fixes.
+        let not_ready = restart_blocker(false, 0).expect("setup blocks it");
+        assert!(not_ready.contains("onboarding is not finished"), "{not_ready}");
+
+        // Readiness is checked first: an unready daemon with a running turn
+        // reports the setup problem, which is the one that has to be fixed
+        // before a restart would help at all.
+        let both = restart_blocker(false, 3).expect("blocked");
+        assert!(both.contains("onboarding"), "{both}");
+    }
 
     #[test]
     fn a_staged_name_is_recognised_and_foreign_names_are_not() {

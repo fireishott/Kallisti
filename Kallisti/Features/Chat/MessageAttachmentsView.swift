@@ -71,9 +71,16 @@ struct MessageAttachmentsView: View {
             // The daemon holds the bytes and serves them with the paired bearer,
             // so the file opens here instead of failing against a relay that never
             // had it.
-            ErisAttachmentImage(erisID: id)
-                .frame(maxWidth: 260, maxHeight: 320)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+            ErisAttachmentImage(erisID: id) { uiImage, data in
+                fullScreenImage = FullScreenImagePayload(
+                    image: uiImage,
+                    fileName: images[0].fileName,
+                    imageData: data,
+                    mimeType: images[0].mimeType
+                )
+            }
+            .frame(maxWidth: 260, maxHeight: 320)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
         } else if images.count == 1 {
             AttachmentImageView(attachment: images[0], maxWidth: 260, maxHeight: 320) { uiImage, data, mime in
                 fullScreenImage = FullScreenImagePayload(
@@ -87,9 +94,16 @@ struct MessageAttachmentsView: View {
             LazyVGrid(columns: columns, spacing: Design.Spacing.xxs) {
                 ForEach(images) { image in
                     if let id = erisID(of: image) {
-                        ErisAttachmentImage(erisID: id)
-                            .frame(maxWidth: 150, maxHeight: 150)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        ErisAttachmentImage(erisID: id) { uiImage, data in
+                            fullScreenImage = FullScreenImagePayload(
+                                image: uiImage,
+                                fileName: image.fileName,
+                                imageData: data,
+                                mimeType: image.mimeType
+                            )
+                        }
+                        .frame(maxWidth: 150, maxHeight: 150)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                     } else {
                     AttachmentImageView(attachment: image, maxWidth: 150, maxHeight: 150) { uiImage, data, mime in
                         fullScreenImage = FullScreenImagePayload(
@@ -764,17 +778,40 @@ private struct QuickLookPreview: UIViewControllerRepresentable {
 /// The daemon holds the bytes and serves them with the paired bearer; the phone has
 /// never needed a dashboard session for its own files. The message carries
 /// eris-attachment://<id> as the handle.
+///
+/// This drew a bare `Image` with no gesture on it, so a photo the daemon attached
+/// could be looked at and never opened: no viewer, no zoom, no share, no save. It
+/// is a button now, and the bytes it already downloaded are handed to the viewer
+/// so tapping does not re-fetch a multi-megabyte image over the tailnet.
 struct ErisAttachmentImage: View {
     let erisID: String
+    /// Called with the decoded image and its bytes when the thumbnail is tapped.
+    var onTap: ((UIImage, Data) -> Void)?
     @State private var image: UIImage?
+    @State private var bytes: Data?
     @State private var failed = false
 
     var body: some View {
         Group {
             if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
+                if let onTap {
+                    Button {
+                        // The bytes are already here; re-downloading on tap would
+                        // make a 12 MP photo feel broken on a slow link.
+                        onTap(image, bytes ?? Data())
+                    } label: {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Attached image")
+                    .accessibilityHint("Double-tap to view full screen")
+                } else {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                }
             } else if failed {
                 Label("This file could not be opened", systemImage: "exclamationmark.triangle")
                     .font(.caption)
@@ -790,6 +827,7 @@ struct ErisAttachmentImage: View {
                 failed = true
                 return
             }
+            bytes = data
             image = UIImage(data: data)
             failed = image == nil
         }

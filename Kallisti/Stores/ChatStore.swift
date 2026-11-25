@@ -818,6 +818,17 @@ final class ChatStore {
         // new chat while a poll response is in-flight could replace the
         // just-loaded conversation with stale data from the old one.
         conversationGeneration &+= 1
+        // The live round counter belongs to the turn on screen, and the screen
+        // is changing. It was reset only when a turn finished, so opening a
+        // different chat while another one was mid-turn left the badge showing
+        // that other chat's `round 44/100` on a conversation that had not run a
+        // single round - and starting a brand new chat inherited it too, because
+        // a new chat loads through this same path.
+        //
+        // Cleared before the fetch, not after: the fetch can be slow, and the old
+        // number must not be on screen for the duration of it. The turn's own
+        // frames restore it the moment this conversation's stream attaches.
+        liveRound = LiveRoundProgress()
         do {
             let refreshed = try await heraldClient.loadConversation(id: id)
             conversation = mergeConversationMetadata(from: conversation, into: refreshed)
@@ -2092,13 +2103,27 @@ final class ChatStore {
                 // the waiting label but do NOT mark the turn stalled.
                 let serverRunning = await self.heraldClient.resumeActiveSessionIfNeeded()
                 if serverRunning {
+                    // The job is alive on the host, so this turn has not stalled:
+                    // it is working with no output reaching this phone. Leave the
+                    // waiting label in place and do NOT arm the stall banner.
+                    //
+                    // This used to `continue`, which skipped the loop's own sleep
+                    // and spun: every iteration fired another server probe as fast
+                    // as the network answered, which is a request storm on exactly
+                    // the long turns the probe exists to protect.
                     appendLog(level: .info, "poll loop: server reports job still running - keeping waiting state (\(elapsedSecs)s)")
+                    try? await Task.sleep(for: .seconds(10))
                     continue
                 }
                 // Build 64: refresh the banner snapshot so the
                 // ChatScreen TimelineView reads attempt count +
                 // connection state from the same source of truth that
                 // drives the toolActivity label.
+                //
+                // Only reached when the server does NOT confirm the job, which is
+                // the one case where a stall is real. The banner was being armed
+                // every fifth poll regardless, so a healthy 24-second tool showed
+                // "Stream stalled - 10s elapsed" while the tool was running fine.
                 markStalled()
             }
         }
@@ -3370,6 +3395,13 @@ final class ChatStore {
         pendingStreamPlaceholders.removeAll()
         activeStreams.removeAll()
         chatLiveActivity.endActivity()
+        // A new chat has not run a single round. The live counter was only
+        // cleared when a turn finished, so starting a new chat while the previous
+        // one was still running carried its `round 44/100` badge onto a thread
+        // that had done nothing - the number belonged to a different
+        // conversation. Cleared here as well as on a load, because this path
+        // replaces the conversation in place without going through one.
+        liveRound = LiveRoundProgress()
         // Durable outbox: in-flight items belong to the conversation being
         // archived — cancel them; queued items for OTHER conversations are
         // preserved (they resubmit when that conversation becomes current).

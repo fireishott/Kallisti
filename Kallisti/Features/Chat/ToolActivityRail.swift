@@ -135,7 +135,14 @@ struct ToolActivityRail: View {
 
     private var expandedTimeline: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
-            ForEach(activities) { activity in
+            // Newest first.
+            //
+            // The activities arrive oldest-first, so expanding a 57-tool turn put
+            // the call running NOW at the bottom, below every call that had
+            // already finished. On a long turn that is several screens of
+            // scrolling to reach the one line that answers "what is it doing",
+            // which is the only reason to expand this at all.
+            ForEach(activities.reversed()) { activity in
                 // Build 128.58: the expanded timeline uses the terminal look
                 // for anything with output - streamed stdout OR tool result -
                 // instead of raw JSON argument dumps.
