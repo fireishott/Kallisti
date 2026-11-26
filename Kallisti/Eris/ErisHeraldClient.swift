@@ -1253,34 +1253,34 @@ final class ErisHeraldClient: HeraldClientProtocol {
         // cannot know. A session that lost its per-row receipt still gets its
         // turn counter, and a row that measured nothing still gets a footer when
         // the conversation has a cost to report.
-        return TurnAccounting(
-            model: base?.model,
-            provider: base?.provider,
-            promptTokens: base?.promptTokens,
-            completionTokens: base?.completionTokens,
-            cachedTokens: base?.cachedTokens,
-            durationMs: base?.durationMs,
-            rounds: base?.rounds,
-            contextTokens: resolvedContext,
-            contextWindow: resolvedWindow,
-            // The row's own cost when it has one: that is the figure that
-            // belongs under this answer.
-            costUSD: resolvedCost,
-            sessionCostUSD: resolvedSessionCost,
-            pricedAnswers: totals.pricedAnswers,
-            sessionAnswers: totals.answers,
-            sessionTurns: totals.turns,
-            toolCalls: base?.toolCalls ?? rowToolCount,
-            // The learned line is a conversation fact, so it comes from the
-            // totals and not from the row. It was added to `ErisConversationTotals`
-            // and never copied onto the receipt, so the sub-footer could not draw
-            // no matter what the daemon sent.
-            skillsCreated: totals.skillsCreated,
-            skillsAppended: totals.skillsAppended,
-            skillCalls: base?.skillCalls ?? rowSkillCount,
-            capped: base?.capped,
-            wrappedUp: base?.wrappedUp
-        )
+        // Built by assignment, not by one call.
+        //
+        // Nineteen labelled arguments with nil-coalescing chains inside them
+        // exceed what Swift's type checker will infer in reasonable time. Every
+        // property is `var` on `TurnAccounting` for exactly this reason, and each
+        // statement below is trivial to check on its own.
+        var receipt = TurnAccounting()
+        receipt.model = base?.model
+        receipt.provider = base?.provider
+        receipt.promptTokens = base?.promptTokens
+        receipt.completionTokens = base?.completionTokens
+        receipt.cachedTokens = base?.cachedTokens
+        receipt.durationMs = base?.durationMs
+        receipt.rounds = base?.rounds
+        receipt.contextTokens = resolvedContext
+        receipt.contextWindow = resolvedWindow
+        receipt.costUSD = resolvedCost
+        receipt.sessionCostUSD = resolvedSessionCost
+        receipt.pricedAnswers = totals.pricedAnswers
+        receipt.sessionAnswers = totals.answers
+        receipt.sessionTurns = totals.turns
+        receipt.toolCalls = base?.toolCalls ?? rowToolCount
+        receipt.skillsCreated = totals.skillsCreated
+        receipt.skillsAppended = totals.skillsAppended
+        receipt.skillCalls = base?.skillCalls ?? rowSkillCount
+        receipt.capped = base?.capped
+        receipt.wrappedUp = base?.wrappedUp
+        return receipt
     }
 
     /// Every row of a fetched conversation, with the session figures folded in.

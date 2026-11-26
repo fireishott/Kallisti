@@ -52,75 +52,82 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
     /// Carried on the frame and on the row. A footer that omits the model says
     /// less than the same answer would in a Discord message, which is where this
     /// shape came from.
-    let model: String?
+    var model: String?
     /// The provider that served it, when the daemon named one.
-    let provider: String?
+    var provider: String?
     /// Prompt tokens the provider reported.
-    let promptTokens: Int?
+    var promptTokens: Int?
     /// Completion tokens the provider reported.
-    let completionTokens: Int?
+    var completionTokens: Int?
     /// Prompt tokens the provider served from cache, when it said so.
-    let cachedTokens: Int?
+    var cachedTokens: Int?
     /// Wall time from request to last byte.
-    let durationMs: Int?
+    var durationMs: Int?
     /// Tool rounds the turn ran.
-    let rounds: Int?
+    var rounds: Int?
     /// The last round trip's own prompt size, which is the live context size.
-    let contextTokens: Int?
+    var contextTokens: Int?
     /// The window declared for this model, so the context can be shown as a
     /// share of what it had to work with.
-    let contextWindow: Int?
+    var contextWindow: Int?
     /// What this turn cost in US dollars, when the operator declared a price.
     ///
     /// Absent is a fact, not a zero: the daemon does not guess a rate, so an
     /// unpriced model produces nothing here and the footer says nothing rather
     /// than "free".
-    let costUSD: Double?
+    var costUSD: Double?
     /// What the whole conversation has cost so far, on the same terms.
-    let sessionCostUSD: Double?
+    var sessionCostUSD: Double?
     /// Answers in this conversation that carry a price.
     ///
     /// Compared with the session's answer count to tell a complete total from a
     /// floor. The daemon sends both; the footer only claims a total when they
     /// agree.
-    let pricedAnswers: Int?
+    var pricedAnswers: Int?
     /// Answers in this conversation, which is the turn counter's denominator
     /// and its source.
-    let sessionAnswers: Int?
+    var sessionAnswers: Int?
     /// How many turns deep this conversation is.
     ///
     /// Read from the conversation's own total rather than counted in the footer:
     /// the transcript is paged, so a count taken from the messages on screen
     /// would start at one every time an older page loaded.
-    let sessionTurns: Int?
+    var sessionTurns: Int?
     /// The tools this turn ran, as a count.
     ///
     /// Kept as a count rather than names so the footer stays one line: the tool
     /// rail under the answer is where the detail belongs.
-    let toolCalls: Int?
+    var toolCalls: Int?
     /// How many of those tool calls were skill reads.
     ///
     /// A skill is invoked with the `read_skill` tool, so it is already inside
     /// `toolCalls`. This is the subset that came from the skill library, shown
     /// separately because "this answer consulted two skills" is a different fact
     /// from "this answer ran twelve tools" and the Hermes footer drew both.
-    let skillCalls: Int?
+    var skillCalls: Int?
     /// Every tool the turn ran, by name and count, for the optional extra row.
-    let toolList: [FooterUsage]?
+    var toolList: [FooterUsage]?
     /// The skill keys the turn read, by key and count, for its own extra row.
-    let skillList: [FooterUsage]?
+    var skillList: [FooterUsage]?
     /// Skills this conversation brought into the library, when it taught any.
     ///
     /// The baseline sub-footer: it appears only on a chat that produced
     /// knowledge, so twenty ordinary chats do not carry a "0 learned" line.
-    let skillsCreated: Int?
+    var skillsCreated: Int?
     /// Existing skills this conversation added to.
-    let skillsAppended: Int?
+    var skillsAppended: Int?
     /// Whether the tool budget, not the model, ended this turn.
-    let capped: Bool?
+    var capped: Bool?
     /// Whether the engine took the tools away early and the model wrote the
     /// answer itself.
-    let wrappedUp: Bool?
+    var wrappedUp: Bool?
+
+    /// An empty receipt, for callers that fill the fields one at a time.
+    ///
+    /// The labelled initialiser below takes twenty arguments, and Swift's type
+    /// checker will not infer a call that large once nil-coalescing chains are in
+    /// the argument positions. Assignment needs this first.
+    init() {}
 
     init(
         model: String? = nil,
