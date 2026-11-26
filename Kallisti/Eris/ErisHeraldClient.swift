@@ -1232,6 +1232,23 @@ final class ErisHeraldClient: HeraldClientProtocol {
     ) -> TurnAccounting? {
         guard let totals else { return row.accounting }
         let base = row.accounting
+        // Everything that comes from the row, resolved before the initialiser.
+        //
+        // The single expression below grew past what Swift's type checker will
+        // infer in reasonable time once the nil-coalescing chains were added, and a
+        // failed build is a feature that does not ship. Naming the row-derived
+        // values costs nothing and gives the checker less to infer at once.
+        let rowTools = row.tools
+        let rowToolCount: Int? = rowTools.isEmpty ? nil : rowTools.count
+        let rowSkillCount: Int? = rowTools.isEmpty
+            ? nil
+            : rowTools.filter { $0.name == "read_skill" }.count
+        let resolvedContext = base?.contextTokens ?? (isNewestAnswer ? totals.contextUsed : nil)
+        let resolvedWindow = base?.contextWindow ?? (isNewestAnswer ? totals.contextWindow : nil)
+        let resolvedCost = base?.costUSD ?? (isNewestAnswer ? totals.turnCostUSD : nil)
+        let resolvedSessionCost: Double? = isNewestAnswer
+            ? (base?.sessionCostUSD ?? totals.sessionCostUSD)
+            : nil
         // The row's own measured numbers win; the totals fill in only what a row
         // cannot know. A session that lost its per-row receipt still gets its
         // turn counter, and a row that measured nothing still gets a footer when
@@ -1244,26 +1261,23 @@ final class ErisHeraldClient: HeraldClientProtocol {
             cachedTokens: base?.cachedTokens,
             durationMs: base?.durationMs,
             rounds: base?.rounds,
-            contextTokens: base?.contextTokens ?? (isNewestAnswer ? totals.contextUsed : nil),
-            contextWindow: base?.contextWindow ?? (isNewestAnswer ? totals.contextWindow : nil),
+            contextTokens: resolvedContext,
+            contextWindow: resolvedWindow,
             // The row's own cost when it has one: that is the figure that
             // belongs under this answer.
-            costUSD: base?.costUSD ?? (isNewestAnswer ? totals.turnCostUSD : nil),
-            sessionCostUSD: isNewestAnswer ? (base?.sessionCostUSD ?? totals.sessionCostUSD) : nil,
+            costUSD: resolvedCost,
+            sessionCostUSD: resolvedSessionCost,
             pricedAnswers: totals.pricedAnswers,
             sessionAnswers: totals.answers,
             sessionTurns: totals.turns,
-            toolCalls: base?.toolCalls ?? (row.tools.isEmpty ? nil : row.tools.count),
+            toolCalls: base?.toolCalls ?? rowToolCount,
             // The learned line is a conversation fact, so it comes from the
             // totals and not from the row. It was added to `ErisConversationTotals`
             // and never copied onto the receipt, so the sub-footer could not draw
             // no matter what the daemon sent.
             skillsCreated: totals.skillsCreated,
             skillsAppended: totals.skillsAppended,
-            skillCalls: base?.skillCalls
-                ?? (row.tools.isEmpty
-                    ? nil
-                    : row.tools.filter { $0.name == "read_skill" }.count),
+            skillCalls: base?.skillCalls ?? rowSkillCount,
             capped: base?.capped,
             wrappedUp: base?.wrappedUp
         )
