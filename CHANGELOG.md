@@ -10,6 +10,25 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.3] - 2026-11-26
+
+### Fixed
+
+- **The tool count in the footer was never a number.** The client decoded
+  `tool_calls` from the receipt and no daemon surface ever sent it, so the switch
+  existed and the field never drew. The daemon sends it now.
+
+### Added
+
+- **Skills are counted separately from tools.** A skill is read with the
+  `read_skill` tool, so every skill use is also a tool call: the footer draws the
+  total and the subset, `12 tools · 2 skills`, which is the shape the Hermes
+  footer used. A conversation's own totals carry both, so a chat can say what it
+  has done overall rather than only what the last answer did.
+- A "Skills used" switch under Settings > Turn footer.
+- "Tool calls" now defaults to on. It defaulted to off because it could never
+  show anything.
+
 ## [1.8.2] - 2026-11-25
 
 ### Fixed
