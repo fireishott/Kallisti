@@ -10,6 +10,20 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.6] - 2026-11-26
+
+### Fixed
+
+- **The tool and skill lines now appear on a live turn, not only after a reopen.**
+  Three gaps between what the daemon sent and what the phone could draw: the
+  device's live `done` receipt never carried the counts or the name lists, the
+  learned figures were parsed from the totals and never copied onto the receipt,
+  and the two name rows defaulted to off. All three fixed; the wire shape is
+  asserted end to end in the daemon's own test.
+- The learned sub-footer is session-scoped by design: the learning review runs
+  after a turn ends, so a live frame cannot know what the conversation just
+  taught. It appears on the next read, which is the first moment it is true.
+
 ## [1.8.5] - 2026-11-26
 
 ### Added
