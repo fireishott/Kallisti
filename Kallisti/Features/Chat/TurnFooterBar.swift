@@ -18,7 +18,7 @@ import SwiftUI
 ///
 /// The same shape carries a tool breakdown and a skill breakdown, so one row
 /// renderer draws both.
-struct FooterUsage: Equatable, Hashable, Sendable, Decodable {
+struct FooterUsage: Equatable, Hashable, Sendable, Codable {
     /// The tool name, or the skill key.
     let name: String
     /// How many times it ran.
