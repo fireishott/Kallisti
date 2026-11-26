@@ -142,6 +142,19 @@ pub async fn harness_tool_login_complete(
     let token_value = match finished {
         Ok(token_value) => token_value,
         Err(reason) => {
+            // Logged, not just returned.
+            //
+            // The refusal logger records the status and the code and deliberately
+            // omits the message, so every failed sign-in looked identical in the
+            // journal: `400 harness_login_failed`, with no way to tell a rate
+            // limit from a spent code from a hung exchange. Diagnosing one meant
+            // reproducing it by hand against the CLI. The reason is the CLI's own
+            // words about a credential the operator already typed, never a secret
+            // this daemon holds, so it is safe to record.
+            tracing::warn!(
+                reason = %reason,
+                "the Claude Code sign-in did not complete"
+            );
             return DeviceError::new(StatusCode::BAD_REQUEST, "harness_login_failed", reason)
                 .into_response();
         }

@@ -718,7 +718,17 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
     // The CLI redraws its screen in place, so what it says arrives as cursor
     // moves and carriage returns with no line break at all. Everything is read
     // as raw chunks and scanned as one growing text.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    // How long a token exchange may take.
+    //
+    // Was 30 seconds, which is shorter than the exchange itself can be: a
+    // well-formed code sends the CLI to console.anthropic.com, and when that
+    // endpoint is slow or rate-limiting the CLI prints nothing while it waits. The
+    // daemon then gave up, reported "no token and no error", and the operator
+    // pressed the button again - which is the one action that keeps a rate limit in
+    // place. Two minutes is longer than any real exchange needs and still bounded,
+    // because the phone is waiting on this call.
+    let deadline_secs: u64 = 120;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(deadline_secs);
     let mut token: Option<String> = None;
     let mut complaint: Option<String> = None;
     while std::time::Instant::now() < deadline {
@@ -784,8 +794,20 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
                     .flatten()
                     .and_then(|status| status.code());
                 let drawn = last_words(&seen);
+                // A well-formed code makes the CLI do a real network exchange, and
+                // while that exchange hangs it prints nothing at all - no token, no
+                // error, no redraw. The old sentence said "within 30 seconds", which
+                // read as the daemon's own timeout and hid the fact that the CLI was
+                // still waiting on Anthropic. Say what is actually true: the code
+                // went in, the exchange did not come back.
+                let waited = deadline_secs;
                 let mut sentence = if prompt_seen {
-                    "Claude Code never answered the code: it printed no token and no error within 30 seconds".to_owned()
+                    format!(
+                        "Claude Code accepted that code and then went quiet: no token and no error \
+                         came back within {waited} seconds. That is the exchange against Anthropic \
+                         not answering, not a bad code. Check this host can reach \
+                         console.anthropic.com (a 429 there looks exactly like this), then try again"
+                    )
                 } else {
                     "Claude Code never drew its code prompt, so the code had nowhere to go. Start the sign-in again and watch for the prompt before pasting".to_owned()
                 };
@@ -977,9 +999,17 @@ fn finished_field(seen: &str, prefix: &str) -> Option<String> {
 /// removed, because a redraw leaves gaps and skipped letters inside them.
 fn login_complaint(seen: &str) -> Option<String> {
     let spaced = strip_escapes(seen, true);
+    // Whitespace AND punctuation are dropped before matching.
+    //
+    // A redraw glues words together with cursor moves, so "rate limit" can arrive
+    // as "ratelimit". The CLI also prints structured errors, where the same fact
+    // is spelled `rate_limit_error` - and the underscore is enough to break a plain
+    // whitespace squeeze, which is why a 429 in JSON form went unrecognised.
     let squeezed: String = spaced
         .chars()
-        .filter(|character| !character.is_whitespace())
+        .filter(|character| {
+            !character.is_whitespace() && !matches!(character, '_' | '-' | '"' | '\'' | '.' | ':')
+        })
         .collect::<String>()
         .to_lowercase();
     // The CLI's own format check, which runs before any network call. Its text
@@ -991,6 +1021,21 @@ fn login_complaint(seen: &str) -> Option<String> {
     if squeezed.contains("invalidcode") && !squeezed.contains("statuscode") {
         return Some(
             "That does not look like a complete code. Claude Code expects the whole value from the page, including the part after the #. Close this, tap Sign in with Claude again, and copy the entire code"
+                .to_owned(),
+        );
+    }
+    // A rate limit is not a refused code and must not read as one.
+    //
+    // The OAuth token endpoint answers `429 rate_limit_error` while it is holding
+    // this host off, and the CLI surfaces that as "Request failed with status code
+    // 429". Reporting it as "Claude refused that code" sends the operator to fetch
+    // a fresh code for a server that is refusing everyone, and the fresh code is
+    // refused in the same way.
+    if squeezed.contains("statuscode429") || squeezed.contains("ratelimit") {
+        return Some(
+            "Claude is rate-limiting this host, not refusing your code (429). Nothing about \
+             the code is wrong. Wait a few minutes, then start the sign-in again - tapping \
+             it repeatedly keeps the limit in place"
                 .to_owned(),
         );
     }
@@ -1781,6 +1826,30 @@ mod tests {
     /// failed with status code 400". Reading both as "Claude refused that code"
     /// is what sent an operator to fetch a fresh code for a paste they could have
     /// completed.
+    /// A rate limit is reported as a rate limit, not as a refused code.
+    ///
+    /// This is the failure that made the sign-in look broken: the OAuth endpoint
+    /// answered 429, the CLI surfaced it as "Request failed with status code 429",
+    /// and the old matcher did not recognise that string - so the sign-in ended
+    /// either as "Claude refused that code" (sending the operator to fetch a new
+    /// code for a server refusing everyone) or, when the CLI printed nothing at
+    /// all, as silence.
+    #[test]
+    fn a_rate_limited_exchange_is_not_a_refused_code() {
+        let limited = login_complaint(
+            "OAuth error: Requstfailed withstatus code 429 PressEntertoretry.",
+        )
+        .expect("a complaint");
+        assert!(limited.contains("rate-limiting"), "{limited}");
+        assert!(limited.contains("Nothing about the code is wrong"), "{limited}");
+        assert!(!limited.contains("refused that code"), "{limited}");
+
+        // The structured form the CLI can also print.
+        let typed = login_complaint(r#"{"error":{"type":"rate_limit_error"}}"#)
+            .expect("a complaint");
+        assert!(typed.contains("rate-limiting"), "{typed}");
+    }
+
     #[test]
     fn a_locally_refused_code_is_not_a_server_rejection() {
         let local = login_complaint(
