@@ -83,8 +83,12 @@ running() {
   # A genuinely dead worker is the rarer case and the boot sweep already handles it.
   # Waiting a little longer for a turn that is really gone costs a delay; restarting
   # under a turn that is really alive costs the operator their answer.
+  # `kind != 'tool'` because a tool job is a background PROCESS, not a chat turn.
+  # It carries no lease (its own sweep checks whether the pid survived) and it can
+  # legitimately outlive any deploy. Counting those made this script refuse to
+  # deploy forever behind one stuck `p...` row.
   sqlite3 "file:$DB?mode=ro" \
-    "SELECT COUNT(*) FROM jobs WHERE status = 'running';" \
+    "SELECT COUNT(*) FROM jobs WHERE status = 'running' AND kind != 'tool';" \
     2>/dev/null || echo 0
 }
 
