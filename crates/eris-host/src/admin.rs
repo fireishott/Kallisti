@@ -60,11 +60,61 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The build number inside this version.
 ///
-/// The marketing version moves when behaviour changes shape; this number moves
-/// on every ship, so a fix can land without telling the world the product is a
+/// The marketing version moves when behaviour changes shape; this number moves on
+/// every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 219;
+///
+/// Read from `BUILD` at the repository root rather than written here.
+///
+/// It was a hand-edited constant, and it drifted: four daemon changes shipped
+/// while `--version` and the Settings card still said `build 219`, so the running
+/// binary and the number that identifies it disagreed. A file the release path
+/// bumps is one place to be right; a literal in the middle of a source file is a
+/// thing to forget. `env!("CARGO_MANIFEST_DIR")` points at this crate, so the
+/// file is resolved two directories up.
+pub const BUILD: u32 = parse_build(include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../BUILD"
+)));
+
+/// Turn the `BUILD` file's text into the number, refusing rather than guessing.
+///
+/// A const fn because this runs at compile time: a malformed file is a build
+/// error naming the file, not a silent zero in a released binary.
+const fn parse_build(text: &str) -> u32 {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    // Leading whitespace, which an editor or a trailing newline is allowed to add.
+    while index < bytes.len() && (bytes[index] == b' ' || bytes[index] == b'\n' || bytes[index] == b'\r' || bytes[index] == b'\t') {
+        index += 1;
+    }
+    // The digits.
+    let mut value: u32 = 0;
+    let mut digits = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        value = value * 10 + (byte - b'0') as u32;
+        digits += 1;
+        index += 1;
+    }
+    if digits == 0 {
+        panic!("BUILD must contain an integer");
+    }
+    // Only whitespace may follow them. Anything else is a file the release path
+    // did not write, and reading it as the number would hide that.
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte != b' ' && byte != b'\n' && byte != b'\r' && byte != b'\t' {
+            panic!("BUILD must contain one integer and nothing else");
+        }
+        index += 1;
+    }
+    value
+}
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -1439,5 +1489,44 @@ mod tests {
             forwarded_header(&clean).is_none(),
             "a plain loopback request is not refused"
         );
+    }
+
+    /// The build number is parsed at compile time, so this pins the reader rather
+    /// than the file: a trailing newline, an editor's padding, and a leading space
+    /// all mean the same number, and nothing else is accepted.
+    #[test]
+    fn the_build_file_is_read_exactly() {
+        assert_eq!(parse_build("220"), 220);
+        assert_eq!(parse_build("220\n"), 220, "a trailing newline is normal");
+        assert_eq!(parse_build("  220 \n"), 220, "padding is harmless");
+        assert_eq!(parse_build("1"), 1);
+        assert_eq!(parse_build("0"), 0);
+    }
+
+    /// A file with no digits panics at compile time. The panic text is what a
+    /// person sees when the release path writes something wrong, so it names the
+    /// file rather than saying "invalid integer".
+    #[test]
+    #[should_panic(expected = "BUILD must contain an integer")]
+    fn a_build_file_with_no_digits_is_refused() {
+        let _ = parse_build("\n  \n");
+    }
+
+    /// Trailing junk is refused too: `220 # bump` is a comment nobody parses,
+    /// and silently reading it as 220 would hide a broken release script.
+    #[test]
+    #[should_panic(expected = "BUILD must contain one integer")]
+    fn a_build_file_with_trailing_junk_is_refused() {
+        let _ = parse_build("220 # bump");
+    }
+
+    /// The identity this build reports names both halves, and the build number is
+    /// not a zero: a released binary claiming `build 0` is the drift this replaced.
+    #[test]
+    fn the_version_line_carries_a_real_build_number() {
+        let line = version_line();
+        assert!(line.contains(VERSION), "{line}");
+        assert!(line.contains(" build "), "{line}");
+        assert_ne!(BUILD, 0, "a released daemon must name its build: {line}");
     }
 }
