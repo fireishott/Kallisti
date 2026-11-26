@@ -1549,6 +1549,8 @@ pub async fn conversation(
                 crate::web::chat::tool_and_skill_counts(&message.tools);
             session_tool_calls += tool_calls;
             session_skill_calls += skill_calls;
+            let tool_list = crate::web::chat::tool_usage(&message.tools);
+            let skill_list = crate::web::chat::skill_usage(&message.tools);
             serde_json::json!({
                 "id": message.id,
                 "role": message.role.as_str(),
@@ -1591,6 +1593,12 @@ pub async fn conversation(
                     // says so.
                     "tool_calls": tool_calls,
                     "skill_calls": skill_calls,
+                    // The names behind those two numbers, for a footer that
+                    // draws an extra line per family. Sent per row so a client
+                    // never has to parse the recorded arguments itself, and
+                    // shaped `{name, count}` so both lines render the same way.
+                    "tool_list": tool_list,
+                    "skill_list": skill_list,
                     "cost_usd": match crate::web::pricing::cost_of(
                         message.model.as_deref().unwrap_or_default(),
                         message.prompt_tokens,

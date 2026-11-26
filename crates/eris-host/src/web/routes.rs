@@ -12379,6 +12379,8 @@ fn spawn_turn(
                 // available to anything else that publishes this turn.
                 let (turn_tool_calls, turn_skill_calls) =
                     chat::tool_and_skill_counts(&turn.tools);
+                let turn_tool_list = chat::tool_usage(&turn.tools);
+                let turn_skill_list = chat::skill_usage(&turn.tools);
                 let turn_cost_usd = {
                     let prices = crate::web::pricing::parse_prices(
                         crate::web::store::settings_get(&db, crate::web::pricing::SETTING_PRICES)
@@ -12435,6 +12437,8 @@ fn spawn_turn(
                             // the same list the transcript row will store.
                             "tool_calls": turn_tool_calls,
                             "skill_calls": turn_skill_calls,
+                            "tool_list": turn_tool_list,
+                            "skill_list": turn_skill_list,
                         },
                     }),
                 );

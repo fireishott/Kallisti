@@ -25,6 +25,8 @@ struct TurnFooterSettingsSection: View {
     @AppStorage(TurnFooterPrefs.turns) private var showsTurns: Bool = true
     @AppStorage(TurnFooterPrefs.tools) private var showsTools: Bool = true
     @AppStorage(TurnFooterPrefs.skills) private var showsSkills: Bool = true
+    @AppStorage(TurnFooterPrefs.toolList) private var showsToolList: Bool = false
+    @AppStorage(TurnFooterPrefs.skillList) private var showsSkillList: Bool = false
 
     var body: some View {
         SettingsSectionView(title: "Turn footer") {
@@ -71,6 +73,20 @@ struct TurnFooterSettingsSection: View {
                         title: "Skills used",
                         subtitle: "How many of those were skill reads",
                         isOn: $showsSkills
+                    )
+                    divider
+                    row(
+                        icon: "list.bullet.rectangle",
+                        title: "Tool names row",
+                        subtitle: "An extra line listing every tool and how many times it ran",
+                        isOn: $showsToolList
+                    )
+                    divider
+                    row(
+                        icon: "list.star",
+                        title: "Skill names row",
+                        subtitle: "An extra line listing every skill the turn read",
+                        isOn: $showsSkillList
                     )
                     divider
                     row(

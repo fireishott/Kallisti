@@ -4757,6 +4757,102 @@ pub fn is_skill_tool(name: &str) -> bool {
     name == "read_skill"
 }
 
+/// One name and how many times it appears, for a footer's extra line.
+///
+/// `name` is the tool name for a tool breakdown and the skill key for a skill
+/// breakdown; `count` is how many times it ran. Ordered by count descending then
+/// name ascending, which is the order the Hermes footer printed: the tool that ran
+/// most leads, and equal counts read alphabetically so the line is stable between
+/// two turns that used the same tools.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UsageCount {
+    /// The tool name, or the skill key.
+    pub name: String,
+    /// How many times it ran this turn.
+    pub count: usize,
+}
+
+impl UsageCount {
+    /// `bash×3` when it ran more than once, the bare name otherwise - the
+    /// notation the Hermes footer used.
+    #[must_use]
+    pub fn label(&self) -> String {
+        if self.count > 1 {
+            format!("{}×{}", self.name, self.count)
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+/// The tools this turn ran, by name and count, ready for the footer's extra line.
+///
+/// Skill reads are included: this is the "what did the turn do" list, and a
+/// `read_skill` call is part of what it did. The skills line is the subset, built
+/// by [`skill_usage`].
+#[must_use]
+pub fn tool_usage(tools: &[ToolRecord]) -> Vec<UsageCount> {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for tool in tools {
+        // A tool with no name is a malformed record, not a call: counting "" as a
+        // tool would put a blank chip in the footer.
+        let name = tool.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        *counts.entry(name).or_insert(0) += 1;
+    }
+    let mut out: Vec<UsageCount> = counts
+        .into_iter()
+        .map(|(name, count)| UsageCount {
+            name: name.to_owned(),
+            count,
+        })
+        .collect();
+    // Most-used first, then alphabetical. `sort_by` is stable, and the BTreeMap
+    // already handed these over in name order, so equal counts keep that order.
+    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+/// The skills this turn read, by key and count.
+///
+/// The key is the `read_skill` argument, which is the skill's own name in the
+/// library. It is parsed out of the recorded arguments rather than stored beside
+/// the row: the arguments are the model's own words and are what a later change to
+/// the skill library must not silently rewrite.
+///
+/// A read whose arguments do not parse contributes nothing to this list rather
+/// than a placeholder. The turn still counted it as a tool call, so the totals stay
+/// honest; this line simply cannot name a skill it was not told.
+#[must_use]
+pub fn skill_usage(tools: &[ToolRecord]) -> Vec<UsageCount> {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for tool in tools {
+        if !is_skill_tool(&tool.name) {
+            continue;
+        }
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&tool.arguments) else {
+            continue;
+        };
+        let Some(key) = parsed
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+        else {
+            continue;
+        };
+        *counts.entry(key.to_owned()).or_insert(0) += 1;
+    }
+    let mut out: Vec<UsageCount> = counts
+        .into_iter()
+        .map(|(name, count)| UsageCount { name, count })
+        .collect();
+    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
 /// The number of rows a conversation holds, for a page that wants a count without
 /// loading the transcript twice.
 #[must_use]
@@ -5903,6 +5999,57 @@ pub fn stopped() -> TurnFailure {
 /// tools, because a turn cannot read a skill without calling the tool that reads
 /// it. It also pins the exact name match - a future tool with "skill" in its name
 /// must not be counted as a library read.
+/// The two extra rows: names with counts, most-used first, skills read out of the
+/// tool arguments.
+#[test]
+fn the_usage_lists_name_what_ran_and_how_often() {
+    let tool = |name: &str, args: &str| ToolRecord {
+        name: name.to_owned(),
+        arguments: args.to_owned(),
+        output: String::new(),
+        is_error: false,
+        asked: None,
+    };
+
+    let turn = [
+        tool("run_command", "{}"),
+        tool("read_skill", r#"{"key":"pdf"}"#),
+        tool("run_command", "{}"),
+        tool("read_skill", r#"{"key":"pdf"}"#),
+        tool("read_skill", r#"{"key":"email"}"#),
+        tool("search_sessions", "{}"),
+        // A malformed read and a nameless tool: neither may put a blank chip in
+        // the row, and neither may invent a name.
+        tool("read_skill", "not json"),
+        tool("   ", "{}"),
+    ];
+
+    // Most-used first, then alphabetical. `run_command` (2) and `read_skill` (3)
+    // lead; `run_command` and `search_sessions` sort alphabetically behind.
+    let tools = tool_usage(&turn);
+    let names: Vec<(&str, usize)> = tools.iter().map(|u| (u.name.as_str(), u.count)).collect();
+    // Four `read_skill` calls, not three: the one whose arguments did not parse is
+    // still a tool call the turn made. It cannot be named on the SKILLS row, which
+    // is a different question, and that difference is the point - the totals stay
+    // honest while the skill list only claims what it was told.
+    assert_eq!(
+        names,
+        vec![("read_skill", 4), ("run_command", 2), ("search_sessions", 1)],
+        "count descending, then name: {tools:?}"
+    );
+
+    // Skills come from the arguments, and the unparseable read contributes
+    // nothing here even though it counted as a tool above.
+    let skills = skill_usage(&turn);
+    let keys: Vec<(&str, usize)> = skills.iter().map(|u| (u.name.as_str(), u.count)).collect();
+    assert_eq!(keys, vec![("pdf", 2), ("email", 1)], "{skills:?}");
+
+    // The label notation the footer prints.
+    assert_eq!(skills[0].label(), "pdf×2");
+    assert_eq!(skills[1].label(), "email");
+    assert_eq!(tools.len(), 3, "a nameless tool is not a row");
+}
+
 #[test]
 fn skills_are_counted_inside_the_tool_total() {
     let tool = |name: &str| ToolRecord {

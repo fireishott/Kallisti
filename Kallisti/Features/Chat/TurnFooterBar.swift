@@ -14,6 +14,38 @@ import SwiftUI
 /// and provider answered, how long it took, what it spent in tokens, how much of
 /// that came from cache, what it cost in dollars, what the session has cost so
 /// far, how many turns deep the conversation is, and how full the window was.
+/// One name and how many times it ran, as the daemon sends it.
+///
+/// The same shape carries a tool breakdown and a skill breakdown, so one row
+/// renderer draws both.
+struct FooterUsage: Equatable, Hashable, Sendable, Decodable {
+    /// The tool name, or the skill key.
+    let name: String
+    /// How many times it ran.
+    let count: Int
+
+    private enum CodingKeys: String, CodingKey { case name, count }
+
+    init(name: String, count: Int) {
+        self.name = name
+        self.count = count
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: (try? container.decodeIfPresent(String.self, forKey: .name)) ?? "",
+            count: (try? container.decodeIfPresent(Int.self, forKey: .count)) ?? 0
+        )
+    }
+
+    /// `bash×3` when it ran more than once, the bare name otherwise, which is the
+    /// notation the Hermes footer used.
+    var label: String {
+        count > 1 ? "\(name)×\(count)" : name
+    }
+}
+
 struct TurnAccounting: Equatable, Hashable, Sendable {
     /// The model the daemon resolved for this turn, when it named one.
     ///
@@ -73,6 +105,10 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
     /// separately because "this answer consulted two skills" is a different fact
     /// from "this answer ran twelve tools" and the Hermes footer drew both.
     let skillCalls: Int?
+    /// Every tool the turn ran, by name and count, for the optional extra row.
+    let toolList: [FooterUsage]?
+    /// The skill keys the turn read, by key and count, for its own extra row.
+    let skillList: [FooterUsage]?
     /// Whether the tool budget, not the model, ended this turn.
     let capped: Bool?
     /// Whether the engine took the tools away early and the model wrote the
@@ -96,6 +132,8 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
         sessionTurns: Int? = nil,
         toolCalls: Int? = nil,
         skillCalls: Int? = nil,
+        toolList: [FooterUsage]? = nil,
+        skillList: [FooterUsage]? = nil,
         capped: Bool? = nil,
         wrappedUp: Bool? = nil
     ) {
@@ -115,6 +153,8 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
         self.sessionTurns = sessionTurns
         self.toolCalls = toolCalls
         self.skillCalls = skillCalls
+        self.toolList = toolList
+        self.skillList = skillList
         self.capped = capped
         self.wrappedUp = wrappedUp
     }
@@ -168,11 +208,33 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
             sessionTurns: count("session_turns"),
             toolCalls: count("tool_calls"),
             skillCalls: count("skill_calls"),
+            toolList: Self.usage(json["tool_list"]),
+            skillList: Self.usage(json["skill_list"]),
             capped: flag("capped"),
             wrappedUp: flag("wrapped_up")
         )
         guard !candidate.isEmpty else { return nil }
         self = candidate
+    }
+
+    /// Read one `[{name, count}]` array off a frame.
+    ///
+    /// Returns nil rather than an empty array when the key is absent, so "the
+    /// daemon sent no breakdown" stays different from "the turn ran nothing".
+    private static func usage(_ raw: Any?) -> [FooterUsage]? {
+        guard let rows = raw as? [[String: Any]] else { return nil }
+        return rows.compactMap { row in
+            guard let name = row["name"] as? String, !name.isEmpty else { return nil }
+            let count: Int
+            if let value = row["count"] as? Int {
+                count = value
+            } else if let value = row["count"] as? NSNumber {
+                count = value.intValue
+            } else {
+                return nil
+            }
+            return FooterUsage(name: name, count: count)
+        }
     }
 
     /// Whether the row stated anything at all.
@@ -372,6 +434,8 @@ extension TurnAccounting: Decodable {
         case sessionTurns = "session_turns"
         case toolCalls = "tool_calls"
         case skillCalls = "skill_calls"
+        case toolList = "tool_list"
+        case skillList = "skill_list"
         case capped
         case wrappedUp = "wrapped_up"
     }
@@ -429,6 +493,8 @@ extension TurnAccounting: Decodable {
             sessionTurns: count(.sessionTurns),
             toolCalls: count(.toolCalls),
             skillCalls: count(.skillCalls),
+            toolList: try? container.decodeIfPresent([FooterUsage].self, forKey: .toolList),
+            skillList: try? container.decodeIfPresent([FooterUsage].self, forKey: .skillList),
             capped: flag(.capped),
             wrappedUp: flag(.wrappedUp)
         )
@@ -457,6 +523,8 @@ extension TurnAccounting: Encodable {
         try container.encodeIfPresent(sessionTurns, forKey: .sessionTurns)
         try container.encodeIfPresent(toolCalls, forKey: .toolCalls)
         try container.encodeIfPresent(skillCalls, forKey: .skillCalls)
+        try container.encodeIfPresent(toolList, forKey: .toolList)
+        try container.encodeIfPresent(skillList, forKey: .skillList)
         try container.encodeIfPresent(capped, forKey: .capped)
         try container.encodeIfPresent(wrappedUp, forKey: .wrappedUp)
     }
@@ -483,6 +551,8 @@ enum TurnFooterPrefs {
     static let turns = "kallisti.turnFooter.turns"
     static let tools = "kallisti.turnFooter.tools"
     static let skills = "kallisti.turnFooter.skills"
+    static let toolList = "kallisti.turnFooter.toolList"
+    static let skillList = "kallisti.turnFooter.skillList"
 }
 
 // MARK: - Footer
@@ -512,17 +582,69 @@ struct TurnFooterBar: View {
     @AppStorage(TurnFooterPrefs.turns) private var showsTurns: Bool = true
     @AppStorage(TurnFooterPrefs.tools) private var showsTools: Bool = true
     @AppStorage(TurnFooterPrefs.skills) private var showsSkills: Bool = true
+    @AppStorage(TurnFooterPrefs.toolList) private var showsToolList: Bool = false
+    @AppStorage(TurnFooterPrefs.skillList) private var showsSkillList: Bool = false
 
     var body: some View {
-        if let line {
-            Text(line)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.75)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityLabel(line)
+        if line != nil || !detailRows.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                if let line {
+                    // The receipt itself: the numbers.
+                    Text(line)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.75)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // The optional extra rows: which tools, which skills, by name and
+                // count. Off by default because they are as long as the answer is
+                // busy - a 34-tool turn is a very long line - so they are a thing
+                // an operator turns on, not something drawn under every reply.
+                ForEach(detailRows, id: \.label) { row in
+                    Text(row.text)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.7)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel(row.accessibility)
+                }
+            }
         }
+    }
+
+    /// One extra row: a family of things the turn used, and their names.
+    struct DetailRow: Identifiable {
+        let label: String
+        let text: String
+        let accessibility: String
+        var id: String { label }
+    }
+
+    /// The extra rows the operator switched on and the turn actually has data
+    /// for. Skips a switch that is on but has nothing to say rather than drawing
+    /// an empty strip.
+    var detailRows: [DetailRow] {
+        guard isEnabled, let accounting else { return [] }
+        var rows: [DetailRow] = []
+        if showsToolList, let list = accounting.toolList, !list.isEmpty {
+            let body = list.map(\.label).joined(separator: " · ")
+            rows.append(DetailRow(
+                label: "tools",
+                text: "\u{1F527} " + body,
+                accessibility: "Tools used: \(list.map { "\($0.name) \($0.count) times" }.joined(separator: ", "))"
+            ))
+        }
+        if showsSkillList, let list = accounting.skillList, !list.isEmpty {
+            let body = list.map(\.label).joined(separator: " · ")
+            rows.append(DetailRow(
+                label: "skills",
+                text: "\u{1F4DA} " + body,
+                accessibility: "Skills used: \(list.map { "\($0.name) \($0.count) times" }.joined(separator: ", "))"
+            ))
+        }
+        return rows
     }
 
     /// The fields that are both switched on and actually known, in reading
