@@ -47,6 +47,31 @@ pub const SETTING_CWD: &str = "routing.harness.cwd";
 /// `settings` row: how long one delegated task may run.
 pub const SETTING_TIMEOUT_SECS: &str = "routing.harness.timeout_secs";
 
+/// The provider key the Claude Code sign-in is sealed under.
+///
+/// The token lives in the daemon's AEAD-encrypted token store, the same one every
+/// provider grant uses, and NOT in a settings row. It was a plaintext settings row,
+/// which is a credential at rest in the database - the one thing the build rules
+/// forbid outright. A harness token is no different from a provider grant.
+///
+/// One constant, referenced by the route that writes it and the spawn that exports
+/// it, so the two cannot name different records.
+pub const CLAUDE_TOKEN_PROVIDER: &str = "claude-code-harness";
+
+/// The stored Claude Code token, read back from the sealed store.
+///
+/// `None` when nothing was ever stored, when the record cannot be opened, or when
+/// the store is unreadable. A read failure is "no token" rather than an error: the
+/// harness still runs, it simply runs unauthenticated, and refusing to start a task
+/// because a credential file would not open would be worse than starting it.
+#[must_use]
+pub fn sealed_claude_token() -> Option<String> {
+    let store = crate::oauth::TokenFileStore::from_home().ok()?;
+    let record = store.read(CLAUDE_TOKEN_PROVIDER).ok().flatten()?;
+    let token = record.access_token.trim().to_owned();
+    (!token.is_empty()).then_some(token)
+}
+
 /// How long one delegated task may run when the row is absent or unusable.
 ///
 /// Ten minutes was the shipped default and it is too short for the work this
@@ -186,6 +211,14 @@ pub struct Config {
     pub cwd: Option<PathBuf>,
     /// How long one task may run.
     pub timeout_secs: u64,
+    /// The Claude Code sign-in token, when one was stored through the app.
+    ///
+    /// This is the credential the harness itself needs. It was stored by the
+    /// device's login route as a settings row and read back only to answer "is
+    /// there a token?" for the tools report, so a successful sign-in still left
+    /// `claude` unable to authenticate: the paste was recorded and then dropped.
+    /// It rides here so the spawn below can export it.
+    pub claude_token: Option<String>,
 }
 
 impl Config {
@@ -210,6 +243,7 @@ pub fn config(db: &Db) -> Option<Config> {
         model: nonempty(read(SETTING_MODEL)),
         cwd: nonempty(read(SETTING_CWD)).map(PathBuf::from),
         timeout_secs: timeout_secs(read(SETTING_TIMEOUT_SECS).as_deref()),
+        claude_token: sealed_claude_token(),
     })
 }
 
@@ -450,6 +484,22 @@ pub fn run(
         .stderr(std::process::Stdio::piped());
     if let Some(dir) = &cwd {
         command.current_dir(dir);
+    }
+    // The sign-in token reaches the harness here.
+    //
+    // `claude` reads `CLAUDE_CODE_OAUTH_TOKEN` from its environment, and this
+    // process is the one that starts it. Without this line a stored token was
+    // inert: the app reported a saved sign-in, the tools report said a token
+    // existed, and every harness run still failed to authenticate because nothing
+    // ever handed the value to the binary.
+    //
+    // Set on the child only, never on this process: exporting it into the daemon's
+    // own environment would put a credential where every other spawn inherits it,
+    // including the sandboxed tools that have no business holding one.
+    if let Some(token) = config.claude_token.as_deref().map(str::trim)
+        && !token.is_empty()
+    {
+        command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
     }
     // Its own group, so a timeout can end the task the harness started rather
     // than only the process this module spawned. A harness that forks a worker
@@ -724,6 +774,7 @@ mod tests {
             model: None,
             cwd: None,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            claude_token: None,
         }
     }
 
@@ -745,6 +796,7 @@ mod tests {
             model: None,
             cwd: None,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            claude_token: None,
         };
         let spec = spec(&config);
         assert_eq!(spec.name, "delegate_to_harness");
@@ -780,6 +832,7 @@ mod tests {
             model: None,
             cwd: None,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            claude_token: None,
         };
         let argv = argv(&config, task);
         assert_eq!(
@@ -803,6 +856,7 @@ mod tests {
             model: None,
             cwd: None,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            claude_token: None,
         };
         assert_eq!(
             argv(&config, "one task"),
@@ -819,6 +873,7 @@ mod tests {
             model: Some("a-model".to_owned()),
             cwd: None,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            claude_token: None,
         };
         // dsh names its profile and takes the task positionally: `-p` is not an
         // option the launcher accepts, and neither is `--model` - it answers
@@ -879,6 +934,98 @@ mod tests {
             "the task reached the harness as one argument: {payload}"
         );
         assert_eq!(payload["stderr"], "a warning\n");
+    }
+
+    /// A sign-in token is sealed, and read back, without touching a settings row.
+    ///
+    /// The token used to live in `settings` in plaintext, which is a credential at
+    /// rest in the database - a direct violation of the build rules, and how this
+    /// was stored before. It belongs in the same AEAD store every provider grant
+    /// uses. This exercises the store directly because the route that calls it needs
+    /// a paired admin token to reach.
+    #[test]
+    fn a_claude_token_is_sealed_and_read_back() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = crate::oauth::TokenFileStore::new(
+            dir.path().join("tokens"),
+            dir.path().join("keys/token.key"),
+        );
+        let record = core_domain::provider::TokenRecord {
+            provider: CLAUDE_TOKEN_PROVIDER.to_owned(),
+            access_token: "sk-ant-oat-sealed".to_owned(),
+            refresh_token: None,
+            expires_at: None,
+            scopes: Vec::new(),
+            project_id: None,
+            token_type: Some("Bearer".to_owned()),
+            last_refresh: None,
+            account: None,
+            origin: core_domain::provider::TokenOrigin::Login,
+        };
+        store.write(&record).expect("seal");
+
+        // The file on disk is not the token. A plaintext settings row would have
+        // been readable by anything that can open the database.
+        let raw = std::fs::read(store.path_for(CLAUDE_TOKEN_PROVIDER)).expect("file");
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            !text.contains("sk-ant-oat-sealed"),
+            "the token must not be legible on disk"
+        );
+
+        // And it reads back exactly.
+        let back = store
+            .read(CLAUDE_TOKEN_PROVIDER)
+            .expect("open")
+            .expect("a record");
+        assert_eq!(back.access_token, "sk-ant-oat-sealed");
+    }
+
+    /// The stored Claude token reaches the harness process.
+    ///
+    /// This is the defect that made every sign-in fail silently: the device route
+    /// stored the pasted token in a settings row, the tools report used it to answer
+    /// "a token exists", and nothing ever handed the value to `claude`. The operator
+    /// signed in, the app said so, and the harness still could not authenticate.
+    ///
+    /// The stub echoes the variable it received, so this fails unless the spawn
+    /// really exports it.
+    #[test]
+    fn the_stored_claude_token_reaches_the_harness_process() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let command = stub(
+            dir.path(),
+            "echo-token.sh",
+            "#!/bin/sh\nprintf 'token=%s\\n' \"${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n",
+        );
+        let mut config = stub_config(&command, Harness::ClaudeCode);
+        config.claude_token = Some("sk-ant-oat-test-value".to_owned());
+        let sandbox = full_sandbox(dir.path()).with_harness(Some(config));
+
+        let result = super::super::execute(TOOL, &serde_json::json!({"task": "hi"}), &sandbox);
+        let payload = payload_of(&result);
+        assert_eq!(
+            payload["stdout"], "token=sk-ant-oat-test-value\n",
+            "the child process must receive the stored token: {payload}"
+        );
+
+        // And with no token stored, the variable is absent rather than empty, so a
+        // leftover value in the daemon's own environment cannot be mistaken for a
+        // sign-in the operator performed.
+        let dir2 = tempfile::tempdir().expect("temp dir");
+        let command2 = stub(
+            dir2.path(),
+            "echo-token.sh",
+            "#!/bin/sh\nprintf 'token=%s\\n' \"${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n",
+        );
+        let config2 = stub_config(&command2, Harness::ClaudeCode);
+        let sandbox2 = full_sandbox(dir2.path()).with_harness(Some(config2));
+        let result2 = super::super::execute(TOOL, &serde_json::json!({"task": "hi"}), &sandbox2);
+        let payload2 = payload_of(&result2);
+        assert_eq!(
+            payload2["stdout"], "token=none\n",
+            "no stored token means no token in the child: {payload2}"
+        );
     }
 
     /// A harness that never finishes is killed at the configured timeout and the

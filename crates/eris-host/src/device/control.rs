@@ -160,10 +160,22 @@ pub async fn harness_tool_login_complete(
         }
     };
     let db = service.engine().db();
-    if let Err(error) = crate::web::store::settings_put(db, SETTING_CLAUDE_TOKEN, &token_value) {
-        return DeviceError::db_unavailable(format!("cannot store the harness token: {error}"))
-            .into_response();
+    // Sealed, not written to a settings row.
+    //
+    // This was `settings_put(SETTING_CLAUDE_TOKEN, ...)`, which put a live OAuth
+    // token in the database in plaintext. The daemon already has an AEAD store for
+    // provider grants, and a harness credential is the same kind of secret, so it
+    // goes there. The old row is deleted below so an install that already has one
+    // does not keep a plaintext copy alongside the sealed record.
+    if let Err(error) = seal_claude_token(&token_value) {
+        tracing::error!(%error, "the Claude Code token could not be sealed");
+        return DeviceError::db_unavailable(format!(
+            "the harness token could not be stored: {error}"
+        ))
+        .into_response();
     }
+    // Best effort: a leftover row from before the sealed store existed.
+    let _ = crate::web::store::settings_delete(db, SETTING_CLAUDE_TOKEN);
     match detect_harnesses(db).await {
         Ok(report) => axum::Json(report.json()).into_response(),
         Err(error) => error.into_response(),
@@ -3787,10 +3799,7 @@ async fn detect_harnesses(
 ) -> Result<crate::harness_tools::ToolsReport, DeviceError> {
     // A token saved through this route is the one the person meant; the
     // environment belongs to whatever started the service.
-    let saved = crate::web::store::settings_get(db, SETTING_CLAUDE_TOKEN)
-        .ok()
-        .flatten()
-        .filter(|token| !token.trim().is_empty());
+    let saved = crate::tools::harness::sealed_claude_token();
     // The environment is read here, on the caller's thread, because a test's
     // fixture is thread-local and would be invisible inside the blocking pool.
     let mut env = crate::harness_tools::detect_env();
@@ -3811,8 +3820,34 @@ async fn detect_harnesses(
 /// Chat scope: this is what a composer needs in order to offer a harness, and a
 /// binary, a version, a path and an account email are not credentials. The token
 /// the sign-in was checked with never appears here, in any form.
-/// Where a token pasted into the app is kept.
+/// Where a token pasted into the app used to be kept, in plaintext.
+///
+/// Kept only so the migration above can delete it. Nothing reads it any more.
 const SETTING_CLAUDE_TOKEN: &str = "harness.claude.token";
+
+/// Seal a Claude Code sign-in token in the daemon's encrypted store.
+fn seal_claude_token(token: &str) -> Result<(), String> {
+    let store = crate::oauth::TokenFileStore::from_home().map_err(|error| error.to_string())?;
+    let record = core_domain::provider::TokenRecord {
+        provider: crate::tools::harness::CLAUDE_TOKEN_PROVIDER.to_owned(),
+        access_token: token.trim().to_owned(),
+        refresh_token: None,
+        // The token is long-lived by the CLI's own design; an expiry it does not
+        // state is not one this daemon invents.
+        expires_at: None,
+        scopes: Vec::new(),
+        project_id: None,
+        token_type: Some("Bearer".to_owned()),
+        last_refresh: None,
+        account: None,
+        // The operator produced it deliberately, so refreshing it would be this
+        // daemon's to do if it ever gained that path.
+        origin: core_domain::provider::TokenOrigin::Login,
+    };
+    store
+        .write(&record)
+        .map_err(|error| error.to_string())
+}
 
 /// `PUT /v1/harness/tools/claude-code/auth` - store a sign-in token.
 ///

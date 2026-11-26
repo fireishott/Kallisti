@@ -55,6 +55,18 @@ pub fn settings_put(db: &Db, key: &str, value: &str) -> Result<(), DbError> {
     })
 }
 
+/// Remove one `settings` row, if it exists.
+///
+/// Idempotent: deleting a row that is already gone is a success, because the caller
+/// is expressing "this must not be stored", not "this was stored". Used to retire a
+/// key that moved somewhere safer, where a second call must not fail a sign-in.
+pub fn settings_delete(db: &Db, key: &str) -> Result<(), DbError> {
+    db.with_conn(|conn| {
+        conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        Ok(())
+    })
+}
+
 /// Every `settings` row, key order.
 pub fn settings_all(db: &Db) -> Result<BTreeMap<String, String>, DbError> {
     db.with_conn(|conn| {

@@ -97,6 +97,8 @@ const PIPE_GRACE: Duration = Duration::from_millis(500);
 pub const SOURCE_ENVIRONMENT: &str = "environment";
 /// A token saved through this daemon's own route.
 pub const SOURCE_DAEMON: &str = "saved here";
+/// `claude auth status`, which answers the question directly.
+pub const SOURCE_CLI_STATUS: &str = "cli";
 /// See [`SOURCE_ENVIRONMENT`].
 pub const SOURCE_CREDENTIALS_FILE: &str = "credentials file";
 /// See [`SOURCE_ENVIRONMENT`].
@@ -1453,6 +1455,34 @@ struct Look {
 fn claude_auth(env: &Env) -> Auth {
     let now = now_ms();
     let mut looks: Vec<Look> = Vec::new();
+    // The CLI's own verdict, when it can be asked.
+    //
+    // Everything below this point guesses from files. `claude` knows the answer
+    // authoritatively, and on this host the two disagreed in a way that mattered:
+    // `~/.claude/.credentials.json` was a leftover holding `accessToken: ""` and
+    // `expiresAt: 0` from a `setup-token` run that had printed a token and saved
+    // nothing, while `claude auth status` said `{"loggedIn": false, "authMethod":
+    // "none"}`. Reading only the file cannot tell a stale leftover from a real
+    // sign-in that happens to be stored elsewhere.
+    //
+    // A status it cannot run leaves the rest of this function to decide, so a host
+    // without a working `claude` behaves exactly as before.
+    //
+    // A status it CAN run is decisive either way, because it reads the same
+    // environment and files this function would otherwise guess at - and it knows
+    // about sources this module does not parse, an `apiKeyHelper` among them.
+    if let Some(status) = claude_auth_status(env) {
+        // Reported as the only look: one authoritative answer, not a vote. Adding
+        // it alongside the file looks let a stale `.credentials.json` outrank a
+        // signed-out CLI, which is precisely the disagreement that made the failure
+        // look like "not signed in" no matter how often the operator signed in.
+        return Auth {
+            kind: OAUTH,
+            verified: status.verified,
+            account: status.account,
+            source: status.source,
+        };
+    }
     let first = env
         .stored_token
         .as_deref()
@@ -1488,6 +1518,35 @@ fn claude_auth(env: &Env) -> Auth {
         looks.push(look_from_json(SOURCE_KEYCHAIN, &text, now));
     }
     resolve(looks)
+}
+
+/// What `claude auth status` says, as a [`Look`].
+///
+/// The command prints one JSON object. Only two fields matter here: `loggedIn`,
+/// which is the answer, and `authMethod`, which distinguishes a subscription
+/// sign-in from an API key so the report can say which one is in use.
+///
+/// `None` when the command is missing, fails, prints something that is not an
+/// object, or exceeds its timeout. Every one of those is "this source has nothing
+/// to say" rather than "not signed in": a broken CLI must not be reported as a
+/// missing credential, because the fix for the two is different.
+fn claude_auth_status(env: &Env) -> Option<Look> {
+    let claude = find_on_path(&env.dirs, "claude")?;
+    let text = run_captured(&claude, &["auth", "status"], KEYCHAIN_TIMEOUT)?;
+    let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    if !value.is_object() {
+        return None;
+    }
+    let logged_in = value
+        .get("loggedIn")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Some(Look {
+        source: SOURCE_CLI_STATUS,
+        found: logged_in,
+        verified: logged_in,
+        account: account_email(&value),
+    })
 }
 
 /// The one answer a report carries.
@@ -2082,6 +2141,96 @@ mod tests {
         assert_eq!(allowed_models(TOOL_ANTIGRAVITY).len(), 3);
         assert_eq!(allowed_models(TOOL_DSH), vec!["default"]);
         assert!(allowed_models("none").is_empty());
+    }
+
+    /// The CLI's own answer outranks a leftover credentials file.
+    ///
+    /// The live host carried both: `claude auth status` reporting `loggedIn: false`,
+    /// and a `.credentials.json` left by `setup-token` holding empty strings. Reading
+    /// only the file could not tell that leftover from a real sign-in.
+    #[test]
+    fn the_cli_verdict_is_read_and_outranks_the_file() {
+        let dir = tempfile::tempdir().expect("dir");
+        let home = tempfile::tempdir().expect("home");
+        // A CLI that reports a signed-in account.
+        let claude = stub(
+            dir.path(),
+            "claude",
+            "#!/bin/sh\nprintf '{\"loggedIn\": true, \"authMethod\": \"oauth\"}'\n",
+        );
+        let _ = claude;
+        // A credentials file that says nothing.
+        let claude_dir = home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).expect("dir");
+        std::fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"","expiresAt":0}}"#,
+        )
+        .expect("credentials");
+
+        let mut env = env_in(&[dir.path().to_path_buf()]);
+        env.home = Some(home.path().to_path_buf());
+        env.platform = Platform::Linux;
+
+        // The status reader itself, which is the half that can be tested without a
+        // pty: SQL-free, one command, one JSON object.
+        let look = claude_auth_status(&env).expect("the stub answers");
+        assert_eq!(look.source, SOURCE_CLI_STATUS);
+        assert!(look.found, "loggedIn:true is a sign-in");
+        assert!(look.verified, "and it is valid");
+
+        // A CLI that reports signed out must not be overridden by a stale file.
+        let dir2 = tempfile::tempdir().expect("dir");
+        stub(
+            dir2.path(),
+            "claude",
+            "#!/bin/sh\nprintf '{\"loggedIn\": false, \"authMethod\": \"none\"}'\n",
+        );
+        let mut env2 = env_in(&[dir2.path().to_path_buf()]);
+        env2.home = Some(home.path().to_path_buf());
+        env2.platform = Platform::Linux;
+        let look2 = claude_auth_status(&env2).expect("the stub answers");
+        assert!(!look2.found, "loggedIn:false is not a sign-in");
+        assert!(!look2.verified);
+    }
+
+    /// A hollow credentials file is not a sign-in.
+    ///
+    /// This is the shape the live host carried: `accessToken` and `refreshToken`
+    /// as empty strings and `expiresAt: 0`, left behind by `claude setup-token`,
+    /// which prints a token to stdout and persists nothing. The daemon reported
+    /// "not signed in" from it, which was right by luck - and the operator kept
+    /// signing in because the CLI has no credential, which is the part that was
+    /// invisible: nothing distinguished "the file says no" from "the file is a
+    /// leftover".
+    ///
+    /// The token flag has to be false here, or a stale file would read as a
+    /// working sign-in.
+    #[test]
+    fn a_hollow_credentials_file_is_not_a_sign_in() {
+        let credential = parse_credential(
+            r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,
+                "subscriptionType":"pro","scopes":["user:inference"]}}"#,
+        )
+        .expect("it parses");
+        assert!(!credential.token, "an empty access token is no token");
+        assert_eq!(credential.expires_at_ms, Some(0), "zero is read, not invented");
+
+        // And through the source reader it must not verify.
+        let dir = tempfile::tempdir().expect("dir");
+        let home = tempfile::tempdir().expect("home");
+        let claude = home.path().join(".claude");
+        std::fs::create_dir_all(&claude).expect("dir");
+        std::fs::write(
+            claude.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}"#,
+        )
+        .expect("credentials");
+        let mut env = env_in(&[dir.path().to_path_buf()]);
+        env.home = Some(home.path().to_path_buf());
+        env.platform = Platform::Linux;
+        let auth = claude_auth(&env);
+        assert!(!auth.verified, "a hollow file must not read as signed in");
     }
 
     /// The credentials file names the account, and the token never appears in the
