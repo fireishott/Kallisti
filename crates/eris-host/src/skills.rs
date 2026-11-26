@@ -241,6 +241,10 @@ const DEFAULT_SKILLS: &[(&str, &str)] = &[
         "craft-anything",
         include_str!("../../../skills/craft-anything/SKILL.md"),
     ),
+    (
+        "local-model-coding",
+        include_str!("../../../skills/local-model-coding/SKILL.md"),
+    ),
 ];
 
 /// Place the shipped skills into the owned library on first run.
