@@ -234,6 +234,15 @@ struct AttachmentPickerSheet: View {
                           image.cgImage != nil || image.ciImage != nil else {
                         throw PreparationError.invalidImage
                     }
+                case .imageData(let data, _):
+                    // The bytes have to decode to a picture and fit the ceiling;
+                    // a picker can hand over an empty or truncated file.
+                    guard UIImage(data: data) != nil else {
+                        throw PreparationError.invalidImage
+                    }
+                    guard data.count <= PendingAttachment.maxFileSize else {
+                        throw PreparationError.fileTooLarge
+                    }
                 case .file(let url):
                     guard FileManager.default.isReadableFile(atPath: url.path) else {
                         throw PreparationError.inaccessibleFile
@@ -311,8 +320,10 @@ struct AttachmentPickerSheet: View {
                 guard !Task.isCancelled else { break }
                 do {
                     if let data = try await item.loadTransferable(type: Data.self),
-                       let image = UIImage(data: data) {
-                        onAttachmentPicked?(.image(image))
+                       UIImage(data: data) != nil {
+                        // The bytes, not the decoded image: full size and full
+                        // resolution, exactly as the library holds them.
+                        onAttachmentPicked?(.imageData(data, fileName: nil))
                         delivered = true
                     }
                 } catch {
@@ -334,6 +345,7 @@ struct AttachmentPickerSheet: View {
         case emptyFile
         case unreadableVideo
         case videoTooLarge
+        case fileTooLarge
 
         var errorDescription: String? {
             switch self {
@@ -342,6 +354,9 @@ struct AttachmentPickerSheet: View {
             case .emptyFile: "The selected file is empty."
             case .unreadableVideo: "The video could not be prepared."
             case .videoTooLarge: "Video is too large to upload."
+            case .fileTooLarge:
+                "That image is larger than the 25 MB a single attachment may be. "
+                    + "Nothing was shrunk to fit - pick a smaller file instead."
             }
         }
     }
@@ -350,7 +365,14 @@ struct AttachmentPickerSheet: View {
 // MARK: - Attachment Result
 
 enum AttachmentResult {
+    /// A UIImage from the camera, where there are no original bytes to keep.
     case image(UIImage)
+    /// A photo straight from the library, with its bytes untouched.
+    ///
+    /// The picker already receives `Data`; decoding it to a UIImage and re-encoding
+    /// is a lossy round trip over a file that is already the operator's picture, and
+    /// it is what downscaling-on-upload used to do silently.
+    case imageData(Data, fileName: String?)
     case file(URL)
 }
 

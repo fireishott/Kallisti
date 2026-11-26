@@ -76,13 +76,38 @@ pub const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
 /// A screenshot and a log and a JSON file and a PDF is a normal turn; fifty is a
 /// mistake. The cap exists so a drop of a whole folder is a refusal with a
 /// number in it rather than a turn that writes a directory into the workspace.
-pub const MAX_ATTACHMENTS: usize = 8;
+///
+/// Ten, not eight, because ten is what the phone offers. The app let an operator
+/// pick ten photos and the daemon refused the message with
+/// `attachments_invalid: a message may carry at most 8 files`, which is a
+/// contradiction the operator cannot act on - the picker had already said ten was
+/// fine. A limit the client shows must be a limit the server honours.
+///
+/// The aggregate budget is what actually protects the daemon; this number only
+/// bounds how many separate writes one turn can make. Ten camera photos at a few
+/// megabytes each still fit inside `MAX_ATTACHMENT_TOTAL_BYTES`, and a message
+/// that does not fit is refused with the total named.
+pub const MAX_ATTACHMENTS: usize = 10;
 
 /// The most bytes one message may carry across every file.
 ///
-/// Eight files at the single-file ceiling is 200 MB, which is a workspace write
-/// nobody asked for. The total is the budget that actually matters.
-pub const MAX_ATTACHMENT_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+/// The total is the budget that actually matters, and it has to fit the worst
+/// real case the operator can express: ten FULL-SIZE photos. At full resolution an
+/// iPhone frame is about 2 MB as HEIC, 4-5 MB as a high-quality JPEG, and 15-20 MB
+/// as PNG, so ten of them ranges from 22 MB to 200 MB. The old 64 MB ceiling was
+/// chosen when the app downscaled every image to 768 pixels and a photo was 300 KB;
+/// with that compression now gone it would refuse an ordinary ten-photo message.
+///
+/// 256 MB covers ten full-resolution PNGs with room for the multipart framing. It
+/// is larger than the per-file ceiling times ten on purpose: the point of raising it
+/// is that a legitimate photo message is never refused for a limit that only made
+/// sense while the client was destroying the pixels.
+///
+/// This is a ceiling on one request, not on disk: the daemon writes the files it
+/// accepts into the workspace, so the practical guard is that the operator chose
+/// them. A drop of a whole folder is still refused, now with a number that reflects
+/// what a picture is worth.
+pub const MAX_ATTACHMENT_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 
 /// How much of a text file is pasted into the prompt.
 pub const INLINE_TEXT_BYTES: usize = 8 * 1024;
@@ -2313,7 +2338,15 @@ pub fn is_image(file: &Attachment) -> bool {
 }
 
 /// The largest image handed to a vision model in one turn, in bytes.
-pub const MAX_VISION_BYTES: u64 = 8 * 1024 * 1024;
+///
+/// A full-resolution PNG of a 12-megapixel photo is 15-20 MB, and the old 8 MB
+/// ceiling silently skipped it: the model was told there was a file and never shown
+/// it, which reads as "the model ignored my picture". 24 MB covers one
+/// full-resolution PNG, and the per-file ceiling above bounds it from the other side.
+///
+/// This is a ceiling per image, not per turn: `describe_images` filters each file
+/// separately, so the total sent to the vision model can exceed this.
+pub const MAX_VISION_BYTES: u64 = 24 * 1024 * 1024;
 
 /// Ask a vision model what is in the attached images.
 ///
@@ -6163,6 +6196,32 @@ fn the_usage_lists_name_what_ran_and_how_often() {
     assert_eq!(skills[0].label(), "pdf×2");
     assert_eq!(skills[1].label(), "email");
     assert_eq!(tools.len(), 3, "a nameless tool is not a row");
+}
+
+/// Ten files, because ten is what the phone offers.
+///
+/// The app let an operator pick ten photos and this daemon refused the message with
+/// `attachments_invalid: a message may carry at most 8 files`. A limit the client
+/// shows must be the limit the server honours, and this pins the number so the two
+/// cannot drift apart again: the iOS `PendingAttachment.maxAttachmentsPerMessage`
+/// carries the same literal and the same reason.
+#[test]
+fn one_message_carries_ten_files() {
+    assert_eq!(MAX_ATTACHMENTS, 10, "the picker offers ten; honour ten");
+    // Ten full-resolution photos must fit the aggregate budget, or raising the
+    // count would only move the refusal. A 12 MP frame is ~2 MB as HEIC, ~5 MB as a
+    // high-quality JPEG, and ~20 MB as PNG: 200 MB for ten PNGs.
+    assert!(
+        MAX_ATTACHMENT_TOTAL_BYTES >= 10 * 20 * 1024 * 1024,
+        "the total must fit ten full-resolution PNGs: {MAX_ATTACHMENT_TOTAL_BYTES}"
+    );
+    // One full-resolution PNG must reach a vision model rather than be skipped.
+    assert!(
+        MAX_VISION_BYTES >= 20 * 1024 * 1024,
+        "a full-resolution PNG must reach the vision model: {MAX_VISION_BYTES}"
+    );
+    // And a single file may not exceed the aggregate.
+    assert!(MAX_ATTACHMENT_BYTES <= MAX_ATTACHMENT_TOTAL_BYTES);
 }
 
 #[test]

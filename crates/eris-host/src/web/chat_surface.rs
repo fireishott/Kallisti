@@ -1423,8 +1423,14 @@ fn a_message_can_carry_a_file_and_the_turn_is_told_about_it() {
 /// A refused send writes nothing. This is the shape of the defect that lost a
 /// typed message: the reader wrote each file as its part arrived and only then
 /// found the one that broke a cap, so the parts before it were already on disk
-/// and already in `chat_attachments`, with no message to belong to. Nine files is
-/// the cheapest way to reach a refusal with eight good parts in front of it.
+/// and already in `chat_attachments`, with no message to belong to. One file past
+/// the cap is the cheapest way to reach a refusal with every permitted part in
+/// front of it.
+///
+/// The count is derived from `MAX_ATTACHMENTS` rather than written as a literal:
+/// this test hardcoded nine against a cap of eight, and raising the cap to ten
+/// turned the send into a success and the assertion into a 303. A test about
+/// cleanup must not break because a limit moved.
 #[test]
 fn a_refused_send_leaves_no_file_and_no_attachment_row() {
     let (_dir, engine, app, cookie) = ready_app();
@@ -1434,7 +1440,7 @@ fn a_refused_send_leaves_no_file_and_no_attachment_row() {
     let mut body = format!(
         "--{boundary}\r\nContent-Disposition: form-data; name=\"message\"\r\n\r\nread these\r\n\r\n"
     );
-    for index in 0..9 {
+    for index in 0..=crate::web::chat::MAX_ATTACHMENTS {
         body.push_str(&format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"note{index}.txt\"\r\nContent-Type: text/plain\r\n\r\nfile {index}\r\n\r\n"
         ));

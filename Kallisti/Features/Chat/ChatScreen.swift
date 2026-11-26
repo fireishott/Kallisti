@@ -2032,6 +2032,12 @@ struct ChatScreen: View {
             if let attachment = PendingAttachment.image(image) {
                 pendingAttachments.append(attachment)
             }
+        case .imageData(let data, let name):
+            // The library's original bytes, uploaded exactly as picked: full size,
+            // full resolution, no re-encode.
+            if let attachment = PendingAttachment.imageData(data, fileName: name) {
+                pendingAttachments.append(attachment)
+            }
         case .file(let url):
             if let attachment = PendingAttachment.file(at: url) {
                 pendingAttachments.append(attachment)

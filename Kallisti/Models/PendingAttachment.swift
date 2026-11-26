@@ -18,9 +18,27 @@ struct PendingAttachment: Identifiable, Sendable {
     }
 
     /// Maximum file size: 350 KB (before base64 encoding -> ~470KB base64).
-    /// The Herald API server accepts a 1 MB request body for the whole message payload,
-    /// so individual attachments still need additional aggregate request-size validation.
-    static let maxFileSize = 350 * 1024
+    /// The most bytes one attachment may carry.
+    ///
+    /// This was 350 KB, with a comment about a 1 MB Herald relay request body. That
+    /// relay is gone: the Eris daemon takes the file as RAW BYTES on its own
+    /// `POST /v1/attachments`, and its ceiling is 25 MB per file with a 64 MB total
+    /// per message. Nothing is base64'd into a chat request any more, so the old
+    /// number was compressing photos for a limit that no longer exists.
+    ///
+    /// Matched to the daemon's `chat::MAX_ATTACHMENT_BYTES` so the app refuses a
+    /// file the daemon would refuse, and nothing smaller.
+    static let maxFileSize = 25 * 1024 * 1024
+
+    /// The most files one message may carry.
+    ///
+    /// Ten, and the daemon's `chat::MAX_ATTACHMENTS` is ten: the two agreed on
+    /// different numbers once, so the picker offered ten photos and the daemon
+    /// refused the message with `attachments_invalid: a message may carry at most 8
+    /// files`. A limit the UI shows must be the limit the server honours, and the
+    /// operator's expectation - ten - is the one that was reasonable.
+    ///
+    /// These two numbers must move together or not at all.
     static let maxAttachmentsPerMessage = 10
     /// Build 78.7: video files ride the file.attach data_url path (WS cap 384 MB).
     static let maxVideoFileSize = 150 * 1024 * 1024
@@ -53,34 +71,31 @@ struct PendingAttachment: Identifiable, Sendable {
             || supportedVideoMimeTypes.contains(mimeType)
     }
 
-    /// Create an image attachment from a UIImage.
-    /// Large images are automatically downscaled to stay within the size limit.
+    /// Create an image attachment from a UIImage, at full size and resolution.
+    ///
+    /// This used to downscale every photo to 768 points on its longest edge and
+    /// encode it at quality 0.5, then keep stepping the quality down until the file
+    /// fit in 350 KB. A 12-megapixel photo arrived at the daemon as roughly a
+    /// 0.2-megapixel thumbnail: useless for anything visual, and destructive in a
+    /// way nobody asked for. The limits it was protecting against - a 1 MB relay
+    /// body carrying base64 - no longer exist, and the daemon takes raw bytes up to
+    /// 25 MB.
+    ///
+    /// So the pixels are passed through untouched. The image is re-encoded only to
+    /// pick a container the daemon recognises, and at the highest quality rather
+    /// than a chosen one: `UIImage.jpegData(quality: 1.0)` is visually lossless for
+    /// a camera image and much smaller than PNG for the same picture. An image
+    /// already inside `maxFileSize` is never re-encoded at all.
     static func image(_ image: UIImage, fileName: String? = nil) -> PendingAttachment? {
-        var quality: CGFloat = 0.5
-        var targetImage = image
+        // The original bytes when the caller has them (a file picker or
+        // PhotosPicker hands over a file, not a UIImage) are preserved exactly;
+        // this path only runs for an in-memory UIImage, where the best available
+        // fidelity is one high-quality re-encode.
+        guard let jpegData = image.jpegData(compressionQuality: 1.0) else { return nil }
 
-        // Downscale images to 768px max — keeps base64 well under API body limit
-        let maxDimension: CGFloat = 768
-        if max(image.size.width, image.size.height) > maxDimension {
-            let scale = maxDimension / max(image.size.width, image.size.height)
-            let newSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-            let renderer = UIGraphicsImageRenderer(size: newSize)
-            targetImage = renderer.image { _ in
-                image.draw(in: CGRect(origin: .zero, size: newSize))
-            }
-        }
-
-        guard var jpegData = targetImage.jpegData(compressionQuality: quality) else { return nil }
-
-        // Progressively lower quality if still too large
-        while jpegData.count > maxFileSize && quality > 0.1 {
-            quality -= 0.2
-            if let reduced = targetImage.jpegData(compressionQuality: max(quality, 0.1)) {
-                jpegData = reduced
-            } else {
-                break
-            }
-        }
+        // A genuine overshoot is refused rather than silently crushed. The caller
+        // gets nil and the UI says the file is too large; shipping a degraded copy
+        // the operator did not ask for is the bug this replaced.
         guard jpegData.count <= maxFileSize else { return nil }
 
         // Build 114: generate an aspect-fill crop, not an aspect-fit square.
@@ -96,6 +111,51 @@ struct PendingAttachment: Identifiable, Sendable {
             localStoragePath: stageLocally(data: jpegData, preferredFileName: fileName ?? "photo.jpg"),
             thumbnailData: thumbData
         )
+    }
+
+    /// Build an image attachment from the bytes a photo picker handed over.
+    ///
+    /// The picker gives `Data` and the old code decoded it to a `UIImage`, threw the
+    /// bytes away, and re-encoded at quality 0.5. That is a lossy round trip over a
+    /// file that was already the operator's picture, and it is what "compressed on
+    /// upload" meant. The bytes are kept as they arrived; the decoded image is used
+    /// only to draw the thumbnail.
+    ///
+    /// The media type comes from the bytes, not from the file extension, because a
+    /// picker can hand over HEIC and the daemon sniffs bytes anyway.
+    static func imageData(_ data: Data, fileName: String? = nil) -> PendingAttachment? {
+        guard let image = UIImage(data: data) else { return nil }
+        guard data.count <= maxFileSize else { return nil }
+        let name = fileName ?? "photo_\(UUID().uuidString.prefix(8)).heic"
+        return PendingAttachment(
+            kind: .image,
+            fileName: name,
+            mimeType: Self.imageMimeType(for: data),
+            data: data,
+            localStoragePath: stageLocally(data: data, preferredFileName: name),
+            thumbnailData: croppedThumbnailData(from: image)
+        )
+    }
+
+    /// The media type of image bytes, decided by magic bytes.
+    ///
+    /// Mirrors the daemon's `chat::sniff_media_type` for the formats a phone
+    /// produces. Guessing `image/jpeg` for a HEIC is the kind of label mismatch that
+    /// makes a model describe garbage, so the signature decides.
+    private static func imageMimeType(for data: Data) -> String {
+        let bytes = [UInt8](data.prefix(12))
+        if bytes.count >= 8, bytes[0..4] == [0x89, 0x50, 0x4E, 0x47] { return "image/png" }
+        if bytes.count >= 3, bytes[0..3] == [0xFF, 0xD8, 0xFF] { return "image/jpeg" }
+        if bytes.count >= 12, bytes[0..4] == Array("RIFF".utf8),
+           bytes[8..12] == Array("WEBP".utf8) { return "image/webp" }
+        if bytes.count >= 6, bytes[0..3] == Array("GIF".utf8) { return "image/gif" }
+        if bytes.count >= 12, bytes[4..8] == Array("ftyp".utf8) {
+            let brand = String(decoding: bytes[8..12], as: UTF8.self)
+            if ["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"].contains(brand) {
+                return "image/heic"
+            }
+        }
+        return "image/jpeg"
     }
 
     static func croppedThumbnailData(from image: UIImage) -> Data? {
@@ -125,8 +185,23 @@ struct PendingAttachment: Identifiable, Sendable {
         let isImage = mimeType.hasPrefix("image/")
         let isVideo = supportedVideoMimeTypes.contains(mimeType)
 
+        // An image that arrived as a FILE keeps its own bytes, verbatim.
+        //
+        // This used to decode it to a UIImage and hand it to `image(...)`, which
+        // re-encoded it - and before that fix, downscaled it to 768 pixels. A HEIC
+        // straight out of Photos is the operator's original; decoding and
+        // re-encoding it can only lose, and it turns a 2 MB HEIC into a much larger
+        // JPEG for no gain. The bytes are the picture.
         if isImage, let image = UIImage(data: data) {
-            return Self.image(image, fileName: url.lastPathComponent)
+            guard data.count <= maxFileSize else { return nil }
+            return PendingAttachment(
+                kind: .image,
+                fileName: url.lastPathComponent,
+                mimeType: mimeType,
+                data: data,
+                localStoragePath: stageLocally(data: data, preferredFileName: url.lastPathComponent),
+                thumbnailData: croppedThumbnailData(from: image)
+            )
         }
 
         guard data.count <= (isVideo ? maxVideoFileSize : maxFileSize) else { return nil }
