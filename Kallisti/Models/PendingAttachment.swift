@@ -143,14 +143,22 @@ struct PendingAttachment: Identifiable, Sendable {
     /// produces. Guessing `image/jpeg` for a HEIC is the kind of label mismatch that
     /// makes a model describe garbage, so the signature decides.
     private static func imageMimeType(for data: Data) -> String {
-        let bytes = [UInt8](data.prefix(12))
-        if bytes.count >= 8, bytes[0..4] == [0x89, 0x50, 0x4E, 0x47] { return "image/png" }
-        if bytes.count >= 3, bytes[0..3] == [0xFF, 0xD8, 0xFF] { return "image/jpeg" }
-        if bytes.count >= 12, bytes[0..4] == Array("RIFF".utf8),
-           bytes[8..12] == Array("WEBP".utf8) { return "image/webp" }
-        if bytes.count >= 6, bytes[0..3] == Array("GIF".utf8) { return "image/gif" }
-        if bytes.count >= 12, bytes[4..8] == Array("ftyp".utf8) {
-            let brand = String(decoding: bytes[8..12], as: UTF8.self)
+        let bytes = [UInt8](data)
+        /// Whether `signature` sits at `offset`.
+        ///
+        /// Explicit bounds checking rather than a slice comparison: `bytes[0..4]`
+        /// is an `ArraySlice`, and comparing one to a literal array is not an
+        /// operation Swift defines - it is a compile error, not a runtime miss.
+        func matches(_ signature: [UInt8], at offset: Int = 0) -> Bool {
+            guard bytes.count >= offset + signature.count else { return false }
+            return Array(bytes[offset..<(offset + signature.count)]) == signature
+        }
+        if matches([0x89, 0x50, 0x4E, 0x47]) { return "image/png" }
+        if matches([0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
+        if matches(Array("RIFF".utf8)), matches(Array("WEBP".utf8), at: 8) { return "image/webp" }
+        if matches(Array("GIF".utf8)) { return "image/gif" }
+        if matches(Array("ftyp".utf8), at: 4) {
+            let brand = String(decoding: bytes[8..<12], as: UTF8.self)
             if ["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"].contains(brand) {
                 return "image/heic"
             }
