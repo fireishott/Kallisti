@@ -1254,6 +1254,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
             sessionAnswers: totals.answers,
             sessionTurns: totals.turns,
             toolCalls: base?.toolCalls ?? (row.tools.isEmpty ? nil : row.tools.count),
+            // The learned line is a conversation fact, so it comes from the
+            // totals and not from the row. It was added to `ErisConversationTotals`
+            // and never copied onto the receipt, so the sub-footer could not draw
+            // no matter what the daemon sent.
+            skillsCreated: totals.skillsCreated,
+            skillsAppended: totals.skillsAppended,
             skillCalls: base?.skillCalls
                 ?? (row.tools.isEmpty
                     ? nil

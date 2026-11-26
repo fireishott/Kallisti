@@ -2805,6 +2805,7 @@ impl TurnHub {
                                 rounds,
                                 duration_ms,
                                 context_tokens,
+                                &tools,
                             );
                             let data = serde_json::json!({
                                 "text": &text,
@@ -3788,6 +3789,7 @@ fn receipt_for(
     rounds: u64,
     duration_ms: u64,
     context_tokens: Option<u64>,
+    tools: &[crate::web::chat::ToolRecord],
 ) -> serde_json::Value {
     let parsed = serde_json::from_value::<core_domain::Usage>(usage.clone()).ok();
     let prompt = parsed.and_then(|usage| usage.input_tokens());
@@ -3800,6 +3802,15 @@ fn receipt_for(
             .as_deref(),
     );
     let cost = crate::web::pricing::cost_of(model, prompt, completion, cached, &prices);
+    // The tool and skill counts belong on this frame too.
+    //
+    // They were added to the transcript read and to the browser's done frame, and
+    // forgotten here - so a footer drawn from the LIVE stream showed no tools, no
+    // skills and no learned line, and only gained them after the chat was reopened.
+    // That is the whole feature invisible on the surface it exists for.
+    let (tool_calls, skill_calls) = crate::web::chat::tool_and_skill_counts(tools);
+    let tool_list = crate::web::chat::tool_usage(tools);
+    let skill_list = crate::web::chat::skill_usage(tools);
     serde_json::json!({
         "model": model,
         "prompt_tokens": prompt,
@@ -3808,6 +3819,10 @@ fn receipt_for(
         "duration_ms": duration_ms,
         "rounds": rounds,
         "context_tokens": context_tokens,
+        "tool_calls": tool_calls,
+        "skill_calls": skill_calls,
+        "tool_list": tool_list,
+        "skill_list": skill_list,
         "cost_usd": match cost {
             crate::web::pricing::Cost::Amount(amount) => Some(amount),
             crate::web::pricing::Cost::Unpriced => None,

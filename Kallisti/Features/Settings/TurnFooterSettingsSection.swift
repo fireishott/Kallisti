@@ -25,8 +25,8 @@ struct TurnFooterSettingsSection: View {
     @AppStorage(TurnFooterPrefs.turns) private var showsTurns: Bool = true
     @AppStorage(TurnFooterPrefs.tools) private var showsTools: Bool = true
     @AppStorage(TurnFooterPrefs.skills) private var showsSkills: Bool = true
-    @AppStorage(TurnFooterPrefs.toolList) private var showsToolList: Bool = false
-    @AppStorage(TurnFooterPrefs.skillList) private var showsSkillList: Bool = false
+    @AppStorage(TurnFooterPrefs.toolList) private var showsToolList: Bool = true
+    @AppStorage(TurnFooterPrefs.skillList) private var showsSkillList: Bool = true
     @AppStorage(TurnFooterPrefs.learned) private var showsLearned: Bool = true
 
     var body: some View {

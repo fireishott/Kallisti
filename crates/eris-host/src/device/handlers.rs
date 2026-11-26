@@ -10584,12 +10584,28 @@ mod tests {
         let conversation = chat::create_conversation(db).expect("conversation");
         let answer = chat::append_answer(db, &conversation, "ds/deepseek-v4-flash", Some(128_000))
             .expect("answer row");
+        let tools = [
+            chat::ToolRecord {
+                name: "run_command".to_owned(),
+                arguments: "{}".to_owned(),
+                output: "ok".to_owned(),
+                is_error: false,
+                asked: None,
+            },
+            chat::ToolRecord {
+                name: "read_skill".to_owned(),
+                arguments: r#"{"key":"pdf"}"#.to_owned(),
+                output: "body".to_owned(),
+                is_error: false,
+                asked: None,
+            },
+        ];
         chat::settle(
             db,
             &answer,
             "the reply",
             None,
-            &[],
+            &tools,
             None,
             chat::Accounting {
                 prompt_tokens: Some(1_000),
