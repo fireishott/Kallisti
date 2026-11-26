@@ -10,6 +10,31 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.4] - 2026-11-26
+
+### Added
+
+- **Optional rows naming the tools and the skills used.** Two switches under
+  Settings > Turn footer, both off by default: one draws a line of every tool the
+  turn ran with its count, the other a line of every skill it read. They are off
+  by default because a busy turn is a long line - 34 tools is not something to
+  draw under every reply.
+
+  ```
+  🔧 run_command×31 · search_sessions×2 · read_skill
+  📚 dsh-image-vision-routing
+  ```
+
+- Ordered by count descending then name, so the busiest tool leads and two turns
+  that used the same tools read identically. A skill's name is the key from the
+  `read_skill` arguments, so the row names the skill as the model asked for it.
+
+### Note
+
+- A skill read whose arguments cannot be parsed still counts as a tool call, so
+  the totals stay honest, but it adds no name to the skills row: naming a skill
+  the daemon was never told would be a guess.
+
 ## [1.8.3] - 2026-11-26
 
 ### Fixed
