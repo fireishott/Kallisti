@@ -10,6 +10,28 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.5] - 2026-11-26
+
+### Added
+
+- **A sub-footer saying what the chat taught the skill library.** The per-answer
+  rows say what a turn *used*; this says what the conversation *created*, drawn
+  small beneath the receipt:
+
+  ```
+  🌱 3 skills learned · 1 skill extended
+  ```
+
+  Read from the learning ledger, which is the only durable link between a
+  conversation and the knowledge it produced - the review runs after the turn
+  ends, so a creation lands later than the turn that earned it. `create` and
+  `append` are counted apart: one brought a skill into existence, the other added
+  to one that already existed.
+
+- It draws nothing on a chat that taught nothing. Twenty ordinary chats should
+  not carry a "0 learned" strip for every one that produced knowledge. Its own
+  switch sits under Settings > Turn footer, on by default.
+
 ## [1.8.4] - 2026-11-26
 
 ### Added
