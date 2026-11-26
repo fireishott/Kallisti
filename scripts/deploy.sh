@@ -68,11 +68,23 @@ say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 # whose lease is still live can be a turn somebody is watching.
 running() {
   if [ ! -f "$DB" ]; then echo 0; return; fi
+  # A row that is `running` counts as busy even if its lease has lapsed.
+  #
+  # This used to exclude a lapsed lease, on the theory that a dead worker leaves a
+  # stale `running` row that nobody is watching. The theory was wrong in the case
+  # that matters: the lease is renewed by the turn's own heartbeat, and a turn
+  # waiting on one long tool call emitted no stream output and so stopped renewing
+  # while it was still working. Excluding lapsed leases read that live turn as idle,
+  # the restart killed it, and the boot sweep settled it as "the daemon stopped
+  # before this turn finished" - a reply thrown away, and a Retry that had to start
+  # over. On 2026-11-26 at 04:11 UTC that is exactly what happened to a fifteen-round
+  # turn.
+  #
+  # A genuinely dead worker is the rarer case and the boot sweep already handles it.
+  # Waiting a little longer for a turn that is really gone costs a delay; restarting
+  # under a turn that is really alive costs the operator their answer.
   sqlite3 "file:$DB?mode=ro" \
-    "SELECT COUNT(*) FROM jobs
-      WHERE status = 'running'
-        AND (lease_expires_at IS NULL
-             OR lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));" \
+    "SELECT COUNT(*) FROM jobs WHERE status = 'running';" \
     2>/dev/null || echo 0
 }
 

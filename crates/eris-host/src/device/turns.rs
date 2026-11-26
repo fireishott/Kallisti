@@ -3000,6 +3000,41 @@ impl TurnHub {
         // display switches this turn was given.
         let policy_for_drain = policy.clone();
         let renew_job = job_id.clone();
+        // The lease heartbeat, on its own thread.
+        //
+        // A lease is what `deploy.sh` reads to decide whether a turn is running,
+        // and it only ever renewed from the streaming sink - so a turn waiting on
+        // one long tool call, which emits no stream parts at all, let its 60-second
+        // lease lapse while it was still working. A deploy then read the row as
+        // idle, restarted under it, and the boot sweep settled a live turn as "the
+        // daemon stopped before this turn finished".
+        //
+        // This thread ticks every 20 seconds regardless of output. It stops when
+        // the turn ends: the `Arc` is dropped at the end of this scope, and the
+        // loop sees it gone on its next tick.
+        let heartbeat_alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        {
+            let alive = std::sync::Arc::clone(&heartbeat_alive);
+            let heartbeat_db = progress_db.clone();
+            let heartbeat_job = renew_job.clone();
+            std::thread::Builder::new()
+                .name(format!("lease-{heartbeat_job}"))
+                .spawn(move || {
+                    while alive.load(std::sync::atomic::Ordering::Acquire) {
+                        // Sleep in short steps so a finished turn stops renewing
+                        // within a second rather than holding a dead lease open for
+                        // the full interval.
+                        for _ in 0..20 {
+                            if !alive.load(std::sync::atomic::Ordering::Acquire) {
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                        let _ = renew_lease(&heartbeat_db, &heartbeat_job);
+                    }
+                })
+                .ok();
+        }
         // Which key this turn's question is parked under, decided before the turn
         // starts so the answer route can find it by job id. A turn that writes into
         // a conversation asks under that conversation, which is the key the
@@ -3235,6 +3270,15 @@ impl TurnHub {
             // The lease is what `deploy.sh` reads to decide whether a turn is
             // running. Renewed here rather than only at the claim, so a ten-minute
             // turn is not fifteen rows of "idle" to a deploy that then kills it.
+            //
+            // Renewal ran ONLY inside this sink, which is a bug: the sink fires on
+            // stream parts, and a turn waiting on one long tool call emits none.
+            // A fifteen-round turn did exactly that, its 60-second lease lapsed
+            // while the tool was still running, `deploy.sh` read the row as idle
+            // and restarted under it, and the boot sweep settled a live turn as
+            // "the daemon stopped before this turn finished". The heartbeat is now
+            // owned by a thread of its own (`lease_heartbeat` below), so it ticks
+            // whether or not the turn is producing output.
             let mut renewed_at = std::time::Instant::now();
             const RENEW_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
             let mut sink = |part: crate::web::chat::StreamPart<'_>| {
@@ -3472,6 +3516,11 @@ impl TurnHub {
 
         let _ = turn_task.await;
         let _ = writer.await;
+        // The turn is over, so nothing should renew its lease any more. Setting
+        // this false stops the heartbeat on its next short sleep instead of leaving
+        // a dead turn's lease live until the interval ran out - which would make a
+        // finished turn look busy to a deploy.
+        heartbeat_alive.store(false, std::sync::atomic::Ordering::Release);
 
         // Work this turn handed forward runs now, strictly after its own row is
         // settled: a queued task and the turn that queued it must never write one
@@ -4058,6 +4107,57 @@ mod tests {
         // A live worker's renew puts it back out of the list.
         store.renew(&job).expect("renew");
         assert!(store.lease_expired_jobs().expect("read").is_empty());
+    }
+
+    /// A turn that emits no stream output still keeps its lease alive.
+    ///
+    /// The regression this pins: renewal lived inside the streaming sink, so a turn
+    /// waiting on one long tool call - which produces no stream parts - let its
+    /// 60-second lease lapse while it was still working. `deploy.sh` reads leases to
+    /// decide whether a turn is running, so it saw the row as idle, restarted under
+    /// the turn, and the boot sweep settled a live turn as interrupted. The
+    /// heartbeat is now a thread of its own, independent of output.
+    ///
+    /// This exercises the mechanism the thread uses rather than the thread itself:
+    /// renewing a lapsed lease with no stream activity puts the row back.
+    #[test]
+    fn a_silent_turn_still_renews_its_lease() {
+        let (store, device) = store(64);
+        let (job, _session) = queued(&store, &device);
+        assert!(store.claim(&job).expect("claim"));
+
+        // Age the lease as a long silent tool call would, with no sink traffic.
+        store
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE jobs SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
+                    params![job],
+                )?;
+                Ok(())
+            })
+            .expect("age the lease");
+        assert_eq!(store.lease_expired_jobs().expect("read"), vec![job.clone()]);
+
+        // One heartbeat tick, with no stream part involved.
+        renew_lease(store.db(), &job).expect("heartbeat");
+        assert!(
+            store.lease_expired_jobs().expect("read").is_empty(),
+            "a silent turn that beat once is not an expired lease"
+        );
+
+        // And the row is still `running`, which is what deploy.sh now trusts.
+        let running: i64 = store
+            .db()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM jobs WHERE status = 'running' AND id = ?1",
+                    params![job],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("count");
+        assert_eq!(running, 1, "a running row is busy whatever its lease says");
     }
 
     /// A step frame is an ordinary append: if this ever returns `None` on a
