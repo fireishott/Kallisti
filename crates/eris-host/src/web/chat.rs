@@ -4731,6 +4731,32 @@ pub fn stats_for(db: &Db, transcript: &[Message]) -> Stats {
     stats_with_prices(transcript, &prices)
 }
 
+/// How many tools and how many skills one turn used.
+///
+/// A skill is not a separate kind of record: the model reads one with the
+/// `read_skill` tool, so a skill use and a tool call land in the same `tools`
+/// list this counts. Separating them here is what lets the footer say
+/// `3 tools · 2 skills` instead of folding a skill read into the tool total and
+/// hiding the fact that the turn consulted the library at all.
+///
+/// The two counts are not independent: every skill use is also a tool call, so
+/// `skills <= tools`. A footer that shows both shows a total and a subset, which
+/// is the shape the Hermes footer used (`bash×3 · read_skill×2`).
+#[must_use]
+pub fn tool_and_skill_counts(tools: &[ToolRecord]) -> (usize, usize) {
+    let skills = tools.iter().filter(|tool| is_skill_tool(&tool.name)).count();
+    (tools.len(), skills)
+}
+
+/// Whether a tool name is a skill read.
+///
+/// One name today, matched exactly so a future tool that merely has "skill" in
+/// its name is not silently counted as a library read.
+#[must_use]
+pub fn is_skill_tool(name: &str) -> bool {
+    name == "read_skill"
+}
+
 /// The number of rows a conversation holds, for a page that wants a count without
 /// loading the transcript twice.
 #[must_use]

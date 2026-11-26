@@ -23,7 +23,8 @@ struct TurnFooterSettingsSection: View {
     @AppStorage(TurnFooterPrefs.cost) private var showsCost: Bool = true
     @AppStorage(TurnFooterPrefs.sessionCost) private var showsSessionCost: Bool = true
     @AppStorage(TurnFooterPrefs.turns) private var showsTurns: Bool = true
-    @AppStorage(TurnFooterPrefs.tools) private var showsTools: Bool = false
+    @AppStorage(TurnFooterPrefs.tools) private var showsTools: Bool = true
+    @AppStorage(TurnFooterPrefs.skills) private var showsSkills: Bool = true
 
     var body: some View {
         SettingsSectionView(title: "Turn footer") {
@@ -63,6 +64,13 @@ struct TurnFooterSettingsSection: View {
                         title: "Tool calls",
                         subtitle: "How many tools ran",
                         isOn: $showsTools
+                    )
+                    divider
+                    row(
+                        icon: "books.vertical",
+                        title: "Skills used",
+                        subtitle: "How many of those were skill reads",
+                        isOn: $showsSkills
                     )
                     divider
                     row(

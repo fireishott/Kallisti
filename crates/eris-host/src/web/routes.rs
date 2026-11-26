@@ -12377,6 +12377,8 @@ fn spawn_turn(
                 // declared a price for this model. Resolved before the frame so
                 // the `json!` body stays a value, and so the same figure is
                 // available to anything else that publishes this turn.
+                let (turn_tool_calls, turn_skill_calls) =
+                    chat::tool_and_skill_counts(&turn.tools);
                 let turn_cost_usd = {
                     let prices = crate::web::pricing::parse_prices(
                         crate::web::store::settings_get(&db, crate::web::pricing::SETTING_PRICES)
@@ -12428,6 +12430,11 @@ fn spawn_turn(
                             // second lookup for a figure this surface does not
                             // draw from the frame.
                             "cost_usd": turn_cost_usd,
+                            // Tools that ran, and how many of those were skill
+                            // reads. `turn.tools` is in hand here, so this is
+                            // the same list the transcript row will store.
+                            "tool_calls": turn_tool_calls,
+                            "skill_calls": turn_skill_calls,
                         },
                     }),
                 );

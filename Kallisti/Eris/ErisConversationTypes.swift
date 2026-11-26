@@ -454,6 +454,10 @@ struct ErisConversationTotals: Equatable, Sendable, Decodable {
     let totalTokens: Int?
     /// The cached share of the prompt, when there is a denominator.
     let cacheHitPercent: Int?
+    /// Every tool call the conversation has made.
+    let toolCalls: Int?
+    /// How many of those were skill reads.
+    let skillCalls: Int?
 
     init(
         turns: Int? = nil,
@@ -464,7 +468,9 @@ struct ErisConversationTotals: Equatable, Sendable, Decodable {
         contextUsed: Int? = nil,
         contextWindow: Int? = nil,
         totalTokens: Int? = nil,
-        cacheHitPercent: Int? = nil
+        cacheHitPercent: Int? = nil,
+        toolCalls: Int? = nil,
+        skillCalls: Int? = nil
     ) {
         self.turns = turns
         self.answers = answers
@@ -475,6 +481,8 @@ struct ErisConversationTotals: Equatable, Sendable, Decodable {
         self.contextWindow = contextWindow
         self.totalTokens = totalTokens
         self.cacheHitPercent = cacheHitPercent
+        self.toolCalls = toolCalls
+        self.skillCalls = skillCalls
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -487,6 +495,8 @@ struct ErisConversationTotals: Equatable, Sendable, Decodable {
         case contextWindow = "context_window"
         case totalTokens = "total_tokens"
         case cacheHitPercent = "cache_hit_pct"
+        case toolCalls = "tool_calls"
+        case skillCalls = "skill_calls"
     }
 
     /// Tolerant per key, so one shape this build does not know costs that field
@@ -520,7 +530,9 @@ struct ErisConversationTotals: Equatable, Sendable, Decodable {
             contextUsed: count(.contextUsed),
             contextWindow: count(.contextWindow),
             totalTokens: count(.totalTokens),
-            cacheHitPercent: count(.cacheHitPercent)
+            cacheHitPercent: count(.cacheHitPercent),
+            toolCalls: count(.toolCalls),
+            skillCalls: count(.skillCalls)
         )
     }
 }

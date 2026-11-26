@@ -66,6 +66,13 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
     /// Kept as a count rather than names so the footer stays one line: the tool
     /// rail under the answer is where the detail belongs.
     let toolCalls: Int?
+    /// How many of those tool calls were skill reads.
+    ///
+    /// A skill is invoked with the `read_skill` tool, so it is already inside
+    /// `toolCalls`. This is the subset that came from the skill library, shown
+    /// separately because "this answer consulted two skills" is a different fact
+    /// from "this answer ran twelve tools" and the Hermes footer drew both.
+    let skillCalls: Int?
     /// Whether the tool budget, not the model, ended this turn.
     let capped: Bool?
     /// Whether the engine took the tools away early and the model wrote the
@@ -88,6 +95,7 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
         sessionAnswers: Int? = nil,
         sessionTurns: Int? = nil,
         toolCalls: Int? = nil,
+        skillCalls: Int? = nil,
         capped: Bool? = nil,
         wrappedUp: Bool? = nil
     ) {
@@ -106,6 +114,7 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
         self.sessionAnswers = sessionAnswers
         self.sessionTurns = sessionTurns
         self.toolCalls = toolCalls
+        self.skillCalls = skillCalls
         self.capped = capped
         self.wrappedUp = wrappedUp
     }
@@ -158,6 +167,7 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
             sessionAnswers: count("session_answers"),
             sessionTurns: count("session_turns"),
             toolCalls: count("tool_calls"),
+            skillCalls: count("skill_calls"),
             capped: flag("capped"),
             wrappedUp: flag("wrapped_up")
         )
@@ -267,6 +277,18 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
         return toolCalls == 1 ? "1 tool" : "\(toolCalls) tools"
     }
 
+    /// The skill reads, shown beside the tool count rather than inside it.
+    ///
+    /// A skill read IS a tool call, so this number is a subset of `toolsText`
+    /// and never larger. Drawing both is what the Hermes footer did
+    /// (`bash×3 · read_skill×2`): the total says how much work happened, the
+    /// subset says the answer stood on the skill library. Omitting it folds a
+    /// library read into an anonymous tool count and loses the fact entirely.
+    var skillsText: String? {
+        guard let skillCalls, skillCalls > 0 else { return nil }
+        return skillCalls == 1 ? "1 skill" : "\(skillCalls) skills"
+    }
+
     /// The live context size, plus the window when the daemon knew it.
     var contextText: String? {
         guard let contextTokens else { return nil }
@@ -349,6 +371,7 @@ extension TurnAccounting: Decodable {
         case sessionAnswers = "session_answers"
         case sessionTurns = "session_turns"
         case toolCalls = "tool_calls"
+        case skillCalls = "skill_calls"
         case capped
         case wrappedUp = "wrapped_up"
     }
@@ -405,6 +428,7 @@ extension TurnAccounting: Decodable {
             sessionAnswers: count(.sessionAnswers),
             sessionTurns: count(.sessionTurns),
             toolCalls: count(.toolCalls),
+            skillCalls: count(.skillCalls),
             capped: flag(.capped),
             wrappedUp: flag(.wrappedUp)
         )
@@ -432,6 +456,7 @@ extension TurnAccounting: Encodable {
         try container.encodeIfPresent(sessionAnswers, forKey: .sessionAnswers)
         try container.encodeIfPresent(sessionTurns, forKey: .sessionTurns)
         try container.encodeIfPresent(toolCalls, forKey: .toolCalls)
+        try container.encodeIfPresent(skillCalls, forKey: .skillCalls)
         try container.encodeIfPresent(capped, forKey: .capped)
         try container.encodeIfPresent(wrappedUp, forKey: .wrappedUp)
     }
@@ -457,6 +482,7 @@ enum TurnFooterPrefs {
     static let sessionCost = "kallisti.turnFooter.sessionCost"
     static let turns = "kallisti.turnFooter.turns"
     static let tools = "kallisti.turnFooter.tools"
+    static let skills = "kallisti.turnFooter.skills"
 }
 
 // MARK: - Footer
@@ -484,7 +510,8 @@ struct TurnFooterBar: View {
     @AppStorage(TurnFooterPrefs.cost) private var showsCost: Bool = true
     @AppStorage(TurnFooterPrefs.sessionCost) private var showsSessionCost: Bool = true
     @AppStorage(TurnFooterPrefs.turns) private var showsTurns: Bool = true
-    @AppStorage(TurnFooterPrefs.tools) private var showsTools: Bool = false
+    @AppStorage(TurnFooterPrefs.tools) private var showsTools: Bool = true
+    @AppStorage(TurnFooterPrefs.skills) private var showsSkills: Bool = true
 
     var body: some View {
         if let line {
@@ -510,6 +537,7 @@ struct TurnFooterBar: View {
         if showsProvider, let text = accounting.providerText { fields.append(text) }
         if showsRounds, let text = accounting.roundsText { fields.append(text) }
         if showsTools, let text = accounting.toolsText { fields.append(text) }
+        if showsSkills, let text = accounting.skillsText { fields.append(text) }
         if showsDuration, let text = accounting.durationText { fields.append(text) }
         if showsTokens, let text = accounting.tokensText { fields.append(text) }
         if showsTokens, let text = accounting.totalTokensText { fields.append(text) }

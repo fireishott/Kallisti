@@ -1535,11 +1535,20 @@ pub async fn conversation(
             .flatten()
             .as_deref(),
     );
+    // Running totals for the whole conversation, accumulated in the same pass
+    // that builds the rows: the messages are consumed here, so a second walk
+    // would need a clone of every tool output in the transcript.
+    let mut session_tool_calls = 0usize;
+    let mut session_skill_calls = 0usize;
     let messages: Vec<serde_json::Value> = bounded
         .messages
         .into_iter()
         .map(|message| {
             let files = files_by_message.get(&message.id);
+            let (tool_calls, skill_calls) =
+                crate::web::chat::tool_and_skill_counts(&message.tools);
+            session_tool_calls += tool_calls;
+            session_skill_calls += skill_calls;
             serde_json::json!({
                 "id": message.id,
                 "role": message.role.as_str(),
@@ -1574,6 +1583,14 @@ pub async fn conversation(
                     "rounds": message.rounds,
                     "context_tokens": message.context_tokens,
                     "context_window": message.context_window,
+                    // How many tools ran, and how many of those were skill
+                    // reads. A skill is invoked with the `read_skill` tool, so
+                    // it is already inside the tool count; the second number is
+                    // the subset that came from the skill library, which the
+                    // footer shows separately so a turn that consulted skills
+                    // says so.
+                    "tool_calls": tool_calls,
+                    "skill_calls": skill_calls,
                     "cost_usd": match crate::web::pricing::cost_of(
                         message.model.as_deref().unwrap_or_default(),
                         message.prompt_tokens,
@@ -1633,6 +1650,10 @@ pub async fn conversation(
             "context_window": totals.context_window,
             "total_tokens": totals.total_tokens,
             "cache_hit_pct": totals.cache_hit_pct,
+            // The whole conversation's tool and skill use, so a footer can say
+            // what this chat has done rather than only what the last answer did.
+            "tool_calls": session_tool_calls,
+            "skill_calls": session_skill_calls,
         },
         "truncated": truncated || bounded.omitted > 0,
         // Whether an older page exists, so a client can decide to ask for one

@@ -1254,6 +1254,10 @@ final class ErisHeraldClient: HeraldClientProtocol {
             sessionAnswers: totals.answers,
             sessionTurns: totals.turns,
             toolCalls: base?.toolCalls ?? (row.tools.isEmpty ? nil : row.tools.count),
+            skillCalls: base?.skillCalls
+                ?? (row.tools.isEmpty
+                    ? nil
+                    : row.tools.filter { $0.name == "read_skill" }.count),
             capped: base?.capped,
             wrappedUp: base?.wrappedUp
         )
