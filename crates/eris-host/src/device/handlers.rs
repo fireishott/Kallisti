@@ -1511,6 +1511,10 @@ pub async fn conversation(
     // floor or leaves it out. Reading every row to total it would make opening a
     // long chat cost a full-table scan on the device listener.
     let totals = chat::stats_for(db, &messages);
+    // What this chat has taught the skill library. Read from the learning
+    // ledger, which is the only record that binds a created skill to the
+    // conversation it came from.
+    let learned = chat::learned_for(db, &conversation_id);
     // The count bound above is not a size bound, and this is the surface that has
     // to live with the difference: a tool-heavy conversation is megabytes of
     // stdout, and a phone that cannot finish reading it opens the chat blank.
@@ -1662,6 +1666,13 @@ pub async fn conversation(
             // what this chat has done rather than only what the last answer did.
             "tool_calls": session_tool_calls,
             "skill_calls": session_skill_calls,
+            // What this conversation taught the library. A sub-footer shows
+            // "3 skills learned" once a chat has produced knowledge, which is a
+            // different fact from what it *used* and cannot be derived from the
+            // transcript: the learning loop reviews an answer asynchronously,
+            // so the creation lands after the turn that earned it.
+            "skills_created": learned.created,
+            "skills_appended": learned.appended,
         },
         "truncated": truncated || bounded.omitted > 0,
         // Whether an older page exists, so a client can decide to ask for one

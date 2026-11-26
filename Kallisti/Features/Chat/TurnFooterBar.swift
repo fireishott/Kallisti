@@ -109,6 +109,13 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
     let toolList: [FooterUsage]?
     /// The skill keys the turn read, by key and count, for its own extra row.
     let skillList: [FooterUsage]?
+    /// Skills this conversation brought into the library, when it taught any.
+    ///
+    /// The baseline sub-footer: it appears only on a chat that produced
+    /// knowledge, so twenty ordinary chats do not carry a "0 learned" line.
+    let skillsCreated: Int?
+    /// Existing skills this conversation added to.
+    let skillsAppended: Int?
     /// Whether the tool budget, not the model, ended this turn.
     let capped: Bool?
     /// Whether the engine took the tools away early and the model wrote the
@@ -134,6 +141,8 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
         skillCalls: Int? = nil,
         toolList: [FooterUsage]? = nil,
         skillList: [FooterUsage]? = nil,
+        skillsCreated: Int? = nil,
+        skillsAppended: Int? = nil,
         capped: Bool? = nil,
         wrappedUp: Bool? = nil
     ) {
@@ -155,6 +164,8 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
         self.skillCalls = skillCalls
         self.toolList = toolList
         self.skillList = skillList
+        self.skillsCreated = skillsCreated
+        self.skillsAppended = skillsAppended
         self.capped = capped
         self.wrappedUp = wrappedUp
     }
@@ -210,6 +221,8 @@ struct TurnAccounting: Equatable, Hashable, Sendable {
             skillCalls: count("skill_calls"),
             toolList: Self.usage(json["tool_list"]),
             skillList: Self.usage(json["skill_list"]),
+            skillsCreated: count("skills_created"),
+            skillsAppended: count("skills_appended"),
             capped: flag("capped"),
             wrappedUp: flag("wrapped_up")
         )
@@ -436,6 +449,8 @@ extension TurnAccounting: Decodable {
         case skillCalls = "skill_calls"
         case toolList = "tool_list"
         case skillList = "skill_list"
+        case skillsCreated = "skills_created"
+        case skillsAppended = "skills_appended"
         case capped
         case wrappedUp = "wrapped_up"
     }
@@ -495,6 +510,8 @@ extension TurnAccounting: Decodable {
             skillCalls: count(.skillCalls),
             toolList: try? container.decodeIfPresent([FooterUsage].self, forKey: .toolList),
             skillList: try? container.decodeIfPresent([FooterUsage].self, forKey: .skillList),
+            skillsCreated: count(.skillsCreated),
+            skillsAppended: count(.skillsAppended),
             capped: flag(.capped),
             wrappedUp: flag(.wrappedUp)
         )
@@ -525,6 +542,8 @@ extension TurnAccounting: Encodable {
         try container.encodeIfPresent(skillCalls, forKey: .skillCalls)
         try container.encodeIfPresent(toolList, forKey: .toolList)
         try container.encodeIfPresent(skillList, forKey: .skillList)
+        try container.encodeIfPresent(skillsCreated, forKey: .skillsCreated)
+        try container.encodeIfPresent(skillsAppended, forKey: .skillsAppended)
         try container.encodeIfPresent(capped, forKey: .capped)
         try container.encodeIfPresent(wrappedUp, forKey: .wrappedUp)
     }
@@ -553,6 +572,7 @@ enum TurnFooterPrefs {
     static let skills = "kallisti.turnFooter.skills"
     static let toolList = "kallisti.turnFooter.toolList"
     static let skillList = "kallisti.turnFooter.skillList"
+    static let learned = "kallisti.turnFooter.learned"
 }
 
 // MARK: - Footer
@@ -584,6 +604,7 @@ struct TurnFooterBar: View {
     @AppStorage(TurnFooterPrefs.skills) private var showsSkills: Bool = true
     @AppStorage(TurnFooterPrefs.toolList) private var showsToolList: Bool = false
     @AppStorage(TurnFooterPrefs.skillList) private var showsSkillList: Bool = false
+    @AppStorage(TurnFooterPrefs.learned) private var showsLearned: Bool = true
 
     var body: some View {
         if line != nil || !detailRows.isEmpty {
@@ -610,6 +631,18 @@ struct TurnFooterBar: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityLabel(row.accessibility)
                 }
+                // The sub-footer: what this chat has taught the library, shown
+                // only once it has taught something. Smaller and dimmer than the
+                // receipt, because it is a fact about the whole session rather
+                // than about the answer above it.
+                if let learnedText {
+                    Text(learnedText)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .accessibilityLabel(learnedText)
+                }
             }
         }
     }
@@ -620,6 +653,26 @@ struct TurnFooterBar: View {
         let text: String
         let accessibility: String
         var id: String { label }
+    }
+
+    /// What this conversation taught the library, or nil when it taught nothing.
+    ///
+    /// Deliberately silent on a chat that created no skills. A "0 learned" line
+    /// under every answer would be noise on the twenty ordinary chats for every
+    /// one that produced knowledge; this line exists to mark the ones that did.
+    var learnedText: String? {
+        guard isEnabled, showsLearned, let accounting else { return nil }
+        let created = accounting.skillsCreated ?? 0
+        let appended = accounting.skillsAppended ?? 0
+        guard created > 0 || appended > 0 else { return nil }
+        var parts: [String] = []
+        if created > 0 {
+            parts.append(created == 1 ? "1 skill learned" : "\(created) skills learned")
+        }
+        if appended > 0 {
+            parts.append(appended == 1 ? "1 skill extended" : "\(appended) skills extended")
+        }
+        return "\u{1F331} " + parts.joined(separator: " · ")
     }
 
     /// The extra rows the operator switched on and the turn actually has data

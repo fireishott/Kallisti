@@ -4731,6 +4731,69 @@ pub fn stats_for(db: &Db, transcript: &[Message]) -> Stats {
     stats_with_prices(transcript, &prices)
 }
 
+/// What a conversation has taught the skill library.
+///
+/// The learning loop records one row per finished answer it reviewed, carrying the
+/// conversation it came from and the skill it created or appended to. That is the
+/// only durable link between "this chat" and "this chat produced knowledge", so the
+/// session footer reads it here rather than trying to infer a creation from a tool
+/// call - `write_file` on a SKILL.md is not the same act as the review deciding a
+/// lesson is worth keeping.
+///
+/// `created` counts only `create`: an `append` added a section to a skill that
+/// already existed, which is a different claim and is reported separately.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Learned {
+    /// Skills this conversation brought into existence.
+    pub created: usize,
+    /// Existing skills this conversation added to.
+    pub appended: usize,
+}
+
+impl Learned {
+    /// Whether the conversation taught the library anything at all.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.created == 0 && self.appended == 0
+    }
+}
+
+/// Read [`Learned`] for one conversation.
+///
+/// Best effort: a ledger that cannot be read reports nothing learned rather than
+/// failing the transcript. The footer's job is to describe an answer, and a
+/// database error there must not cost the answer itself.
+#[must_use]
+pub fn learned_for(db: &Db, conversation: &str) -> Learned {
+    if conversation.trim().is_empty() {
+        return Learned::default();
+    }
+    db.with_conn(|conn| {
+        let mut out = Learned::default();
+        let mut statement = conn.prepare(
+            "SELECT action, COUNT(*) FROM learning_runs \
+             WHERE conversation_id = ?1 AND action IN ('create', 'append') \
+             GROUP BY action",
+        )?;
+        let rows = statement.query_map(params![conversation], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (action, count) = row?;
+            // A negative count cannot come from COUNT(*), but a corrupt row must
+            // not underflow the subtraction either.
+            let count = usize::try_from(count.max(0)).unwrap_or(0);
+            match action.as_str() {
+                "create" => out.created = count,
+                "append" => out.appended = count,
+                _ => {}
+            }
+        }
+        Ok(out)
+    })
+    .unwrap_or_default()
+}
+
 /// How many tools and how many skills one turn used.
 ///
 /// A skill is not a separate kind of record: the model reads one with the
@@ -6001,6 +6064,58 @@ pub fn stopped() -> TurnFailure {
 /// must not be counted as a library read.
 /// The two extra rows: names with counts, most-used first, skills read out of the
 /// tool arguments.
+/// What a conversation taught, read from the learning ledger.
+///
+/// `create` and `append` are counted apart because they are different claims:
+/// one brought a skill into existence, the other added a section to one that was
+/// already there. A conversation with neither reports nothing, which is what lets
+/// the footer stay silent on a chat that taught nothing.
+#[test]
+fn a_conversation_reports_what_it_taught_the_library() {
+    let db = Db::open_in_memory().expect("in-memory database");
+    let conversation = create_conversation(&db).expect("conversation");
+
+    // A chat that has taught nothing, and the empty id, both read as nothing.
+    let none = learned_for(&db, &conversation);
+    assert!(none.is_empty(), "{none:?}");
+    assert!(learned_for(&db, "").is_empty());
+    assert!(learned_for(&db, "   ").is_empty());
+
+    let record = |answer: &str, action: &str, key: Option<&str>| {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO learning_runs (id, conversation_id, answer_id, status, action, skill_key) \
+                 VALUES (?1, ?2, ?3, 'done', ?4, ?5)",
+                params![
+                    uuid::Uuid::now_v7().to_string(),
+                    conversation,
+                    answer,
+                    action,
+                    key
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("learning row");
+    };
+
+    record("a1", "create", Some("one"));
+    record("a2", "create", Some("two"));
+    record("a3", "append", Some("one"));
+    // Actions that are not a contribution to the library must not be counted.
+    record("a4", "none", None);
+    record("a5", "skipped", None);
+
+    let learned = learned_for(&db, &conversation);
+    assert_eq!(learned.created, 2, "{learned:?}");
+    assert_eq!(learned.appended, 1, "{learned:?}");
+    assert!(!learned.is_empty());
+
+    // A different conversation sees none of it.
+    let other = create_conversation(&db).expect("other conversation");
+    assert!(learned_for(&db, &other).is_empty());
+}
+
 #[test]
 fn the_usage_lists_name_what_ran_and_how_often() {
     let tool = |name: &str, args: &str| ToolRecord {

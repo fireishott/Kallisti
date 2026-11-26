@@ -27,6 +27,7 @@ struct TurnFooterSettingsSection: View {
     @AppStorage(TurnFooterPrefs.skills) private var showsSkills: Bool = true
     @AppStorage(TurnFooterPrefs.toolList) private var showsToolList: Bool = false
     @AppStorage(TurnFooterPrefs.skillList) private var showsSkillList: Bool = false
+    @AppStorage(TurnFooterPrefs.learned) private var showsLearned: Bool = true
 
     var body: some View {
         SettingsSectionView(title: "Turn footer") {
@@ -87,6 +88,13 @@ struct TurnFooterSettingsSection: View {
                         title: "Skill names row",
                         subtitle: "An extra line listing every skill the turn read",
                         isOn: $showsSkillList
+                    )
+                    divider
+                    row(
+                        icon: "leaf",
+                        title: "Learned sub-footer",
+                        subtitle: "What this chat taught the skill library. Appears only when it taught something",
+                        isOn: $showsLearned
                     )
                     divider
                     row(

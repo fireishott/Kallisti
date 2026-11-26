@@ -458,6 +458,14 @@ struct ErisConversationTotals: Equatable, Sendable, Decodable {
     let toolCalls: Int?
     /// How many of those were skill reads.
     let skillCalls: Int?
+    /// Skills this conversation brought into the library.
+    ///
+    /// Not the same as `skillCalls`: that counts reads, this counts what the
+    /// learning loop decided was worth keeping. A chat can read forty skills and
+    /// teach none, or teach three without reading any.
+    let skillsCreated: Int?
+    /// Existing skills this conversation added a section to.
+    let skillsAppended: Int?
 
     init(
         turns: Int? = nil,
@@ -470,7 +478,9 @@ struct ErisConversationTotals: Equatable, Sendable, Decodable {
         totalTokens: Int? = nil,
         cacheHitPercent: Int? = nil,
         toolCalls: Int? = nil,
-        skillCalls: Int? = nil
+        skillCalls: Int? = nil,
+        skillsCreated: Int? = nil,
+        skillsAppended: Int? = nil
     ) {
         self.turns = turns
         self.answers = answers
@@ -483,6 +493,8 @@ struct ErisConversationTotals: Equatable, Sendable, Decodable {
         self.cacheHitPercent = cacheHitPercent
         self.toolCalls = toolCalls
         self.skillCalls = skillCalls
+        self.skillsCreated = skillsCreated
+        self.skillsAppended = skillsAppended
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -497,6 +509,8 @@ struct ErisConversationTotals: Equatable, Sendable, Decodable {
         case cacheHitPercent = "cache_hit_pct"
         case toolCalls = "tool_calls"
         case skillCalls = "skill_calls"
+        case skillsCreated = "skills_created"
+        case skillsAppended = "skills_appended"
     }
 
     /// Tolerant per key, so one shape this build does not know costs that field
@@ -532,7 +546,9 @@ struct ErisConversationTotals: Equatable, Sendable, Decodable {
             totalTokens: count(.totalTokens),
             cacheHitPercent: count(.cacheHitPercent),
             toolCalls: count(.toolCalls),
-            skillCalls: count(.skillCalls)
+            skillCalls: count(.skillCalls),
+            skillsCreated: count(.skillsCreated),
+            skillsAppended: count(.skillsAppended)
         )
     }
 }
