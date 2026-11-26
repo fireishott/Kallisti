@@ -5897,6 +5897,46 @@ pub fn stopped() -> TurnFailure {
     )
 }
 
+/// A skill read is a tool call, so the two counts are a total and a subset.
+///
+/// This pins the relationship the footer draws: it never shows more skills than
+/// tools, because a turn cannot read a skill without calling the tool that reads
+/// it. It also pins the exact name match - a future tool with "skill" in its name
+/// must not be counted as a library read.
+#[test]
+fn skills_are_counted_inside_the_tool_total() {
+    let tool = |name: &str| ToolRecord {
+        name: name.to_owned(),
+        arguments: "{}".to_owned(),
+        output: String::new(),
+        is_error: false,
+        asked: None,
+    };
+
+    // No tools at all.
+    assert_eq!(tool_and_skill_counts(&[]), (0, 0));
+
+    // Ordinary tools only.
+    let plain = [tool("run_command"), tool("read_file"), tool("web_search")];
+    assert_eq!(tool_and_skill_counts(&plain), (3, 0));
+
+    // Two of the four are skill reads.
+    let mixed = [
+        tool("run_command"),
+        tool("read_skill"),
+        tool("read_skill"),
+        tool("write_file"),
+    ];
+    let (tools, skills) = tool_and_skill_counts(&mixed);
+    assert_eq!((tools, skills), (4, 2));
+    assert!(skills <= tools, "a skill read is a tool call, never a new one");
+
+    // A name that merely contains "skill" is not a library read.
+    assert_eq!(tool_and_skill_counts(&[tool("skill_inventory")]), (1, 0));
+    assert!(!is_skill_tool("read_skills"));
+    assert!(is_skill_tool("read_skill"));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
