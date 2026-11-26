@@ -10,6 +10,26 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.7] - 2026-11-26
+
+### Fixed
+
+- **Ten photos, full size, no compression.** The picker offered ten and the daemon
+  accepted eight, so a ten-photo message came back `attachments_invalid: a message
+  may carry at most 8 files` after the operator had already been told ten was fine.
+  Both are ten now, pinned by a test that derives from the shared constant.
+- **Photos are uploaded as the bytes the library holds.** The app downscaled every
+  image to 768 points on its longest edge, encoded JPEG at quality 0.5, then stepped
+  the quality down until the file fit in 350 KB: a 12-megapixel photo arrived as
+  roughly 0.2 megapixels. Those limits guarded a 1 MB relay body carrying base64,
+  which no longer exists. The picker path now re-encodes nothing at all, and a
+  camera capture is one high-quality encode.
+- The budgets moved with it: the aggregate ceiling 64 MB to 256 MB (ten
+  full-resolution PNGs exceed 64 MB) and the vision ceiling 8 MB to 24 MB (a
+  full-resolution PNG was being silently skipped, so the model was told a file
+  existed and never shown it).
+- An oversize file is refused with its size named rather than silently crushed.
+
 ## [1.8.6] - 2026-11-26
 
 ### Fixed
