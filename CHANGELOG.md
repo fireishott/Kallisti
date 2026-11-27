@@ -10,6 +10,28 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.8] - 2026-11-27
+
+### Fixed
+
+- **The Claude Code sign-in no longer hangs up before the daemon answers.**
+  "The code could not be sent" was the app's network timeout, not a rejection: the
+  daemon holds that request open while the CLI exchanges the code (up to 120
+  seconds) and `URLSession` gave up at its 60-second default. The app's ceiling is
+  now above the daemon's.
+- Two silent returns in the same flow now say what happened instead of leaving the
+  sheet spinning with no message: a sign-in with no session id, and a missing
+  daemon address.
+
+### Earlier in this run, daemon side
+
+- The pasted token is now exported to the harness process as
+  `CLAUDE_CODE_OAUTH_TOKEN`; it was stored and never used.
+- The daemon asks `claude auth status` instead of guessing from a credentials file.
+- The token is sealed in the encrypted store rather than sitting in the database.
+- Abandoned `setup-token` processes are killed on prune, which was the broken pipe.
+- A dead sign-in names itself instead of reporting an errno.
+
 ## [1.8.7] - 2026-11-26
 
 ### Fixed
