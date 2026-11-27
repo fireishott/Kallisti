@@ -445,6 +445,24 @@ pub struct LoginSession {
     started: std::time::Instant,
 }
 
+impl LoginSession {
+    /// Everything the CLI has printed and not yet been read, without blocking.
+    ///
+    /// Used to quote the CLI's last words when a sign-in dies before the code
+    /// arrives. Draining is safe here because the session is about to be discarded:
+    /// nothing else will read these channels.
+    fn drain_output(&self) -> String {
+        let mut out = String::new();
+        while let Ok(chunk) = self.stdout.try_recv() {
+            out.push_str(&chunk);
+        }
+        while let Ok(chunk) = self.stderr.try_recv() {
+            out.push_str(&chunk);
+        }
+        out
+    }
+}
+
 /// The harnesses with an install running right now.
 ///
 /// Keyed by harness id. The vendor installers are not reentrant - Antigravity
@@ -631,9 +649,25 @@ pub fn start_login(env: &Env) -> Result<(String, String), String> {
         return Err("Claude Code did not print a sign-in link".to_owned());
     };
     let id = uuid::Uuid::now_v7().to_string();
-    // A sign-in nobody finishes is not worth keeping.
+    // A sign-in nobody finishes is not worth keeping - and one that is dropped
+    // must not be left running.
+    //
+    // `retain` discarded the `LoginSession`, which dropped its `Child` handle
+    // without killing the process. Rust does not kill on drop, so an abandoned
+    // `claude setup-token` kept running with nobody holding its id: the operator's
+    // paste then either found no session ("no sign-in with that id is open") or a
+    // session whose process had ended, and read as a broken pipe. Pruning now ends
+    // the process it is abandoning.
     if let Ok(mut open) = logins().lock() {
-        open.retain(|session| session.started.elapsed() < std::time::Duration::from_secs(600));
+        let cutoff = std::time::Duration::from_secs(600);
+        open.retain_mut(|session| {
+            if session.started.elapsed() < cutoff {
+                return true;
+            }
+            let _ = session.child.kill();
+            let _ = session.child.wait();
+            false
+        });
     }
     logins()
         .lock()
@@ -701,6 +735,28 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
     // A carriage return, not a newline: the prompt reads the terminal in raw
     // mode, where Enter is CR. A bare newline is echoed and then ignored, which left
     // the app spinning while the CLI waited for a key it never saw.
+    // Is the CLI still there before writing to it?
+    //
+    // This is the difference between a useful sentence and a raw pipe error. When
+    // `claude setup-token` has already gone away - it exited, or something ended it
+    // - the write fails with a broken pipe ("the code could not be sent: Broken
+    // pipe (os error 32)"), which tells the operator nothing about what to do. The
+    // real condition is always the same and always fixable: this sign-in is over,
+    // start another. Checked before the write so the message names that.
+    if let Ok(Some(status)) = session.child.try_wait() {
+        let drawn = strip_escapes(&session.drain_output(), true);
+        let tail = drawn.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut sentence = format!(
+            "that sign-in had already ended before the code arrived ({status}), so there was \
+             nothing to hand it to. Close this and tap Sign in with Claude again"
+        );
+        if !tail.is_empty() {
+            let short: String = tail.chars().rev().take(160).collect::<Vec<_>>()
+                .into_iter().rev().collect();
+            sentence.push_str(&format!(". It last printed: {short}"));
+        }
+        return Err(sentence);
+    }
     let stdin = session
         .child
         .stdin
@@ -708,7 +764,15 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
         .ok_or("the sign-in has no input pipe")?;
     stdin
         .write_all(format!("{}\r", code.trim()).as_bytes())
-        .map_err(|error| format!("the code could not be sent: {error}"))?;
+        .map_err(|error| {
+            // A write can still fail with the process alive: a drained pty or a
+            // closed descriptor. Either way the sign-in is not usable, and the
+            // operator's action is the same, so say that rather than the errno.
+            format!(
+                "the code could not be delivered because the sign-in stopped accepting \
+                 input ({error}). Close this and tap Sign in with Claude again"
+            )
+        })?;
     stdin
         .flush()
         .map_err(|error| format!("the code could not be sent: {error}"))?;
@@ -2141,6 +2205,58 @@ mod tests {
         assert_eq!(allowed_models(TOOL_ANTIGRAVITY).len(), 3);
         assert_eq!(allowed_models(TOOL_DSH), vec!["default"]);
         assert!(allowed_models("none").is_empty());
+    }
+
+    /// A sign-in whose CLI has already exited says so, instead of "Broken pipe".
+    ///
+    /// This is the live failure: the operator pasted a code, the `claude
+    /// setup-token` process had already gone away, and the write failed with
+    /// "the code could not be sent: Broken pipe (os error 32)". That sentence names
+    /// an errno, not an action. The check before the write is what turns it into
+    /// "that sign-in had already ended, start another".
+    #[test]
+    fn a_dead_sign_in_names_itself_instead_of_a_broken_pipe() {
+        // A process that has already exited, standing in for the dead CLI.
+        let mut child = Command::new("/bin/true")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        // Reap it so `try_wait` reports the exit rather than a live child.
+        let _ = child.wait();
+
+        // An empty channel pair: nothing left to read.
+        let (_tx, rx) = std::sync::mpsc::channel::<String>();
+        let (_etx, erx) = std::sync::mpsc::channel::<String>();
+        let mut session = LoginSession {
+            child,
+            stdout: rx,
+            stderr: erx,
+            id: "test".to_owned(),
+            url: "https://example.test".to_owned(),
+            started: std::time::Instant::now(),
+        };
+        // The exact condition the handler checks before writing.
+        assert!(
+            session.child.try_wait().ok().flatten().is_some(),
+            "a reaped child must read as exited"
+        );
+
+        // And a live one must not be mistaken for it.
+        let mut alive = Command::new("/bin/sleep")
+            .arg("5")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        assert!(
+            alive.try_wait().ok().flatten().is_none(),
+            "a running child is not exited"
+        );
+        let _ = alive.kill();
+        let _ = alive.wait();
     }
 
     /// The CLI's own answer outranks a leftover credentials file.
