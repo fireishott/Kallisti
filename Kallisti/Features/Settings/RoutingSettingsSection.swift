@@ -587,11 +587,24 @@ struct RoutingSettingsSection: View {
     }
 
     private func finishClaudeLogin() async {
-        guard !isSavingClaudeToken, !claudeLoginID.isEmpty else { return }
+        guard !isSavingClaudeToken else { return }
         isSavingClaudeToken = true
         defer { isSavingClaudeToken = false }
         claudeSignInError = nil
-        guard let url = daemonURL("/v1/harness/tools/claude-code/login/complete") else { return }
+        // A silent return here left the sheet spinning with no message.
+        //
+        // If the base URL went missing, or the sheet was reopened without a session
+        // id, this returned early and the operator saw nothing happen at all - the
+        // worst kind of failure, because there is nothing to report and nothing to
+        // retry. Both conditions now say which one it was.
+        guard !claudeLoginID.isEmpty else {
+            claudeSignInError = "This sign-in has no session. Close this and tap Sign in with Claude again."
+            return
+        }
+        guard let url = daemonURL("/v1/harness/tools/claude-code/login/complete") else {
+            claudeSignInError = "No daemon address is configured, so the code had nowhere to go."
+            return
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -602,6 +615,16 @@ struct RoutingSettingsSection: View {
             "id": claudeLoginID,
             "code": claudeLoginCode.trimmingCharacters(in: .whitespacesAndNewlines),
         ])
+        // Outlast the daemon's own wait, or this fails while the daemon is still
+        // working.
+        //
+        // The daemon holds this request open while `claude setup-token` exchanges
+        // the code, and that wait was raised from 30 seconds to 120 because a real
+        // exchange can outlast a shorter one. `URLSession`'s default is 60, so the
+        // app hung up first and reported "the code could not be sent" - an error
+        // about the network for a request the daemon was still answering. The
+        // ceiling here must be above the daemon's, never below it.
+        request.timeoutInterval = 150
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
