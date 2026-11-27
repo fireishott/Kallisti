@@ -597,7 +597,16 @@ fn terminal_command(claude: &Path, dirs: &[PathBuf]) -> Command {
         .arg("-e")
         .arg("-c")
         .arg(format!(
-            "stty cols 500 rows 50 2>/dev/null; '{path}' setup-token"
+            // `NODE_OPTIONS=--dns-result-order=ipv4first` because this host resolves
+            // `platform.claude.com` to an IPv6 address and has no IPv6 default
+            // route: the CLI's token exchange then blocks forever on an address it
+            // can never reach. Measured on 2026-11-27: a well-formed code produced
+            // zero output and zero CPU (`utime=0 stime=0`) for 120+ seconds, while
+            // the same request forced over IPv4 answered in 149 ms. A short malformed
+            // code still failed instantly, which is what made this look like a code
+            // problem rather than a network one. This is the whole sign-in bug.
+            "stty cols 500 rows 50 2>/dev/null; \
+             NODE_OPTIONS=\"${{NODE_OPTIONS:-}} --dns-result-order=ipv4first\" '{path}' setup-token"
         ))
         .arg("/dev/null");
     command
@@ -762,6 +771,24 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
         .stdin
         .as_mut()
         .ok_or("the sign-in has no input pipe")?;
+    // The code, then a SEPARATE Enter a moment later.
+    //
+    // `claude setup-token` echoes the code (87 asterisks for a 43+43 pair, so it
+    // took every character) and then does nothing at all: no token, no error, and
+    // zero CPU (`utime=0 stime=0`) for 120+ seconds. That silence is the sign-in
+    // failure the operator reported as "still no bueno", and a shorter malformed
+    // code failing instantly is what made it look like a bad code rather than a
+    // prompt that never advanced.
+    //
+    // It needs a second carriage return, and it needs it as its own write after a
+    // pause. Measured on 2026-11-27 with the same code:
+    //
+    //   code + "\r\r" in one write      -> silent for 50s
+    //   code + "\r", 1.0s, "\r"          -> answered in 0.2s
+    //   code + "\r", 3.0s, "\r"          -> answered in 0.2s
+    //
+    // So this is a timing condition, not a number of newlines: the prompt is in raw
+    // mode and reads the second return as the one that commits.
     stdin
         .write_all(format!("{}\r", code.trim()).as_bytes())
         .map_err(|error| {
@@ -776,6 +803,21 @@ pub fn complete_login(id: &str, code: &str) -> Result<String, String> {
     stdin
         .flush()
         .map_err(|error| format!("the code could not be sent: {error}"))?;
+
+    // The prompt is in raw mode: the code line is only committed when another
+    // return arrives, and it has to arrive as its own write after the code has been
+    // consumed. See the measurement beside the write above - one joined "\r\r"
+    // never advances the prompt and the sign-in sits silent forever.
+    //
+    // The pause is what makes it a separate keystroke from the prompt's point of
+    // view. Too short and it is coalesced into the same read as the code.
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    stdin
+        .write_all(b"\r")
+        .map_err(|error| format!("the code could not be confirmed: {error}"))?;
+    stdin
+        .flush()
+        .map_err(|error| format!("the code could not be confirmed: {error}"))?;
 
     // Bounded, because the phone is waiting on this call. A rejection arrives in
     // seconds; anything past half a minute is the CLI waiting for another code,
@@ -2225,6 +2267,65 @@ mod tests {
         assert_eq!(allowed_models(TOOL_ANTIGRAVITY).len(), 3);
         assert_eq!(allowed_models(TOOL_DSH), vec!["default"]);
         assert!(allowed_models("none").is_empty());
+    }
+
+    /// The code is committed with a SECOND, separate carriage return.
+    ///
+    /// `claude setup-token` echoes the whole code and then does nothing until
+    /// another return arrives, and that return has to be its own write after a
+    /// pause. Measured on 2026-11-27 with one code:
+    ///
+    ///   code + "\r\r" in one write  -> silent 50s
+    ///   code + "\r", 1.2s, "\r"      -> answered 0.2s
+    ///
+    /// The stub below reads one line for the code and one for the confirmation, so
+    /// an edit that folds the two writes together - which is what made the sign-in
+    /// hang - leaves the read waiting and fails here.
+    #[test]
+    fn the_code_is_confirmed_with_a_second_separate_return() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Python, so the reporting needs no shell quoting.
+        let command = stub(
+            dir.path(),
+            "prompt.py",
+            "#!/usr/bin/env python3\n\
+             import sys\n\
+             sys.stdout.write('Paste code here if prompted\\n')\n\
+             sys.stdout.flush()\n\
+             first = sys.stdin.readline().strip()\n\
+             second = sys.stdin.readline().strip()\n\
+             sys.stdout.write('code=[' + first + '] confirm=[' + second + ']\\n')\n\
+             sys.stdout.flush()\n",
+        );
+        let mut child = Command::new(&command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let mut stdin = child.stdin.take().expect("stdin");
+
+        // The daemon sends CR to a raw terminal; the stub is a pipe, so this uses LF.
+        // What it proves is the part that was broken: two separate writes.
+        let code = "AAAA#BBBB";
+        stdin
+            .write_all(format!("{code}\n").as_bytes())
+            .expect("code");
+        stdin.flush().expect("flush");
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        stdin.write_all(b"\n").expect("confirm");
+        stdin.flush().expect("flush");
+
+        let output = child.wait_with_output().expect("wait");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            text.contains("code=[AAAA#BBBB]"),
+            "the code must arrive whole: {text}"
+        );
+        assert!(
+            text.contains("confirm=[]"),
+            "the confirming return must arrive as its own write: {text}"
+        );
     }
 
     /// A sign-in whose CLI has already exited says so, instead of "Broken pipe".

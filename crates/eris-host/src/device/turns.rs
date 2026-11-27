@@ -2136,11 +2136,20 @@ impl TurnHub {
     ) {
         let db = self.store.db();
         let prepared = (|| -> Result<ConversationTurn, DbError> {
+            // Marked, because this is not operator speech.
+            //
+            // A queued task is the model scheduling its own next work: a
+            // continuation after a capped turn, or a verification pass it decided
+            // to run. Writing it as a plain user row put machine text in the chat
+            // that the operator never typed - six "Verify the FIHUNRAID wipe ..."
+            // rows in one conversation on 2026-11-27. The marker keeps the prompt
+            // (the model still needs every word of it) while letting the transcript
+            // - and any client reading it - tell the two apart.
             crate::web::chat::append(
                 db,
                 conversation,
                 crate::web::chat::Role::User,
-                &queued.prompt,
+                &crate::queue::mark_task(&queued.prompt),
                 crate::web::chat::State::Complete,
             )?;
             let question_id = crate::web::chat::question_id(db, conversation)?.unwrap_or_default();

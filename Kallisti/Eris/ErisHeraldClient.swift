@@ -1180,9 +1180,23 @@ final class ErisHeraldClient: HeraldClientProtocol {
     static let autoContinuationPrefix =
         "Continue this job. The previous turn ended at its tool-round cap"
 
+    /// The marker a queued task's prompt carries.
+    ///
+    /// A queue_task prompt is the model scheduling its own next work, not something
+    /// the operator typed. Without this the chat filled with walls of machine text -
+    /// six "Verify the FIHUNRAID wipe ..." rows in one conversation - because the
+    /// daemon wrote each one as an ordinary user message. Mirrors
+    /// `crate::queue::TASK_PREFIX`; the two must move together.
+    static let taskPromptPrefix = "[task] "
+
     static func message(from m: ErisConversationMessage) -> Message {
         let isAutoContinuation = m.isUser
             && m.body.hasPrefix(autoContinuationPrefix)
+        // A queued task is the same kind of thing: machine speech in a user row.
+        // It gets its own quiet line rather than the operator's voice, and its
+        // body is not rendered - the prompt is long and the operator did not write
+        // it. The turn's answer still appears normally under it.
+        let isTask = m.isUser && m.body.hasPrefix(taskPromptPrefix)
         return Message(
             id: stableUUID(from: m.id),
             // The two handles the daemon stamps on the row. Without them a
@@ -1191,10 +1205,12 @@ final class ErisHeraldClient: HeraldClientProtocol {
             // newline came back as a second copy of itself: one row in the
             // database, two bubbles on the phone.
             clientMessageID: m.clientMessageID.flatMap { UUID(uuidString: $0) },
-            sender: isAutoContinuation ? .system : (m.isUser ? .user : .herald),
+            sender: (isAutoContinuation || isTask) ? .system : (m.isUser ? .user : .herald),
             content: isAutoContinuation
                 ? "Continued automatically after the tool-round limit."
-                : m.body,
+                : isTask
+                    ? "Queued a task and ran it."
+                    : m.body,
             timestamp: ErisTimestamp.date(from: m.createdAt) ?? .now,
             jobID: m.jobID.flatMap { $0.isEmpty ? nil : Self.stableUUID(from: $0) },
             status: m.isFailed ? .failed : .sent,

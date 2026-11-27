@@ -248,6 +248,36 @@ fn already_queued(db: &Db, conversation: &str, prompt: &str) -> Result<bool, DbE
 /// says plainly not to redo finished work. A continuation that re-explores costs
 /// the same budget the cap just spent.
 #[must_use]
+/// The prefix every queued task's prompt carries.
+///
+/// A queue_task prompt is the model talking to itself: a continuation, a
+/// verification pass, a follow-up it decided to schedule. It is not something the
+/// operator typed - and until this existed, `start_queued` wrote it into the
+/// transcript as an ordinary user message, so a self-verifying turn filled the
+/// chat with walls of machine text the operator never sent. Measured on
+/// 2026-11-27: six rows of "Verify the FIHUNRAID wipe ..." in one conversation.
+///
+/// The marker lives at the front of the stored body rather than in a new column:
+/// the transcript read already carries `body`, so a client can recognise it with
+/// no schema change and no migration, and the model still sees the full prompt.
+pub const TASK_PREFIX: &str = "[task] ";
+
+/// Whether a stored user body is a queued task rather than operator speech.
+#[must_use]
+pub fn is_task_prompt(body: &str) -> bool {
+    body.starts_with(TASK_PREFIX)
+}
+
+/// A queued task's prompt, marked.
+#[must_use]
+pub fn mark_task(prompt: &str) -> String {
+    if is_task_prompt(prompt) {
+        prompt.to_owned()
+    } else {
+        format!("{TASK_PREFIX}{}", prompt.trim_start())
+    }
+}
+
 pub fn continuation_prompt(previous: &str) -> String {
     let tail = tail_chars(previous, CONTINUATION_TAIL_CHARS);
     let mut out = String::from(
@@ -272,6 +302,35 @@ fn tail_chars(text: &str, limit: usize) -> String {
     }
     let skip = trimmed.chars().count() - limit;
     trimmed.chars().skip(skip).collect()
+}
+
+/// A queued task's prompt is marked, and marking twice is harmless.
+///
+/// The marker is what lets a transcript tell the model's own scheduled work from
+/// operator speech. It has to survive a re-mark: a prompt that already carries it
+/// must not accumulate prefixes, or a requeued task would grow one per hop.
+#[cfg(test)]
+#[test]
+fn a_queued_task_prompt_is_marked_exactly_once() {
+    // Local to this module, so no path prefix.
+
+    let plain = "Verify the FIHUNRAID wipe has finished.";
+    assert!(!is_task_prompt(plain), "an operator prompt is not a task");
+
+    let marked = mark_task(plain);
+    assert!(is_task_prompt(&marked));
+    assert_eq!(marked, format!("{TASK_PREFIX}{plain}"));
+    // The model still receives every word of the original prompt.
+    assert!(marked.ends_with(plain));
+
+    // Re-marking does not stack.
+    assert_eq!(mark_task(&marked), marked, "marking twice is a no-op");
+    assert_eq!(mark_task(&marked).matches(TASK_PREFIX).count(), 1);
+
+    // The continuation prompt the daemon generates is marked like any other.
+    let continuation = continuation_prompt("did some work");
+    assert!(!is_task_prompt(&continuation), "generated unmarked");
+    assert!(is_task_prompt(&mark_task(&continuation)));
 }
 
 #[cfg(test)]
