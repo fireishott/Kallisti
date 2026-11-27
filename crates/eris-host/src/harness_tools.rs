@@ -1092,16 +1092,36 @@ fn login_complaint(seen: &str) -> Option<String> {
     }
     // A rate limit is not a refused code and must not read as one.
     //
-    // The OAuth token endpoint answers `429 rate_limit_error` while it is holding
-    // this host off, and the CLI surfaces that as "Request failed with status code
-    // 429". Reporting it as "Claude refused that code" sends the operator to fetch
-    // a fresh code for a server that is refusing everyone, and the fresh code is
-    // refused in the same way.
+    // The CLI surfaces a throttled exchange as "Request failed with status code
+    // 429". Reporting that as "Claude refused that code" sends the operator to fetch
+    // a fresh code for a server refusing everyone, and the fresh code is refused in
+    // the same way.
+    //
+    // Caution, learned by getting it wrong: a 429 from a hand-rolled probe of the
+    // endpoint does NOT establish that the account is throttled. On this host `curl`
+    // to that URL answered 429 for hours while the same request carrying the CLI's
+    // user agent answered 400, so the probe was being fingerprinted. Only the CLI's
+    // own output is evidence about the CLI's own exchange.
     if squeezed.contains("statuscode429") || squeezed.contains("ratelimit") {
         return Some(
             "Claude is rate-limiting this host, not refusing your code (429). Nothing about \
              the code is wrong. Wait a few minutes, then start the sign-in again - tapping \
              it repeatedly keeps the limit in place"
+                .to_owned(),
+        );
+    }
+    // The token endpoint rejecting the request itself, before it looked at any
+    // credential. The CLI reports this as "Invalid request format", and it is what a
+    // direct probe of the endpoint gets when its user agent is not recognised:
+    // measured on this host, `curl` to the same URL answers 429 rate_limit_error
+    // while the same request carrying the CLI's own user agent answers 400
+    // invalid_request_error. So a 429 to a hand-rolled probe means "this probe was
+    // fingerprinted", not "the account is throttled" - and telling an operator the
+    // wrong one sends them to wait for a limit that was never there.
+    if squeezed.contains("invalidrequestformat") || squeezed.contains("invalidrequest") {
+        return Some(
+            "Claude rejected the shape of the sign-in request, not the code itself. That is \
+             normally a stale CLI: update Claude Code, then tap Sign in with Claude again"
                 .to_owned(),
         );
     }
