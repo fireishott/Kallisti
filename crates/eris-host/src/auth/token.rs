@@ -410,6 +410,21 @@ impl TokenService {
             verified.scope,
             origin,
         )?;
+        // One live family per device, whatever raced to get here.
+        //
+        // Both lanes of a racing refresh verify inside `RotationGrace` and both
+        // mint, which measurably leaves two live refresh rows for one phone. This
+        // retires the siblings so the newly minted token is the only live one. It
+        // runs after the mint, never before: a failure here must not cost the caller
+        // the pair it just earned, and the sweep is best effort for the same reason
+        // the retired-row prune is.
+        if let Err(error) = self.store.retire_sibling_refresh_tokens(
+            &verified.device_id,
+            &refresh.token_id,
+            &now(),
+        ) {
+            tracing::warn!(%error, "could not retire a superseded refresh token");
+        }
         self.store
             .audit(origin.actor(), "auth.rotate", Some(&verified.device_id))?;
         // A device that refreshes hourly retires two rows on every refresh, and
@@ -605,6 +620,78 @@ fn decode_token(presented: &str) -> Result<[u8; TOKEN_BYTES], AuthError> {
 
 // Tests live at module level (not in a `mod tests`) so the reported name is
 // exactly `auth::token::<name>`.
+
+/// A racing refresh leaves ONE live family, not two.
+///
+/// Two callers rotating the same refresh token inside `RotationGrace` both verify
+/// and both mint, which measurably left two live refresh rows for a single device.
+/// Each orphan is a credential nobody holds that still verifies, and every one is
+/// another hash on every later device request. Measured on the live daemon as six
+/// rotations in 2.5 seconds, which is what a second `ErisClient` actor does.
+///
+/// The loser must still recover: its own token was rotated moments ago, so it
+/// verifies inside the grace window and can rotate again.
+#[cfg(test)]
+#[test]
+fn a_racing_refresh_leaves_one_live_family() {
+    use crate::auth::{ScopeSet, TokenOrigin};
+    use crate::db::Db;
+
+    use super::TokenService;
+
+    let service = TokenService::new(Db::open_in_memory().expect("in-memory database"));
+    let device = service
+        .register_device("race-phone", "ios")
+        .expect("a device");
+    let first = service
+        .mint_pair(&device, ScopeSet::device_default(), TokenOrigin::Device)
+        .expect("a pair");
+
+    // Two lanes rotate the same token, as two actor instances do.
+    let lane_a = service.rotate(first.refresh.token()).expect("lane A");
+    let lane_b = service.rotate(first.refresh.token()).expect("lane B");
+
+    let live_refresh = |service: &TokenService, device: &str| {
+        service
+            .store()
+            .token_rows()
+            .expect("rows")
+            .iter()
+            .filter(|row| {
+                row.device_id == device
+                    && row.kind == "refresh"
+                    && row.revoked_at.is_none()
+                    && row.rotated_at.is_none()
+            })
+            .count()
+    };
+    assert_eq!(
+        live_refresh(&service, &device),
+        1,
+        "one device needs one live refresh family, not one per racing lane"
+    );
+
+    // The surviving family is the newer one, and it works.
+    service
+        .verify_refresh(lane_b.refresh.token())
+        .expect("the winner is live");
+
+    // The loser recovers rather than being logged out: its token was retired a
+    // moment ago, so it still answers inside the grace window.
+    service
+        .verify_refresh(lane_a.refresh.token())
+        .expect("the loser is not a stranger inside the window");
+
+    // And a further rotation off the loser's lane still yields a working pair,
+    // which is what keeps a phone paired through the race instead of asking to
+    // be paired again.
+    let recovered = service
+        .rotate(lane_a.refresh.token())
+        .expect("the loser can rotate again");
+    service
+        .verify_access(recovered.access.token())
+        .expect("its new access token works");
+}
 
 #[cfg(test)]
 #[test]

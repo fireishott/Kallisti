@@ -280,6 +280,40 @@ impl AuthStore {
         Ok(changed > 0)
     }
 
+    /// Retire every OTHER live refresh row for one device, keeping `keep_id`.
+    ///
+    /// A rotation is supposed to replace a device's refresh token, not add to it.
+    /// Two callers rotating the same token inside `RotationGrace` both verify, both
+    /// mark it rotated, and both mint - measurably two live refresh rows for one
+    /// device after a two-lane refresh. Each orphan is a credential nobody holds
+    /// that still verifies, and every one is another hash on every later request.
+    ///
+    /// Retiring the siblings keeps exactly one live family per device. A lane that
+    /// lost the race still recovers: its own token was rotated moments ago, so it
+    /// verifies inside the grace window and rotates again.
+    ///
+    /// Returns how many rows were retired.
+    pub fn retire_sibling_refresh_tokens(
+        &self,
+        device_id: &str,
+        keep_id: &str,
+        at: &OffsetDateTime,
+    ) -> Result<usize, AuthError> {
+        let stamp = format_timestamp(*at);
+        let changed = self.db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE auth_tokens SET rotated_at = ?2 \
+                  WHERE device_id = ?1 \
+                    AND kind = 'refresh' \
+                    AND id <> ?3 \
+                    AND rotated_at IS NULL \
+                    AND revoked_at IS NULL",
+                params![device_id, stamp, keep_id],
+            )
+        })?;
+        Ok(changed)
+    }
+
     /// Push one live token's expiry forward. `false` when the row is already
     /// retired, which is the case a sliding verification must not resurrect.
     ///
