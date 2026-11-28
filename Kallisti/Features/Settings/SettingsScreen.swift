@@ -137,7 +137,17 @@ struct SettingsScreen: View {
                 models: modelStore.models,
                 searchText: $auxPickerSearchText,
                 onSelect: { provider, model in
-                    Task { await auxService?.set(task: task.task, provider: provider, model: model) }
+                    // The daemon keys its roles by `key`, the row shows `task`.
+                    // These differ - `fallback` vs `Fallback` - and sending the
+                    // label was refused as an unknown role.
+                    Task {
+                        await auxService?.set(
+                            key: task.key,
+                            label: task.task,
+                            provider: provider,
+                            model: model
+                        )
+                    }
                     auxPickerTask = nil
                 }
             )

@@ -66,6 +66,18 @@ pub const CLAUDE_TOKEN_PROVIDER: &str = "claude-code-harness";
 /// because a credential file would not open would be worse than starting it.
 #[must_use]
 pub fn sealed_claude_token() -> Option<String> {
+    // Under test the environment fixture decides, so a test does not read the
+    // developer's real token store and change its own answer.
+    //
+    // This was how `the_harness_tool_list_answers_its_documented_shape` started
+    // failing after the status probe learned to honour a stored token: the fixture
+    // installed an empty environment, and this function reached past it into
+    // ~/.config for the live host's real sign-in. A test's environment has to bound
+    // every input the code under test reads.
+    #[cfg(test)]
+    if let Some(env) = crate::harness_tools::testing::current() {
+        return env.stored_token.filter(|token| !token.trim().is_empty());
+    }
     let store = crate::oauth::TokenFileStore::from_home().ok()?;
     let record = store.read(CLAUDE_TOKEN_PROVIDER).ok().flatten()?;
     let token = record.access_token.trim().to_owned();

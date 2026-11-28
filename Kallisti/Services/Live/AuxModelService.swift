@@ -104,22 +104,34 @@ final class AuxModelService {
         }
     }
 
-    func set(task: String, provider: String, model: String) async {
+    /// Pin one role's model.
+    ///
+    /// `key` is the daemon's canonical role key and `label` is what the row shows.
+    /// They are different strings - `fallback` and `Fallback` - and the Eris path
+    /// must send the key. It was sending the label, so every Eris pick was refused
+    /// with `aux_role_unknown: role does not accept 'Fallback'`. The comment below
+    /// claimed the row already carried the key; it carried the label.
+    ///
+    /// The legacy path still gets the label, because its own normalizer maps labels
+    /// to `auxiliary.<key>.<field>`.
+    func set(key: String, label: String, provider: String, model: String) async {
         if let erisSetter {
+            // The daemon matches its own key, never the label.
+            let role = key.isEmpty ? label : key
             do {
-                // Eris keys every role by its own canonical key, so the label
-                // normalization below is not needed on this path: the row that
-                // was tapped carries the key the daemon minted it with.
-                try await erisSetter(task, provider, model)
+                try await erisSetter(role, provider, model)
                 await load()
                 return
             } catch {
                 lastError = error.localizedDescription
-                Self.logger.error("eris aux set failed for \(task, privacy: .public): \(error.localizedDescription)")
+                Self.logger.error("eris aux set failed for \(role, privacy: .public): \(error.localizedDescription)")
                 return
             }
         }
 
+        // The legacy path keys off LABELS - its switch below has cases like
+        // "Vision" and "Web extract" - so it receives `label`, not the daemon key.
+        //
         // Normalize every dashboard task label to its canonical config key
         // (auxiliary.<key>.<field>). The dashboard menu exposes the eleven
         // canonical aux slots via the connector AUX_TASKS list (mirroring
@@ -127,7 +139,7 @@ final class AuxModelService {
         // adds will fail normalization here and we surface a real error
         // instead of silently writing to a typo'd key.
         let normalizedTask: String
-        switch task {
+        switch label {
         case "Vision":              normalizedTask = "vision"
         case "Web extract":         normalizedTask = "web_extract"
         case "Compression":         normalizedTask = "compression"

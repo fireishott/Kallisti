@@ -1515,6 +1515,58 @@ fn first_line(text: &str) -> Option<String> {
 /// The pipe is read on its own thread so a tool that exits while a child of its
 /// own still holds the descriptor cannot turn a version check into a wait; the
 /// grace period after the exit collects what the kernel already buffered.
+/// Run one program with extra environment, and capture its stdout.
+///
+/// A sibling of [`run_captured`] rather than a parameter on it: only the Claude
+/// status probe needs an environment, and every other caller reading a `--version`
+/// line must not silently inherit one.
+fn run_captured_with_env(
+    program: &Path,
+    args: &[&str],
+    timeout: Duration,
+    env: &[(&str, &str)],
+) -> Option<String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().ok()?;
+    let pipe = child.stdout.take();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        let _ = sender.send(bytes);
+    });
+    let started = Instant::now();
+    loop {
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(bytes) => {
+                let _ = child.wait();
+                return String::from_utf8(bytes).ok();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 fn run_captured(program: &Path, args: &[&str], timeout: Duration) -> Option<String> {
     let mut child = Command::new(program)
         .args(args)
@@ -1658,7 +1710,26 @@ fn claude_auth(env: &Env) -> Auth {
 /// missing credential, because the fix for the two is different.
 fn claude_auth_status(env: &Env) -> Option<Look> {
     let claude = find_on_path(&env.dirs, "claude")?;
-    let text = run_captured(&claude, &["auth", "status"], KEYCHAIN_TIMEOUT)?;
+    // Ask it with the daemon's own token in the environment.
+    //
+    // Without this the probe answers `loggedIn: false` for a host that has a valid
+    // stored token: `claude` only reports a sign-in from its credentials file,
+    // keychain, or `CLAUDE_CODE_OAUTH_TOKEN`, and the token this daemon holds lives
+    // in its own encrypted store. Measured on 2026-11-28: the sealed record was
+    // present (`sk-ant-oat01`, 120 chars) while the status probe said signed out,
+    // and because the CLI's verdict settles the report, the app kept showing "Not
+    // signed in" after a sign-in that had actually succeeded.
+    //
+    // This is the same variable the harness spawn exports, so the probe answers the
+    // question that matters: will a delegated run authenticate?
+    let text = match env.stored_token.as_deref().map(str::trim) {
+        Some(token) if !token.is_empty() => {
+            run_captured_with_env(&claude, &["auth", "status"], KEYCHAIN_TIMEOUT, &[
+                ("CLAUDE_CODE_OAUTH_TOKEN", token),
+            ])?
+        }
+        _ => run_captured(&claude, &["auth", "status"], KEYCHAIN_TIMEOUT)?,
+    };
     let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
     if !value.is_object() {
         return None;
@@ -1874,7 +1945,7 @@ pub(crate) mod testing {
     }
 
     /// The fixture in force, cloned out from under the lock.
-    pub(super) fn current() -> Option<Env> {
+    pub(crate) fn current() -> Option<Env> {
         FIXTURE
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -2378,6 +2449,48 @@ mod tests {
         );
         let _ = alive.kill();
         let _ = alive.wait();
+    }
+
+    /// A sealed token makes the status probe report signed in.
+    ///
+    /// The probe reads `claude auth status`, and the CLI only knows about its
+    /// credentials file, its keychain, or `CLAUDE_CODE_OAUTH_TOKEN`. The token this
+    /// daemon holds lives in its own encrypted store, so the probe used to answer
+    /// `loggedIn: false` for a host that had signed in successfully - and because
+    /// the CLI's verdict settles the report, the app kept showing "Not signed in"
+    /// after a sign-in that had worked. Measured 2026-11-28: sealed record present,
+    /// status false; with the token in the probe's environment, true.
+    #[test]
+    fn a_sealed_token_makes_the_status_probe_report_signed_in() {
+        let dir = tempfile::tempdir().expect("dir");
+        // A stub that answers logged-in only when the variable is set, which is
+        // exactly how the real CLI behaves.
+        stub(
+            dir.path(),
+            "claude",
+            "#!/bin/sh\n\
+             if [ -n \"$CLAUDE_CODE_OAUTH_TOKEN\" ]; then\n\
+               printf '{\"loggedIn\": true, \"authMethod\": \"oauth\"}'\n\
+             else\n\
+               printf '{\"loggedIn\": false, \"authMethod\": \"none\"}'\n\
+             fi\n",
+        );
+        let mut env = env_in(&[dir.path().to_path_buf()]);
+        env.platform = Platform::Linux;
+
+        // No stored token: the probe reports signed out.
+        env.stored_token = None;
+        let without = claude_auth_status(&env).expect("answers");
+        assert!(!without.verified, "no token means not signed in");
+
+        // A stored token: the probe reports signed in.
+        env.stored_token = Some("sk-ant-oat01-test".to_owned());
+        let with = claude_auth_status(&env).expect("answers");
+        assert!(
+            with.verified,
+            "a stored token must make the probe answer signed in: {with:?}"
+        );
+        assert_eq!(with.source, SOURCE_CLI_STATUS);
     }
 
     /// The CLI's own answer outranks a leftover credentials file.
