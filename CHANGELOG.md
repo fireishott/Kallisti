@@ -10,6 +10,27 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.9] - 2026-11-28
+
+### Fixed
+
+- **The Claude Code sign-in now shows as signed in.** The sign-in had been working:
+  the daemon held a sealed token. It still displayed "Not signed in" because the
+  status probe asked the CLI, and the CLI only knows about its own credentials file,
+  keychain, or `CLAUDE_CODE_OAUTH_TOKEN` — not the daemon's encrypted store. The
+  probe now asks with the token in its environment, which is the same variable a
+  delegated run gets, so the answer matches reality.
+- **Auxiliary role changes are accepted.** Picking a model for Fallback (or any
+  role) was refused with `aux_role_unknown: role does not accept 'Fallback'`: the
+  daemon matches its canonical key `fallback` and the app was sending the row's
+  display label. The app now sends the key and keeps the label for the legacy
+  connector path, which keys off labels.
+
+### Also in this run, daemon side
+
+- The code is committed with a second, separate Return — the actual sign-in bug.
+- Queued task prompts no longer appear in the chat as if you typed them.
+
 ## [1.8.8] - 2026-11-27
 
 ### Fixed
