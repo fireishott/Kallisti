@@ -10,6 +10,18 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-11-28
+
+### Fixed
+
+- **A new chat's first message no longer vanishes.** On a fresh chat the first
+  message could disappear, and leaving and returning showed the chat with no
+  activity at all. Two causes, both about a conversation id that was not real yet:
+  the id was persisted before the daemon had created the conversation, and the
+  reload path then returned an empty stub for an id it could not resolve, replacing
+  the message with nothing. The id is now persisted only once the daemon has bound
+  it, and a reload keeps the rows already on screen instead of blanking a live chat.
+
 ## [1.8.9] - 2026-11-28
 
 ### Fixed
