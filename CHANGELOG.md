@@ -10,6 +10,21 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-11-28
+
+### Fixed
+
+- **Sign in is always offered, so a dead token can be replaced.** The button used to
+  appear only when the harness reported no sign-in, so a harness that reported one
+  could not have it replaced: the only action left was Verify, which can confirm a
+  broken state but not fix it. The label now carries the state — "Sign in" with no
+  credential, "Sign in again" with one — so replacing an account is always possible.
+
+- The daemon now proves a stored harness token with a live call before reporting it
+  as signed in. `claude auth status` answers `loggedIn: true` for any non-empty
+  token, including a dead or forged one, so a rejected credential could read as a
+  working sign-in while every delegated run failed with `401`.
+
 ## [1.9.0] - 2026-11-28
 
 ### Fixed
