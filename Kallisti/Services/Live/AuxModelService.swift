@@ -155,12 +155,12 @@ final class AuxModelService {
             // Allow callers that already pass the canonical key (snake_case).
             // Reject anything else with a real error instead of writing
             // garbage to the gateway config.
-            let snake = task.lowercased().replacingOccurrences(of: " ", with: "_")
+            let snake = label.lowercased().replacingOccurrences(of: " ", with: "_")
             if NativeGatewayFeatureClient.auxiliaryCatalog.contains(where: { $0.key == snake }) {
                 normalizedTask = snake
             } else {
-                lastError = "Unknown auxiliary task: \(task)"
-                Self.logger.error("set rejected unknown task: \(task)")
+                lastError = "Unknown auxiliary task: \(label)"
+                Self.logger.error("set rejected unknown task: \(label)")
                 return
             }
         }
