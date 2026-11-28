@@ -72,6 +72,13 @@ pub const VERSION_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long the macOS keychain may take to answer.
 pub const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long the "does this token still work" probe may take.
+///
+/// A status read runs on a phone's request path, so this is deliberately short: a
+/// one-word completion on a healthy token answers in a second or two, and a probe
+/// that cannot finish is treated as inconclusive rather than as a dead token.
+pub const AUTH_PROBE_TIMEOUT: Duration = Duration::from_secs(25);
+
 /// The keychain item the Claude tool stores its sign-in in.
 pub const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
@@ -1649,7 +1656,26 @@ fn claude_auth(env: &Env) -> Auth {
     // A status it CAN run is decisive either way, because it reads the same
     // environment and files this function would otherwise guess at - and it knows
     // about sources this module does not parse, an `apiKeyHelper` among them.
-    if let Some(status) = claude_auth_status(env) {
+    if let Some(mut status) = claude_auth_status(env) {
+        // When the daemon holds the token itself, presence is not enough.
+        //
+        // `claude auth status` answers true for any non-empty
+        // `CLAUDE_CODE_OAUTH_TOKEN` - a garbage string included - so a dead or
+        // revoked token read as a working sign-in while every delegated run failed
+        // with `401 OAuth access token is invalid`. Measured on 2026-11-28: that is
+        // exactly what happened, and the operator saw "signed in" beside a harness
+        // that could not answer.
+        //
+        // Only a token this daemon stored is probed, because only that case is both
+        // commonly stale and cheap to check: a `--print` round trip against the
+        // pinned model. A failure downgrades the report to present-but-unverified,
+        // which is what tells the operator to sign in again.
+        if status.verified
+            && let Some(token) = env.stored_token.as_deref().map(str::trim)
+            && !token.is_empty()
+        {
+            status.verified = token_authenticates(env, token);
+        }
         // Reported as the only look: one authoritative answer, not a vote. Adding
         // it alongside the file looks let a stale `.credentials.json` outrank a
         // signed-out CLI, which is precisely the disagreement that made the failure
@@ -1698,6 +1724,39 @@ fn claude_auth(env: &Env) -> Auth {
     resolve(looks)
 }
 
+/// Whether one token actually authenticates, by spending the smallest real call.
+///
+/// `claude auth status` cannot answer this: it reports a credential is present, not
+/// that it works. The only proof is a request, so this asks the CLI for one tiny
+/// completion and reads the failure it prints. A non-zero exit with an auth error in
+/// its output is the dead-token case; anything else - success, a timeout, a missing
+/// binary - leaves the answer alone rather than inventing a verdict.
+///
+/// Bounded by [`AUTH_PROBE_TIMEOUT`]: the caller is a status read on a phone.
+fn token_authenticates(env: &Env, token: &str) -> bool {
+    let Some(claude) = find_on_path(&env.dirs, "claude") else {
+        // No binary to ask. Keep the CLI's own answer rather than contradicting it.
+        return true;
+    };
+    let Some(raw) = run_captured_with_env(
+        &claude,
+        &["-p", "ok"],
+        AUTH_PROBE_TIMEOUT,
+        &[("CLAUDE_CODE_OAUTH_TOKEN", token)],
+    ) else {
+        // No answer or too slow. A probe that cannot run is not evidence of a dead
+        // token, so it must not report one.
+        return true;
+    };
+    let said = raw.to_ascii_lowercase();
+    // The two ways the API says "this bearer is no good". Anything else is left to
+    // the CLI's own answer.
+    !(said.contains("401")
+        || said.contains("invalid bearer token")
+        || said.contains("oauth access token is invalid")
+        || said.contains("failed to authenticate"))
+}
+
 /// What `claude auth status` says, as a [`Look`].
 ///
 /// The command prints one JSON object. Only two fields matter here: `loggedIn`,
@@ -1738,6 +1797,18 @@ fn claude_auth_status(env: &Env) -> Option<Look> {
         .get("loggedIn")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    // `loggedIn` alone is not proof the token works - so this is not what decides
+    // `verified` when a stored token exists.
+    //
+    // The CLI reports `loggedIn: true` AND `authMethod: "oauth_token"` for ANY
+    // non-empty `CLAUDE_CODE_OAUTH_TOKEN`, including a dead or forged one. Measured
+    // on 2026-11-28: a garbage string returns both, and the stored token returned
+    // both while the API answered `401 OAuth access token is invalid`. Presence is
+    // all this command can see.
+    //
+    // A token that the daemon itself holds is therefore verified by a live probe
+    // instead; see `token_authenticates`. What this function can still say is the
+    // honest weaker thing: a credential is present.
     Some(Look {
         source: SOURCE_CLI_STATUS,
         found: logged_in,
@@ -2449,6 +2520,56 @@ mod tests {
         );
         let _ = alive.kill();
         let _ = alive.wait();
+    }
+
+    /// A dead stored token is reported unverified, not signed in.
+    ///
+    /// `claude auth status` answers true for any non-empty token, so presence was
+    /// being reported as a working sign-in while the API answered
+    /// `401 OAuth access token is invalid` - measured on 2026-11-28 against the
+    /// host's own stored token. The probe spends one tiny completion to find out.
+    #[test]
+    fn a_token_the_api_refuses_is_not_reported_as_signed_in() {
+        let dir = tempfile::tempdir().expect("dir");
+        // A stub that behaves like the real CLI: status says logged in whenever the
+        // variable is set, and an actual completion fails with the 401 text.
+        stub(
+            dir.path(),
+            "claude",
+            "#!/bin/sh\n\
+             case \"$1\" in\n\
+               auth) printf '{\"loggedIn\": true, \"authMethod\": \"oauth_token\"}' ;;\n\
+               -p) echo 'Failed to authenticate. API Error: 401 OAuth access token is invalid.'; exit 1 ;;\n\
+             esac\n",
+        );
+        let mut env = env_in(&[dir.path().to_path_buf()]);
+        env.platform = Platform::Linux;
+        env.stored_token = Some("sk-ant-oat01-dead".to_owned());
+
+        let auth = claude_auth(&env);
+        assert!(
+            !auth.verified,
+            "a token the API refuses must not read as verified: {auth:?}"
+        );
+
+        // A token the API accepts stays verified.
+        let dir2 = tempfile::tempdir().expect("dir");
+        stub(
+            dir2.path(),
+            "claude",
+            "#!/bin/sh\n\
+             case \"$1\" in\n\
+               auth) printf '{\"loggedIn\": true, \"authMethod\": \"oauth_token\"}' ;;\n\
+               -p) echo 'ok' ;;\n\
+             esac\n",
+        );
+        let mut env2 = env_in(&[dir2.path().to_path_buf()]);
+        env2.platform = Platform::Linux;
+        env2.stored_token = Some("sk-ant-oat01-live".to_owned());
+        assert!(
+            claude_auth(&env2).verified,
+            "a token the API accepts is a working sign-in"
+        );
     }
 
     /// A sealed token makes the status probe report signed in.
