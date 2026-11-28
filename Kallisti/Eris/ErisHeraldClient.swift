@@ -670,8 +670,23 @@ final class ErisHeraldClient: HeraldClientProtocol {
                     .id
             }
         }
+        // No id for this local UUID. That is a chat the daemon has never heard of,
+        // which is normal for a conversation created in this process and not yet
+        // submitted - but returning an EMPTY conversation here is what made the
+        // first message vanish.
+        //
+        // The screen keeps whatever the caller already had in memory. Returning a
+        // stub with no messages replaced the optimistic row with nothing, so the
+        // operator's first message disappeared and the chat looked inactive: the
+        // report was "I have to leave and come back, then see no activity".
+        //
+        // A stub is correct for a genuinely empty new chat and wrong for one that
+        // already has rows on screen, so the caller decides by passing what it has.
         guard let conversationID else {
-            return Conversation(id: id, title: "New Chat")
+            return currentConversation.flatMap { existing in
+                // Keep the rows already rendered for this same chat.
+                existing.id == id ? existing : nil
+            } ?? Conversation(id: id, title: "New Chat")
         }
         // Bind it. A chat opened from the session list - one started on another
         // device - resolved to a conversation here; leaving the map empty meant the

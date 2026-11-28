@@ -918,7 +918,24 @@ final class ChatStore {
         if conversation == nil {
             conversation = Conversation(id: conversationID, title: "New Chat")
         }
-        persistence.currentSessionId = conversationID
+        // Do NOT persist this id yet when the chat is new.
+        //
+        // On a fresh chat `conversationID` is a UUID this process invented; the
+        // daemon will mint its own when `ensureConversation` runs. Persisting the
+        // local one meant the next load asked the daemon for a conversation that
+        // does not exist: `ErisHeraldClient.loadConversation` finds no id-map entry,
+        // finds no match in the session list, and returns an EMPTY stub
+        // (`Conversation(id:, title: "New Chat")` with no messages). That is the
+        // report exactly - the first message disappears, and leaving and returning
+        // shows a chat with no activity, because the screen is now an empty stub
+        // bound to a conversation the daemon never created.
+        //
+        // The id is persisted later, from `loadConversation`, once the daemon has
+        // bound it (that path writes `conversation?.id` from the resolved detail).
+        // An existing chat keeps persisting immediately: its id is already real.
+        if conversation?.messages.isEmpty == false || persistence.currentSessionId != nil {
+            persistence.currentSessionId = conversationID
+        }
 
         let clientID = clientMessageID ?? UUID()
         let displayContent = trimmedContent.isEmpty && !attachments.isEmpty
@@ -1309,6 +1326,14 @@ final class ChatStore {
             guard !Task.isCancelled else { break }
             sessionEstablished = await heraldClient.ensureConversation(id: targetID)
             ensureAttempt += 1
+        }
+        // The daemon now knows this chat, so its id is safe to persist.
+        //
+        // This is the correct moment: `ensureConversation` has bound the local id to
+        // a real conversation, so a later load resolves instead of falling back to an
+        // empty stub. Persisting at enqueue time was the bug.
+        if sessionEstablished {
+            persistence.currentSessionId = targetID
         }
         guard sessionEstablished else {
             if let earlyPlaceholderID,
