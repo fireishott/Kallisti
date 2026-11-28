@@ -801,20 +801,30 @@ struct RoutingSettingsSection: View {
                 .disabled(installingToolID != nil || isSaving)
                 .accessibilityIdentifier("settings.routing.tools.\(tool.id).install")
             } else if tool.installed && tool.id == "claude-code" {
-                if tool.auth?.verified != true {
-                    Button {
-                        claudeSignInError = nil
-                        showingClaudeSignIn = true
-                    } label: {
-                        Text("Sign in")
-                            .font(Design.Typography.caption)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .tint(Design.Brand.accent)
-                    .disabled(isSaving)
-                    .accessibilityIdentifier("settings.routing.tools.\(tool.id).signin")
+                // Sign in is ALWAYS offered, and reads "Sign in again" once there is
+                // a credential.
+                //
+                // It used to appear only while `verified != true`, so a harness that
+                // reported a sign-in had no way to replace it - and a token can be
+                // dead while the status still says present (the API answers 401 for a
+                // token the CLI reports as logged in). The operator was left with
+                // only Verify, which can confirm a broken state but not fix it.
+                //
+                // The label carries the state instead of hiding the action: a
+                // working sign-in gets "Sign in again", which is how you replace an
+                // account, and a missing one gets the plain invitation.
+                Button {
+                    claudeSignInError = nil
+                    showingClaudeSignIn = true
+                } label: {
+                    Text(tool.auth?.verified == true ? "Sign in again" : "Sign in")
+                        .font(Design.Typography.caption)
                 }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(Design.Brand.accent)
+                .disabled(isSaving)
+                .accessibilityIdentifier("settings.routing.tools.\(tool.id).signin")
                 Button {
                     Task { await verifyHarnessTools() }
                 } label: {
